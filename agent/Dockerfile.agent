@@ -1,0 +1,23 @@
+FROM python:3.11-slim
+
+# Création utilisateur dédié relay-agent (miroir du service systemd)
+RUN groupadd -r relay-agent && useradd -r -g relay-agent -M -s /sbin/nologin relay-agent
+
+WORKDIR /opt/relay-agent
+
+# Copie du code agent
+COPY relay_agent.py facts_collector.py async_registry.py ./
+
+RUN pip install --no-cache-dir rsa httpx websockets cryptography
+
+# Répertoire de données (token JWT, clef privée, registry async)
+RUN mkdir -p /var/lib/relay-agent && chown relay-agent:relay-agent /var/lib/relay-agent
+
+ENV PYTHONUNBUFFERED=1
+
+# L'agent est lancé via agent_entrypoint.py (voir COPY ci-dessous)
+COPY agent_entrypoint.py ./
+
+USER relay-agent
+
+CMD ["python3", "/opt/relay-agent/agent_entrypoint.py"]

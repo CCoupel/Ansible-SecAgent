@@ -182,7 +182,7 @@ async def main():
     print("\n" + "=" * 60)
     print("DEPLOY QUALIF — Phase 1")
     print("=" * 60)
-    print(f"Cible : 192.168.1.217")
+    print(f"Cible : 192.168.1.218")
     print()
     print(f"{PASS if results['rsa'] else FAIL} Génération clef RSA-4096")
     print(f"{PASS if results['enrollment'] else FAIL} Tentative enrollment POST /api/register")

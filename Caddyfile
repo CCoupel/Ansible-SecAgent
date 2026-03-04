@@ -1,0 +1,81 @@
+# Caddyfile — 3 ports distincts pour sécurité
+# Port 7770 : Client enrollment + WSS agent
+# Port 7771 : Plugin connection (exec/upload/fetch)
+# Port 7772 : Inventory plugin
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Port 7770 — Client (enrollment + WSS)
+# ─────────────────────────────────────────────────────────────────────────────
+
+:7770 {
+  log {
+    level info
+    format json
+  }
+
+  # Enrollment client
+  route /api/register {
+    reverse_proxy relay-api:7770
+  }
+
+  # WebSocket agent
+  route /ws/agent {
+    reverse_proxy relay-api:7770 {
+      transport http {
+        write_timeout 0
+        read_timeout 0
+      }
+    }
+  }
+
+  # Health check
+  route /health {
+    reverse_proxy relay-api:7770
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Port 7771 — Plugin connection (exec/upload/fetch)
+# ─────────────────────────────────────────────────────────────────────────────
+
+:7771 {
+  log {
+    level info
+    format json
+  }
+
+  route /api/exec {
+    reverse_proxy relay-api:7771
+  }
+
+  route /api/upload {
+    reverse_proxy relay-api:7771
+  }
+
+  route /api/fetch {
+    reverse_proxy relay-api:7771
+  }
+
+  route /health {
+    reverse_proxy relay-api:7771
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Port 7772 — Inventory plugin
+# ─────────────────────────────────────────────────────────────────────────────
+
+:7772 {
+  log {
+    level info
+    format json
+  }
+
+  route /api/inventory {
+    reverse_proxy relay-api:7772
+  }
+
+  route /health {
+    reverse_proxy relay-api:7772
+  }
+}

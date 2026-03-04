@@ -1,0 +1,11 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY smoke_test.py .
+
+RUN pip install --no-cache-dir httpx websockets python-jose[cryptography] cryptography
+
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python3", "smoke_test.py"]

@@ -1,25 +1,137 @@
 # docker-compose.yml — AnsibleRelay qualification
-# Phase 1 : test relay-agent seul (sans relay-server complet)
 #
 # Déploiement via Docker remote access :
-#   DOCKER_HOST=tcp://192.168.1.217:2375 docker compose up --build --abort-on-container-exit
+#   DOCKER_HOST=tcp://192.168.1.218:2375 docker compose up --build -d
 #
-# Le code est inclus via build context (COPY dans Dockerfiles).
-# Pas de bind-mount — compatible avec daemon Linux distant depuis Windows.
+# Profils :
+#   (sans profil)   : Phase 2 uniquement — nats, relay-api, caddy
+#   phase1          : Phase 1 — relay-agent daemon + mock-server + relay-agent-test
+#   full            : Phase 1 + Phase 2 (agent connecte au vrai relay-api)
 #
-# Services Phase 1 :
-#   mock-server        : répond HTTP aux tentatives enrollment
-#   relay-agent-test   : script de qualification Phase 1
-#
-# Phase 2 (tâche #30 — dev-relay) : relay-api, nats, caddy
+# Variables d'environnement requises (fichier .env ou export) :
+#   JWT_SECRET_KEY  : clef HMAC-SHA256 pour les JWT
+#   ADMIN_TOKEN     : token Bearer pour /api/admin/authorize
 
 services:
 
-  # ── Phase 1 : mock server pour enrollment ─────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PHASE 2 — relay-server (nats + relay-api + caddy)
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  # ── NATS JetStream ────────────────────────────────────────────────────────────
+  nats:
+    image: nats:2-alpine
+    container_name: relay-nats
+    restart: unless-stopped
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ── relay-api (FastAPI multi-port) — 3 ports distincts pour sécurité ────────
+  relay-api:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: relay-api
+    restart: unless-stopped
+    depends_on:
+      nats:
+        condition: service_healthy
+    environment:
+      PYTHONUNBUFFERED: "1"
+      NATS_URL: "nats://nats:4222"
+      DATABASE_URL: "sqlite:////data/relay.db"
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY}"
+      ADMIN_TOKEN: "${ADMIN_TOKEN}"
+      LOG_LEVEL: "INFO"
+    volumes:
+      - relay_data:/data
+    expose:
+      - "7770"
+      - "7771"
+      - "7772"
+    ports:
+      - "7770:7770"  # Client (enrollment + WSS)
+      - "7771:7771"  # Plugin connection (exec/upload/fetch)
+      - "7772:7772"  # Inventory plugin (admin)
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:7770/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── Caddy (reverse proxy + TLS) — optionnel pour production ──────────────────
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    container_name: relay-caddy
+    restart: unless-stopped
+    ports:
+      - "7443:7443"   # TLS frontend (optionnel, peut être remplacé par reverse proxy prod)
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      relay-api:
+        condition: service_healthy
+    environment:
+      RELAY_API_AGENT_URL: "relay-api:7770"
+      RELAY_API_PLUGIN_URL: "relay-api:7771"
+      RELAY_API_INVENTORY_URL: "relay-api:7772"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PHASE 1 — relay-agent connecté au relay-api Phase 2
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  # ── relay-agent : daemon persistent (se connecte au relay-api Phase 2) ───────
+  relay-agent:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile.agent
+    container_name: relay-agent
+    restart: unless-stopped
+    depends_on:
+      relay-api:
+        condition: service_healthy
+    environment:
+      PYTHONUNBUFFERED: "1"
+      RELAY_SERVER_URL: "http://relay-api:7770"
+      RELAY_HOSTNAME: "qualif-host-01"
+      RELAY_DATA_DIR: "/var/lib/relay-agent"
+    volumes:
+      - relay_agent_data:/var/lib/relay-agent
+
+  # ── smoke-test Phase 2 (one-shot) ─────────────────────────────────────────
+  smoke-test:
+    build:
+      context: ./qualif
+      dockerfile: Dockerfile.smoke
+    container_name: relay-smoke-test
+    depends_on:
+      relay-api:
+        condition: service_healthy
+    environment:
+      RELAY_API_URL: "http://relay-api:7770"
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY}"
+      ADMIN_TOKEN: "${ADMIN_TOKEN}"
+      PYTHONUNBUFFERED: "1"
+
+  # ── mock server pour les tests d'enrollment Phase 1 ──────────────────────────
   mock-server:
     build:
       context: ./qualif
       dockerfile: Dockerfile.mock
+    container_name: relay-mock-server
+    profiles: ["phase1"]
     healthcheck:
       test: ["CMD", "python3", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
@@ -28,16 +140,23 @@ services:
       retries: 10
       start_period: 3s
 
-  # ── Phase 1 : qualification relay-agent ───────────────────────────────────
+  # ── qualification Phase 1 (one-shot, tests fonctionnels) ─────────────────────
   relay-agent-test:
     build:
       context: ./agent
       dockerfile: Dockerfile.qualify
-    depends_on:
-      mock-server:
-        condition: service_healthy
+    container_name: relay-agent-test
+    profiles: ["phase1"]
     environment:
       PYTHONUNBUFFERED: "1"
       RELAY_SERVER_URL: "http://mock-server:8080"
+    depends_on:
+      mock-server:
+        condition: service_healthy
 
-volumes: {}
+volumes:
+  nats_data:
+  relay_data:
+  relay_agent_data:
+  caddy_data:
+  caddy_config:

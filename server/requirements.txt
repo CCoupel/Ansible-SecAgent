@@ -1,0 +1,19 @@
+# relay-server — Python dependencies
+# Python 3.11+
+
+# Web framework
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+
+# Settings
+pydantic-settings==2.8.1
+
+# Database
+aiosqlite==0.21.0
+
+# NATS JetStream
+nats-py==2.10.0
+
+# JWT + Crypto
+python-jose[cryptography]==3.4.0
+cryptography==44.0.2
