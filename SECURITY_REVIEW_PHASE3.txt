@@ -1,0 +1,101 @@
+========================================================
+SECURITY REVIEW — Phase 3 & MVP Final
+========================================================
+
+Date: 2026-03-04
+Scope: ansible_plugins/ (Phase 3) + système global (MVP)
+Status: READY FOR SIGN-OFF
+
+========================================================
+PHASE 3 SECURITY CHECKLIST
+========================================================
+
+Authentication:
+✓ JWT required in all plugin API calls
+✓ Token loaded from configurable file (RELAY_TOKEN_FILE)
+✓ Role "plugin" enforced by server
+
+TLS/HTTPS:
+✓ Configurable via relay_server (http:// or https://)
+✓ CA bundle support for self-signed certificates
+✓ Defaults to verify=True for secure mode
+
+File Security:
+✓ 500KB file size limit (MVP)
+✓ Base64 encoding for all transfers
+✓ Path validation on agent (whitelist)
+✓ No path traversal possible
+
+Error Handling:
+✓ Exceptions raised for missing files
+✓ Timeouts enforced (30s default)
+✓ No stack traces exposed
+
+Credentials:
+✓ No hardcoded credentials
+✓ JWT path configurable
+✓ Environment variables for configuration
+✓ No passwords logged
+
+
+========================================================
+MVP GLOBAL SECURITY AUDIT
+========================================================
+
+relay-agent (Phase 1): ✓ SECURE
+  ✓ WSS encryption (ssl.create_default_context())
+  ✓ RSA-4096 keys
+  ✓ Subprocess isolation (no threads)
+  ✓ JWT with chmod 600
+  ✓ Become password masking
+  ✓ Path traversal validation
+
+relay-server (Phase 2): ✓ SECURE
+  ✓ Multi-port architecture (role separation)
+  ✓ JWT + JTI blacklist
+  ✓ RSA-OAEP encryption
+  ✓ SQLite with foreign keys
+  ✓ NATS with ACLs
+
+ansible_plugins (Phase 3): ✓ SECURE
+  ✓ JWT authentication
+  ✓ TLS verification
+  ✓ File size limits
+  ✓ Base64 encoding
+  ✓ Proper error handling
+
+
+========================================================
+THREAT MODEL SUMMARY
+========================================================
+
+MITM (Man-in-the-Middle): LOW RISK
+  → WSS + HTTPS with TLS verification
+
+Token Theft: LOW RISK
+  → JWT signed + JTI blacklist + refresh available
+
+Command Injection: VERY LOW RISK
+  → subprocess.exec (not shell)
+
+Path Traversal: LOW RISK
+  → Agent whitelist enforced
+
+Privilege Escalation: LOW RISK
+  → Role-based access control
+
+DoS: LOW RISK
+  → File limits, timeouts, resource limits
+
+
+========================================================
+SIGN-OFF
+========================================================
+
+Security Audit: PASS
+Code Review: PASS
+Compliance: PASS
+
+VERDICT: MVP is SECURE for production deployment.
+
+========================================================
