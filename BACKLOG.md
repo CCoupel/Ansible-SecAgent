@@ -1,18 +1,25 @@
-# BACKLOG AnsibleRelay — 41 tâches
+# BACKLOG AnsibleRelay — 102 tâches
 
 Date création : 2026-03-03
 Date mise à jour : 2026-03-05
-Status : Phase 0-3 complètes, Phase 4 (Production Kubernetes) à démarrer
+Status : Phase 0-3 complètes, Phase 4-6 planifiées, Phase 7-9 (GO migration) planifiées
 
 ## Vue d'ensemble
 
+### MVP (Python)
 - **Phase 1 (relay-agent)** : 13 tâches (#4 à #23) ✅ COMPLÈTE
 - **Phase 2 (relay-server)** : 11 tâches (#24 à #34) ✅ COMPLÈTE
 - **Phase 3 (plugins Ansible)** : 7 tâches (#35 à #41) ✅ COMPLÈTE
 - **Phase 4 (Production Kubernetes)** : 12 tâches (#42 à #53) 🆕 À DÉMARRER
 - **Phase 5 (Documentation & Hardening)** : 8 tâches (#54 à #61) 🆕 À DÉMARRER
-- **Phase 6 (Management UI)** : 8 tâches (#62 à #69) 🆕 À DÉMARRER
-- **Total** : 69 tâches
+- **Phase 6 (Management CLI)** : 8 tâches (#62 à #69) 🆕 À DÉMARRER
+
+### Optimisation (GO)
+- **Phase 7 (Server rewrite GO)** : 12 tâches (#70 à #81) 🆕 À DÉMARRER
+- **Phase 8 (Agent rewrite GO)** : 10 tâches (#82 à #91) 🆕 À DÉMARRER
+- **Phase 9 (Plugins wrapper GO)** : 5 tâches (#92 à #96) 🆕 À DÉMARRER
+
+**Total** : 102 tâches
 
 ---
 
@@ -212,6 +219,142 @@ CLI de management pour administrer les minions (agents) et l'inventaire Ansible 
 
 ---
 
+## PHASE 7 — Rewrite relay-server (GO) — 12 tâches
+
+### Prérequis
+- Phase 6 complète (CLI opérationnelle)
+- GO 1.21+ installé
+- Aucune modification aux API contracts (backward-compatible)
+
+### Objectif
+Réécrire relay-server (FastAPI Python) en GO compilé pour performance + sécurité :
+- Latency : 100ms → 5ms (20x faster)
+- Memory : 100MB → 10MB per instance
+- Single compiled binary (no runtime)
+- Type-safe crypto (RSA, JWT, SHA256)
+- High-concurrency WebSocket (500+ agents)
+
+### Tâches Phase 7
+
+| # | Tâche | Owner | Status | Bloquée par |
+|---|-------|-------|--------|------------|
+| #70 | Spécifications architecture GO — project layout, dependencies | dev-relay | pending | #69 |
+| #71 | Server main.go — multi-port app (7770/7771/7772), lifespan | dev-relay | pending | #70 |
+| #72 | handlers/register.go — enrollment, JWT, RSA-4096 encryption | dev-relay | pending | #71 |
+| #73 | handlers/exec.go — /api/exec, /api/upload, /api/fetch endpoints | dev-relay | pending | #71 |
+| #74 | handlers/inventory.go — /api/inventory (Ansible format) | dev-relay | pending | #71 |
+| #75 | ws/handler.go — WebSocket agent connections, dispatcher | dev-relay | pending | #71 |
+| #76 | storage/agent_store.go — SQLite wrapper (agents, authorized_keys, blacklist) | dev-relay | pending | #71 |
+| #77 | broker/nats.go — NATS JetStream client (RELAY_TASKS, RELAY_RESULTS) | dev-relay | pending | #71 |
+| #78 | Tests unitaires relay-server GO | test-writer | pending | #72-#77 |
+| #79 | Migration Python → GO : verify API contracts, protocol compatibility | dev-relay | pending | #78 |
+| #80 | QA — pytest E2E vs GO server (agents enroll, exec, inventory) | qa | pending | #79 |
+| #81 | Deploy qualif Phase 7 — GO server on 192.168.1.218 | deploy-qualif | pending | #80 |
+
+**Validation Phase 7 → Phase 8** :
+- ✓ TOUTES tâches #70-#81 completed
+- ✓ API contracts : 100% compatible with Python version
+- ✓ qa : 0 test en échec, E2E tests pass vs GO server
+- ✓ Performance : p95 latency < 10ms, p99 < 20ms
+- ✓ Memory : < 10MB per instance
+- ✓ Throughput : 1000+ req/s
+- ✓ deploy-qualif : GO server running stable 24h
+
+---
+
+## PHASE 8 — Rewrite relay-agent (GO) — 10 tâches
+
+### Prérequis
+- Phase 7 déployée (GO server)
+- GO 1.21+ installé
+
+### Objectif
+Réécrire relay-agent (Python daemon) en GO compilé :
+- Memory : 30MB → 2-3MB per agent
+- Startup : 500ms → 10ms
+- Better subprocess isolation
+- Single systemd binary
+- No Python garbage collector latency
+
+### Tâches Phase 8
+
+| # | Tâche | Owner | Status | Bloquée par |
+|---|-------|-------|--------|------------|
+| #82 | Agent architecture GO — project layout, async model | dev-agent | pending | #81 |
+| #83 | agent/main.go — enrollment, WSS connection, reconnection backoff | dev-agent | pending | #82 |
+| #84 | agent/dispatcher.go — message dispatcher (exec/put_file/fetch_file) | dev-agent | pending | #83 |
+| #85 | agent/executor.go — exec_command subprocess + stdout streaming (5MB buffer) | dev-agent | pending | #83 |
+| #86 | agent/files.go — put_file, fetch_file (base64, 500KB limit) | dev-agent | pending | #83 |
+| #87 | agent/registry.go — async task registry (JSON persistence) | dev-agent | pending | #83 |
+| #88 | agent/facts.go — system facts collection (via gopsutil) | dev-agent | pending | #83 |
+| #89 | Tests unitaires relay-agent GO | test-writer | pending | #85-#88 |
+| #90 | QA — pytest E2E vs GO agent (enrollment, exec, facts) | qa | pending | #89 |
+| #91 | Deploy qualif Phase 8 — GO agents on 192.168.1.218 | deploy-qualif | pending | #90 |
+
+**Validation Phase 8 → Phase 9** :
+- ✓ TOUTES tâches #82-#91 completed
+- ✓ qa : 0 test en échec
+- ✓ Memory : < 3MB per agent
+- ✓ Startup : < 50ms
+- ✓ Subprocess isolation : no threads, separate processes
+- ✓ Systemd : works with existing relay-agent.service
+- ✓ Backward-compatible : no changes to agent protocol
+
+---
+
+## PHASE 9 — Plugins wrapper (GO) — 5 tâches
+
+### Prérequis
+- Phase 8 déployée (GO agents)
+- Ansible plugins Python working
+
+### Objectif
+Wrapper GO pour plugins Ansible (inventory + connection) :
+- relay-inventory-go : compiled binary called by relay_inventory.py
+- relay-exec-go : compiled binary called by relay.py ConnectionBase
+- Transparent to Ansible (Python plugins unchanged)
+- Eliminates Python startup overhead (inventory refresh, exec)
+
+### Architecture
+```
+ansible-playbook
+    ↓
+relay_inventory.py (Python, unchanged)
+    ↓ subprocess call
+relay-inventory-go (compiled wrapper)
+    ↓ HTTP
+relay-server:7772 (/api/inventory)
+    ↓
+response → Ansible inventory
+
+relay.py (Python ConnectionBase, unchanged)
+    ↓ subprocess call
+relay-exec-go (compiled wrapper)
+    ↓ HTTP
+relay-server:7771 (/api/exec, /api/upload, /api/fetch)
+    ↓
+response → Ansible module result
+```
+
+### Tâches Phase 9
+
+| # | Tâche | Owner | Status | Bloquée par |
+|---|-------|-------|--------|------------|
+| #92 | inventory-wrapper/main.go — CLI arg parsing, HTTP client | dev-plugins | pending | #91 |
+| #93 | inventory-wrapper/inventory.go — fetch /api/inventory, format for Ansible | dev-plugins | pending | #92 |
+| #94 | exec-wrapper/main.go — CLI arg parsing, subprocess handling | dev-plugins | pending | #91 |
+| #95 | Tests + integration : Python plugins → GO wrappers | test-writer | pending | #93, #94 |
+| #96 | Deploy qualif Phase 9 — E2E Ansible playbook via GO wrappers | deploy-qualif | pending | #95 |
+
+**Validation Phase 9 → Production** :
+- ✓ TOUTES tâches #92-#96 completed
+- ✓ qa : 0 test en échec, E2E playbooks pass with GO wrappers
+- ✓ Ansible plugins : unchanged (backward compatible)
+- ✓ Performance : inventory refresh < 500ms, exec < 1s startup
+- ✓ No Python startup overhead
+
+---
+
 ## Dépendances critiques
 
 ```
@@ -246,6 +389,20 @@ PHASE 6 (MANAGEMENT CLI):
 #63 → #65 (auth) bloqué par #63
 #64/#65/#66 (inventory editor) bloqué par #64
 #64/#65/#66 → #67 (tests) → #68 (QA) → #69 (CLI package)
+
+PHASE 7 (SERVER REWRITE GO):
+#69 (CLI done) → #70 (GO specs)
+#70 → #71 (main.go) → #72-#77 (handlers, storage, broker, ws - parallèle)
+#72-#77 → #78 (tests) → #79 (migration verify) → #80 (QA E2E) → #81 (deploy)
+
+PHASE 8 (AGENT REWRITE GO):
+#81 (GO server done) → #82 (agent specs)
+#82 → #83 (main.go) → #84-#88 (dispatcher, executor, files, registry, facts - parallèle)
+#84-#88 → #89 (tests) → #90 (QA E2E) → #91 (deploy)
+
+PHASE 9 (PLUGINS WRAPPER GO):
+#91 (GO agent done) → #92 (inventory wrapper) + #94 (exec wrapper - parallèle)
+#92/#94 → #95 (tests + integration) → #96 (E2E playbook)
 ```
 
 ---
@@ -298,4 +455,7 @@ PHASE 6 (MANAGEMENT CLI):
 | Phase 4 | Helm deploy réussie, 3 agents K8s connectés, Ingress TLS OK, persistance vérifiée | 🆕 À FAIRE |
 | Phase 5 | Runbooks testées, monitoring opérationnel, DR validated, sign-off utilisateur | 🆕 À FAIRE |
 | Phase 6 | CLI opérationnelle : minions list/detail/revoke/delete, inventory edit/diff/rollback | 🆕 À FAIRE |
-| LIVE | Production Kubernetes opérationnelle, SLA garantis, support en place, management CLI | 🆕 À FAIRE |
+| Phase 7 | GO server : p95 latency < 10ms, memory < 10MB, 1000+ req/s, API 100% compatible | 🆕 À FAIRE |
+| Phase 8 | GO agent : memory < 3MB, startup < 50ms, systemd service, backward-compatible | 🆕 À FAIRE |
+| Phase 9 | GO wrappers : inventory refresh < 500ms, exec < 1s, Ansible plugins unchanged | 🆕 À FAIRE |
+| LIVE | Production Kubernetes optimisée GO : SLA garantis, performance, CLI management | 🆕 À FAIRE |
