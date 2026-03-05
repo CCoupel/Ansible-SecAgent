@@ -1,0 +1,21 @@
+---
+# Configuration du plugin d'inventory relay_inventory
+# Utilisé par: ansible-playbook -i relay_inventory.yml playbook.yml
+#
+# Architecture multi-port:
+#   - 7770: agents (enrollment + WSS)
+#   - 7771: plugin connection (exec/upload/fetch)
+#   - 7772: inventory plugin
+
+plugin: relay_inventory
+relay_server: http://192.168.1.218:7772  # Port 7772 = inventory plugin
+relay_token_file: /tmp/relay_token.jwt
+only_connected: false
+
+# Variables pour le connection plugin (appelle port 7771)
+all:
+  hosts:
+    # Les hosts seront ajoutés dynamiquement par le plugin relay_inventory
+  vars:
+    ansible_relay_server: http://192.168.1.218:7771  # Port 7771 = exec/upload/fetch
+    ansible_relay_token_file: /tmp/relay_token.jwt

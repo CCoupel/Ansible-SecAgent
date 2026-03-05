@@ -1,0 +1,116 @@
+#!/usr/bin/env ansible-playbook
+---
+# Test des plugins Ansible (connection + inventory)
+#
+# Pré-conditions:
+# 1. Server relay déployé sur 192.168.1.218:7770
+# 2. Agents qualif-host-01, 02, 03 enregistrés et connectés
+# 3. JWT plugin généré et sauvegardé dans /tmp/relay_token.jwt
+#
+# Utilisation:
+#   ansible-playbook playbooks/test_relay_plugins.yml -i relay_inventory
+#   ou
+#   export RELAY_TOKEN_FILE=/tmp/relay_token.jwt
+#   ansible-playbook playbooks/test_relay_plugins.yml -i relay_inventory
+#
+
+- name: Test AnsibleRelay Plugins (Connection + Inventory)
+  hosts: all
+  gather_facts: yes
+
+  tasks:
+    - name: "Test 1: Basic connectivity via relay connection plugin"
+      debug:
+        msg: "Connected to {{ inventory_hostname }} via relay connection plugin"
+
+    - name: "Test 2: Get hostname (exec_command)"
+      command: hostname
+      register: hostname_result
+      changed_when: false
+
+    - name: "Display hostname"
+      debug:
+        msg: "{{ inventory_hostname }} hostname: {{ hostname_result.stdout }}"
+
+    - name: "Test 3: Get system uptime (exec_command)"
+      command: uptime
+      register: uptime_result
+      changed_when: false
+
+    - name: "Display uptime"
+      debug:
+        msg: "{{ inventory_hostname }} uptime: {{ uptime_result.stdout }}"
+
+    - name: "Test 4: Create test file (put_file)"
+      copy:
+        content: |
+          Test file created by AnsibleRelay
+          Host: {{ inventory_hostname }}
+          Timestamp: {{ ansible_date_time.iso8601 }}
+        dest: /tmp/relay_test_file_{{ inventory_hostname }}.txt
+
+    - name: "Test 5: Read test file (fetch_file)"
+      slurp:
+        src: /tmp/relay_test_file_{{ inventory_hostname }}.txt
+      register: test_file_content
+
+    - name: "Display file content"
+      debug:
+        msg: "{{ test_file_content['content'] | b64decode }}"
+
+    - name: "Test 6: List /tmp on relay agent"
+      command: ls -lah /tmp/relay_test_file_*
+      register: ls_result
+      changed_when: false
+
+    - name: "Display ls result"
+      debug:
+        msg: "{{ ls_result.stdout_lines }}"
+
+    - name: "Test 7: Get disk usage (exec_command)"
+      shell: df -h / | tail -1
+      register: df_result
+      changed_when: false
+
+    - name: "Display disk usage"
+      debug:
+        msg: "{{ inventory_hostname }} disk usage: {{ df_result.stdout }}"
+
+    - name: "Test 8: Gather facts (gather_facts)"
+      debug:
+        msg: |
+          Facts gathered:
+          - OS: {{ ansible_system }} {{ ansible_system_version }}
+          - Kernel: {{ ansible_kernel }}
+          - CPU: {{ ansible_processor_vcpus }}
+          - Memory: {{ ansible_memtotal_mb }} MB
+
+    - name: "Test 9: Test with become (if configured)"
+      command: whoami
+      become: yes
+      become_user: root
+      register: whoami_result
+      changed_when: false
+      ignore_errors: yes
+
+    - name: "Display whoami result"
+      debug:
+        msg: "Current user: {{ whoami_result.stdout }}"
+      when: whoami_result is success
+
+    - name: "Test 10: Cleanup test files"
+      file:
+        path: /tmp/relay_test_file_{{ inventory_hostname }}.txt
+        state: absent
+
+  post_tasks:
+    - name: "Summary: All relay plugin tests completed"
+      debug:
+        msg: |
+          ✅ Plugin tests summary for {{ inventory_hostname }}:
+          - Connection plugin (relay): OK
+          - exec_command: OK
+          - put_file: OK
+          - fetch_file: OK
+          - gather_facts: OK
+          - become (become_user): {{ 'OK' if whoami_result is success else 'SKIPPED' }}

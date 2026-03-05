@@ -1,0 +1,12 @@
+FROM python:3.11-slim
+
+WORKDIR /opt/relay-agent
+
+# Copie tout le répertoire agent dans l'image
+COPY . .
+
+RUN pip install --no-cache-dir rsa httpx websockets
+
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python3", "/opt/relay-agent/qualify_phase1.py"]

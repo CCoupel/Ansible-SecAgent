@@ -1,0 +1,56 @@
+[Unit]
+Description=AnsibleRelay Agent — connexion WebSocket sortante vers le relay server
+Documentation=https://github.com/example/ansible-relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Utilisateur dédié sans shell ni répertoire home sur /root
+User=relay-agent
+Group=relay-agent
+
+# Répertoire de travail (contient token.jwt, private_key.pem, config)
+WorkingDirectory=/etc/relay-agent
+
+# Binaire Python dans l'environnement virtuel dédié
+ExecStart=/opt/relay-agent/venv/bin/python /opt/relay-agent/relay_agent.py
+
+# Redémarrage automatique sauf en cas de sortie propre (ExitCode=0)
+Restart=on-failure
+RestartSec=5s
+
+# Plafond du backoff de reconnexion géré par l'agent lui-même ;
+# on laisse systemd redémarrer en cas de crash brutal.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+# Isolation et durcissement sécurité
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/relay-agent /tmp
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+
+# Variables d'environnement minimales
+# Surcharger via /etc/relay-agent/env ou EnvironmentFile
+EnvironmentFile=-/etc/relay-agent/env
+Environment=PYTHONUNBUFFERED=1
+
+# Journalisation via systemd-journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=relay-agent
+
+# Timeout d'arrêt propre : envoie SIGTERM, attend 15s, puis SIGKILL
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

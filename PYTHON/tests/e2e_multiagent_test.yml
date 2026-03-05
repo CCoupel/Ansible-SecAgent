@@ -1,0 +1,61 @@
+#!/usr/bin/env ansible-playbook
+---
+# E2E test : Exécution de commandes sur tous les agents relay-agent
+#
+# Utilise le plugin d'inventaire dynamique relay_inventory
+# et le plugin de connexion relay pour communiquer avec les agents
+#
+# Exécution :
+#   export RELAY_TOKEN_FILE=/path/to/jwt/token
+#   ansible-playbook tests/e2e_multiagent_test.yml -i relay_inventory
+#
+
+- name: E2E Multi-Agent Test — Execute commands on all relay agents
+  hosts: all
+  gather_facts: yes
+
+  tasks:
+    - name: Get hostname
+      command: hostname
+      register: host_result
+      changed_when: false
+
+    - name: Display hostname
+      debug:
+        msg: "Host {{ inventory_hostname }} reports: {{ host_result.stdout }}"
+
+    - name: Get uname
+      command: uname -a
+      register: uname_result
+      changed_when: false
+
+    - name: Display uname
+      debug:
+        msg: "{{ uname_result.stdout }}"
+
+    - name: Get disk usage
+      shell: df -h / | tail -1
+      register: df_result
+      changed_when: false
+
+    - name: Display disk usage
+      debug:
+        msg: "{{ df_result.stdout }}"
+
+    - name: List /var/lib/relay-agent contents
+      command: ls -la /var/lib/relay-agent
+      register: ls_result
+      changed_when: false
+
+    - name: Display directory listing
+      debug:
+        msg: "{{ ls_result.stdout_lines }}"
+
+  post_tasks:
+    - name: Summary
+      debug:
+        msg: |
+          E2E test completed for {{ inventory_hostname }}
+          - Task execution: SUCCESS
+          - Fact gathering: {{ 'SUCCESS' if ansible_facts else 'FAILED' }}
+          - Remote command execution: OK
