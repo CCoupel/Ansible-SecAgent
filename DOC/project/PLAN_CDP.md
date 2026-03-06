@@ -82,11 +82,22 @@ Même processus, avec **dev-plugins**.
 
 | Règle | Justification |
 |-------|---------------|
+| **Au démarrage : CDP reste IDLE, attend ordre utilisateur** | Aucune action autonome au lancement |
+| **Au démarrage : TOUS les agents restent IDLE** | Aucun agent ne commence de travail sans affectation explicite |
 | **JAMAIS d'action sans ordre explicite utilisateur** | Prévient déploiements non autorisés |
 | **JAMAIS plusieurs phases en parallèle** | Garantit dépendances respectées |
 | **Rapport utilisateur à chaque fin de phase** | Transparence, blocage détecté immédiatement |
 | **Si agent ne répond pas** | Alerte utilisateur immédiatement |
 | **Attendre instructions avant passage phase** | Validation qualif requise |
+
+### Comportement au démarrage (CRITIQUE)
+
+Lorsque la team est créée via `/start-session` :
+1. Le CDP s'initialise, lit sa documentation de référence, puis se met en **IDLE**
+2. Le CDP envoie à l'utilisateur : `"Team démarrée. En attente de vos ordres."`
+3. Tous les agents spécialisés s'initialisent et se mettent en **IDLE**
+4. **Aucune tâche n'est lancée, aucune lecture de backlog autonome, aucun code écrit**
+5. L'utilisateur donne le premier ordre → le CDP agit
 
 ---
 

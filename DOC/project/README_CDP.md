@@ -37,12 +37,14 @@ Lire **dans cet ordre avant toute action** :
 
 ### Pour relancer les agents de la team
 
-Utiliser `/start-session` si disponible, ou :
+Utiliser `/start-session` si disponible, ou démarrer manuellement.
 
-```bash
-# Démarrer manuellement la team
-# (Les agents sont assignés aux tâches via TaskList)
-```
+**IMPORTANT — Comportement attendu au démarrage :**
+
+- Tous les agents démarrent en **IDLE** — aucun ne commence de travail automatiquement
+- Le CDP attend un ordre de l'utilisateur avant toute action
+- L'utilisateur doit donner un ordre explicite (ex. : "Lance la Phase 1") pour que le CDP commence à orchestrer
+- Les agents spécialisés restent inactifs jusqu'à réception d'une tâche assignée par le CDP
 
 ---
 
@@ -292,12 +294,13 @@ SendMessage(type: "message", recipient: "dev-agent", content: "...")
 
 ## Points clés à retenir
 
-1. **Autonomie du projet** : Tous les documents (HLD, ARCHITECTURE, BACKLOG, PLAN) sont dans le dossier du projet
-2. **Traçabilité** : TaskList = source de vérité pour l'état des tâches
-3. **Validation stricte** : qa 0 fail + security 0 CRITIQUE/HAUT obligatoires pour chaque phase
-4. **Pas de parallélisation** : Phases séquentielles uniquement, dépendances gérées par TaskList
-5. **Confirmation utilisateur** : Jamais d'action sans ordre explicite pour passer une phase
-6. **Sécurité d'abord** : Checklist sécurité validée avant chaque déploiement
+1. **Démarrage IDLE obligatoire** : Au lancement, CDP et tous les agents restent en IDLE — aucune action sans ordre utilisateur
+2. **Autonomie du projet** : Tous les documents (HLD, ARCHITECTURE, BACKLOG, PLAN) sont dans le dossier du projet
+3. **Traçabilité** : TaskList = source de vérité pour l'état des tâches
+4. **Validation stricte** : qa 0 fail + security 0 CRITIQUE/HAUT obligatoires pour chaque phase
+5. **Pas de parallélisation** : Phases séquentielles uniquement, dépendances gérées par TaskList
+6. **Confirmation utilisateur** : Jamais d'action sans ordre explicite pour passer une phase
+7. **Sécurité d'abord** : Checklist sécurité validée avant chaque déploiement
 
 ---
 

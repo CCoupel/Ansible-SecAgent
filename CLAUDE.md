@@ -92,3 +92,19 @@ ansible-relay/
 - Ordre d'implémentation MVP : `relay-agent` → `relay server` → `plugins Ansible`
 - Chaque composant est validé par `qa` avant de passer au suivant
 - `security-reviewer` audite chaque PR avant merge
+
+### Règle de démarrage — OBLIGATOIRE
+
+**Au lancement de la team (via `/start-session` ou manuellement) :**
+
+- **TOUS les agents** (cdp inclus) restent en **IDLE** après leur initialisation
+- **Aucun agent ne démarre de travail de sa propre initiative**
+- Le **CDP attend un ordre explicite de l'utilisateur** avant toute action
+- Les agents spécialisés (dev, qa, security, deploy…) attendent une affectation de tâche par le CDP
+- **Interdit** : lire le backlog, créer des tâches, coder ou déployer au lancement sans ordre préalable
+
+Séquence correcte :
+1. `/start-session` → agents démarrés → tous en IDLE
+2. Utilisateur donne un ordre au CDP (ex. : "Lance la Phase 1")
+3. CDP distribue les tâches aux agents concernés
+4. Les agents commencent **seulement après réception d'une tâche assignée**
