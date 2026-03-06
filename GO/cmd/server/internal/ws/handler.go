@@ -1,10 +1,12 @@
 package ws
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,7 +14,7 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin:     func(r *http.Request) bool { return true },
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 }
@@ -33,15 +35,15 @@ type AgentConnection struct {
 
 // Message represents a message sent over the WebSocket
 type Message struct {
-	TaskID   string                 `json:"task_id"`
-	Type     string                 `json:"type"`     // ack, stdout, result, put_file, fetch_file
-	RC       int                    `json:"rc"`
-	Stdout   string                 `json:"stdout"`
-	Stderr   string                 `json:"stderr"`
-	Truncated bool                  `json:"truncated"`
-	Data     string                 `json:"data"`     // For fetch_file
-	Error    string                 `json:"error"`
-	Chunk    string                 `json:"chunk"`    // For stdout streaming
+	TaskID    string `json:"task_id"`
+	Type      string `json:"type"`     // ack, stdout, result, put_file, fetch_file
+	RC        int    `json:"rc"`
+	Stdout    string `json:"stdout"`
+	Stderr    string `json:"stderr"`
+	Truncated bool   `json:"truncated"`
+	Data      string `json:"data"`  // For fetch_file
+	Error     string `json:"error"`
+	Chunk     string `json:"chunk"` // For stdout streaming
 }
 
 // TaskResult represents the final result of a task
@@ -73,7 +75,18 @@ var (
 
 	// Maximum accumulated stdout per task (5 MB — ARCHITECTURE.md §2)
 	stdoutMaxBytes = 5 * 1024 * 1024
+
+	// RekeyFunc is called when an agent authenticates with the previous JWT secret.
+	// It should sign a new JWT and send the encrypted token to the agent.
+	// Injected from handlers at startup; nil = send a plain rekey signal (no encrypted token).
+	RekeyFunc func(hostname string) bool
 )
+
+// SetRekeyFunc injects the function used to issue a new encrypted token to an agent.
+// Called at startup by main.go after handlers are initialized.
+func SetRekeyFunc(fn func(hostname string) bool) {
+	RekeyFunc = fn
+}
 
 // CustomError represents errors returned by WebSocket handlers
 type CustomError struct {
@@ -98,9 +111,6 @@ func RegisterConnection(hostname string, conn *AgentConnection) {
 
 	wsConnections[hostname] = conn
 	log.Printf("Agent connected: hostname=%s", hostname)
-
-	// TODO: Update agent_status in database to "connected"
-	// store.UpdateAgentStatus(hostname, "connected", nowISO())
 }
 
 // UnregisterConnection removes a hostname from active connections
@@ -113,9 +123,6 @@ func UnregisterConnection(hostname string) {
 
 	// Resolve all pending futures with error
 	ResolveFuturesForHostname(hostname, "agent_disconnected")
-
-	// TODO: Update agent_status in database to "disconnected"
-	// store.UpdateAgentStatus(hostname, "disconnected", nowISO())
 }
 
 // GetConnection retrieves a WebSocket connection by hostname
@@ -216,9 +223,6 @@ func HandleMessage(msg Message, hostname string) {
 		return
 	}
 
-	// TODO: Update agent last_seen timestamp in database
-	// store.UpdateLastSeen(hostname)
-
 	switch msgType {
 	case "ack":
 		// Subprocess started — just log
@@ -284,43 +288,121 @@ func HandleMessage(msg Message, hostname string) {
 	}
 }
 
-// AgentHandler manages WebSocket connections from relay-agents
-// Flow:
-// 1. Verify JWT from Authorization header BEFORE accepting connection
-// 2. Accept connection (only if JWT is valid)
-// 3. Register in wsConnections
-// 4. Receive messages in a loop until disconnect
-// 5. On disconnect: update status, cleanup, resolve pending futures
-func AgentHandler(w http.ResponseWriter, r *http.Request) {
-	// TODO: Extract and verify JWT from r.Header.Get("Authorization")
-	// For now, skip JWT verification (will be integrated with routes_register.go helpers)
+// extractHostnameFromRequest validates the JWT Bearer token using dual-key validation
+// and extracts the "sub" claim as hostname. Falls back to ?hostname= query param
+// only when JWTSecretsFunc is not configured (e.g. tests without DB).
+// Returns (hostname, usedPreviousKey, error).
+func extractHostnameFromRequest(r *http.Request) (hostname string, usedPrevious bool, err error) {
+	authHeader := r.Header.Get("Authorization")
 
-	// Step 1: Upgrade connection
-	conn, err := upgrader.Upgrade(w, r, nil)
+	// If JWT validation is configured, use it (production path)
+	if JWTSecretsFunc != nil && strings.HasPrefix(authHeader, "Bearer ") {
+		claims, prev, valErr := ExtractJWTClaims(authHeader)
+		if valErr != nil {
+			return "", false, fmt.Errorf("jwt_invalid: %w", valErr)
+		}
+		sub, _ := claims["sub"].(string)
+		if sub == "" {
+			return "", false, fmt.Errorf("jwt_missing_sub")
+		}
+		return sub, prev, nil
+	}
+
+	// Fallback: extract sub from JWT payload without verification (tests / no-DB mode)
+	log.Printf("[SECURITY WARNING] JWT verification bypassed — JWTSecretsFunc is nil")
+	if strings.HasPrefix(authHeader, "Bearer ") && len(authHeader) > 7 {
+		sub := extractSubFromJWTUnsafe(authHeader[7:])
+		if sub != "" {
+			return sub, false, nil
+		}
+	}
+
+	// Last resort: query param (legacy / tests)
+	if h := r.URL.Query().Get("hostname"); h != "" {
+		return h, false, nil
+	}
+
+	return "", false, fmt.Errorf("missing_hostname")
+}
+
+// extractSubFromJWTUnsafe decodes the JWT payload without signature verification.
+// Used only when JWTSecretsFunc is not configured (tests, degraded mode).
+func extractSubFromJWTUnsafe(tokenStr string) string {
+	parts := strings.Split(tokenStr, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	// JWT uses base64url without padding
+	padded := parts[1]
+	switch len(padded) % 4 {
+	case 2:
+		padded += "=="
+	case 3:
+		padded += "="
+	}
+	decoded, err := base64.StdEncoding.DecodeString(padded)
 	if err != nil {
-		log.Printf("WebSocket upgrade failed: %v", err)
-		http.Error(w, "upgrade failed", http.StatusBadRequest)
+		// Try RawStdEncoding as fallback (no padding)
+		decoded, err = base64.RawStdEncoding.DecodeString(parts[1])
+		if err != nil {
+			return ""
+		}
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(decoded, &payload); err != nil {
+		return ""
+	}
+	sub, _ := payload["sub"].(string)
+	return sub
+}
+
+// AgentHandler manages WebSocket connections from relay-agents.
+//
+// Flow:
+//  1. Validate JWT (dual-key if rotation in progress) — reject with 401 on failure
+//  2. Extract hostname from JWT "sub" claim
+//  3. Upgrade connection
+//  4. If validated with previous key: send rekey message opportunistically
+//  5. Register connection and loop on incoming messages
+//  6. On disconnect: cleanup, resolve pending futures
+func AgentHandler(w http.ResponseWriter, r *http.Request) {
+	hostname, usedPrevious, err := extractHostnameFromRequest(r)
+	if err != nil {
+		log.Printf("WS auth rejected: %v", err)
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
 
-	// Extract hostname from JWT (for now, use query parameter as fallback)
-	// TODO: hostname := jwt_payload["sub"]
-	hostname := r.URL.Query().Get("hostname")
-	if hostname == "" {
-		conn.WriteMessage(websocket.CloseMessage,
-			websocket.FormatCloseMessage(WSCloseRevoked, "missing hostname"))
-		conn.Close()
+	// Upgrade HTTP → WebSocket
+	conn, upgradeErr := upgrader.Upgrade(w, r, nil)
+	if upgradeErr != nil {
+		log.Printf("WebSocket upgrade failed: %v", upgradeErr)
 		return
 	}
 
-	// Step 2: Register the connection
 	agentConn := &AgentConnection{
 		Hostname: hostname,
 		Conn:     conn,
 	}
 	RegisterConnection(hostname, agentConn)
 
-	// Step 3: Message reception loop
+	// If agent authenticated with the previous JWT secret, send rekey message
+	// so it gets a fresh token signed with the current secret.
+	if usedPrevious {
+		sent := false
+		if RekeyFunc != nil {
+			// Send encrypted rekey (includes new token_encrypted)
+			sent = RekeyFunc(hostname)
+		}
+		if !sent {
+			// Fallback: plain rekey signal (agent should re-enroll)
+			agentConn.mu.Lock()
+			conn.WriteJSON(map[string]interface{}{"type": "rekey"}) //nolint:errcheck
+			agentConn.mu.Unlock()
+		}
+		log.Printf("Rekey sent to agent: hostname=%s encrypted=%v", hostname, sent)
+	}
+
 	defer func() {
 		UnregisterConnection(hostname)
 		conn.Close()
@@ -335,9 +417,58 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			break
 		}
-
 		HandleMessage(msg, hostname)
 	}
+}
+
+// CloseAgent sends a WebSocket close frame to a connected agent and removes the connection.
+// Used by revoke endpoint to disconnect an agent with code 4001 (token revoked).
+func CloseAgent(hostname string, code int, reason string) bool {
+	connectionsMu.Lock()
+	conn, exists := wsConnections[hostname]
+	if !exists {
+		connectionsMu.Unlock()
+		return false
+	}
+	delete(wsConnections, hostname)
+	connectionsMu.Unlock()
+
+	conn.mu.Lock()
+	closeMsg := websocket.FormatCloseMessage(code, reason)
+	conn.Conn.WriteMessage(websocket.CloseMessage, closeMsg) //nolint:errcheck
+	conn.Conn.Close()
+	conn.mu.Unlock()
+
+	// Resolve any pending futures for this hostname
+	ResolveFuturesForHostname(hostname, "agent_revoked")
+
+	log.Printf("Agent force-closed: hostname=%s code=%d reason=%s", hostname, code, reason)
+	return true
+}
+
+// GetConnectedCount returns the number of currently connected agents.
+func GetConnectedCount() int {
+	connectionsMu.RLock()
+	defer connectionsMu.RUnlock()
+	return len(wsConnections)
+}
+
+// GetPendingTaskCount returns the number of tasks awaiting a result.
+func GetPendingTaskCount() int {
+	tasksMu.RLock()
+	defer tasksMu.RUnlock()
+	return len(pendingTasks)
+}
+
+// GetConnectedHostnames returns the list of currently connected agent hostnames.
+func GetConnectedHostnames() []string {
+	connectionsMu.RLock()
+	defer connectionsMu.RUnlock()
+	hosts := make([]string, 0, len(wsConnections))
+	for h := range wsConnections {
+		hosts = append(hosts, h)
+	}
+	return hosts
 }
 
 // WaitForResult waits for a task result on a channel with timeout

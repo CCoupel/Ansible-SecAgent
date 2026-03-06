@@ -16,36 +16,36 @@ import (
 const (
 	StreamTasks    = "RELAY_TASKS"
 	StreamResults  = "RELAY_RESULTS"
-	SubjectTasks   = "tasks.*"           // wildcard — subscribe to all hostnames
-	SubjectResults = "results.*"         // wildcard — subscribe to all task results
-	TasksTTLSec    = 300                 // 5 minutes
-	ResultsTTLSec  = 60                  // 60 seconds
-	TasksMaxBytes  = 1 * 1024 * 1024     // 1 MB
-	ResultsMaxBytes = 5 * 1024 * 1024    // 5 MB
+	SubjectTasks   = "tasks.*"         // wildcard — subscribe to all hostnames
+	SubjectResults = "results.*"       // wildcard — subscribe to all task results
+	TasksTTLSec    = 300               // 5 minutes
+	ResultsTTLSec  = 60               // 60 seconds
+	TasksMaxBytes  = 1 * 1024 * 1024   // 1 MB
+	ResultsMaxBytes = 5 * 1024 * 1024  // 5 MB
 )
 
 // Client represents a NATS JetStream client for the relay server
 // Handles task publishing and result subscriptions for HA deployment
 type Client struct {
-	natsURL        string
-	nc             *nats.Conn
-	js             jetstream.JetStream
-	nodeID         string
-	wsSendFn       func(hostname string, message map[string]interface{}) error
-	resultFn       func(taskID string, payload map[string]interface{}) error
-	subscriptions  []jetstream.ConsumeContext
+	natsURL       string
+	nc            *nats.Conn
+	js            jetstream.JetStream
+	nodeID        string
+	wsSendFn      func(hostname string, message map[string]interface{}) error
+	resultFn      func(taskID string, payload map[string]interface{}) error
+	consumers     []jetstream.ConsumeContext
 }
 
 // TaskMessage represents a message being published to NATS
 type TaskMessage struct {
-	TaskID       string      `json:"task_id"`
-	Type         string      `json:"type"`
-	Cmd          string      `json:"cmd,omitempty"`
-	Stdin        *string     `json:"stdin,omitempty"`
-	Timeout      int         `json:"timeout,omitempty"`
-	Become       bool        `json:"become,omitempty"`
-	BecomeMethod string      `json:"become_method,omitempty"`
-	ExpiresAt    int64       `json:"expires_at,omitempty"`
+	TaskID       string  `json:"task_id"`
+	Type         string  `json:"type"`
+	Cmd          string  `json:"cmd,omitempty"`
+	Stdin        *string `json:"stdin,omitempty"`
+	Timeout      int     `json:"timeout,omitempty"`
+	Become       bool    `json:"become,omitempty"`
+	BecomeMethod string  `json:"become_method,omitempty"`
+	ExpiresAt    int64   `json:"expires_at,omitempty"`
 }
 
 // ResultMessage represents a result message from an agent
@@ -96,11 +96,11 @@ func NewClient(natsURL string) (*Client, error) {
 	}
 
 	client := &Client{
-		natsURL:       natsURL,
-		nc:            nc,
-		js:            js,
-		nodeID:        "relay-server",
-		subscriptions: []jetstream.ConsumeContext{},
+		natsURL:   natsURL,
+		nc:        nc,
+		js:        js,
+		nodeID:    "relay-server",
+		consumers: []jetstream.ConsumeContext{},
 	}
 
 	// Ensure streams exist
@@ -113,8 +113,17 @@ func NewClient(natsURL string) (*Client, error) {
 	return client, nil
 }
 
+// IsConnected returns true if the underlying NATS connection is open.
+func (c *Client) IsConnected() bool {
+	return c.nc != nil && c.nc.IsConnected()
+}
+
 // Close closes the NATS connection gracefully
 func (c *Client) Close() error {
+	// Stop all consumers
+	for _, cc := range c.consumers {
+		cc.Stop()
+	}
 	if c.nc != nil && !c.nc.IsClosed() {
 		c.nc.Drain()
 		log.Printf("NATS connection closed")
@@ -125,12 +134,12 @@ func (c *Client) Close() error {
 // ensureStreams creates RELAY_TASKS and RELAY_RESULTS streams if they don't exist
 func (c *Client) ensureStreams(ctx context.Context) error {
 	if err := c.ensureStream(ctx, StreamTasks, []string{"tasks.*"},
-		jetstream.WorkQueuePolicy(), TasksTTLSec, TasksMaxBytes); err != nil {
+		jetstream.WorkQueuePolicy, TasksTTLSec, TasksMaxBytes); err != nil {
 		return err
 	}
 
 	if err := c.ensureStream(ctx, StreamResults, []string{"results.*"},
-		jetstream.LimitsPolicy(), ResultsTTLSec, ResultsMaxBytes); err != nil {
+		jetstream.LimitsPolicy, ResultsTTLSec, ResultsMaxBytes); err != nil {
 		return err
 	}
 
@@ -141,30 +150,22 @@ func (c *Client) ensureStreams(ctx context.Context) error {
 func (c *Client) ensureStream(ctx context.Context, name string, subjects []string,
 	retention jetstream.RetentionPolicy, maxAge int, maxMsgSize int) error {
 
-	// Check if stream exists
-	_, err := c.js.Stream(ctx, name)
-	if err == nil {
-		log.Printf("NATS stream already exists: stream=%s", name)
-		return nil
-	}
-
-	// Create stream
 	cfg := jetstream.StreamConfig{
-		Name:       name,
-		Subjects:   subjects,
-		Retention:  retention,
-		MaxAge:     time.Duration(maxAge) * time.Second,
-		MaxBytes:   int64(maxMsgSize),
-		Storage:    jetstream.FileStorage,
-		NumReplicas: 1,
+		Name:        name,
+		Subjects:    subjects,
+		Retention:   retention,
+		MaxAge:      time.Duration(maxAge) * time.Second,
+		MaxBytes:    int64(maxMsgSize),
+		Storage:     jetstream.FileStorage,
+		Replicas:    1,
 	}
 
-	_, err = c.js.CreateStream(ctx, cfg)
+	_, err := c.js.CreateOrUpdateStream(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("failed to create stream %s: %w", name, err)
+		return fmt.Errorf("failed to create/update stream %s: %w", name, err)
 	}
 
-	log.Printf("NATS stream created: stream=%s", name)
+	log.Printf("NATS stream ready: stream=%s", name)
 	return nil
 }
 
@@ -211,19 +212,27 @@ func (c *Client) SubscribeTasks(ctx context.Context, wsSendFn func(hostname stri
 	c.wsSendFn = wsSendFn
 
 	consumerName := fmt.Sprintf("relay-server-%s-tasks", c.nodeID)
-	cfg := jetstream.ConsumerConfig{
+	stream, err := c.js.Stream(ctx, StreamTasks)
+	if err != nil {
+		return fmt.Errorf("failed to get tasks stream: %w", err)
+	}
+
+	consumer, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
 		Durable:       consumerName,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		MaxDeliver:    1, // No silent retry
 		FilterSubject: SubjectTasks,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create tasks consumer: %w", err)
 	}
 
-	cc, err := c.js.Subscribe(ctx, SubjectTasks, c.onTaskMessage, jetstream.WithConsumerConfig(cfg))
+	cc, err := consumer.Consume(c.onTaskMessage)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to tasks: %w", err)
 	}
 
-	c.subscriptions = append(c.subscriptions, cc)
+	c.consumers = append(c.consumers, cc)
 	log.Printf("Subscribed to NATS tasks.*: consumer=%s", consumerName)
 	return nil
 }
@@ -272,19 +281,27 @@ func (c *Client) SubscribeResults(ctx context.Context, resultFn func(taskID stri
 	c.resultFn = resultFn
 
 	consumerName := fmt.Sprintf("relay-server-%s-results", c.nodeID)
-	cfg := jetstream.ConsumerConfig{
+	stream, err := c.js.Stream(ctx, StreamResults)
+	if err != nil {
+		return fmt.Errorf("failed to get results stream: %w", err)
+	}
+
+	consumer, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
 		Durable:       consumerName,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		MaxDeliver:    1,
 		FilterSubject: SubjectResults,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create results consumer: %w", err)
 	}
 
-	cc, err := c.js.Subscribe(ctx, SubjectResults, c.onResultMessage, jetstream.WithConsumerConfig(cfg))
+	cc, err := consumer.Consume(c.onResultMessage)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to results: %w", err)
 	}
 
-	c.subscriptions = append(c.subscriptions, cc)
+	c.consumers = append(c.consumers, cc)
 	log.Printf("Subscribed to NATS results.*: consumer=%s", consumerName)
 	return nil
 }

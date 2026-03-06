@@ -94,7 +94,13 @@ func main() {
 		JWT:       jwt,
 		CABundle:  cfg.caBundle,
 		Insecure:  cfg.insecure,
-	}, handler, cfg.maxConcurrentTasks)
+	}, handler, cfg.maxConcurrentTasks).WithEnrollConfig(ws.EnrollConfig{
+		RegisterURL: cfg.serverURL + "/api/register",
+		Hostname:    hostname,
+		PrivateKey:  privKey,
+		JWTPath:     cfg.jwtPath,
+		MaxRetries:  3,
+	})
 
 	// --- Étape 6 : Signal handling + run loop ---
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

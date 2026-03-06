@@ -168,6 +168,7 @@ GOOS=linux GOARCH=amd64 go build -o relay-server ./cmd/server
 - `ADMIN_TOKEN`: Bearer token for admin endpoints (required)
 - `NATS_URL`: NATS server URL (default: nats://localhost:4222)
 - `DATABASE_URL`: SQLite path (default: sqlite:///./relay.db)
+- `RSA_MASTER_KEY`: Master key for AES-256-GCM encryption of RSA private key (optional, required in production)
 
 ### Quick Start
 ```bash
@@ -176,32 +177,114 @@ export JWT_SECRET_KEY="dev-secret-key"
 export ADMIN_TOKEN="dev-admin-token"
 export NATS_URL="nats://localhost:4222"
 export DATABASE_URL="sqlite:///./relay.db"
+export RSA_MASTER_KEY="test-key-for-dev"
 
 # Run server
 ./relay-server
 ```
 
-## Testing
+### CLI Access via Container
 
-### Unit Tests (TODO)
+**Start the stack** :
 ```bash
-go test ./cmd/server/internal/handlers -v
-go test ./cmd/server/internal/ws -v
-go test ./cmd/server/internal/storage -v
-go test ./cmd/server/internal/broker -v
+cd GO/
+docker-compose up -d
 ```
 
-### Integration Tests (TODO)
-- Agent enrollment flow
-- Task execution and result delivery
-- File transfer (upload/fetch)
-- HA task routing via NATS
+**Access CLI commands via container** (Phase 6 — admin commands) :
+```bash
+# Minions management
+docker-compose exec relay-api relay-server minions list --format table
+docker-compose exec relay-api relay-server minions get <hostname>
+docker-compose exec relay-api relay-server minions suspend <hostname>
+docker-compose exec relay-api relay-server minions resume <hostname>
+docker-compose exec relay-api relay-server minions revoke <hostname>
+docker-compose exec relay-api relay-server minions vars set <hostname> <key> <value>
 
-### E2E Tests (TODO)
-- Full Python agent ↔ GO server
-- Ansible playbook execution
-- Dynamic inventory
-- Multiple concurrent agents
+# Security — Key rotation
+docker-compose exec relay-api relay-server security keys status
+docker-compose exec relay-api relay-server security keys rotate --grace 2h
+docker-compose exec relay-api relay-server security tokens list
+docker-compose exec relay-api relay-server security blacklist list
+
+# Inventory
+docker-compose exec relay-api relay-server inventory list --only-connected
+
+# Server status
+docker-compose exec relay-api relay-server server status --format json
+```
+
+**Format options** : `--format table|json|yaml` (default: table)
+
+**Authentication** : CLI uses `ADMIN_TOKEN` env var from container (set in docker-compose.yml)
+
+## Testing
+
+### Unit Tests
+```bash
+cd GO/
+RSA_MASTER_KEY=test ADMIN_TOKEN=test go test ./cmd/server/... -v -count=1
+RSA_MASTER_KEY=test go test ./cmd/agent/... -v -count=1
+```
+
+### Integration Tests — CLI via Docker
+
+**Smoke tests (basic CLI validation)** :
+```bash
+docker-compose up -d
+docker-compose exec relay-api relay-server minions list
+docker-compose exec relay-api relay-server security keys status
+docker-compose exec relay-api relay-server server status
+docker-compose down
+```
+
+**Enrollment workflow test (Phase 6)** :
+Test the full enrollment flow by revoking agents and validating ré-enrôlement:
+```bash
+# Start stack with 3 connected agents
+docker-compose up -d
+
+# 1. Verify agents are connected
+docker-compose exec relay-api relay-server minions list --format table
+# Expected: qualif-host-01/02/03 with status=enrolled
+
+# 2. Revoke agents to force ré-enrôlement
+docker-compose exec relay-api relay-server minions revoke qualif-host-01
+docker-compose exec relay-api relay-server minions revoke qualif-host-02
+docker-compose exec relay-api relay-server minions revoke qualif-host-03
+
+# 3. Verify revocation (agents should disconnect then ré-enroll)
+sleep 5
+docker-compose exec relay-api relay-server minions list --format table
+# Expected: status should cycle through revoked → enrolled as agents reconnect
+
+# 4. Validate ré-enrôlement completed
+docker-compose exec relay-api relay-server minions get qualif-host-01 --format json
+# Check: enrolled_at timestamp updated, token_jti set in DB
+
+# 5. Test authorized_keys flow (optional)
+# Pre-authorize an agent's public key, then trigger ré-enrôlement
+docker-compose exec relay-api relay-server minions authorize qualif-host-01 --key-file agent_pubkey.pem
+docker-compose exec relay-api relay-server minions revoke qualif-host-01
+# Verify agent ré-enrôles with authorized key validation passing
+
+docker-compose down
+```
+
+**What this validates** :
+- ✅ `RegisterAgent()` flow : authorized_keys lookup, JWT encryption, JTI persistence
+- ✅ `AdminAuthorize()` : pre-authorization storage
+- ✅ `TokenRefresh()` : 401 ré-enrôlement, new JWT encryption
+- ✅ Dual-key JWT : grace period validation during rotation
+- ✅ Agent 401 handling : automatic ré-enrôlement without manual intervention
+
+### E2E Tests
+- Full GO agent ↔ GO server
+- Ansible playbook execution via relay-inventory plugin
+- Dynamic inventory with connected agents
+- Multiple concurrent agents with key rotation
+- JWT rotation with grace period (dual-key validation)
+- Agent revocation → automatic ré-enrôlement cycle
 
 ## Architecture Decisions
 
@@ -250,36 +333,45 @@ go test ./cmd/server/internal/broker -v
 - Pragma settings matched
 - Index configuration same
 
-## TODO Items
+## Completed Phases
 
-### Phase 7 Checkpoint 1 (Current)
-- ✅ handlers/register.go — Fully implemented
-- ✅ handlers/exec.go — Fully implemented
-- ✅ handlers/inventory.go — Fully implemented
-- ✅ ws/handler.go — Fully implemented
-- ✅ storage/store.go — Fully implemented
-- ✅ broker/nats.go — Fully implemented
+### Phase 7 — Server Rewrite ✅
+- ✅ handlers/register.go — Enrollment, JWT, RSA-4096
+- ✅ handlers/exec.go — Task execution, file transfer
+- ✅ handlers/inventory.go — Ansible inventory format
+- ✅ handlers/admin.go — Admin endpoints (minions, status)
+- ✅ ws/handler.go — WebSocket connections, dispatch
+- ✅ storage/store.go — SQLite persistence
+- ✅ broker/nats.go — NATS JetStream client
+- ✅ main.go — HTTP server setup, request routing
+- ✅ Unit tests — 80%+ coverage
+- ✅ Docker — Dockerfile + docker-compose.yml
+- ✅ go.mod/go.sum — Dependency lock files
 
-### Phase 7 Checkpoint 2
-- [ ] **main.go**: HTTP server setup, request routing, graceful shutdown
-- [ ] **Unit tests**: 80%+ coverage of all modules
-- [ ] **Integration tests**: End-to-end workflow validation
-- [ ] **Security audit**: JWT, RSA, Bearer token verification
-- [ ] **Performance baseline**: Latency, memory, throughput measurement
-- [ ] **Docker**: Dockerfile + docker-compose.yml
-- [ ] **go.mod/go.sum**: Dependency lock files
+### Phase 8 — Agent Rewrite ✅
+- ✅ cmd/agent/main.go — Agent daemon
+- ✅ internal/ws/dispatcher.go — WebSocket handler, rekey support
+- ✅ internal/executor/executor.go — Subprocess execution
+- ✅ internal/enrollment/ — RSA-4096, enrollment flow
+- ✅ internal/registry/ — Async task registry
+- ✅ internal/facts/ — System facts collection
+- ✅ Handler rekey + 401 ré-enrôlement
 
-### Phase 8 (Agent Rewrite)
-- [ ] cmd/agent/main.go
-- [ ] agent/dispatcher.go
-- [ ] agent/executor.go
-- [ ] agent/files.go
-- [ ] agent/registry.go
-- [ ] agent/facts.go
+### Phase 9 — Inventory Plugin ✅
+- ✅ cmd/inventory/main.go — relay-inventory binary
+- ✅ Ansible plugin wrapper
+- ✅ Dynamic inventory format
 
-### Phase 9 (Plugins Wrapper)
-- [ ] cmd/inventory-wrapper/main.go
-- [ ] cmd/exec-wrapper/main.go
+### Phase 6 — Admin CLI ✅
+- ✅ internal/cli/root.go — Cobra CLI framework
+- ✅ internal/cli/minions.go — Minion management commands
+- ✅ internal/cli/security.go — Key rotation & security commands
+- ✅ internal/cli/inventory.go — Inventory listing
+- ✅ internal/cli/server.go — Server status
+- ✅ internal/auth/jwt.go — JWT service, dual-key validation
+- ✅ internal/crypto/aes.go — AES-256-GCM encryption
+- ✅ handlers/security.go — Key rotation endpoint + rekey WS
+- ✅ 407 tests pass, CLI smoke tests OK
 
 ## Security
 

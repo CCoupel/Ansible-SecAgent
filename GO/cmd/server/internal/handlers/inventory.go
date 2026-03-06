@@ -5,6 +5,9 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
+
+	"relay-server/cmd/server/internal/ws"
 )
 
 // Agent represents a registered agent in the system
@@ -59,60 +62,24 @@ func GetInventory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// TODO: Query agents from database (from storage/store.go)
-	// store := request.app.state.store
-	// agents, err := store.ListAgents(onlyConnected)
-	// For now, use mock data
-	agents := []map[string]interface{}{
-		{
-			"hostname":   "agent-1",
-			"status":     "connected",
-			"last_seen":  "2026-03-05T12:00:00Z",
-			"public_key": "-----BEGIN PUBLIC KEY-----\n...",
-		},
-		{
-			"hostname":  "agent-2",
-			"status":    "disconnected",
-			"last_seen": "2026-03-05T11:30:00Z",
-		},
-	}
+	// Build inventory from live WS connections
+	connectedHosts := ws.GetConnectedHostnames()
+	now := time.Now().UTC().Format(time.RFC3339)
 
-	// Filter if needed
-	if onlyConnected {
-		filtered := []map[string]interface{}{}
-		for _, agent := range agents {
-			if status, ok := agent["status"].(string); ok && status == "connected" {
-				filtered = append(filtered, agent)
-			}
-		}
-		agents = filtered
-	}
-
-	// Build inventory response
 	var response InventoryResponse
 	response.All.Hosts = make([]string, 0)
 	response.Meta.Hostvars = make(map[string]HostVars)
 
-	for _, agent := range agents {
-		hostname := agent["hostname"].(string)
-		status := "disconnected"
-		if s, ok := agent["status"].(string); ok {
-			status = s
+	for _, hostname := range connectedHosts {
+		if onlyConnected {
+			// connected-only: all entries from WS registry are connected by definition
 		}
-		lastSeen := ""
-		if ls, ok := agent["last_seen"].(string); ok {
-			lastSeen = ls
-		}
-
-		// Add to hosts list
 		response.All.Hosts = append(response.All.Hosts, hostname)
-
-		// Add host variables
 		response.Meta.Hostvars[hostname] = HostVars{
 			AnsibleConnection: "relay",
 			AnsibleHost:       hostname,
-			RelayStatus:       status,
-			RelayLastSeen:     lastSeen,
+			RelayStatus:       "connected",
+			RelayLastSeen:     now,
 		}
 	}
 

@@ -3,14 +3,13 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // AgentRecord represents stored agent data
@@ -21,6 +20,8 @@ type AgentRecord struct {
 	EnrolledAt    time.Time
 	LastSeen      time.Time
 	Status        string // "connected", "disconnected"
+	Suspended     bool
+	Vars          string // JSON object, e.g. {"key": "value"}
 }
 
 // AuthorizedKeyRecord represents a pre-authorized public key
@@ -56,7 +57,9 @@ CREATE TABLE IF NOT EXISTS agents (
     token_jti       TEXT,
     enrolled_at     TIMESTAMP,
     last_seen       TIMESTAMP,
-    status          TEXT NOT NULL DEFAULT 'disconnected'
+    status          TEXT NOT NULL DEFAULT 'disconnected',
+    suspended       BOOLEAN NOT NULL DEFAULT FALSE,
+    vars            TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS authorized_keys (
@@ -76,6 +79,12 @@ CREATE TABLE IF NOT EXISTS blacklist (
 
 CREATE INDEX IF NOT EXISTS idx_blacklist_expires ON blacklist (expires_at);
 CREATE INDEX IF NOT EXISTS idx_agents_status ON agents (status);
+
+CREATE TABLE IF NOT EXISTS server_config (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
 `
 
 // NewStore creates a new SQLite store and opens the connection
@@ -121,6 +130,14 @@ func NewStore(dbURL string) (*Store, error) {
 	// Create tables
 	if _, err := db.Exec(DDL); err != nil {
 		return nil, fmt.Errorf("failed to create tables: %w", err)
+	}
+
+	// Apply migrations for existing DBs (ignore errors — columns may already exist)
+	for _, stmt := range []string{
+		"ALTER TABLE agents ADD COLUMN suspended BOOLEAN NOT NULL DEFAULT FALSE",
+		"ALTER TABLE agents ADD COLUMN vars TEXT NOT NULL DEFAULT '{}'",
+	} {
+		_, _ = db.Exec(stmt) // intentionally ignore "duplicate column" errors
 	}
 
 	store := &Store{
@@ -264,13 +281,13 @@ func (s *Store) GetAgent(ctx context.Context, hostname string) (*AgentRecord, er
 	defer s.dbMu.RUnlock()
 
 	query := `
-		SELECT hostname, public_key_pem, token_jti, enrolled_at, last_seen, status
+		SELECT hostname, public_key_pem, token_jti, enrolled_at, last_seen, status, suspended, vars
 		FROM agents WHERE hostname = ?
 	`
 
 	row := s.db.QueryRowContext(ctx, query, hostname)
 	var rec AgentRecord
-	err := row.Scan(&rec.Hostname, &rec.PublicKeyPEM, &rec.TokenJTI, &rec.EnrolledAt, &rec.LastSeen, &rec.Status)
+	err := row.Scan(&rec.Hostname, &rec.PublicKeyPEM, &rec.TokenJTI, &rec.EnrolledAt, &rec.LastSeen, &rec.Status, &rec.Suspended, &rec.Vars)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -287,7 +304,7 @@ func (s *Store) ListAgents(ctx context.Context, onlyConnected bool) ([]AgentReco
 	defer s.dbMu.RUnlock()
 
 	query := `
-		SELECT hostname, public_key_pem, token_jti, enrolled_at, last_seen, status
+		SELECT hostname, public_key_pem, token_jti, enrolled_at, last_seen, status, suspended, vars
 		FROM agents
 	`
 	if onlyConnected {
@@ -304,7 +321,7 @@ func (s *Store) ListAgents(ctx context.Context, onlyConnected bool) ([]AgentReco
 	for rows.Next() {
 		var rec AgentRecord
 		if err := rows.Scan(&rec.Hostname, &rec.PublicKeyPEM, &rec.TokenJTI,
-			&rec.EnrolledAt, &rec.LastSeen, &rec.Status); err != nil {
+			&rec.EnrolledAt, &rec.LastSeen, &rec.Status, &rec.Suspended, &rec.Vars); err != nil {
 			return nil, fmt.Errorf("failed to scan agent: %w", err)
 		}
 		agents = append(agents, rec)
@@ -440,4 +457,230 @@ func (s *Store) PurgeExpiredBlacklist(ctx context.Context) (int64, error) {
 // CleanupExpiredBlacklist is an alias for PurgeExpiredBlacklist
 func (s *Store) CleanupExpiredBlacklist(ctx context.Context) (int64, error) {
 	return s.PurgeExpiredBlacklist(ctx)
+}
+
+// ========================================================================
+// agents — suspend / resume / vars
+// ========================================================================
+
+// SetSuspended sets the suspended flag for an agent.
+// When suspended=true, exec requests for this agent will return 503.
+func (s *Store) SetSuspended(ctx context.Context, hostname string, suspended bool) (bool, error) {
+	s.dbMu.Lock()
+	defer s.dbMu.Unlock()
+
+	result, err := s.db.ExecContext(ctx,
+		"UPDATE agents SET suspended = ? WHERE hostname = ?", suspended, hostname)
+	if err != nil {
+		return false, fmt.Errorf("failed to set suspended: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected > 0 {
+		action := "suspended"
+		if !suspended {
+			action = "resumed"
+		}
+		log.Printf("Agent %s: hostname=%s", action, hostname)
+	}
+	return rowsAffected > 0, nil
+}
+
+// IsAgentSuspended returns true if the agent exists and is suspended.
+func (s *Store) IsAgentSuspended(ctx context.Context, hostname string) (bool, error) {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
+
+	var suspended bool
+	err := s.db.QueryRowContext(ctx,
+		"SELECT suspended FROM agents WHERE hostname = ?", hostname).Scan(&suspended)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to check suspended: %w", err)
+	}
+	return suspended, nil
+}
+
+// GetAgentVars returns the vars JSON string for an agent.
+func (s *Store) GetAgentVars(ctx context.Context, hostname string) (string, error) {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
+
+	var vars string
+	err := s.db.QueryRowContext(ctx,
+		"SELECT vars FROM agents WHERE hostname = ?", hostname).Scan(&vars)
+	if err == sql.ErrNoRows {
+		return "", nil // agent not found
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to get vars: %w", err)
+	}
+	return vars, nil
+}
+
+// SetAgentVar adds or updates a single key in the vars JSON for an agent.
+// The value must be a JSON-serializable type.
+func (s *Store) SetAgentVar(ctx context.Context, hostname, key string, value interface{}) error {
+	s.dbMu.Lock()
+	defer s.dbMu.Unlock()
+
+	// Read existing vars
+	var existing string
+	err := s.db.QueryRowContext(ctx,
+		"SELECT vars FROM agents WHERE hostname = ?", hostname).Scan(&existing)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("agent_not_found")
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read vars: %w", err)
+	}
+
+	// Merge key into map
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(existing), &m); err != nil {
+		m = make(map[string]interface{})
+	}
+	m[key] = value
+
+	updated, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("failed to marshal vars: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx,
+		"UPDATE agents SET vars = ? WHERE hostname = ?", string(updated), hostname)
+	if err != nil {
+		return fmt.Errorf("failed to update vars: %w", err)
+	}
+
+	log.Printf("Agent var set: hostname=%s key=%s", hostname, key)
+	return nil
+}
+
+// DeleteAgentVar removes a single key from the vars JSON for an agent.
+// Returns (true, nil) if the key existed, (false, nil) if not.
+func (s *Store) DeleteAgentVar(ctx context.Context, hostname, key string) (bool, error) {
+	s.dbMu.Lock()
+	defer s.dbMu.Unlock()
+
+	var existing string
+	err := s.db.QueryRowContext(ctx,
+		"SELECT vars FROM agents WHERE hostname = ?", hostname).Scan(&existing)
+	if err == sql.ErrNoRows {
+		return false, fmt.Errorf("agent_not_found")
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to read vars: %w", err)
+	}
+
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(existing), &m); err != nil {
+		m = make(map[string]interface{})
+	}
+
+	if _, exists := m[key]; !exists {
+		return false, nil
+	}
+
+	delete(m, key)
+
+	updated, err := json.Marshal(m)
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal vars: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx,
+		"UPDATE agents SET vars = ? WHERE hostname = ?", string(updated), hostname)
+	if err != nil {
+		return false, fmt.Errorf("failed to update vars: %w", err)
+	}
+
+	log.Printf("Agent var deleted: hostname=%s key=%s", hostname, key)
+	return true, nil
+}
+
+// ========================================================================
+// server_config — persistent server-side key/value store
+// Keys: jwt_secret_current, jwt_secret_previous, key_rotation_deadline,
+//       rsa_key_current, rsa_key_previous
+// ========================================================================
+
+// ConfigGet returns the value for a config key, or ("", nil) if not found.
+func (s *Store) ConfigGet(ctx context.Context, key string) (string, error) {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
+
+	var value string
+	err := s.db.QueryRowContext(ctx,
+		"SELECT value FROM server_config WHERE key = ?", key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("ConfigGet %q: %w", key, err)
+	}
+	return value, nil
+}
+
+// ConfigSet upserts a config key/value pair.
+func (s *Store) ConfigSet(ctx context.Context, key, value string) error {
+	s.dbMu.Lock()
+	defer s.dbMu.Unlock()
+
+	now := nowISO()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO server_config (key, value, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+	`, key, value, now)
+	if err != nil {
+		return fmt.Errorf("ConfigSet %q: %w", key, err)
+	}
+	return nil
+}
+
+// ConfigDelete removes a config key (no-op if absent).
+func (s *Store) ConfigDelete(ctx context.Context, key string) error {
+	s.dbMu.Lock()
+	defer s.dbMu.Unlock()
+
+	_, err := s.db.ExecContext(ctx, "DELETE FROM server_config WHERE key = ?", key)
+	if err != nil {
+		return fmt.Errorf("ConfigDelete %q: %w", key, err)
+	}
+	return nil
+}
+
+// ListBlacklistEntries returns all entries in the blacklist (not yet expired)
+func (s *Store) ListBlacklistEntries(ctx context.Context) ([]BlacklistEntry, error) {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
+
+	query := `
+		SELECT jti, hostname, revoked_at, expires_at, reason
+		FROM blacklist
+		ORDER BY revoked_at DESC
+	`
+
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list blacklist: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []BlacklistEntry
+	for rows.Next() {
+		var e BlacklistEntry
+		if err := rows.Scan(&e.JTI, &e.Hostname, &e.RevokedAt, &e.ExpiresAt, &e.Reason); err != nil {
+			return nil, fmt.Errorf("failed to scan blacklist entry: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
 }

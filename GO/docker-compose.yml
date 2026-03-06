@@ -1,0 +1,90 @@
+version: '3.9'
+
+services:
+  # NATS JetStream message broker
+  nats:
+    image: nats:2.10-alpine
+    container_name: relay-nats
+    ports:
+      - "4222:4222"  # Client port
+      - "6222:6222"  # Cluster port
+      - "8222:8222"  # Monitoring port
+    command:
+      - "-js"
+      - "-c"
+      - "/etc/nats/nats-server.conf"
+    volumes:
+      - ./nats.conf:/etc/nats/nats-server.conf:ro
+      - nats-data:/data/nats
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "4222"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - relay-network
+    restart: unless-stopped
+
+  # Relay API server (GO)
+  relay-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: relay-api
+    ports:
+      - "7770:7770"  # API endpoints
+      - "7771:7771"  # Admin endpoints
+      - "7772:7772"  # WebSocket agent connections
+    environment:
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - ADMIN_TOKEN=${ADMIN_TOKEN}
+      - NATS_URL=nats://nats:4222
+      - DATABASE_URL=sqlite:////data/relay.db
+      - LOG_LEVEL=INFO
+    volumes:
+      - relay-db:/data
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7770/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - relay-network
+    restart: unless-stopped
+
+  # TLS termination proxy (Caddy)
+  caddy:
+    image: caddy:2.7-alpine
+    container_name: relay-caddy
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      - ACME_AGREE=true
+    networks:
+      - relay-network
+    depends_on:
+      relay-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  nats-data:
+    driver: local
+  relay-db:
+    driver: local
+  caddy-data:
+    driver: local
+  caddy-config:
+    driver: local
+
+networks:
+  relay-network:
+    driver: bridge
