@@ -511,6 +511,10 @@ kubectl exec -n ansible-relay deploy/relay-api -- relay-server &lt;commande&gt;<
 
       <!-- TAB DOCKER -->
       <div id="tab-docker" class="itab-content active">
+        <div class="enroll-flow" data-i18n="ins.enroll.note">
+          <strong data-i18n="ins.enroll.title">Cycle d'enrollment :</strong>
+          <span data-i18n="ins.enroll.body"> l'agent génère sa paire RSA-4096 au <strong>premier démarrage</strong> et la stocke dans <code>/etc/relay-agent/id_rsa</code> (mode 0600). Il tente immédiatement de s'enroller auprès du serveur — mais le serveur refuse tant que la clef publique n'est pas pré-autorisée. L'agent retente automatiquement avec un backoff exponentiel.</span>
+        </div>
         <div class="qs-steps">
           <div class="qs-step">
             <div class="step-num">1</div>
@@ -534,20 +538,36 @@ export RSA_MASTER_KEY="$(openssl rand -hex 32)"</code></pre>
           <div class="qs-step">
             <div class="step-num">3</div>
             <div>
-              <h3 data-i18n="ins.d.s3">Autoriser un agent (pre-authorize)</h3>
-              <pre><code>docker exec relay-api relay-server minions authorize my-host \
-  --pubkey "$(cat /path/to/my-host_pubkey.pem)"</code></pre>
+              <h3 data-i18n="ins.d.s3">Déployer l'agent sur l'hôte cible</h3>
+              <pre><code># === Sur l'hôte cible (accès initial : SSH, USB, provisioning existant…) ===
+cp relay-agent /usr/local/bin/relay-agent
+
+# Variables d'environnement de l'agent
+export RELAY_SERVER_URL=wss://relay.example.com
+export RELAY_HOSTNAME=my-host
+# Clef privée : /etc/relay-agent/id_rsa  (créée au 1er démarrage, mode 0600)
+# JWT         : /etc/relay-agent/token.jwt (créé après enrollment réussi)
+
+./relay-agent
+# → Génère RSA-4096 dans /etc/relay-agent/id_rsa
+# → POST /api/register → 403 (pas encore autorisé) → retente en backoff</code></pre>
             </div>
           </div>
           <div class="qs-step">
             <div class="step-num">4</div>
             <div>
-              <h3 data-i18n="ins.d.s4">Installer l'agent sur l'hôte cible</h3>
-              <pre><code># Connexion sortante uniquement requise
-RELAY_SERVER_URL=wss://relay.example.com ./relay-agent --hostname my-host
+              <h3 data-i18n="ins.d.s4">Autoriser l'agent (pre-authorize)</h3>
+              <pre><code># === Toujours sur l'hôte cible : extraire la clef publique ===
+openssl rsa -in /etc/relay-agent/id_rsa -pubout 2>/dev/null
+# → -----BEGIN PUBLIC KEY-----
+#    MIICIjANBgkqhkiG9w0BAQ...
+#    -----END PUBLIC KEY-----
 
-# Ou via systemd (production)
-systemctl enable --now relay-agent</code></pre>
+# === Sur le serveur relay : enregistrer la clef publique ===
+docker exec relay-api relay-server minions authorize my-host \
+  --pubkey "$(ssh user@my-host openssl rsa -in /etc/relay-agent/id_rsa -pubout 2>/dev/null)"
+
+# → L'agent retente automatiquement et se connecte</code></pre>
             </div>
           </div>
           <div class="qs-step">
@@ -556,9 +576,8 @@ systemctl enable --now relay-agent</code></pre>
               <h3 data-i18n="ins.d.s5">Lancer un playbook Ansible</h3>
               <pre><code>ansible-playbook site.yml   # Aucune modification du playbook requise !
 
-# Gérer les agents
-docker exec relay-api relay-server minions list --format table
-docker exec relay-api relay-server security keys rotate --grace 24h</code></pre>
+# Vérifier la connexion
+docker exec relay-api relay-server minions list --format table</code></pre>
             </div>
           </div>
         </div>
@@ -566,6 +585,10 @@ docker exec relay-api relay-server security keys rotate --grace 24h</code></pre>
 
       <!-- TAB MANUEL -->
       <div id="tab-manual" class="itab-content">
+        <div class="enroll-flow">
+          <strong data-i18n="ins.enroll.title">Cycle d'enrollment :</strong>
+          <span data-i18n="ins.enroll.body"> l'agent génère sa paire RSA-4096 au <strong>premier démarrage</strong> et la stocke dans <code>/etc/relay-agent/id_rsa</code> (mode 0600). Il tente immédiatement de s'enroller auprès du serveur — mais le serveur refuse tant que la clef publique n'est pas pré-autorisée. L'agent retente automatiquement avec un backoff exponentiel.</span>
+        </div>
         <div class="qs-steps">
           <div class="qs-step">
             <div class="step-num">1</div>
@@ -573,8 +596,8 @@ docker exec relay-api relay-server security keys rotate --grace 24h</code></pre>
               <h3 data-i18n="ins.m.s1">Compiler depuis les sources</h3>
               <pre><code>git clone https://github.com/CCoupel/Ansible-Relay.git
 cd Ansible-Relay/GO
-go build -o relay-server ./cmd/server
-go build -o relay-agent  ./cmd/agent
+go build -o relay-server    ./cmd/server
+go build -o relay-agent     ./cmd/agent
 go build -o relay-inventory ./cmd/inventory</code></pre>
             </div>
           </div>
@@ -601,11 +624,28 @@ export NATS_URL="nats://localhost:4222"
           <div class="qs-step">
             <div class="step-num">4</div>
             <div>
-              <h3 data-i18n="ins.m.s4">Installer l'agent via systemd</h3>
-              <pre><code>cp relay-agent /usr/local/bin/
+              <h3 data-i18n="ins.m.s4">Déployer l'agent sur l'hôte cible</h3>
+              <pre><code># === Sur l'hôte cible ===
+cp relay-agent /usr/local/bin/
 cp relay-agent.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now relay-agent</code></pre>
+systemctl enable --now relay-agent
+# → Génère /etc/relay-agent/id_rsa (RSA-4096, mode 0600)
+# → Tente l'enrollment → refusé → retente en backoff</code></pre>
+            </div>
+          </div>
+          <div class="qs-step">
+            <div class="step-num">5</div>
+            <div>
+              <h3 data-i18n="ins.m.s5">Autoriser l'agent (pre-authorize)</h3>
+              <pre><code># === Sur l'hôte cible : extraire la clef publique depuis la clef privée ===
+openssl rsa -in /etc/relay-agent/id_rsa -pubout 2>/dev/null
+
+# === Sur le serveur relay ===
+./relay-server minions authorize my-host \
+  --pubkey "$(ssh user@my-host openssl rsa -in /etc/relay-agent/id_rsa -pubout 2>/dev/null)"
+
+# → L'agent retente et se connecte. JWT stocké dans /etc/relay-agent/token.jwt</code></pre>
             </div>
           </div>
         </div>
@@ -784,11 +824,14 @@ const T = {
     "install.tag":"Installation","install.title":"Démarrage rapide",
     "install.lead":"Choisissez votre méthode de déploiement.",
     "install.tab.docker":"Docker Compose","install.tab.manual":"Manuel (binaire)","install.tab.k8s":"Kubernetes (Helm)",
+    "ins.enroll.title":"Cycle d'enrollment :",
+    "ins.enroll.body":" l'agent génère sa paire RSA-4096 au <strong>premier démarrage</strong> et la stocke dans <code>/etc/relay-agent/id_rsa</code> (mode 0600). Il tente immédiatement de s'enroller auprès du serveur — mais le serveur refuse tant que la clef publique n'est pas pré-autorisée. L'agent retente automatiquement avec un backoff exponentiel.",
     "ins.d.s1":"Cloner le dépôt et configurer","ins.d.s2":"Démarrer le serveur (relay-api + NATS + Caddy)",
-    "ins.d.s3":"Autoriser un agent (pre-authorize)","ins.d.s4":"Installer l'agent sur l'hôte cible",
+    "ins.d.s3":"Déployer l'agent sur l'hôte cible","ins.d.s4":"Autoriser l'agent (pre-authorize)",
     "ins.d.s5":"Lancer un playbook Ansible",
     "ins.m.s1":"Compiler depuis les sources","ins.m.s2":"Démarrer NATS JetStream",
-    "ins.m.s3":"Démarrer le serveur relay","ins.m.s4":"Installer l'agent via systemd",
+    "ins.m.s3":"Démarrer le serveur relay","ins.m.s4":"Déployer l'agent sur l'hôte cible",
+    "ins.m.s5":"Autoriser l'agent (pre-authorize)",
     "ins.k.s1":"Créer le namespace et les secrets","ins.k.s2":"Déployer via Helm",
     "ins.k.s3":"Vérifier le déploiement","ins.k.s4":"Gérer les agents et les clefs",
     "mgmt.tag":"Management",
@@ -913,11 +956,14 @@ const T = {
     "install.tag":"Installation","install.title":"Quick start",
     "install.lead":"Choose your deployment method.",
     "install.tab.docker":"Docker Compose","install.tab.manual":"Manual (binary)","install.tab.k8s":"Kubernetes (Helm)",
+    "ins.enroll.title":"Enrollment flow:",
+    "ins.enroll.body":" the agent generates its RSA-4096 keypair on <strong>first start</strong> and stores it at <code>/etc/relay-agent/id_rsa</code> (mode 0600). It immediately attempts enrollment — but the server rejects it until the public key is pre-authorized. The agent retries automatically with exponential backoff.",
     "ins.d.s1":"Clone the repo and configure","ins.d.s2":"Start the server (relay-api + NATS + Caddy)",
-    "ins.d.s3":"Authorize an agent (pre-authorize)","ins.d.s4":"Install the agent on the target host",
+    "ins.d.s3":"Deploy the agent on the target host","ins.d.s4":"Authorize the agent (pre-authorize)",
     "ins.d.s5":"Run an Ansible playbook",
     "ins.m.s1":"Build from source","ins.m.s2":"Start NATS JetStream",
-    "ins.m.s3":"Start the relay server","ins.m.s4":"Install agent via systemd",
+    "ins.m.s3":"Start the relay server","ins.m.s4":"Deploy the agent on the target host",
+    "ins.m.s5":"Authorize the agent (pre-authorize)",
     "ins.k.s1":"Create namespace and secrets","ins.k.s2":"Deploy via Helm",
     "ins.k.s3":"Verify deployment","ins.k.s4":"Manage agents and keys",
     "mgmt.tag":"Management",
