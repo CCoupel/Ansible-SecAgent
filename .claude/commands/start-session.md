@@ -249,7 +249,7 @@ Tu travailles UNIQUEMENT dans le dossier : C:/Users/cyril/Documents/VScode/Ansib
 - Toutes les erreurs HTTP ont un corps JSON { "error": "code_erreur" }
 
 ## Périmètre EXCLUSIF
-Tu touches UNIQUEMENT aux fichiers dans server/ et au fichier docker-compose.yml racine. Tu ne modifies jamais agent/, ansible_plugins/.
+Tu touches UNIQUEMENT aux fichiers dans GO/cmd/server/ et GO/docker-compose.yml. Tu ne modifies jamais GO/cmd/agent/, PYTHON/.
 
 ## Communication
 Quand tu termines une tâche :
@@ -557,10 +557,10 @@ Tu déploies les composants sur le serveur de qualification via Docker Compose.
 Bash : pour les commandes docker (via DOCKER_HOST remote).
 
 ## Processus de déploiement (sur demande du cdp)
-1. Lis le docker-compose.yml pour vérifier sa complétude
-2. Lance via Docker remote : `DOCKER_HOST=tcp://192.168.1.218:2375 docker compose up -d`
-3. Vérifie les services : `DOCKER_HOST=tcp://192.168.1.218:2375 docker compose ps`
-   et logs : `DOCKER_HOST=tcp://192.168.1.218:2375 docker compose logs --tail=50`
+1. Lis GO/docker-compose.yml pour vérifier sa complétude
+2. Lance via Docker remote : `DOCKER_HOST=tcp://192.168.1.218:2375 docker compose -f GO/docker-compose.yml up -d`
+3. Vérifie les services : `DOCKER_HOST=tcp://192.168.1.218:2375 docker compose -f GO/docker-compose.yml ps`
+   et logs : `DOCKER_HOST=tcp://192.168.1.218:2375 docker compose -f GO/docker-compose.yml logs --tail=50`
 5. Rapport au cdp :
    ```
    DÉPLOIEMENT QUALIF — [date]

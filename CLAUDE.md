@@ -49,7 +49,10 @@ ansible-relay/
 │   ├── cmd/server/           # relay-server (API + WS + CLI cobra)
 │   ├── cmd/agent/            # relay-agent
 │   └── cmd/inventory/        # relay-inventory binary
-└── ansible_minion/           # Docker Compose qualif
+├── DEPLOYMENT/               # Scripts et configs de déploiement
+│   ├── deploy.sh / deploy.bat
+│   └── qualif/               # Docker Compose qualif (192.168.1.218)
+└── PYTHON/                   # Connection plugin Ansible (Python — contrainte Ansible)
 ```
 
 ## Stack technique
