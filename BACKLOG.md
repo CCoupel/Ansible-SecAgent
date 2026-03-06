@@ -2,7 +2,7 @@
 
 Date création : 2026-03-03
 Date mise à jour : 2026-03-06
-Status : Phase 0-3 ✅, Phase 7 ✅, Phase 8 ✅, Phase 9 ✅ — Phase 6 (CLI GO) À DÉMARRER
+Status : Phase 1-3 ✅, Phase 6 ✅, Phase 7 ✅, Phase 8 ✅, Phase 9 ✅ — Phase 4/5 SUSPENDUES (no K8s prod actuelle)
 
 ## Vue d'ensemble
 
@@ -19,9 +19,9 @@ Status : Phase 0-3 ✅, Phase 7 ✅, Phase 8 ✅, Phase 9 ✅ — Phase 6 (CLI G
 - **Phase 9 (Inventory binary GO)** : ✅ COMPLÈTE — relay-inventory, 19 tests PASS
 
 ### CLI & Management (GO)
-- **Phase 6 (Management CLI GO)** : 8 tâches (#62 à #69) 🆕 À DÉMARRER
+- **Phase 6 (Management CLI GO)** : 8 tâches (#62 à #69) ✅ COMPLÈTE — CLI cobra opérationnelle, rotation clefs validée
 
-**Total actif** : 8 tâches Phase 6
+**Total actif** : 0 tâches (Phases 4-5 suspendues, toutes phases development complètes)
 
 ---
 
