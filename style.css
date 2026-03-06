@@ -364,6 +364,65 @@ footer {
 .footer-inner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
 .footer-links { display: flex; gap: 1.5rem; }
 
+/* ── Management ── */
+.terminal-demo {
+  background: #010409; border: 1px solid var(--border);
+  border-radius: var(--radius-lg); overflow: hidden;
+  margin: 2rem 0; box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+}
+.terminal-bar {
+  background: var(--bg-3); border-bottom: 1px solid var(--border);
+  padding: 0.6rem 1rem; display: flex; align-items: center; gap: 0.5rem;
+}
+.terminal-bar .dot {
+  width: 12px; height: 12px; border-radius: 50%;
+}
+.dot-red    { background: #ff5f57; }
+.dot-yellow { background: #febc2e; }
+.dot-green  { background: #28c840; }
+.terminal-title {
+  flex: 1; text-align: center; font-size: 0.78rem;
+  color: var(--text-muted); font-family: var(--mono);
+}
+.terminal-body {
+  padding: 1.25rem 1.5rem; font-family: var(--mono);
+  font-size: 0.82rem; line-height: 1.75; overflow-x: auto;
+  white-space: pre; color: var(--text);
+}
+.t-prompt { color: var(--accent); }
+.t-cmd    { color: #e6edf3; }
+.t-head   { color: var(--accent-blue); font-weight: 700; }
+.t-ok     { color: var(--accent); }
+.t-warn   { color: var(--accent-orange); }
+.t-dim    { color: var(--text-muted); }
+
+.cmd-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem; margin-top: 2rem;
+}
+.cmd-card {
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 1.5rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.cmd-card:hover { border-color: rgba(0,212,170,0.25); box-shadow: 0 0 20px rgba(0,212,170,0.05); }
+.cmd-card-head {
+  display: flex; align-items: center; gap: 0.7rem;
+  margin-bottom: 0.6rem;
+}
+.cmd-card-head .cmd-icon { font-size: 1.4rem; flex-shrink: 0; }
+.cmd-card-head h3 { font-size: 1.05rem; margin: 0; }
+.cmd-card > p { font-size: 0.88rem; margin-bottom: 0.9rem; }
+.cmd-card pre { margin-top: 0; font-size: 0.8rem; padding: 0.8rem 1rem; }
+
+.access-note {
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-orange);
+  border-radius: var(--radius); padding: 1.1rem 1.4rem;
+  margin-top: 2rem; font-size: 0.9rem;
+}
+.access-note strong { color: var(--accent-orange); }
+
 /* ── Responsive ── */
 @media (max-width: 900px) {
   .deploy-modes { grid-template-columns: 1fr; }

@@ -17,6 +17,7 @@
     <li><a href="#nonintrusive" data-i18n="nav.compat">Compatibilité</a></li>
     <li><a href="#security"     data-i18n="nav.security">Sécurité</a></li>
     <li><a href="#features"     data-i18n="nav.features">Fonctionnalités</a></li>
+    <li><a href="#mgmt"         data-i18n="nav.mgmt">Management</a></li>
     <li><a href="#install"      data-i18n="nav.install">Installation</a></li>
     <li><a href="https://github.com/CCoupel/Ansible-Relay">GitHub ↗</a></li>
   </ul>
@@ -342,6 +343,125 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
   </div>
 </section>
 
+<!-- ══ MANAGEMENT ════════════════════════════════════════════════════════ -->
+<section id="mgmt">
+  <div class="container">
+    <span class="section-tag" data-i18n="mgmt.tag">Management</span>
+    <h2 data-i18n="mgmt.title">Administrez depuis le terminal</h2>
+    <p class="section-lead" data-i18n="mgmt.lead">
+      La CLI cobra est intégrée directement dans le binaire <code>relay-server</code>.
+      Accessible depuis un container Docker ou un pod Kubernetes — sans binaire supplémentaire.
+    </p>
+
+    <!-- Terminal demo -->
+    <div class="terminal-demo">
+      <div class="terminal-bar">
+        <span class="dot dot-red"></span>
+        <span class="dot dot-yellow"></span>
+        <span class="dot dot-green"></span>
+        <span class="terminal-title">relay-server — management CLI</span>
+      </div>
+      <div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">docker exec relay-api relay-server minions list --format table</span>
+
+<span class="t-head">HOSTNAME          STATUS       LAST SEEN            VERSION   IP</span>
+<span class="t-ok">qualif-host-01    connected    2026-03-06 14:32     v1.1.0    192.168.1.101</span>
+<span class="t-ok">qualif-host-02    connected    2026-03-06 14:32     v1.1.0    192.168.1.102</span>
+<span class="t-ok">qualif-host-03    connected    2026-03-06 14:31     v1.1.0    192.168.1.103</span>
+<span class="t-warn">prod-web-01       suspended    2026-03-06 09:15     v1.1.0    10.0.1.10</span>
+<span class="t-ok">prod-db-01        connected    2026-03-06 14:32     v1.1.0    10.0.1.20</span>
+<span class="t-dim">5 agents  (4 connected, 1 suspended)</span>
+
+<span class="t-prompt">$</span> <span class="t-cmd">docker exec relay-api relay-server security keys status --format table</span>
+
+<span class="t-head">KEY           SECRET                STATUS     EXPIRES</span>
+<span class="t-ok">current       jwt_secret_current    active     2026-04-05 14:00</span>
+<span class="t-dim">previous      jwt_secret_previous   grace      2026-03-07 14:00  (grace 24h)</span>
+<span class="t-ok">RSA keypair   rsa-4096              encrypted  (AES-256-GCM in DB)</span></div>
+    </div>
+
+    <!-- Command cards -->
+    <div class="cmd-grid">
+      <div class="cmd-card">
+        <div class="cmd-card-head">
+          <span class="cmd-icon">🤖</span>
+          <h3 data-i18n="mgmt.agents.title">Gestion des agents</h3>
+        </div>
+        <p data-i18n="mgmt.agents.desc">Listez, suspendez, révoquez et autorisez les agents. Gérez leurs variables d'inventaire.</p>
+        <pre><code>relay-server minions list
+relay-server minions get my-host
+relay-server minions suspend my-host
+relay-server minions resume  my-host
+relay-server minions revoke  my-host
+relay-server minions authorize new-host \
+  --pubkey "$(cat pubkey.pem)"
+relay-server minions vars set my-host \
+  env=prod region=eu-west</code></pre>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-card-head">
+          <span class="cmd-icon">🔐</span>
+          <h3 data-i18n="mgmt.security.title">Sécurité &amp; clefs</h3>
+        </div>
+        <p data-i18n="mgmt.security.desc">Rotation des secrets JWT zero downtime, gestion des tokens actifs et de la blacklist JTI.</p>
+        <pre><code># Rotation JWT (grace period configurable)
+relay-server security keys rotate --grace 24h
+
+# État des clefs
+relay-server security keys status
+
+# Tokens actifs et blacklist
+relay-server security tokens list
+relay-server security blacklist list
+relay-server security blacklist purge</code></pre>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-card-head">
+          <span class="cmd-icon">📋</span>
+          <h3 data-i18n="mgmt.inventory.title">Inventaire</h3>
+        </div>
+        <p data-i18n="mgmt.inventory.desc">Visualisez les agents connectés et leurs facts directement depuis la CLI.</p>
+        <pre><code># Agents connectés uniquement
+relay-server inventory list --only-connected
+
+# Format JSON (compatible Ansible)
+relay-server inventory list --format json
+
+# Format YAML
+relay-server inventory list --format yaml</code></pre>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-card-head">
+          <span class="cmd-icon">📊</span>
+          <h3 data-i18n="mgmt.server.title">Statut serveur</h3>
+        </div>
+        <p data-i18n="mgmt.server.desc">Consultez l'état du serveur relay : uptime, connexions actives, tâches exécutées, mémoire.</p>
+        <pre><code># État général
+relay-server server status --format table
+
+# Statistiques détaillées
+relay-server server stats --format json
+
+# Exemple de sortie :
+# UPTIME    AGENTS  TASKS 24H  MEMORY
+# 3d 14h    4 / 5   127        12 MB</code></pre>
+      </div>
+    </div>
+
+    <div class="access-note">
+      <strong data-i18n="mgmt.access.label">Accès :</strong>
+      <span data-i18n="mgmt.access.body"> La CLI lit les variables d'environnement du container (<code>ADMIN_TOKEN</code>, <code>JWT_SECRET_KEY</code>). Aucune configuration supplémentaire requise.</span>
+      <pre style="margin-top:0.75rem"><code># Docker
+docker exec relay-api relay-server &lt;commande&gt;
+
+# Kubernetes
+kubectl exec -n ansible-relay deploy/relay-api -- relay-server &lt;commande&gt;</code></pre>
+    </div>
+  </div>
+</section>
+
 <!-- ══ ROADMAP ════════════════════════════════════════════════════════════ -->
 <section id="roadmap">
   <div class="container">
@@ -559,7 +679,7 @@ kubectl exec -n ansible-relay deploy/relay-api -- \
 const T = {
   fr: {
     "nav.problem":"Problème","nav.solution":"Solution","nav.compat":"Compatibilité",
-    "nav.security":"Sécurité","nav.features":"Fonctionnalités","nav.install":"Installation",
+    "nav.security":"Sécurité","nav.features":"Fonctionnalités","nav.mgmt":"Management","nav.install":"Installation",
     "hero.badge.native":"Ansible natif",
     "hero.h1":'<span class="hl-teal">Des agents</span><br>pour Ansible',
     "hero.subtitle":"Exécutez vos playbooks sur des hôtes derrière NAT, firewall ou DMZ. Les agents initient eux-mêmes la connexion — vous n'ouvrez aucun port entrant.",
@@ -671,11 +791,24 @@ const T = {
     "ins.m.s3":"Démarrer le serveur relay","ins.m.s4":"Installer l'agent via systemd",
     "ins.k.s1":"Créer le namespace et les secrets","ins.k.s2":"Déployer via Helm",
     "ins.k.s3":"Vérifier le déploiement","ins.k.s4":"Gérer les agents et les clefs",
+    "mgmt.tag":"Management",
+    "mgmt.title":"Administrez depuis le terminal",
+    "mgmt.lead":"La CLI cobra est intégrée directement dans le binaire <code>relay-server</code>. Accessible depuis un container Docker ou un pod Kubernetes — sans binaire supplémentaire.",
+    "mgmt.agents.title":"Gestion des agents",
+    "mgmt.agents.desc":"Listez, suspendez, révoquez et autorisez les agents. Gérez leurs variables d'inventaire.",
+    "mgmt.security.title":"Sécurité &amp; clefs",
+    "mgmt.security.desc":"Rotation des secrets JWT zero downtime, gestion des tokens actifs et de la blacklist JTI.",
+    "mgmt.inventory.title":"Inventaire",
+    "mgmt.inventory.desc":"Visualisez les agents connectés et leurs facts directement depuis la CLI.",
+    "mgmt.server.title":"Statut serveur",
+    "mgmt.server.desc":"Consultez l'état du serveur relay : uptime, connexions actives, tâches exécutées, mémoire.",
+    "mgmt.access.label":"Accès :",
+    "mgmt.access.body":" La CLI lit les variables d'environnement du container (<code>ADMIN_TOKEN</code>, <code>JWT_SECRET_KEY</code>). Aucune configuration supplémentaire requise.",
     "footer.github":"GitHub","footer.specs":"Specs techniques","footer.issues":"Issues"
   },
   en: {
     "nav.problem":"Problem","nav.solution":"Solution","nav.compat":"Compatibility",
-    "nav.security":"Security","nav.features":"Features","nav.install":"Install",
+    "nav.security":"Security","nav.features":"Features","nav.mgmt":"Management","nav.install":"Install",
     "hero.badge.native":"Ansible native",
     "hero.h1":'<span class="hl-teal">Agents</span><br>for Ansible',
     "hero.subtitle":"Run your playbooks on hosts behind NAT, firewalls or DMZ. Agents initiate the connection themselves — you open zero inbound ports.",
@@ -787,6 +920,19 @@ const T = {
     "ins.m.s3":"Start the relay server","ins.m.s4":"Install agent via systemd",
     "ins.k.s1":"Create namespace and secrets","ins.k.s2":"Deploy via Helm",
     "ins.k.s3":"Verify deployment","ins.k.s4":"Manage agents and keys",
+    "mgmt.tag":"Management",
+    "mgmt.title":"Administer from the terminal",
+    "mgmt.lead":"The cobra CLI is built directly into the <code>relay-server</code> binary. Accessible from a Docker container or a Kubernetes pod — no extra binary required.",
+    "mgmt.agents.title":"Agent management",
+    "mgmt.agents.desc":"List, suspend, revoke, and authorize agents. Manage their inventory variables.",
+    "mgmt.security.title":"Security &amp; keys",
+    "mgmt.security.desc":"Zero-downtime JWT secret rotation, management of active tokens and JTI blacklist.",
+    "mgmt.inventory.title":"Inventory",
+    "mgmt.inventory.desc":"View connected agents and their facts directly from the CLI.",
+    "mgmt.server.title":"Server status",
+    "mgmt.server.desc":"Check relay server state: uptime, active connections, tasks executed, memory.",
+    "mgmt.access.label":"Access:",
+    "mgmt.access.body":" The CLI reads environment variables from the container (<code>ADMIN_TOKEN</code>, <code>JWT_SECRET_KEY</code>). No extra configuration required.",
     "footer.github":"GitHub","footer.specs":"Technical specs","footer.issues":"Issues"
   }
 };
