@@ -3,7 +3,8 @@
 # Usage:
 #   ./deploy.sh server       — Deploy relay server only
 #   ./deploy.sh minion       — Deploy relay minions only
-#   ./deploy.sh all          — Deploy both server and minions
+#   ./deploy.sh ansible      — Deploy Ansible container with relay plugins
+#   ./deploy.sh all          — Deploy server, minions, and Ansible container
 #   ./deploy.sh stop         — Stop all containers
 #   ./deploy.sh status       — Show status of containers
 
@@ -15,6 +16,7 @@ export DOCKER_HOST
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_DIR="$SCRIPT_DIR/ansible_server"
 MINION_DIR="$SCRIPT_DIR/ansible_minion"
+QUALIF_DIR="$SCRIPT_DIR/qualif"
 
 # Colors
 RED='\033[0;31m'
@@ -68,8 +70,52 @@ deploy_minions() {
     done
 }
 
+deploy_ansible() {
+    log_info "Deploying ANSIBLE CONTAINER (with relay plugins)..."
+
+    # Check if docker-compose.ansible.yml exists
+    if [ ! -f "$QUALIF_DIR/docker-compose.ansible.yml" ]; then
+        log_error "docker-compose.ansible.yml not found in $QUALIF_DIR"
+        exit 1
+    fi
+
+    cd "$QUALIF_DIR"
+
+    # Set environment variables if not already set
+    if [ -z "$RELAY_SERVER_URL" ]; then
+        export RELAY_SERVER_URL="http://relay-api:7770"
+        log_info "Using default RELAY_SERVER_URL: $RELAY_SERVER_URL"
+    fi
+
+    if [ -z "$RELAY_ADMIN_TOKEN" ]; then
+        log_warn "RELAY_ADMIN_TOKEN not set - container may not work correctly"
+        log_info "Set it with: export RELAY_ADMIN_TOKEN='your-token-here'"
+    fi
+
+    # Create playbooks and inventory directories if they don't exist
+    mkdir -p playbooks inventory roles
+
+    # Deploy ansible container
+    docker compose -f docker-compose.ansible.yml up --build -d
+
+    log_info "Waiting for Ansible container to start..."
+    sleep 5
+
+    if docker ps | grep -q relay-ansible; then
+        log_info "✅ Ansible container is running"
+        log_info "Usage: docker exec -it relay-ansible bash"
+        log_info "Example: docker exec -it relay-ansible ansible-inventory -i relay_inventory -y"
+    else
+        log_warn "⚠️  Ansible container status unknown - check logs with: docker logs relay-ansible"
+    fi
+}
+
 stop_all() {
     log_info "Stopping all containers..."
+
+    log_info "Stopping Ansible container..."
+    cd "$QUALIF_DIR"
+    docker compose -f docker-compose.ansible.yml down 2>/dev/null || true
 
     log_info "Stopping minions..."
     cd "$MINION_DIR"
@@ -91,6 +137,11 @@ show_status() {
     log_info "RELAY MINIONS status:"
     cd "$MINION_DIR"
     docker compose ps
+
+    echo ""
+    log_info "ANSIBLE CONTAINER status:"
+    cd "$QUALIF_DIR"
+    docker compose -f docker-compose.ansible.yml ps
 }
 
 show_help() {
@@ -101,22 +152,30 @@ Usage:
     ./deploy.sh [COMMAND] [OPTIONS]
 
 Commands:
-    server       Deploy relay server only (nats + relay-api + caddy)
-    minion       Deploy relay minions only (relay-agent-01/02/03)
-    all          Deploy both server and minions (default)
-    stop         Stop all containers
-    status       Show status of all containers
-    logs-server  Show server logs
-    logs-agent   Show agent logs (arg: 01|02|03)
-    help         Show this help message
+    server           Deploy relay server only (nats + relay-api + caddy)
+    minion           Deploy relay minions only (relay-agent-01/02/03)
+    ansible          Deploy Ansible container with relay plugins
+    all              Deploy server, minions, and Ansible container (default)
+    stop             Stop all containers
+    status           Show status of all containers
+    logs-server      Show server logs
+    logs-agent       Show agent logs (arg: 01|02|03)
+    logs-ansible     Show Ansible container logs
+    help             Show this help message
 
 Options:
-    DOCKER_HOST  Override Docker host (default: tcp://192.168.1.218:2375)
+    DOCKER_HOST          Override Docker host (default: tcp://192.168.1.218:2375)
+    RELAY_SERVER_URL     Relay server URL (default: http://relay-api:7770)
+    RELAY_ADMIN_TOKEN    Admin token for Ansible container
 
 Examples:
     ./deploy.sh all
     DOCKER_HOST=unix:///var/run/docker.sock ./deploy.sh status
     ./deploy.sh logs-agent 01
+    ./deploy.sh ansible
+    RELAY_ADMIN_TOKEN=my-token ./deploy.sh ansible
+
+For more information, see DEPLOYMENT/ANSIBLE_DEPLOYMENT.md
 
 EOF
 }
@@ -129,10 +188,15 @@ case "${1:-all}" in
     minion)
         deploy_minions
         ;;
+    ansible)
+        deploy_ansible
+        ;;
     all)
         deploy_server
         log_info ""
         deploy_minions
+        log_info ""
+        deploy_ansible
         ;;
     stop)
         stop_all
@@ -146,6 +210,9 @@ case "${1:-all}" in
     logs-agent)
         agent_id="${2:-01}"
         docker logs relay-agent-$agent_id --tail 50 -f
+        ;;
+    logs-ansible)
+        docker logs relay-ansible --tail 50 -f
         ;;
     help|--help|-h)
         show_help

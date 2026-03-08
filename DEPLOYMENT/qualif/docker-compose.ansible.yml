@@ -1,0 +1,74 @@
+# docker-compose.yml — Ansible Container with AnsibleRelay Plugins
+#
+# Container Ansible standalone incluant les plugins relay
+# Permet d'exécuter des playbooks Ansible contre les agents AnsibleRelay
+#
+# Déploiement via Docker remote access :
+#   DOCKER_HOST=tcp://192.168.1.218:2375 docker compose -f docker-compose.ansible.yml up -d
+#
+# Variables d'environnement requises (fichier .env ou export) :
+#   RELAY_SERVER_URL : URL du serveur relay (ex: http://relay-api:7770)
+#   RELAY_ADMIN_TOKEN : token admin pour les appels API relay
+
+services:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Ansible Container with AnsibleRelay Plugins
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  relay-ansible:
+    build:
+      context: ../..
+      dockerfile: GO/Dockerfile.ansible
+    container_name: relay-ansible
+    restart: unless-stopped
+
+    # Environment variables pour les plugins relay
+    environment:
+      # Relay server configuration
+      RELAY_SERVER_URL: "${RELAY_SERVER_URL:-http://relay-api:7770}"
+      RELAY_ADMIN_TOKEN: "${RELAY_ADMIN_TOKEN}"
+      RELAY_CA_BUNDLE: "${RELAY_CA_BUNDLE:-}"
+
+      # Ansible configuration
+      ANSIBLE_LIBRARY: /ansible/ansible_plugins/modules
+      ANSIBLE_PLUGINS: /ansible/ansible_plugins
+      ANSIBLE_HOST_KEY_CHECKING: "false"
+      PYTHONUNBUFFERED: "1"
+
+    # Volumes pour playbooks et inventory
+    volumes:
+      # Playbooks (à créer par l'utilisateur)
+      - ./playbooks:/ansible/playbooks
+
+      # Inventory files
+      - ./inventory:/ansible/inventory
+
+      # Roles (optionnel)
+      - ./roles:/ansible/roles
+
+      # ansible.cfg (partagé avec host)
+      - ../../PYTHON/ansible.cfg:/ansible/ansible.cfg:ro
+
+      # Plugins montés en lecture seule
+      - ../../PYTHON/ansible_plugins:/ansible/ansible_plugins:ro
+
+    # Network
+    networks:
+      - relay-network
+
+    # Keep container running
+    stdin_open: true
+    tty: true
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "ansible", "--version"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+networks:
+  relay-network:
+    driver: bridge

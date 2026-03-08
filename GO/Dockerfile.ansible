@@ -1,0 +1,75 @@
+# Dockerfile — Ansible Container with AnsibleRelay Plugins
+#
+# Container Ansible complet incluant :
+# - ansible + ansible-core
+# - Plugins relay (connection + inventory)
+# - Configuration ansible.cfg
+# - Outils courants (curl, git, jq, etc.)
+#
+# Usage :
+#   docker build -f Dockerfile.ansible -t relay-ansible .
+#   docker run -it relay-ansible bash
+#   ansible-playbook -i relay_inventory my-playbook.yml
+
+FROM python:3.11-slim
+
+# Metadata
+LABEL maintainer="AnsibleRelay Team"
+LABEL description="Ansible container with AnsibleRelay connection + inventory plugins"
+LABEL version="1.0"
+
+# Set working directory
+WORKDIR /ansible
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    jq \
+    openssh-client \
+    sshpass \
+    rsync \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    ansible-core>=2.14 \
+    pyyaml \
+    jinja2 \
+    netaddr \
+    requests \
+    paramiko \
+    cryptography
+
+# Copy ansible.cfg
+COPY PYTHON/ansible.cfg /ansible/
+
+# Copy plugins directory structure
+RUN mkdir -p /ansible/ansible_plugins/{connection_plugins,inventory_plugins}
+
+# Copy connection plugin (relay.py)
+COPY PYTHON/ansible_plugins/connection_plugins/relay.py /ansible/ansible_plugins/connection_plugins/
+COPY PYTHON/ansible_plugins/connection_plugins/__init__.py /ansible/ansible_plugins/connection_plugins/
+
+# Copy inventory plugin if exists
+RUN if [ -f "PYTHON/ansible_plugins/inventory_plugins/relay_inventory.py" ]; then \
+    cp PYTHON/ansible_plugins/inventory_plugins/relay_inventory.py /ansible/ansible_plugins/inventory_plugins/; \
+    cp PYTHON/ansible_plugins/inventory_plugins/__init__.py /ansible/ansible_plugins/inventory_plugins/; \
+    fi
+
+# Create inventory directory
+RUN mkdir -p /ansible/inventory /ansible/playbooks /ansible/roles
+
+# Set ANSIBLE_PLUGINS_MODULES environment variable
+ENV ANSIBLE_LIBRARY=/ansible/ansible_plugins/modules
+ENV ANSIBLE_PLUGINS=/ansible/ansible_plugins
+
+# Expose volume mount points
+VOLUME ["/ansible/inventory", "/ansible/playbooks", "/ansible/roles", "/ansible/roles/defaults"]
+
+# Default entry point
+CMD ["bash"]
+
+# Health check — verify ansible is installed
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD ansible --version
