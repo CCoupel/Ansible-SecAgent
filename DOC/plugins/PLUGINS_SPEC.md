@@ -1,9 +1,10 @@
 # Plugins Ansible — Spécifications techniques
 
 > Référence pour les plugins Ansible du projet AnsibleRelay (Python).
-> Source canonique : `DOC/common/ARCHITECTURE.md` §6, §8, §11, §12, §13, §14, §16
+> Source canonique : `DOC/common/ARCHITECTURE.md` §2, §6, §8, §11, §12, §13, §14, §16
 > Sécurité : `DOC/security/SECURITY.md` §6 (auth plugin tokens)
 > **Contrat d'interface** : `DOC/contracts/REST_PLUGIN.md`
+> **Inventaire GO** : `DOC/inventory/INVENTORY_SPEC.md` (alternative binaire)
 
 ---
 
@@ -14,10 +15,10 @@ Ils remplacent SSH par des appels REST HTTPS vers le relay-server.
 
 ```
 Ansible Control Node
-  ├── connection_plugins/relay.py   — remplace SSH (exec, upload, fetch)
-  └── inventory_plugins/relay.py   — inventaire dynamique (GET /api/inventory)
+  ├── connection_plugins/relay.py   — remplace SSH (exec, upload, fetch) — OBLIGATOIRE PYTHON
+  └── inventory_plugins/relay.py   — inventaire dynamique (GET /api/inventory) — OPTIONNEL (voir §1b)
           │
-          │ HTTPS bloquant (requests)
+          │ HTTPS bloquant (requests/httpx)
           ▼
       Relay Server :7770
           │
@@ -26,8 +27,34 @@ Ansible Control Node
       relay-agent (hôte cible)
 ```
 
+### 1a. Contrainte Ansible : Python uniquement
+
+**Les plugins Ansible ne peuvent pas être en GO.**
+
+- `ConnectionBase` : API Python uniquement (définit `exec_command()`, `put_file()`, `fetch_file()`)
+- `InventoryModule` : API Python uniquement (définit `parse()`, `verify_file()`)
+- Ansible charge dynamiquement les `.py` depuis `connection_plugins/` et `inventory_plugins/`
+- Impossible d'écrire un plugin natif GO — ce n'est pas une limitation de l'architecture, c'est une contrainte d'Ansible
+
+→ **Conséquence** : `connection_plugins/relay.py` reste **obligatoirement Python**
+
+### 1b. Inventaire : Plugin Python OU binaire GO
+
+Deux approches pour l'inventaire Ansible :
+
+| Approche | Fichier | Langage | Contrainte | Usage |
+|----------|---------|---------|-----------|-------|
+| **Plugin Ansible** | `inventory_plugins/relay_inventory.py` | Python | Ansible API Python | Natif, zéro config |
+| **Binaire GO** | `relay-inventory` | GO (Phase 9) | Ansible external inventory protocol | Docker, CI/CD, restrictions env |
+
+**Recommandation** : Utiliser le **binaire GO** (`relay-inventory`) en production :
+- ✅ Déjà implémenté (Phase 9, 19 tests PASS)
+- ✅ Moins de dépendances Python à gérer
+- ✅ Performance identique
+- ✅ Compatible Ansible `--list` / `--host` protocol
+
 **Contrainte fondamentale :** `exec_command()` d'Ansible est synchrone.
-Les plugins utilisent `requests` (HTTP bloquant), jamais `asyncio`.
+Les plugins utilisent `requests` ou `httpx` (HTTP bloquant), jamais `asyncio`.
 
 ---
 
@@ -145,27 +172,29 @@ ansible_relay_timeout: 60
 
 ---
 
-## 4. Inventory Plugin (`relay_inventory.py`)
+## 4. Inventaire Ansible : Binaire GO recommandé
 
-### Comportement
+### ⚠️ DÉPRÉCIÉE : Plugin Python `relay_inventory.py`
 
-Interroge `GET /api/inventory` et retourne le format JSON Ansible standard.
+La tâche Phase 3 #36 (plugin Python inventory) ne sera **pas implémentée**. À la place, utilisez le **binaire GO** (`relay-inventory`, Phase 9) qui fournit une interface identique via le protocole Ansible `--list` / `--host`.
 
-```python
-class InventoryModule(BaseInventoryPlugin):
-    NAME = 'relay'
+**Raison** : Le binaire GO (Phase 9, complet + testé) remplace fonctionnellement le plugin Python sans ajouter de dépendances Python.
 
-    def verify_file(self, path: str) -> bool
-    def parse(self, inventory, loader, path, cache=True) -> None
+---
+
+### 4a. Approche recommandée : Binaire GO (`relay-inventory`)
+
+L'exécutable `relay-inventory` (Phase 9) interroge `GET /api/inventory` et retourne le format JSON Ansible standard.
+
+**Endpoint serveur** :
+```http
+GET /api/inventory?only_connected={bool}
+Authorization: Bearer $RELAY_PLUGIN_TOKEN
+X-Relay-Client-Host: <hostname>  (optionnel, pour binding)
 ```
 
-### Appel API
-
-```python
-GET /api/inventory?only_connected={only_connected}
-Authorization: Bearer $RELAY_PLUGIN_TOKEN
-
-# Réponse :
+**Réponse** :
+```json
 {
   "all": { "hosts": ["host-A", "host-B"] },
   "_meta": {
@@ -181,24 +210,42 @@ Authorization: Bearer $RELAY_PLUGIN_TOKEN
 }
 ```
 
-### Configuration
-
-```ini
-# ansible.cfg
-[relay_inventory]
-relay_server_url = https://relay.example.com
-plugin_token     = <token>
-only_connected   = false    # true = exclure agents offline
-```
-
-Ou via le binaire GO (`relay-inventory`) :
+**Usage Ansible** :
 ```bash
-RELAY_SERVER_URL=https://relay.example.com \
-RELAY_TOKEN=$RELAY_PLUGIN_TOKEN \
-relay-inventory --list
+# En ligne de commande
+ansible-playbook -i relay-inventory site.yml
 
-relay-inventory --host my-host
+# Ou dans ansible.cfg
+[defaults]
+inventory = /usr/local/bin/relay-inventory
 ```
+
+**Configuration via variables d'environnement** :
+```bash
+export RELAY_SERVER_URL=https://relay.example.com
+export RELAY_PLUGIN_TOKEN=relay_plugin_xxxxx
+export RELAY_CA_BUNDLE=/etc/ssl/certs/ca.pem     # optionnel
+export RELAY_INSECURE_TLS=false                  # true = tests uniquement
+export RELAY_ONLY_CONNECTED=false                # true = hôtes connectés uniquement
+```
+
+Voir `DOC/inventory/INVENTORY_SPEC.md` pour spécifications complètes.
+
+---
+
+### 4b. Alternative (non recommandée) : Plugin Python `relay_inventory.py`
+
+Si vous devez utiliser un plugin Python (cas exceptionnel), implémentez une classe `InventoryModule` suivant le modèle ci-dessous (référence, non produite) :
+
+```python
+class InventoryModule(BaseInventoryPlugin):
+    NAME = 'relay'
+
+    def verify_file(self, path: str) -> bool
+    def parse(self, inventory, loader, path, cache=True) -> None
+```
+
+**Note** : Cette approche ajoute une dépendance Python non nécessaire. Le binaire GO (4a) est recommandé.
 
 ---
 
