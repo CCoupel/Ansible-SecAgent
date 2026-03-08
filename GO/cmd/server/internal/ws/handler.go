@@ -152,6 +152,21 @@ func RegisterFuture(taskID string, hostname string) chan Message {
 	return resultChan
 }
 
+// UnregisterFuture removes a pending future without resolving it (used for cleanup on send failure or timeout).
+func UnregisterFuture(taskID string) {
+	tasksMu.Lock()
+	delete(pendingTasks, taskID)
+	tasksMu.Unlock()
+
+	taskHostMu.Lock()
+	delete(taskHostnames, taskID)
+	taskHostMu.Unlock()
+
+	buffersMu.Lock()
+	delete(stdoutBuffers, taskID)
+	buffersMu.Unlock()
+}
+
 // ResolveFuturesForHostname resolves all pending futures for a hostname with an error
 func ResolveFuturesForHostname(hostname string, errorMsg string) {
 	taskHostMu.RLock()

@@ -66,7 +66,9 @@ func newTaskIDRequest(method, path, taskID string) *http.Request {
 // ExecCommand
 // ========================================================================
 
-func TestExecCommandSuccess(t *testing.T) {
+// TestExecCommandAgentOffline verifies that a valid request to an offline agent returns 503.
+// The 200 relay path is tested via integration tests (requires a live WS agent connection).
+func TestExecCommandAgentOffline(t *testing.T) {
 	withAuth := setupExecAuth(t)
 
 	req := ExecRequest{
@@ -80,15 +82,15 @@ func TestExecCommandSuccess(t *testing.T) {
 
 	ExecCommand(w, httpReq)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("ExecCommand: expected 200, got %d", w.Code)
+	// No WS connection registered → agent_offline
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("ExecCommand: expected 503, got %d", w.Code)
 	}
 
 	var resp map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &resp)
-
-	if _, ok := resp["rc"]; !ok {
-		t.Error("expected rc in response")
+	if resp["error"] != "agent_offline" {
+		t.Errorf("expected error=agent_offline, got %v", resp["error"])
 	}
 }
 
@@ -125,7 +127,8 @@ func TestExecCommandInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestExecCommandWithBecome(t *testing.T) {
+// TestExecCommandWithBecomeAgentOffline verifies that a become request to an offline agent returns 503.
+func TestExecCommandWithBecomeAgentOffline(t *testing.T) {
 	withAuth := setupExecAuth(t)
 
 	stdin := "password123"
@@ -143,17 +146,19 @@ func TestExecCommandWithBecome(t *testing.T) {
 
 	ExecCommand(w, httpReq)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("ExecCommand: expected 200, got %d", w.Code)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("ExecCommand: expected 503, got %d", w.Code)
 	}
 }
 
-func TestExecCommandDefaultTimeout(t *testing.T) {
+// TestExecCommandDefaultTimeoutAgentOffline verifies that default timeout (Timeout=0→30) is applied
+// before the agent check, and still returns 503 when the agent is not connected.
+func TestExecCommandDefaultTimeoutAgentOffline(t *testing.T) {
 	withAuth := setupExecAuth(t)
 
 	req := ExecRequest{
 		Cmd:     "sleep 1",
-		Timeout: 0, // Will be set to default (30)
+		Timeout: 0, // Will be set to default (30) by validateExecRequest
 	}
 
 	body, _ := json.Marshal(req)
@@ -162,8 +167,8 @@ func TestExecCommandDefaultTimeout(t *testing.T) {
 
 	ExecCommand(w, httpReq)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("ExecCommand: expected 200, got %d", w.Code)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("ExecCommand: expected 503, got %d", w.Code)
 	}
 }
 
@@ -187,7 +192,9 @@ func TestExecCommandOfflineAgent(t *testing.T) {
 // UploadFile
 // ========================================================================
 
-func TestUploadFileSuccess(t *testing.T) {
+// TestUploadFileAgentOffline verifies that a valid upload request to an offline agent returns 503.
+// The 200 relay path is tested via integration tests.
+func TestUploadFileAgentOffline(t *testing.T) {
 	withAuth := setupExecAuth(t)
 	fileData := "test file content"
 	encodedData := base64.StdEncoding.EncodeToString([]byte(fileData))
@@ -204,8 +211,8 @@ func TestUploadFileSuccess(t *testing.T) {
 
 	UploadFile(w, httpReq)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("UploadFile: expected 200, got %d", w.Code)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("UploadFile: expected 503, got %d", w.Code)
 	}
 }
 
@@ -293,13 +300,15 @@ func TestUploadFilePayloadTooLarge(t *testing.T) {
 	}
 }
 
-func TestUploadFileDefaultMode(t *testing.T) {
+// TestUploadFileDefaultModeAgentOffline verifies that default mode (0644) is applied before
+// agent check, and still returns 503 when the agent is not connected.
+func TestUploadFileDefaultModeAgentOffline(t *testing.T) {
 	withAuth := setupExecAuth(t)
 
 	req := UploadRequest{
 		Dest: "/tmp/test.txt",
 		Data: base64.StdEncoding.EncodeToString([]byte("content")),
-		Mode: "", // Will be set to default (0644)
+		Mode: "", // Will be set to default (0644) by validateUploadRequest
 	}
 
 	body, _ := json.Marshal(req)
@@ -308,8 +317,8 @@ func TestUploadFileDefaultMode(t *testing.T) {
 
 	UploadFile(w, httpReq)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("UploadFile: expected 200, got %d", w.Code)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("UploadFile: expected 503, got %d", w.Code)
 	}
 }
 
@@ -336,7 +345,9 @@ func TestUploadFileOfflineAgent(t *testing.T) {
 // FetchFile
 // ========================================================================
 
-func TestFetchFileSuccess(t *testing.T) {
+// TestFetchFileAgentOffline verifies that a valid fetch request to an offline agent returns 503.
+// The 200 relay path is tested via integration tests.
+func TestFetchFileAgentOffline(t *testing.T) {
 	withAuth := setupExecAuth(t)
 
 	req := FetchRequest{
@@ -349,15 +360,9 @@ func TestFetchFileSuccess(t *testing.T) {
 
 	FetchFile(w, httpReq)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("FetchFile: expected 200, got %d", w.Code)
-	}
-
-	var resp map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
-
-	if _, ok := resp["data"]; !ok {
-		t.Error("expected data in response")
+	// No WS connection registered → agent_offline
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("FetchFile: expected 503, got %d", w.Code)
 	}
 }
 

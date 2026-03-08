@@ -24,8 +24,8 @@ FROM alpine:3.18
 
 WORKDIR /app
 
-# ca-certificates for TLS + openssl to pre-generate RSA key in entrypoint + su-exec
-RUN apk add --no-cache ca-certificates openssl su-exec
+# ca-certificates for TLS + openssl to pre-generate RSA key + python3 for Ansible modules
+RUN apk add --no-cache ca-certificates openssl su-exec python3
 
 # Create non-root user
 RUN addgroup -S relay && adduser -S relay -G relay

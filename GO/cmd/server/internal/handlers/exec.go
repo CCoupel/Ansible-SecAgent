@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"relay-server/cmd/server/internal/ws"
 )
 
 // ExecRequest represents a command execution request
@@ -24,10 +26,10 @@ type ExecRequest struct {
 
 // UploadRequest represents a file upload request
 type UploadRequest struct {
-	TaskID *string `json:"task_id"`  // Optional: caller-supplied task ID
-	Dest   string  `json:"dest"`     // Destination path
-	Data   string  `json:"data"`     // base64-encoded file content
-	Mode   string  `json:"mode"`     // File mode (default "0644")
+	TaskID *string `json:"task_id"` // Optional: caller-supplied task ID
+	Dest   string  `json:"dest"`    // Destination path
+	Data   string  `json:"data"`    // base64-encoded file content
+	Mode   string  `json:"mode"`    // File mode (default "0644")
 }
 
 // FetchRequest represents a file fetch request
@@ -58,11 +60,10 @@ type FetchResponse struct {
 // Task result constants
 const (
 	fileMaxBytes     = 500 * 1024 // 500 KB decoded limit
-	timeoutMarginSec = 5           // Extra seconds on top of task timeout
+	timeoutMarginSec = 5          // Extra seconds on top of task timeout
 )
 
 // In-memory storage for completed task results (task_id -> result)
-// In production, this would be in Redis or persistent storage
 var completedResults = make(map[string]map[string]interface{})
 
 // newTaskID generates a new UUID-based task ID
@@ -82,9 +83,6 @@ func validateExecRequest(req *ExecRequest) error {
 	}
 	if req.Timeout <= 0 {
 		req.Timeout = 30 // Default timeout
-	}
-	if req.Timeout <= 0 {
-		return fmt.Errorf("timeout must be positive")
 	}
 	if req.BecomeMethod == "" {
 		req.BecomeMethod = "sudo"
@@ -114,33 +112,16 @@ func validateFetchRequest(req *FetchRequest) error {
 	return nil
 }
 
-// checkAgentOnline verifies that an agent has an active WebSocket connection
-// Returns HTTP 503 if agent is offline
+// checkAgentOnline verifies that an agent has an active WebSocket connection.
+// Returns error with "hostname must not be empty" or "agent_offline".
 func checkAgentOnline(hostname string) error {
-	// TODO: Check ws_connections map (from ws/handler.go)
-	// For now, assume agent is online (will be integrated with WebSocket handler)
 	if hostname == "" {
 		return fmt.Errorf("hostname must not be empty")
 	}
+	if _, err := ws.GetConnection(hostname); err != nil {
+		return fmt.Errorf("agent_offline")
+	}
 	return nil
-}
-
-// decodeResult interprets a result dict from an agent
-// Handles error cases: agent_disconnected, agent_busy (rc=-1)
-func decodeResult(result map[string]interface{}, hostname string, taskID string) (map[string]interface{}, error) {
-	errStr, hasErr := result["error"].(string)
-	if hasErr && errStr == "agent_disconnected" {
-		log.Printf("Agent disconnected during task: hostname=%s task_id=%s", hostname, taskID)
-		return nil, fmt.Errorf("agent_disconnected")
-	}
-
-	if rc, ok := result["rc"].(float64); ok && rc == -1 {
-		runningTasks, _ := result["running_tasks"]
-		log.Printf("Agent busy: hostname=%s task_id=%s running_tasks=%v", hostname, taskID, runningTasks)
-		return nil, fmt.Errorf("agent_busy")
-	}
-
-	return result, nil
 }
 
 // logExecSafe logs exec request, masking stdin if become=True
@@ -158,6 +139,43 @@ func pointerString(s string) *string {
 	return &s
 }
 
+// sendTaskAndWait registers a result future, sends a message to the agent via
+// WebSocket, and waits up to (timeout + timeoutMarginSec) for the result.
+// Returns the result Message or an error.
+func sendTaskAndWait(hostname, taskID string, message map[string]interface{}, timeout int) (ws.Message, error) {
+	// Register channel before send to avoid race where result arrives before we listen
+	resultChan := ws.RegisterFuture(taskID, hostname)
+
+	if err := ws.SendToAgent(hostname, message); err != nil {
+		// Cleanup the orphaned future
+		ws.UnregisterFuture(taskID)
+		return ws.Message{}, fmt.Errorf("send_failed: %w", err)
+	}
+
+	totalTimeout := time.Duration(timeout+timeoutMarginSec) * time.Second
+	result, err := ws.WaitForResult(resultChan, totalTimeout)
+	if err != nil {
+		ws.UnregisterFuture(taskID)
+		return ws.Message{}, fmt.Errorf("timeout")
+	}
+	return result, nil
+}
+
+// writeAgentError writes a JSON error response for agent-side errors.
+func writeAgentError(w http.ResponseWriter, errStr string, hostname, taskID string) {
+	switch errStr {
+	case "agent_disconnected":
+		log.Printf("Agent disconnected during task: hostname=%s task_id=%s", hostname, taskID)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent_disconnected"})
+	case "agent_busy":
+		log.Printf("Agent busy: hostname=%s task_id=%s", hostname, taskID)
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "agent_busy"})
+	default:
+		log.Printf("Agent error: hostname=%s task_id=%s error=%s", hostname, taskID, errStr)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": errStr})
+	}
+}
+
 // POST /api/exec/{hostname} — Execute a command on a remote agent
 func ExecCommand(w http.ResponseWriter, r *http.Request) {
 	// Plugin token authentication (SECURITY.md §6)
@@ -167,34 +185,21 @@ func ExecCommand(w http.ResponseWriter, r *http.Request) {
 
 	hostname := r.PathValue("hostname")
 
-	// Verify agent is connected
-	if err := checkAgentOnline(hostname); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": "agent_offline",
-		})
-		return
-	}
-
-	// Parse request
+	// Parse and validate request first (400 before 503)
 	var req ExecRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": "invalid_json",
-		})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
 
-	// Validate request
 	if err := validateExecRequest(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": err.Error(),
-		})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Verify agent is connected via live WS registry
+	if err := checkAgentOnline(hostname); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent_offline"})
 		return
 	}
 
@@ -204,44 +209,45 @@ func ExecCommand(w http.ResponseWriter, r *http.Request) {
 		taskID = pointerString(newTaskID())
 	}
 
-	now := nowTS()
 	logExecSafe(hostname, *taskID, &req)
 
-	// TODO: Register Future for task result (from ws/handler.go)
-	// registerFuture(*taskID, hostname)
-
-	// Construct message to send to agent via WebSocket
+	// Build WebSocket message (ARCHITECTURE.md §4)
 	message := map[string]interface{}{
-		"task_id":        *taskID,
-		"type":           "exec",
-		"cmd":            req.Cmd,
-		"stdin":          req.Stdin,
-		"timeout":        req.Timeout,
-		"become":         req.Become,
-		"become_method":  req.BecomeMethod,
-		"expires_at":     now + int64(req.Timeout),
+		"task_id":       *taskID,
+		"type":          "exec",
+		"cmd":           req.Cmd,
+		"timeout":       req.Timeout,
+		"become":        req.Become,
+		"become_method": req.BecomeMethod,
+		"expires_at":    nowTS() + int64(req.Timeout),
+	}
+	if req.Stdin != nil {
+		message["stdin"] = *req.Stdin
 	}
 
-	// TODO: Publish to NATS (from broker/nats.go) or direct WebSocket send
-	// For now, simulate successful send
-	_ = message
-
-	// TODO: Wait for result via asyncio.wait_for or channel receive
-	// For now, return mock response
-	result := map[string]interface{}{
-		"rc":        0,
-		"stdout":    "",
-		"stderr":    "",
-		"truncated": false,
+	// Send to agent and wait for result
+	result, err := sendTaskAndWait(hostname, *taskID, message, req.Timeout)
+	if err != nil {
+		if strings.Contains(err.Error(), "timeout") {
+			writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "task_timeout"})
+		} else {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		}
+		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"rc":        result["rc"],
-		"stdout":    result["stdout"],
-		"stderr":    result["stderr"],
-		"truncated": result["truncated"],
+	// Handle agent-side errors
+	if result.Error != "" {
+		writeAgentError(w, result.Error, hostname, *taskID)
+		return
+	}
+
+	log.Printf("Exec complete: hostname=%s task_id=%s rc=%d", hostname, *taskID, result.RC)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"rc":        result.RC,
+		"stdout":    result.Stdout,
+		"stderr":    result.Stderr,
+		"truncated": result.Truncated,
 	})
 }
 
@@ -254,55 +260,36 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	hostname := r.PathValue("hostname")
 
-	// Verify agent is connected
-	if err := checkAgentOnline(hostname); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": "agent_offline",
-		})
-		return
-	}
-
-	// Parse request
+	// Parse and validate request first (400 before 503)
 	var req UploadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": "invalid_json",
-		})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
 
-	// Validate request
 	if err := validateUploadRequest(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": err.Error(),
-		})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
 	// Validate decoded size before sending
 	decoded, err := base64.StdEncoding.DecodeString(req.Data)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": "invalid_base64",
-		})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_base64"})
 		return
 	}
 
 	if len(decoded) > fileMaxBytes {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusRequestEntityTooLarge)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]interface{}{
 			"error":     "payload_too_large",
 			"max_bytes": fileMaxBytes,
 		})
+		return
+	}
+
+	// Verify agent is connected (after validation)
+	if err := checkAgentOnline(hostname); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent_offline"})
 		return
 	}
 
@@ -315,31 +302,34 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Upload request: hostname=%s task_id=%s dest=%s size=%d",
 		hostname, *taskID, req.Dest, len(decoded))
 
-	// TODO: Register Future for task result
-	// registerFuture(*taskID, hostname)
-
-	// Construct message to send to agent
+	// Build WebSocket message
 	message := map[string]interface{}{
-		"task_id":    *taskID,
-		"type":       "put_file",
-		"dest":       req.Dest,
-		"data":       req.Data,
-		"mode":       req.Mode,
+		"task_id": *taskID,
+		"type":    "put_file",
+		"dest":    req.Dest,
+		"data":    req.Data,
+		"mode":    req.Mode,
 	}
 
-	// TODO: Publish to NATS or direct WebSocket send
-	_ = message
-
-	// TODO: Wait for result
-	result := map[string]interface{}{
-		"rc": 0,
+	// Default timeout for file operations: 60s
+	fileTimeout := 60
+	result, err := sendTaskAndWait(hostname, *taskID, message, fileTimeout)
+	if err != nil {
+		if strings.Contains(err.Error(), "timeout") {
+			writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "task_timeout"})
+		} else {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		}
+		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"rc": result["rc"],
-	})
+	if result.Error != "" {
+		writeAgentError(w, result.Error, hostname, *taskID)
+		return
+	}
+
+	log.Printf("Upload complete: hostname=%s task_id=%s rc=%d", hostname, *taskID, result.RC)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"rc": result.RC})
 }
 
 // POST /api/fetch/{hostname} — Retrieve a file from a remote agent
@@ -351,34 +341,21 @@ func FetchFile(w http.ResponseWriter, r *http.Request) {
 
 	hostname := r.PathValue("hostname")
 
-	// Verify agent is connected
-	if err := checkAgentOnline(hostname); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": "agent_offline",
-		})
-		return
-	}
-
-	// Parse request
+	// Parse and validate request first (400 before 503)
 	var req FetchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": "invalid_json",
-		})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
 
-	// Validate request
 	if err := validateFetchRequest(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": err.Error(),
-		})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Verify agent is connected (after validation)
+	if err := checkAgentOnline(hostname); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent_offline"})
 		return
 	}
 
@@ -391,30 +368,35 @@ func FetchFile(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Fetch request: hostname=%s task_id=%s src=%s",
 		hostname, *taskID, req.Src)
 
-	// TODO: Register Future for task result
-	// registerFuture(*taskID, hostname)
-
-	// Construct message to send to agent
+	// Build WebSocket message
 	message := map[string]interface{}{
 		"task_id": *taskID,
 		"type":    "fetch_file",
 		"src":     req.Src,
 	}
 
-	// TODO: Publish to NATS or direct WebSocket send
-	_ = message
-
-	// TODO: Wait for result
-	result := map[string]interface{}{
-		"rc":   0,
-		"data": "",
+	// Default timeout for file operations: 60s
+	fileTimeout := 60
+	result, err := sendTaskAndWait(hostname, *taskID, message, fileTimeout)
+	if err != nil {
+		if strings.Contains(err.Error(), "timeout") {
+			writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "task_timeout"})
+		} else {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		}
+		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"rc":   result["rc"],
-		"data": result["data"],
+	if result.Error != "" {
+		writeAgentError(w, result.Error, hostname, *taskID)
+		return
+	}
+
+	log.Printf("Fetch complete: hostname=%s task_id=%s rc=%d data_len=%d",
+		hostname, *taskID, result.RC, len(result.Data))
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"rc":   result.RC,
+		"data": result.Data,
 	})
 }
 
@@ -424,9 +406,7 @@ func AsyncStatus(w http.ResponseWriter, r *http.Request) {
 
 	// Check completed cache first
 	if result, exists := completedResults[taskID]; exists {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"task_id":   taskID,
 			"status":    "finished",
 			"rc":        result["rc"],
@@ -437,13 +417,7 @@ func AsyncStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Check if task is still in pending_futures (from ws/handler.go)
-	// For now, return 404 if not in completed cache
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusNotFound)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"error": "task_not_found",
-	})
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "task_not_found"})
 }
 
 // StoreResult stores a completed task result for later retrieval via async_status
