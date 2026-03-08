@@ -2,19 +2,20 @@
 
 ## Overview
 
-Le container Ansible inclut les plugins relay (connection + inventory) pour exécuter des playbooks Ansible contre les agents AnsibleRelay.
+Le container Ansible inclut les plugins/binaires relay pour exécuter des playbooks Ansible contre les agents AnsibleRelay.
 
 **Architecture :**
 ```
 Ansible Container (relay-ansible)
+    ├── relay_inventory (binaire GO)   — inventaire dynamique
+    ├── relay.py (plugin connection)   — exécution tâches
     ↓
-    relay_inventory.py (plugin inventory)
-    relay.py (plugin connection)
-    ↓
-Relay Server (relay-api)
+Relay Server (relay-api, port 7770)
     ↓
 Relay Agents (qualif-host-01/02/03)
 ```
+
+**Note** : L'inventaire utilise le binaire `relay-inventory` (Phase 9, GO) plutôt qu'un plugin Python. Le plugin connection `relay.py` reste Python (contrainte Ansible API).
 
 ---
 
@@ -95,30 +96,40 @@ cat > /ansible/playbooks/my-playbook.yml <<'EOF'
         msg: "{{ result.stdout }}"
 EOF
 
-# 3. List inventory (via relay inventory plugin)
-ansible-inventory -i relay_inventory -y
+# 3. List inventory (via relay-inventory binary — external inventory)
+ansible-inventory -i /usr/local/bin/relay-inventory --list -y
 
-# 4. Run playbook
-ansible-playbook -i relay_inventory /ansible/playbooks/my-playbook.yml
+# Or directly list agents
+relay-inventory --list
+
+# 4. Run playbook (using relay-inventory binary)
+ansible-playbook -i /usr/local/bin/relay-inventory /ansible/playbooks/my-playbook.yml
 
 # 5. Run with verbosity
-ansible-playbook -i relay_inventory -vvv /ansible/playbooks/my-playbook.yml
+ansible-playbook -i /usr/local/bin/relay-inventory -vvv /ansible/playbooks/my-playbook.yml
 ```
+
+**Note** : The container uses `relay-inventory` (GO binary, Phase 9) for dynamic inventory.
+This is an external inventory script compatible with Ansible's `--list` / `--host` protocol.
 
 ### From Host (docker exec)
 
 ```bash
 # Run playbook without entering container
 docker exec -it relay-ansible \
-  ansible-playbook -i relay_inventory /ansible/playbooks/my-playbook.yml
+  ansible-playbook -i /usr/local/bin/relay-inventory /ansible/playbooks/my-playbook.yml
 
-# List inventory
+# List inventory (binary)
 docker exec -it relay-ansible \
-  ansible-inventory -i relay_inventory -y
+  relay-inventory --list
+
+# List inventory (Ansible interface)
+docker exec -it relay-ansible \
+  ansible-inventory -i /usr/local/bin/relay-inventory --list -y
 
 # Get facts from all hosts
 docker exec -it relay-ansible \
-  ansible all -i relay_inventory -m setup
+  ansible all -i /usr/local/bin/relay-inventory -m setup
 ```
 
 ---
@@ -142,15 +153,22 @@ Located in `/ansible/ansible.cfg` :
 
 ```ini
 [defaults]
-inventory_plugins = ./ansible_plugins/inventory_plugins
-connection_plugins = ./ansible_plugins/connection_plugins
-host_key_checking = False
+# Using relay-inventory binary (external inventory script)
+inventory = /usr/local/bin/relay-inventory
 
-[relay]
-relay_token_file = /tmp/relay_token.jwt
+# Plugins for connection (still needed for execution)
+connection_plugins = ./ansible_plugins/connection_plugins
+
+host_key_checking = False
+timeout = 30
+
+[relay_connection]
 relay_server_url = http://relay-api:7770
+plugin_token = $RELAY_ADMIN_TOKEN
 relay_ca_bundle =
 ```
+
+**Inventory method** : External binary (`relay-inventory`) instead of plugin. See `DOC/inventory/INVENTORY_SPEC.md` for details.
 
 ---
 
