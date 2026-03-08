@@ -311,3 +311,7 @@ class ConnectionPlugin(ConnectionBase):
     def close(self):
         """Nothing persistent to close — HTTP is stateless."""
         self._connected = False
+
+
+# Ansible expects a class named "Connection", not "ConnectionPlugin"
+Connection = ConnectionPlugin
