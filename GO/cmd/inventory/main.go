@@ -151,8 +151,11 @@ func fetchInventory(cfg config) (*InventoryResponse, error) {
 	}
 
 	url := cfg.serverURL + "/api/inventory"
+	// Always pass only_connected parameter explicitly
 	if cfg.onlyConnected {
 		url += "?only_connected=true"
+	} else {
+		url += "?only_connected=false"
 	}
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
