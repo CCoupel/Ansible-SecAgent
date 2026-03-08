@@ -51,6 +51,8 @@ type InventoryResponse struct {
 }
 
 // buildInventoryResponse constructs an InventoryResponse from the live WS registry + DB agents.
+// Default (onlyConnected=false): return ALL agents with status
+// If onlyConnected=true: return only connected agents
 func buildInventoryResponse(onlyConnected bool) InventoryResponse {
 	connectedHosts := ws.GetConnectedHostnames()
 	connectedSet := make(map[string]bool)
@@ -63,22 +65,7 @@ func buildInventoryResponse(onlyConnected bool) InventoryResponse {
 	response.All.Hosts = make([]string, 0)
 	response.Meta.Hostvars = make(map[string]HostVars)
 
-	// If onlyConnected=true, only return connected agents
-	if onlyConnected {
-		for _, hostname := range connectedHosts {
-			response.All.Hosts = append(response.All.Hosts, hostname)
-			response.Meta.Hostvars[hostname] = HostVars{
-				AnsibleConnection: "relay",
-				AnsibleHost:       hostname,
-				RelayStatus:       "connected",
-				RelayLastSeen:     now,
-			}
-		}
-		return response
-	}
-
-	// If onlyConnected=false, return all enrolled agents from DB
-	// (admin store is global singleton set by tests/handlers)
+	// Query all enrolled agents from DB
 	store := GetAdminStore()
 	if store == nil {
 		return response // fallback: return empty if no store
@@ -86,9 +73,16 @@ func buildInventoryResponse(onlyConnected bool) InventoryResponse {
 
 	agents := store.GetAllAgents()
 	for _, agent := range agents {
+		isConnected := connectedSet[agent.Hostname]
+
+		// If onlyConnected=true, skip disconnected agents
+		if onlyConnected && !isConnected {
+			continue
+		}
+
 		response.All.Hosts = append(response.All.Hosts, agent.Hostname)
 		status := "disconnected"
-		if connectedSet[agent.Hostname] {
+		if isConnected {
 			status = "connected"
 		}
 		response.Meta.Hostvars[agent.Hostname] = HostVars{
