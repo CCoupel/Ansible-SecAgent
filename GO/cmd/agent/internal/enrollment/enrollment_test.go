@@ -44,50 +44,11 @@ func mockEnrollServer(t *testing.T, agentPubKey *rsa.PublicKey, serverKey *rsa.P
 			return
 		}
 
-		// Determine step by presence of "enrollment_token" vs "response"
-		if _, hasToken := body["enrollment_token"]; hasToken {
-			// Step 1 : initiation
-			if step1StatusCode != http.StatusOK {
-				w.WriteHeader(step1StatusCode)
-				json.NewEncoder(w).Encode(map[string]string{"error": "rejected"})
-				return
-			}
-
-			// Generate nonce
-			nonce := make([]byte, 32)
-			if _, err := rand.Read(nonce); err != nil {
-				t.Errorf("mock server: generate nonce: %v", err)
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			pendingNonce = nonce
-
-			// Encrypt nonce with agent public key
-			challengeCiphertext, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, agentPubKey, nonce, nil)
-			if err != nil {
-				t.Errorf("mock server: encrypt challenge: %v", err)
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			challengeB64 := base64.StdEncoding.EncodeToString(challengeCiphertext)
-
-			// Serialize server public key
-			serverPubPEM, err := publicKeyToPEM(&serverKey.PublicKey)
-			if err != nil {
-				t.Errorf("mock server: serialize server pubkey: %v", err)
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-
-			json.NewEncoder(w).Encode(map[string]string{
-				"challenge":            challengeB64,
-				"server_public_key_pem": serverPubPEM,
-			})
-
-		} else if _, hasResponse := body["response"]; hasResponse {
+		// Determine step by presence of "challenge_response" (step2) first
+		if _, hasResponse := body["challenge_response"]; hasResponse {
 			// Step 2 : verification
 			var responseB64 string
-			json.Unmarshal(body["response"], &responseB64)
+			json.Unmarshal(body["challenge_response"], &responseB64)
 
 			// Decrypt response with server private key
 			ciphertext, err := base64.StdEncoding.DecodeString(responseB64)
@@ -130,8 +91,47 @@ func mockEnrollServer(t *testing.T, agentPubKey *rsa.PublicKey, serverKey *rsa.P
 				"jwt_encrypted": jwtEncryptedB64,
 			})
 
+		} else if _, hasToken := body["enrollment_token"]; hasToken {
+			// Step 1 : initiation
+			if step1StatusCode != http.StatusOK {
+				w.WriteHeader(step1StatusCode)
+				json.NewEncoder(w).Encode(map[string]string{"error": "rejected"})
+				return
+			}
+
+			// Generate nonce
+			nonce := make([]byte, 32)
+			if _, err := rand.Read(nonce); err != nil {
+				t.Errorf("mock server: generate nonce: %v", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			pendingNonce = nonce
+
+			// Encrypt nonce with agent public key
+			challengeCiphertext, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, agentPubKey, nonce, nil)
+			if err != nil {
+				t.Errorf("mock server: encrypt challenge: %v", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			challengeB64 := base64.StdEncoding.EncodeToString(challengeCiphertext)
+
+			// Serialize server public key
+			serverPubPEM, err := publicKeyToPEM(&serverKey.PublicKey)
+			if err != nil {
+				t.Errorf("mock server: serialize server pubkey: %v", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			json.NewEncoder(w).Encode(map[string]string{
+				"challenge":            challengeB64,
+				"server_public_key_pem": serverPubPEM,
+			})
+
 		} else {
-			t.Errorf("mock server: unexpected request body (no enrollment_token or response)")
+			t.Errorf("mock server: unexpected request body (no enrollment_token or challenge_response)")
 			w.WriteHeader(http.StatusBadRequest)
 		}
 	}))

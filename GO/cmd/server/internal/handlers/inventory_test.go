@@ -290,3 +290,247 @@ func TestHostVarsStruct(t *testing.T) {
 		t.Error("failed to preserve relay_last_seen")
 	}
 }
+
+// ========================================================================
+// AdminGetInventory — admin token auth on port 7771
+// ========================================================================
+
+// TestAdminGetInventory_RequiresAdminAuth verifies 401 without auth header.
+func TestAdminGetInventory_RequiresAdminAuth(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	req := httptest.NewRequest("GET", "/api/inventory", nil)
+	w := httptest.NewRecorder()
+	AdminGetInventory(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 without auth, got %d", w.Code)
+	}
+}
+
+// TestAdminGetInventory_RejectsPluginToken verifies plugin tokens are rejected.
+func TestAdminGetInventory_RejectsPluginToken(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	req := httptest.NewRequest("GET", "/api/inventory", nil)
+	req.Header.Set("Authorization", "Bearer relay_plg_not_admin")
+	w := httptest.NewRecorder()
+	AdminGetInventory(w, req)
+
+	// Should be 401 (not an admin token)
+	if w.Code == http.StatusOK {
+		t.Error("expected rejection for non-admin token")
+	}
+}
+
+// TestAdminGetInventory_Success verifies 200 with valid admin token.
+func TestAdminGetInventory_Success(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	req := httptest.NewRequest("GET", "/api/inventory", nil)
+	req.Header.Set("Authorization", "Bearer "+server.AdminToken)
+	w := httptest.NewRecorder()
+	AdminGetInventory(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d — %s", w.Code, w.Body.String())
+	}
+
+	var resp InventoryResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.All.Hosts == nil {
+		t.Error("expected All.Hosts array, got nil")
+	}
+	if resp.Meta.Hostvars == nil {
+		t.Error("expected Meta.Hostvars map, got nil")
+	}
+}
+
+// TestAdminGetInventory_ContentType verifies application/json content type.
+func TestAdminGetInventory_ContentType(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	req := httptest.NewRequest("GET", "/api/inventory", nil)
+	req.Header.Set("Authorization", "Bearer "+server.AdminToken)
+	w := httptest.NewRecorder()
+	AdminGetInventory(w, req)
+
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected application/json, got %q", ct)
+	}
+}
+
+// TestAdminGetInventory_OnlyConnectedParam verifies query param is accepted.
+func TestAdminGetInventory_OnlyConnectedParam(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	req := httptest.NewRequest("GET", "/api/inventory?only_connected=true", nil)
+	req.Header.Set("Authorization", "Bearer "+server.AdminToken)
+	w := httptest.NewRecorder()
+	AdminGetInventory(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 with only_connected=true, got %d", w.Code)
+	}
+}
+
+// TestAdminGetInventory_OnlyConnectedFalse verifies only_connected=false is accepted.
+func TestAdminGetInventory_OnlyConnectedFalse(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	req := httptest.NewRequest("GET", "/api/inventory?only_connected=false", nil)
+	req.Header.Set("Authorization", "Bearer "+server.AdminToken)
+	w := httptest.NewRecorder()
+	AdminGetInventory(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 with only_connected=false, got %d", w.Code)
+	}
+	var resp InventoryResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.All.Hosts == nil {
+		t.Error("expected All.Hosts array, got nil")
+	}
+}
+
+// TestAdminGetInventory_InvalidOnlyConnected verifies invalid param defaults gracefully.
+func TestAdminGetInventory_InvalidOnlyConnected(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	req := httptest.NewRequest("GET", "/api/inventory?only_connected=not-a-bool", nil)
+	req.Header.Set("Authorization", "Bearer "+server.AdminToken)
+	w := httptest.NewRecorder()
+	AdminGetInventory(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 with invalid param, got %d", w.Code)
+	}
+	var resp InventoryResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.All.Hosts == nil {
+		t.Error("expected valid response even with invalid query param")
+	}
+}
+
+// TestAdminGetInventory_ResponseStructure verifies Ansible-compatible JSON format.
+func TestAdminGetInventory_ResponseStructure(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	req := httptest.NewRequest("GET", "/api/inventory", nil)
+	req.Header.Set("Authorization", "Bearer "+server.AdminToken)
+	w := httptest.NewRecorder()
+	AdminGetInventory(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	// Must be valid JSON with "all" and "_meta" keys
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(w.Body).Decode(&raw); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if _, ok := raw["all"]; !ok {
+		t.Error("response missing 'all' key")
+	}
+	if _, ok := raw["_meta"]; !ok {
+		t.Error("response missing '_meta' key")
+	}
+}
+
+// TestAdminGetInventory_NoArgs verifies no query param defaults to all hosts.
+func TestAdminGetInventory_NoArgs(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	req := httptest.NewRequest("GET", "/api/inventory", nil)
+	req.Header.Set("Authorization", "Bearer "+server.AdminToken)
+	w := httptest.NewRecorder()
+	AdminGetInventory(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 with no params, got %d", w.Code)
+	}
+}
+
+// ========================================================================
+// Regression: GetInventory on port 7770 (plugin auth) still works
+// ========================================================================
+
+// TestGetInventoryRequiresPluginAuth_Regression verifies GetInventory still
+// requires plugin token auth (not admin) — regression for port 7770.
+func TestGetInventoryRequiresPluginAuth_Regression(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	// No auth header — must 401
+	req := httptest.NewRequest("GET", "/api/inventory", nil)
+	w := httptest.NewRecorder()
+	GetInventory(w, req)
+
+	if w.Code == http.StatusOK {
+		t.Error("GetInventory must require plugin auth on port 7770")
+	}
+}
+
+// TestGetInventoryAdminTokenRejected_Regression verifies that the admin token
+// does NOT work on GetInventory (port 7770 requires plugin token, not admin bearer).
+func TestGetInventoryAdminTokenRejected_Regression(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	req := httptest.NewRequest("GET", "/api/inventory", nil)
+	// Admin token is not a plugin token — plugin auth should reject it
+	req.Header.Set("Authorization", "Bearer "+server.AdminToken)
+	req.RemoteAddr = "127.0.0.1:9999"
+	w := httptest.NewRecorder()
+	GetInventory(w, req)
+
+	// requirePluginAuth looks up hash in plugin_tokens table: admin token not there → 401
+	if w.Code == http.StatusOK {
+		t.Error("GetInventory should reject admin token (not a plugin token)")
+	}
+}
+
+// TestAdminGetInventory_PluginTokenRejected_Regression verifies that a plugin token
+// does NOT work on AdminGetInventory (port 7771 requires admin bearer token).
+func TestAdminGetInventory_PluginTokenRejected_Regression(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	// Create a real plugin token in the store
+	h := sha256.Sum256([]byte("relay_plg_regression_test"))
+	tok := storage.PluginToken{
+		ID:        "tok-regression-01",
+		TokenHash: fmt.Sprintf("%x", h),
+		Role:      "plugin",
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.CreatePluginToken(context.Background(), tok); err != nil {
+		t.Fatalf("create plugin token: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/inventory", nil)
+	req.Header.Set("Authorization", "Bearer relay_plg_regression_test")
+	w := httptest.NewRecorder()
+	AdminGetInventory(w, req)
+
+	// requireAdminAuth compares token directly to ADMIN_TOKEN — plugin token != admin token → 401
+	if w.Code == http.StatusOK {
+		t.Error("AdminGetInventory should reject plugin token (not admin bearer)")
+	}
+}
