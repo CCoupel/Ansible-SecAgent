@@ -39,19 +39,13 @@ services:
     # Volumes pour playbooks et inventory
     volumes:
       # Playbooks (à créer par l'utilisateur)
-      - ./playbooks:/ansible/playbooks
+      - playbooks_volume:/ansible/playbooks
 
       # Inventory files
-      - ./inventory:/ansible/inventory
+      - inventory_volume:/ansible/inventory
 
       # Roles (optionnel)
-      - ./roles:/ansible/roles
-
-      # ansible.cfg (partagé avec host)
-      - ../../PYTHON/ansible.cfg:/ansible/ansible.cfg:ro
-
-      # Plugins montés en lecture seule
-      - ../../PYTHON/ansible_plugins:/ansible/ansible_plugins:ro
+      - roles_volume:/ansible/roles
 
     # Network
     networks:
@@ -72,3 +66,8 @@ services:
 networks:
   relay-network:
     driver: bridge
+
+volumes:
+  playbooks_volume:
+  inventory_volume:
+  roles_volume:

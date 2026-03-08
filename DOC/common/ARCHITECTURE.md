@@ -89,13 +89,16 @@ ansible-relay/
 
 ### Rôles des composants
 
-| Composant | Rôle | Langage |
-|---|---|---|
-| `relay_agent` | Daemon client, maintient la WS, exécute les tâches | Python |
-| `relay server` | Bridge WS↔NATS, expose REST API, gère l'authentification | Python/FastAPI |
-| `NATS JetStream` | Bus de messages persistant, routing inter-nodes | Go (binaire) |
-| `connection plugin` | Remplace SSH dans Ansible, appels REST bloquants | Python |
-| `inventory plugin` | Expose les agents enregistrés à Ansible | Python |
+| Composant | Rôle | Langage | Notes |
+|---|---|---|---|
+| `relay-agent` | Daemon client, maintient la WSS, exécute les tâches | GO (Phase 8) | Binaire standalone |
+| `relay-server` | Bridge WSS↔NATS, expose REST API, gère l'authentification | GO (Phase 7) | Binaire standalone |
+| `NATS JetStream` | Bus de messages persistant, routing inter-nodes | GO (binaire) | Composant externe |
+| `relay-inventory` | Binaire inventaire compatible Ansible `--list`/`--host` | GO (Phase 9) | Binaire standalone |
+| `connection_plugins/relay.py` | Remplace SSH dans Ansible, appels REST bloquants | Python (Phase 3) | **Contrainte Ansible** : API `ConnectionBase` Python uniquement |
+| `inventory_plugins/relay.py` | Expose les agents enregistrés à Ansible | Python (Phase 3) | **Contrainte Ansible** : API `InventoryModule` Python uniquement |
+
+**Note architecture** : Les plugins Ansible (`connection_plugins/`, `inventory_plugins/`) **DOIVENT** rester en Python car Ansible n'expose que des API Python pour l'extension des plugins. Les plugins sont chargés dynamiquement par Ansible et doivent hériter de `ConnectionBase` ou `BaseInventoryPlugin`. L'alternative GO (`relay-inventory` binaire) est fournie pour les cas où le plugin Python n'est pas disponible (ex: restrictions environnement, automatisation externes).
 
 ---
 

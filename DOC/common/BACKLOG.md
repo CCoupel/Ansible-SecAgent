@@ -100,17 +100,20 @@ Status : Phase 1-3 ✅, Phase 6 ✅, Phase 7 ✅, Phase 8 ✅, Phase 9 ✅ — P
 - Lire HLD.md flux plugins
 - Phase 2 validée et déployée
 
+### Notes architecture — Constraints Ansible
+**Plugins Ansible = PYTHON UNIQUEMENT** : Les API Ansible (`ConnectionBase`, `InventoryModule`) ne sont disponibles que en Python. Les plugins connection et inventory **ne peuvent pas être en GO**. Cela justifie la conservation d'une base Python dans le projet malgré la migration GO du serveur et agent. L'alternative GO (`relay-inventory` binaire, Phase 9) remplace le plugin inventory Python mais ne remplace pas le plugin connection (pas d'alternative).
+
 ### Tâches Phase 3
 
-| # | Tâche | Owner | Status | Bloquée par |
-|---|-------|-------|--------|------------|
-| #35 | connection_plugins/relay.py — ConnectionBase (exec_command, put_file, fetch_file, pipelining, become) | dev-plugins | pending | #34 |
-| #36 | inventory_plugins/relay_inventory.py — InventoryModule (GET /api/inventory) | dev-plugins | pending | #34 |
-| #37 | Tests unitaires + E2E plugins Phase 3 | test-writer | pending | #35, #36 |
-| #38 | QA — pytest Phase 3 (unitaire + E2E), rapport | qa | pending | #37 |
-| #39 | Security review global — audit Phase 3 + revue MVP complète | security-reviewer | pending | #38 |
-| #40 | Deploy qualif Phase 3 — test E2E complet sur 192.168.1.218 | deploy-qualif | pending | #39 |
-| #41 | Deploy prod — Helm chart Kubernetes (après confirmation utilisateur) | deploy-prod | pending | #40 |
+| # | Tâche | Owner | Status | Bloquée par | Notes |
+|---|-------|-------|--------|------------|-------|
+| #35 | connection_plugins/relay.py — ConnectionBase (exec_command, put_file, fetch_file, pipelining, become) | dev-plugins | ✅ completed | #34 | **Obligatoire Python** — API Ansible uniquement |
+| #36 | inventory_plugins/relay_inventory.py — InventoryModule (GET /api/inventory) | dev-plugins | ⏸ OBSOLÈTE | #34 | **Alternative GO implémentée** : `relay-inventory` binaire (Phase 9) remplace ce plugin |
+| #37 | Tests unitaires + E2E plugins Phase 3 | test-writer | ✅ completed | #35, #36 | Tests connection plugin uniquement |
+| #38 | QA — pytest Phase 3 (unitaire + E2E), rapport | qa | ✅ completed | #37 | QA connection plugin + relay-inventory binary |
+| #39 | Security review global — audit Phase 3 + revue MVP complète | security-reviewer | ✅ completed | #38 | Audit global MVP |
+| #40 | Deploy qualif Phase 3 — test E2E complet sur 192.168.1.218 | deploy-qualif | ✅ completed | #39 | Connection plugin + relay-inventory binary déployés |
+| #41 | Deploy prod — Helm chart Kubernetes (après confirmation utilisateur) | deploy-prod | ⏸ SUSPENDU (no K8s prod) | #40 | Pas de K8s en production actuellement |
 
 **Validation Phase 3 → Prod** :
 - ✓ TOUTES tâches #35-#40 completed
