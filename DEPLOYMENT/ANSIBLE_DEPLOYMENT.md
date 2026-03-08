@@ -141,8 +141,10 @@ docker exec -it relay-ansible \
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RELAY_SERVER_URL` | `http://relay-api:7770` | Relay server API URL |
-| `RELAY_ADMIN_TOKEN` | (required) | Admin token for API calls |
+| `RELAY_TOKEN` | (required) | Plugin token for relay-inventory (Bearer auth) |
 | `RELAY_CA_BUNDLE` | (empty) | Path to CA certificate bundle (for TLS) |
+| `RELAY_ONLY_CONNECTED` | `false` | Only include connected agents in inventory |
+| `RELAY_INSECURE_TLS` | `false` | Disable TLS verification (TESTS ONLY) |
 | `ANSIBLE_LIBRARY` | `/ansible/ansible_plugins/modules` | Ansible modules directory |
 | `ANSIBLE_PLUGINS` | `/ansible/ansible_plugins` | Ansible plugins directory |
 | `ANSIBLE_HOST_KEY_CHECKING` | `false` | Disable SSH key checking (for agents) |

@@ -8,7 +8,7 @@
 #
 # Variables d'environnement requises (fichier .env ou export) :
 #   RELAY_SERVER_URL : URL du serveur relay (ex: http://relay-api:7770)
-#   RELAY_ADMIN_TOKEN : token admin pour les appels API relay
+#   RELAY_TOKEN : plugin token pour relay-inventory (Bearer auth)
 
 services:
 
@@ -25,10 +25,12 @@ services:
 
     # Environment variables pour les plugins relay
     environment:
-      # Relay server configuration
+      # Relay server configuration (relay-inventory binary)
       RELAY_SERVER_URL: "${RELAY_SERVER_URL:-http://relay-api:7770}"
-      RELAY_ADMIN_TOKEN: "${RELAY_ADMIN_TOKEN}"
+      RELAY_TOKEN: "${RELAY_TOKEN}"
       RELAY_CA_BUNDLE: "${RELAY_CA_BUNDLE:-}"
+      RELAY_ONLY_CONNECTED: "${RELAY_ONLY_CONNECTED:-false}"
+      RELAY_INSECURE_TLS: "${RELAY_INSECURE_TLS:-false}"
 
       # Ansible configuration
       ANSIBLE_LIBRARY: /ansible/ansible_plugins/modules
@@ -47,9 +49,11 @@ services:
       # Roles (optionnel)
       - roles_volume:/ansible/roles
 
-    # Network
+    # Network — connect to both relay-network and ansible_server_default
+    # (ansible_server_default is where relay-api container lives)
     networks:
       - relay-network
+      - ansible_server_default
 
     # Keep container running
     stdin_open: true
@@ -66,6 +70,10 @@ services:
 networks:
   relay-network:
     driver: bridge
+
+  # Reference to external network (created by main docker-compose.yml)
+  ansible_server_default:
+    external: true
 
 volumes:
   playbooks_volume:
