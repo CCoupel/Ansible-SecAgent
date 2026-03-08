@@ -1,10 +1,14 @@
 // relay-agent — Daemon client AnsibleRelay (Go).
 //
-// Flow de démarrage (§8, §18 ARCHITECTURE.md) :
+// Flow de démarrage (§8, §18 ARCHITECTURE.md, Phase 10 challenge-response) :
 //  1. Charge la configuration depuis les variables d'environnement
 //  2. Génère la keypair RSA-4096 si la clef privée n'existe pas encore
-//  3. Enrollment : POST /api/register avec clef publique RSA
-//     → déchiffre le JWT retourné (RSA-OAEP SHA-256) → persiste en 0600
+//  3. Enrollment (2 étapes) :
+//     3a. POST /api/register {hostname, pubkey_pem, enrollment_token}
+//         → server retourne {challenge: OAEP(nonce, agent_pubkey), server_public_key_pem}
+//     3b. Agent déchiffre nonce → POST /api/register {hostname, response: OAEP(nonce+token, server_pubkey)}
+//         → server retourne {jwt_encrypted: OAEP(jwt, agent_pubkey)}
+//     3c. Agent déchiffre JWT → stocke à RELAY_JWT_PATH (mode 0600)
 //     Si JWT déjà présent sur disque → réutilise sans re-enrollment
 //  4. Collecte les facts système (hostname, OS, CPU, RAM, disk, network)
 //  5. Ouvre la connexion WSS avec JWT Bearer
@@ -15,15 +19,16 @@
 //
 // Configuration (variables d'environnement) :
 //
-//	RELAY_SERVER_URL      URL HTTPS du relay server   (défaut: https://localhost:7770)
-//	RELAY_WS_URL          URL WSS du relay server     (défaut: wss://localhost:7772/ws/agent)
-//	RELAY_AGENT_HOSTNAME  Hostname de l'agent         (défaut: os.Hostname())
-//	RELAY_PRIVATE_KEY     Chemin clef privée RSA      (défaut: /etc/relay-agent/id_rsa)
-//	RELAY_JWT_PATH        Chemin JWT persisté         (défaut: /etc/relay-agent/token.jwt)
-//	RELAY_CA_BUNDLE       CA bundle PEM custom        (défaut: store système)
-//	RELAY_ASYNC_DIR       Répertoire registre async   (défaut: /var/lib/relay-agent/async)
-//	RELAY_INSECURE_TLS    "true" pour désactiver TLS  (TESTS UNIQUEMENT)
-//	MAX_CONCURRENT_TASKS  Tâches exec simultanées     (défaut: 10)
+//	RELAY_SERVER_URL         URL HTTPS du relay server    (défaut: https://localhost:7770)
+//	RELAY_WS_URL             URL WSS du relay server      (défaut: wss://localhost:7772/ws/agent)
+//	RELAY_AGENT_HOSTNAME     Hostname de l'agent          (défaut: os.Hostname())
+//	RELAY_PRIVATE_KEY        Chemin clef privée RSA       (défaut: /etc/relay-agent/id_rsa)
+//	RELAY_JWT_PATH           Chemin JWT persisté          (défaut: /etc/relay-agent/token.jwt)
+//	RELAY_ENROLLMENT_TOKEN   Token d'enrollment (REQUIS)  ex: relay_enr_aBcXy123...
+//	RELAY_CA_BUNDLE          CA bundle PEM custom         (défaut: store système)
+//	RELAY_ASYNC_DIR          Répertoire registre async    (défaut: /var/lib/relay-agent/async)
+//	RELAY_INSECURE_TLS       "true" pour désactiver TLS   (TESTS UNIQUEMENT)
+//	MAX_CONCURRENT_TASKS     Tâches exec simultanées      (défaut: 10)
 package main
 
 import (
@@ -95,11 +100,13 @@ func main() {
 		CABundle:  cfg.caBundle,
 		Insecure:  cfg.insecure,
 	}, handler, cfg.maxConcurrentTasks).WithEnrollConfig(ws.EnrollConfig{
-		RegisterURL: cfg.serverURL + "/api/register",
-		Hostname:    hostname,
-		PrivateKey:  privKey,
-		JWTPath:     cfg.jwtPath,
-		MaxRetries:  3,
+		RegisterURL:     cfg.serverURL + "/api/register",
+		Hostname:        hostname,
+		PrivateKey:      privKey,
+		JWTPath:         cfg.jwtPath,
+		EnrollmentToken: cfg.enrollmentToken,
+		Insecure:        cfg.insecure,
+		MaxRetries:      3,
 	})
 
 	// --- Étape 6 : Signal handling + run loop ---
@@ -151,7 +158,7 @@ func loadOrGenerateKey(cfg agentConfig) (*rsa.PrivateKey, error) {
 // ---------------------------------------------------------------------------
 
 // loadOrEnroll retourne le JWT existant si présent, sinon effectue l'enrollment.
-// L'enrollment appelle POST /api/register et déchiffre le JWT avec la clef privée.
+// L'enrollment Phase 10 appelle POST /api/register en 2 étapes (challenge-response OAEP).
 func loadOrEnroll(cfg agentConfig, hostname string, privKey *rsa.PrivateKey) (string, error) {
 	// Tente de recharger le JWT existant
 	if data, err := os.ReadFile(cfg.jwtPath); err == nil && len(data) > 0 {
@@ -167,17 +174,18 @@ func loadOrEnroll(cfg agentConfig, hostname string, privKey *rsa.PrivateKey) (st
 		return "", err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	return enrollment.Enroll(ctx, enrollment.Config{
-		RegisterURL:  cfg.serverURL + "/api/register",
-		Hostname:     hostname,
-		PublicKeyPEM: pubPEM,
-		PrivateKey:   privKey,
-		CABundle:     cfg.caBundle,
-		JWTPath:      cfg.jwtPath,
-		Insecure:     cfg.insecure,
+		RegisterURL:     cfg.serverURL + "/api/register",
+		Hostname:        hostname,
+		PublicKeyPEM:    pubPEM,
+		PrivateKey:      privKey,
+		EnrollmentToken: cfg.enrollmentToken,
+		CABundle:        cfg.caBundle,
+		JWTPath:         cfg.jwtPath,
+		Insecure:        cfg.insecure,
 	})
 }
 
@@ -274,14 +282,15 @@ func (h *agentHandler) HandleFetchFile(ctx context.Context, msg ws.FetchFileMsg,
 // ---------------------------------------------------------------------------
 
 type agentConfig struct {
-	serverURL        string
-	wsURL            string
-	hostname         string
-	privateKeyPath   string
-	jwtPath          string
-	caBundle         string
-	asyncDir         string
-	insecure         bool // TESTS UNIQUEMENT — désactive TLS verification
+	serverURL          string
+	wsURL              string
+	hostname           string
+	privateKeyPath     string
+	jwtPath            string
+	enrollmentToken    string // RELAY_ENROLLMENT_TOKEN — jamais loggé en clair
+	caBundle           string
+	asyncDir           string
+	insecure           bool // TESTS UNIQUEMENT — désactive TLS verification
 	maxConcurrentTasks int
 }
 
@@ -298,6 +307,7 @@ func loadConfig() agentConfig {
 		hostname:           getenv("RELAY_AGENT_HOSTNAME", ""),
 		privateKeyPath:     getenv("RELAY_PRIVATE_KEY", "/etc/relay-agent/id_rsa"),
 		jwtPath:            getenv("RELAY_JWT_PATH", "/etc/relay-agent/token.jwt"),
+		enrollmentToken:    os.Getenv("RELAY_ENROLLMENT_TOKEN"), // pas de valeur par défaut
 		caBundle:           getenv("RELAY_CA_BUNDLE", ""),
 		asyncDir:           getenv("RELAY_ASYNC_DIR", "/var/lib/relay-agent/async"),
 		insecure:           getenv("RELAY_INSECURE_TLS", "") == "true",
@@ -306,8 +316,13 @@ func loadConfig() agentConfig {
 	if cfg.insecure {
 		log.Printf("[WARN] RELAY_INSECURE_TLS=true — TLS verification disabled (tests only)")
 	}
-	log.Printf("[INIT] server=%s ws=%s key=%s jwt=%s maxTasks=%d",
-		cfg.serverURL, cfg.wsURL, cfg.privateKeyPath, cfg.jwtPath, cfg.maxConcurrentTasks)
+	// CRITIQUE : ne pas loguer enrollmentToken en clair
+	tokenStatus := "not set"
+	if cfg.enrollmentToken != "" {
+		tokenStatus = "set"
+	}
+	log.Printf("[INIT] server=%s ws=%s key=%s jwt=%s enrollment_token=%s maxTasks=%d",
+		cfg.serverURL, cfg.wsURL, cfg.privateKeyPath, cfg.jwtPath, tokenStatus, cfg.maxConcurrentTasks)
 	return cfg
 }
 

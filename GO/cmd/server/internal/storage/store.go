@@ -85,6 +85,36 @@ CREATE TABLE IF NOT EXISTS server_config (
     value      TEXT NOT NULL,
     updated_at TIMESTAMP NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS enrollment_tokens (
+    id               TEXT PRIMARY KEY,
+    token_hash       TEXT NOT NULL UNIQUE,
+    hostname_pattern TEXT NOT NULL,
+    reusable         INTEGER NOT NULL DEFAULT 0,
+    use_count        INTEGER NOT NULL DEFAULT 0,
+    last_used_at     INTEGER,
+    created_at       INTEGER NOT NULL,
+    expires_at       INTEGER,
+    created_by       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_enrollment_tokens_hash ON enrollment_tokens (token_hash);
+
+CREATE TABLE IF NOT EXISTS plugin_tokens (
+    id                       TEXT PRIMARY KEY,
+    token_hash               TEXT NOT NULL UNIQUE,
+    description              TEXT,
+    role                     TEXT NOT NULL DEFAULT 'plugin',
+    allowed_ips              TEXT,
+    allowed_hostname_pattern TEXT,
+    created_at               INTEGER NOT NULL,
+    expires_at               INTEGER,
+    last_used_at             INTEGER,
+    last_used_ip             TEXT,
+    revoked                  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_tokens_hash ON plugin_tokens (token_hash);
 `
 
 // NewStore creates a new SQLite store and opens the connection

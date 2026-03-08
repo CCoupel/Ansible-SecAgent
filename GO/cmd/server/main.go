@@ -164,6 +164,13 @@ func main() {
 	adminRouter.HandleFunc("GET /api/admin/security/blacklist", handlers.AdminSecurityBlacklist)
 	adminRouter.HandleFunc("POST /api/admin/security/blacklist/purge", handlers.AdminSecurityBlacklistPurge)
 
+	// Enrollment + plugin tokens (Phase 10)
+	adminRouter.HandleFunc("POST /api/admin/tokens", handlers.AdminCreateToken)
+	adminRouter.HandleFunc("GET /api/admin/tokens", handlers.AdminListTokens)
+	adminRouter.HandleFunc("POST /api/admin/tokens/{id}/revoke", handlers.AdminRevokeToken)
+	adminRouter.HandleFunc("DELETE /api/admin/tokens/{id}", handlers.AdminDeleteToken)
+	adminRouter.HandleFunc("POST /api/admin/tokens/purge", handlers.AdminPurgeTokens)
+
 	// Server status / stats
 	adminRouter.HandleFunc("GET /api/admin/status", handlers.AdminStatus)
 	adminRouter.HandleFunc("GET /api/admin/stats", handlers.AdminStats)

@@ -2,13 +2,47 @@ package handlers
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"relay-server/cmd/server/internal/storage"
 )
+
+// execTestToken is the plain-text plugin token used across exec/upload/fetch tests.
+const execTestToken = "relay_plg_exec_test_shared"
+
+// setupExecAuth initialises an in-memory store with a valid plugin token and
+// returns a helper that stamps requests with the bearer header.
+func setupExecAuth(t *testing.T) func(r *http.Request) *http.Request {
+	t.Helper()
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	h := sha256.Sum256([]byte(execTestToken))
+	tok := storage.PluginToken{
+		ID:        "tok-exec-shared",
+		TokenHash: fmt.Sprintf("%x", h),
+		Role:      "plugin",
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.CreatePluginToken(context.Background(), tok); err != nil {
+		t.Fatalf("setupExecAuth: %v", err)
+	}
+
+	return func(r *http.Request) *http.Request {
+		r.Header.Set("Authorization", "Bearer "+execTestToken)
+		r.RemoteAddr = "127.0.0.1:8080"
+		return r
+	}
+}
 
 // newExecRequest creates a test HTTP request with the hostname path value set
 func newExecRequest(method, path, hostname string, body io.Reader) *http.Request {
@@ -33,13 +67,15 @@ func newTaskIDRequest(method, path, taskID string) *http.Request {
 // ========================================================================
 
 func TestExecCommandSuccess(t *testing.T) {
+	withAuth := setupExecAuth(t)
+
 	req := ExecRequest{
 		Cmd:     "echo hello",
 		Timeout: 30,
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := newExecRequest("POST", "/api/exec/test-host", "test-host", bytes.NewReader(body))
+	httpReq := withAuth(newExecRequest("POST", "/api/exec/test-host", "test-host", bytes.NewReader(body)))
 	w := httptest.NewRecorder()
 
 	ExecCommand(w, httpReq)
@@ -57,13 +93,15 @@ func TestExecCommandSuccess(t *testing.T) {
 }
 
 func TestExecCommandEmptyCmd(t *testing.T) {
+	withAuth := setupExecAuth(t)
+
 	req := ExecRequest{
 		Cmd:     "",
 		Timeout: 30,
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := newExecRequest("POST", "/api/exec/test-host", "test-host", bytes.NewReader(body))
+	httpReq := withAuth(newExecRequest("POST", "/api/exec/test-host", "test-host", bytes.NewReader(body)))
 	w := httptest.NewRecorder()
 
 	ExecCommand(w, httpReq)
@@ -74,8 +112,10 @@ func TestExecCommandEmptyCmd(t *testing.T) {
 }
 
 func TestExecCommandInvalidJSON(t *testing.T) {
-	httpReq := newExecRequest("POST", "/api/exec/test-host", "test-host",
-		bytes.NewBufferString("invalid"))
+	withAuth := setupExecAuth(t)
+
+	httpReq := withAuth(newExecRequest("POST", "/api/exec/test-host", "test-host",
+		bytes.NewBufferString("invalid")))
 	w := httptest.NewRecorder()
 
 	ExecCommand(w, httpReq)
@@ -86,6 +126,8 @@ func TestExecCommandInvalidJSON(t *testing.T) {
 }
 
 func TestExecCommandWithBecome(t *testing.T) {
+	withAuth := setupExecAuth(t)
+
 	stdin := "password123"
 	req := ExecRequest{
 		Cmd:          "id",
@@ -96,7 +138,7 @@ func TestExecCommandWithBecome(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := newExecRequest("POST", "/api/exec/test-host", "test-host", bytes.NewReader(body))
+	httpReq := withAuth(newExecRequest("POST", "/api/exec/test-host", "test-host", bytes.NewReader(body)))
 	w := httptest.NewRecorder()
 
 	ExecCommand(w, httpReq)
@@ -107,13 +149,15 @@ func TestExecCommandWithBecome(t *testing.T) {
 }
 
 func TestExecCommandDefaultTimeout(t *testing.T) {
+	withAuth := setupExecAuth(t)
+
 	req := ExecRequest{
 		Cmd:     "sleep 1",
 		Timeout: 0, // Will be set to default (30)
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := newExecRequest("POST", "/api/exec/test-host", "test-host", bytes.NewReader(body))
+	httpReq := withAuth(newExecRequest("POST", "/api/exec/test-host", "test-host", bytes.NewReader(body)))
 	w := httptest.NewRecorder()
 
 	ExecCommand(w, httpReq)
@@ -124,10 +168,12 @@ func TestExecCommandDefaultTimeout(t *testing.T) {
 }
 
 func TestExecCommandOfflineAgent(t *testing.T) {
+	withAuth := setupExecAuth(t)
+
 	req := ExecRequest{Cmd: "echo hi", Timeout: 30}
 	body, _ := json.Marshal(req)
 	// No path value set — hostname will be empty → agent_offline
-	httpReq := httptest.NewRequest("POST", "/api/exec/", bytes.NewReader(body))
+	httpReq := withAuth(httptest.NewRequest("POST", "/api/exec/", bytes.NewReader(body)))
 	w := httptest.NewRecorder()
 
 	ExecCommand(w, httpReq)
@@ -142,6 +188,7 @@ func TestExecCommandOfflineAgent(t *testing.T) {
 // ========================================================================
 
 func TestUploadFileSuccess(t *testing.T) {
+	withAuth := setupExecAuth(t)
 	fileData := "test file content"
 	encodedData := base64.StdEncoding.EncodeToString([]byte(fileData))
 
@@ -152,7 +199,7 @@ func TestUploadFileSuccess(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := newExecRequest("POST", "/api/upload/test-host", "test-host", bytes.NewReader(body))
+	httpReq := withAuth(newExecRequest("POST", "/api/upload/test-host", "test-host", bytes.NewReader(body)))
 	w := httptest.NewRecorder()
 
 	UploadFile(w, httpReq)
@@ -163,6 +210,8 @@ func TestUploadFileSuccess(t *testing.T) {
 }
 
 func TestUploadFileEmptyDest(t *testing.T) {
+	withAuth := setupExecAuth(t)
+
 	req := UploadRequest{
 		Dest: "",
 		Data: base64.StdEncoding.EncodeToString([]byte("content")),
@@ -170,7 +219,7 @@ func TestUploadFileEmptyDest(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := newExecRequest("POST", "/api/upload/test-host", "test-host", bytes.NewReader(body))
+	httpReq := withAuth(newExecRequest("POST", "/api/upload/test-host", "test-host", bytes.NewReader(body)))
 	w := httptest.NewRecorder()
 
 	UploadFile(w, httpReq)
@@ -181,6 +230,8 @@ func TestUploadFileEmptyDest(t *testing.T) {
 }
 
 func TestUploadFileEmptyData(t *testing.T) {
+	withAuth := setupExecAuth(t)
+
 	req := UploadRequest{
 		Dest: "/tmp/test.txt",
 		Data: "",
@@ -188,7 +239,7 @@ func TestUploadFileEmptyData(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := newExecRequest("POST", "/api/upload/test-host", "test-host", bytes.NewReader(body))
+	httpReq := withAuth(newExecRequest("POST", "/api/upload/test-host", "test-host", bytes.NewReader(body)))
 	w := httptest.NewRecorder()
 
 	UploadFile(w, httpReq)
@@ -199,6 +250,8 @@ func TestUploadFileEmptyData(t *testing.T) {
 }
 
 func TestUploadFileInvalidBase64(t *testing.T) {
+	withAuth := setupExecAuth(t)
+
 	req := UploadRequest{
 		Dest: "/tmp/test.txt",
 		Data: "not-valid-base64!!!",
@@ -206,7 +259,7 @@ func TestUploadFileInvalidBase64(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := newExecRequest("POST", "/api/upload/test-host", "test-host", bytes.NewReader(body))
+	httpReq := withAuth(newExecRequest("POST", "/api/upload/test-host", "test-host", bytes.NewReader(body)))
 	w := httptest.NewRecorder()
 
 	UploadFile(w, httpReq)
@@ -217,6 +270,8 @@ func TestUploadFileInvalidBase64(t *testing.T) {
 }
 
 func TestUploadFilePayloadTooLarge(t *testing.T) {
+	withAuth := setupExecAuth(t)
+
 	// Create data larger than 500KB
 	largeData := make([]byte, 600*1024) // 600KB
 	encodedData := base64.StdEncoding.EncodeToString(largeData)
@@ -228,7 +283,7 @@ func TestUploadFilePayloadTooLarge(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := newExecRequest("POST", "/api/upload/test-host", "test-host", bytes.NewReader(body))
+	httpReq := withAuth(newExecRequest("POST", "/api/upload/test-host", "test-host", bytes.NewReader(body)))
 	w := httptest.NewRecorder()
 
 	UploadFile(w, httpReq)
@@ -239,6 +294,8 @@ func TestUploadFilePayloadTooLarge(t *testing.T) {
 }
 
 func TestUploadFileDefaultMode(t *testing.T) {
+	withAuth := setupExecAuth(t)
+
 	req := UploadRequest{
 		Dest: "/tmp/test.txt",
 		Data: base64.StdEncoding.EncodeToString([]byte("content")),
@@ -246,7 +303,7 @@ func TestUploadFileDefaultMode(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := newExecRequest("POST", "/api/upload/test-host", "test-host", bytes.NewReader(body))
+	httpReq := withAuth(newExecRequest("POST", "/api/upload/test-host", "test-host", bytes.NewReader(body)))
 	w := httptest.NewRecorder()
 
 	UploadFile(w, httpReq)
@@ -257,13 +314,15 @@ func TestUploadFileDefaultMode(t *testing.T) {
 }
 
 func TestUploadFileOfflineAgent(t *testing.T) {
+	withAuth := setupExecAuth(t)
+
 	req := UploadRequest{
 		Dest: "/tmp/test.txt",
 		Data: base64.StdEncoding.EncodeToString([]byte("content")),
 	}
 	body, _ := json.Marshal(req)
 	// No path value — hostname empty → agent_offline
-	httpReq := httptest.NewRequest("POST", "/api/upload/", bytes.NewReader(body))
+	httpReq := withAuth(httptest.NewRequest("POST", "/api/upload/", bytes.NewReader(body)))
 	w := httptest.NewRecorder()
 
 	UploadFile(w, httpReq)
@@ -278,12 +337,14 @@ func TestUploadFileOfflineAgent(t *testing.T) {
 // ========================================================================
 
 func TestFetchFileSuccess(t *testing.T) {
+	withAuth := setupExecAuth(t)
+
 	req := FetchRequest{
 		Src: "/etc/hostname",
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := newExecRequest("POST", "/api/fetch/test-host", "test-host", bytes.NewReader(body))
+	httpReq := withAuth(newExecRequest("POST", "/api/fetch/test-host", "test-host", bytes.NewReader(body)))
 	w := httptest.NewRecorder()
 
 	FetchFile(w, httpReq)
@@ -301,12 +362,14 @@ func TestFetchFileSuccess(t *testing.T) {
 }
 
 func TestFetchFileEmptySrc(t *testing.T) {
+	withAuth := setupExecAuth(t)
+
 	req := FetchRequest{
 		Src: "",
 	}
 
 	body, _ := json.Marshal(req)
-	httpReq := newExecRequest("POST", "/api/fetch/test-host", "test-host", bytes.NewReader(body))
+	httpReq := withAuth(newExecRequest("POST", "/api/fetch/test-host", "test-host", bytes.NewReader(body)))
 	w := httptest.NewRecorder()
 
 	FetchFile(w, httpReq)
@@ -317,10 +380,12 @@ func TestFetchFileEmptySrc(t *testing.T) {
 }
 
 func TestFetchFileOfflineAgent(t *testing.T) {
+	withAuth := setupExecAuth(t)
+
 	req := FetchRequest{Src: "/etc/hostname"}
 	body, _ := json.Marshal(req)
 	// No path value — hostname empty → agent_offline
-	httpReq := httptest.NewRequest("POST", "/api/fetch/", bytes.NewReader(body))
+	httpReq := withAuth(httptest.NewRequest("POST", "/api/fetch/", bytes.NewReader(body)))
 	w := httptest.NewRecorder()
 
 	FetchFile(w, httpReq)

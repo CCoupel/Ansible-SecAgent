@@ -1,15 +1,18 @@
 // Package enrollment gère l'enregistrement de l'agent auprès du relay server.
 //
-// Flow MVP (§8 ARCHITECTURE.md) :
-//  1. POST /api/register { hostname, public_key_pem }
-//  2. Serveur retourne { token_encrypted: base64(RSA-encrypt(JWT)) }
-//  3. Agent déchiffre avec sa clef privée RSA → JWT
-//  4. JWT stocké sur disque (mode 0600) pour les reconnexions
+// Flow Phase 10 (challenge-response) :
+//  1. POST /api/register { hostname, pubkey_pem, enrollment_token }
+//     → Server répond { challenge: OAEP(nonce, agent_pubkey), server_public_key_pem }
+//  2. Agent déchiffre nonce avec sa clef privée
+//     → POST /api/register { hostname, response: OAEP(nonce+token, server_pubkey) }
+//     → Server répond { jwt_encrypted: OAEP(jwt, agent_pubkey) }
+//  3. Agent déchiffre JWT avec sa clef privée → stocke à RELAY_JWT_PATH (mode 0600)
 //
 // Sécurité :
 //   - TLS vérifié obligatoire (InsecureSkipVerify=false)
 //   - Échec déchiffrement RSA → erreur fatale, pas de fallback
 //   - JWT et clef privée créés avec os.OpenFile(O_CREATE, 0600) atomique
+//   - Token d'enrollment JAMAIS loggé en clair (CRITIQUE sécurité)
 package enrollment
 
 import (
@@ -41,6 +44,10 @@ type Config struct {
 	PublicKeyPEM string
 	// PrivateKey est la clef privée RSA pour déchiffrer le JWT retourné.
 	PrivateKey *rsa.PrivateKey
+	// EnrollmentToken est le token d'enrollment single-use (env RELAY_ENROLLMENT_TOKEN).
+	// Requis pour le challenge-response Phase 10.
+	// JAMAIS loggé en clair.
+	EnrollmentToken string
 	// CABundle est le chemin vers un CA bundle PEM custom (vide = store système).
 	CABundle string
 	// JWTPath est le chemin de stockage du JWT (ex: /etc/relay-agent/token.jwt).
@@ -51,23 +58,41 @@ type Config struct {
 	Insecure bool
 }
 
-// enrollRequest est le corps de POST /api/register.
-type enrollRequest struct {
-	Hostname     string `json:"hostname"`
-	PublicKeyPEM string `json:"public_key_pem"`
+// step1Request est le corps de POST /api/register (étape 1).
+type step1Request struct {
+	Hostname        string `json:"hostname"`
+	PublicKeyPEM    string `json:"public_key_pem"`
+	EnrollmentToken string `json:"enrollment_token"`
 }
 
-// enrollResponse est la réponse de POST /api/register.
-type enrollResponse struct {
-	TokenEncrypted    string `json:"token_encrypted"`
-	ServerPublicKeyPEM string `json:"server_public_key_pem"`
+// step1Response est la réponse de POST /api/register (étape 1).
+type step1Response struct {
+	Challenge        string `json:"challenge"`          // base64(OAEP(nonce, agent_pubkey))
+	ServerPublicKey  string `json:"server_public_key_pem"` // clef publique du serveur pour l'étape 2
 }
 
-// Enroll enregistre l'agent et retourne le JWT déchiffré.
+// step2Request est le corps de POST /api/register (étape 2).
+type step2Request struct {
+	Hostname          string `json:"hostname"`
+	PublicKeyPEM      string `json:"public_key_pem"`
+	EnrollmentToken   string `json:"enrollment_token"`
+	ChallengeResponse string `json:"challenge_response"` // base64(OAEP(nonce+token, server_pubkey))
+}
+
+// step2Response est la réponse de POST /api/register (étape 2).
+type step2Response struct {
+	JWTEncrypted string `json:"jwt_encrypted"` // base64(OAEP(jwt, agent_pubkey))
+}
+
+// Enroll enregistre l'agent via le protocole challenge-response en 2 étapes.
 //
-// L'agent effectue un POST /api/register avec son hostname et sa clef publique.
-// Le serveur retourne un JWT chiffré avec la clef publique de l'agent.
-// L'agent le déchiffre avec sa clef privée et le stocke sur disque (0600).
+// L'agent effectue :
+//   - Étape 1 : POST /api/register {hostname, pubkey_pem, enrollment_token}
+//     → server retourne {challenge: OAEP(nonce, agent_pubkey), server_public_key_pem}
+//   - Étape 2 : POST /api/register {hostname, response: OAEP(nonce+token, server_pubkey)}
+//     → server retourne {jwt_encrypted: OAEP(jwt, agent_pubkey)}
+//
+// Le JWT est déchiffré avec la clef privée de l'agent et stocké sur disque (0600).
 //
 // Retourne une erreur si :
 //   - La requête HTTP échoue ou retourne != 200
@@ -77,74 +102,50 @@ func Enroll(ctx context.Context, cfg Config) (string, error) {
 	if cfg.PrivateKey == nil {
 		return "", errors.New("enrollment: private key is required")
 	}
+	if cfg.EnrollmentToken == "" {
+		return "", errors.New("enrollment: RELAY_ENROLLMENT_TOKEN is required (set via env var)")
+	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 30 * time.Second
 	}
 
-	// Build TLS-verified HTTP client
-	tlsCfg := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: cfg.Insecure, //nolint:gosec // tests only, guarded by flag
-	}
-	if !cfg.Insecure && cfg.CABundle != "" {
-		pool, err := loadCABundle(cfg.CABundle)
-		if err != nil {
-			return "", fmt.Errorf("enrollment: load CA bundle: %w", err)
-		}
-		tlsCfg.RootCAs = pool
-	}
-	client := &http.Client{
-		Timeout:   cfg.Timeout,
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
-	}
-
-	// Build and send POST /api/register
-	body, err := json.Marshal(enrollRequest{
-		Hostname:     cfg.Hostname,
-		PublicKeyPEM: cfg.PublicKeyPEM,
-	})
+	client, err := buildHTTPClient(cfg.CABundle, cfg.Insecure, cfg.Timeout)
 	if err != nil {
-		return "", fmt.Errorf("enrollment: marshal request: %w", err)
+		return "", fmt.Errorf("enrollment: build HTTP client: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.RegisterURL, bytes.NewReader(body))
+	// --- Étape 1 : Initiation ---
+	challengeB64, serverPubKeyPEM, err := enrollStep1(ctx, client, cfg)
 	if err != nil {
-		return "", fmt.Errorf("enrollment: build request: %w", err)
+		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := client.Do(req)
+	// Déchiffrer le challenge (nonce) avec la clef privée de l'agent
+	nonce, err := decryptChallenge(challengeB64, cfg.PrivateKey)
 	if err != nil {
-		return "", fmt.Errorf("enrollment: POST %s: %w", cfg.RegisterURL, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		var errBody map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		return "", fmt.Errorf("enrollment: server rejected enrollment: HTTP %d %v", resp.StatusCode, errBody)
+		return "", err
 	}
 
-	var result enrollResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("enrollment: decode response: %w", err)
-	}
-
-	// Decode base64 ciphertext
-	ciphertext, err := base64.StdEncoding.DecodeString(result.TokenEncrypted)
+	// Parser la clef publique du serveur
+	serverPubKey, err := parsePublicKeyPEM(serverPubKeyPEM)
 	if err != nil {
-		return "", fmt.Errorf("enrollment: decode base64 token: %w", err)
+		return "", fmt.Errorf("enrollment: parse server public key: %w", err)
 	}
 
-	// Decrypt RSA-OAEP SHA-256 — matches server encryptWithPublicKey() (rsa.EncryptOAEP).
-	// Failure is fatal, no plaintext fallback (§HAUT-1bis).
-	jwtBytes, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, cfg.PrivateKey, ciphertext, nil)
+	// --- Étape 2 : Vérification ---
+	jwtEncryptedB64, err := enrollStep2(ctx, client, cfg, nonce, serverPubKey)
 	if err != nil {
-		return "", fmt.Errorf("enrollment: RSA-OAEP decrypt failed (key/token mismatch): %w", err)
+		return "", err
+	}
+
+	// Déchiffrer le JWT avec la clef privée de l'agent
+	jwtBytes, err := decryptJWT(jwtEncryptedB64, cfg.PrivateKey)
+	if err != nil {
+		return "", err
 	}
 	jwt := string(jwtBytes)
 
-	// Persist JWT with atomic 0600 creation
+	// Persister le JWT avec mode 0600 atomique
 	if cfg.JWTPath != "" {
 		if err := writeSecret(cfg.JWTPath, jwtBytes); err != nil {
 			return "", fmt.Errorf("enrollment: persist JWT: %w", err)
@@ -152,6 +153,172 @@ func Enroll(ctx context.Context, cfg Config) (string, error) {
 	}
 
 	return jwt, nil
+}
+
+// enrollStep1 exécute l'étape 1 du challenge-response :
+// POST /api/register {hostname, pubkey_pem, enrollment_token}
+// → {challenge, server_public_key_pem}
+func enrollStep1(ctx context.Context, client *http.Client, cfg Config) (challengeB64, serverPubKeyPEM string, err error) {
+	body, err := json.Marshal(step1Request{
+		Hostname:        cfg.Hostname,
+		PublicKeyPEM:    cfg.PublicKeyPEM,
+		EnrollmentToken: cfg.EnrollmentToken,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("enrollment step1: marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.RegisterURL, bytes.NewReader(body))
+	if err != nil {
+		return "", "", fmt.Errorf("enrollment step1: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("enrollment step1: POST %s: %w", cfg.RegisterURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errBody map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		return "", "", fmt.Errorf("enrollment step1: server rejected (HTTP %d): %v", resp.StatusCode, errBody)
+	}
+
+	var result step1Response
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", "", fmt.Errorf("enrollment step1: decode response: %w", err)
+	}
+	if result.Challenge == "" {
+		return "", "", errors.New("enrollment step1: server returned empty challenge")
+	}
+	if result.ServerPublicKey == "" {
+		return "", "", errors.New("enrollment step1: server returned empty server_public_key_pem")
+	}
+
+	return result.Challenge, result.ServerPublicKey, nil
+}
+
+// decryptChallenge déchiffre le challenge OAEP reçu du serveur avec la clef privée de l'agent.
+// Retourne le nonce en clair.
+func decryptChallenge(challengeB64 string, privKey *rsa.PrivateKey) ([]byte, error) {
+	ciphertext, err := base64.StdEncoding.DecodeString(challengeB64)
+	if err != nil {
+		return nil, fmt.Errorf("enrollment: decode base64 challenge: %w", err)
+	}
+
+	nonce, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("enrollment: RSA-OAEP decrypt challenge (key mismatch?): %w", err)
+	}
+
+	return nonce, nil
+}
+
+// enrollStep2 exécute l'étape 2 du challenge-response :
+// POST /api/register {hostname, response: OAEP(nonce+token, server_pubkey)}
+// → {jwt_encrypted}
+func enrollStep2(ctx context.Context, client *http.Client, cfg Config, nonce []byte, serverPubKey *rsa.PublicKey) (string, error) {
+	// Construire la réponse : nonce || enrollment_token (concatenation binaire)
+	plaintext := append(nonce, []byte(cfg.EnrollmentToken)...)
+
+	// Chiffrer avec la clef publique du serveur
+	ciphertext, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, serverPubKey, plaintext, nil)
+	if err != nil {
+		return "", fmt.Errorf("enrollment step2: encrypt response OAEP: %w", err)
+	}
+	responseB64 := base64.StdEncoding.EncodeToString(ciphertext)
+
+	body, err := json.Marshal(step2Request{
+		Hostname:          cfg.Hostname,
+		PublicKeyPEM:      cfg.PublicKeyPEM,
+		EnrollmentToken:   cfg.EnrollmentToken,
+		ChallengeResponse: responseB64,
+	})
+	if err != nil {
+		return "", fmt.Errorf("enrollment step2: marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.RegisterURL, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("enrollment step2: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("enrollment step2: POST %s: %w", cfg.RegisterURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errBody map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		return "", fmt.Errorf("enrollment step2: server rejected (HTTP %d): %v", resp.StatusCode, errBody)
+	}
+
+	var result step2Response
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("enrollment step2: decode response: %w", err)
+	}
+	if result.JWTEncrypted == "" {
+		return "", errors.New("enrollment step2: server returned empty jwt_encrypted")
+	}
+
+	return result.JWTEncrypted, nil
+}
+
+// decryptJWT déchiffre le jwt_encrypted OAEP reçu du serveur.
+// Retourne le JWT en clair.
+func decryptJWT(jwtEncryptedB64 string, privKey *rsa.PrivateKey) ([]byte, error) {
+	ciphertext, err := base64.StdEncoding.DecodeString(jwtEncryptedB64)
+	if err != nil {
+		return nil, fmt.Errorf("enrollment: decode base64 jwt_encrypted: %w", err)
+	}
+
+	jwtBytes, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("enrollment: RSA-OAEP decrypt JWT (key mismatch?): %w", err)
+	}
+
+	return jwtBytes, nil
+}
+
+// parsePublicKeyPEM parse une clef publique RSA au format PEM PKIX.
+func parsePublicKeyPEM(pemStr string) (*rsa.PublicKey, error) {
+	block, _ := pem.Decode([]byte(pemStr))
+	if block == nil {
+		return nil, errors.New("parse server pubkey: no PEM block found")
+	}
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse server pubkey: %w", err)
+	}
+	rsaPub, ok := pub.(*rsa.PublicKey)
+	if !ok {
+		return nil, errors.New("parse server pubkey: not an RSA public key")
+	}
+	return rsaPub, nil
+}
+
+// buildHTTPClient construit un client HTTP avec TLS vérifié.
+func buildHTTPClient(caBundle string, insecure bool, timeout time.Duration) (*http.Client, error) {
+	tlsCfg := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: insecure, //nolint:gosec // tests only, guarded by flag
+	}
+	if !insecure && caBundle != "" {
+		pool, err := loadCABundle(caBundle)
+		if err != nil {
+			return nil, fmt.Errorf("load CA bundle: %w", err)
+		}
+		tlsCfg.RootCAs = pool
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+	}, nil
 }
 
 // writeSecret écrit content dans path avec mode 0600 de façon atomique.

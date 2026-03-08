@@ -2,7 +2,10 @@
 //
 // ReEnroll est utilisé par le dispatcher WS dans deux cas (§22 ARCHITECTURE.md) :
 //   - Handler rekey : le serveur envoie un nouveau token_encrypted via WS
-//   - Reconnexion sur 401 : le JWT existant est rejeté, ré-enrôlement complet requis
+//   - Reconnexion sur 401 : le JWT est invalide, ré-enrôlement complet requis
+//
+// Le ré-enrôlement Phase 10 utilise le challenge-response OAEP à 2 étapes.
+// Le EnrollmentToken (RELAY_ENROLLMENT_TOKEN) est requis pour les deux cas.
 package enrollment
 
 import (
@@ -46,13 +49,13 @@ func DecryptAndSaveToken(tokenEncryptedB64 string, privKey *rsa.PrivateKey, jwtP
 	return jwt, nil
 }
 
-// ReEnroll effectue un enrollment complet (POST /api/register) en réutilisant
+// ReEnroll effectue un enrollment complet (challenge-response 2 étapes) en réutilisant
 // la clef privée RSA existante, puis persiste le nouveau JWT.
 //
-// Utilisé lors d'un 401 sur la connexion WS : le JWT est invalide mais la clef
-// publique de l'agent est toujours autorisée côté serveur.
+// Utilisé lors d'un 401 sur la connexion WS : le JWT est invalide mais le token
+// d'enrollment est toujours valide (ou permanent).
 //
-// Retourne le nouveau JWT ou une erreur si le serveur rejette (403 → clef non autorisée).
+// Retourne le nouveau JWT ou une erreur si le serveur rejette (403 → token invalide/expiré).
 func ReEnroll(ctx context.Context, cfg Config) (string, error) {
 	pubPEM, err := PublicKeyPEM(cfg.PrivateKey)
 	if err != nil {

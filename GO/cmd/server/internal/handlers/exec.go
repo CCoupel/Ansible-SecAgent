@@ -160,6 +160,11 @@ func pointerString(s string) *string {
 
 // POST /api/exec/{hostname} — Execute a command on a remote agent
 func ExecCommand(w http.ResponseWriter, r *http.Request) {
+	// Plugin token authentication (SECURITY.md §6)
+	if _, ok := requirePluginAuth(w, r); !ok {
+		return
+	}
+
 	hostname := r.PathValue("hostname")
 
 	// Verify agent is connected
@@ -242,6 +247,11 @@ func ExecCommand(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/upload/{hostname} — Transfer a file to a remote agent
 func UploadFile(w http.ResponseWriter, r *http.Request) {
+	// Plugin token authentication (SECURITY.md §6)
+	if _, ok := requirePluginAuth(w, r); !ok {
+		return
+	}
+
 	hostname := r.PathValue("hostname")
 
 	// Verify agent is connected
@@ -334,6 +344,11 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/fetch/{hostname} — Retrieve a file from a remote agent
 func FetchFile(w http.ResponseWriter, r *http.Request) {
+	// Plugin token authentication (SECURITY.md §6)
+	if _, ok := requirePluginAuth(w, r); !ok {
+		return
+	}
+
 	hostname := r.PathValue("hostname")
 
 	// Verify agent is connected

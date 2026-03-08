@@ -1,15 +1,50 @@
 package handlers
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"relay-server/cmd/server/internal/storage"
 )
+
+// inventoryTestToken is the plain-text plugin token used across inventory tests.
+const inventoryTestToken = "relay_plg_inventory_test_shared"
+
+// setupInventoryAuth initialises an in-memory store with a valid plugin token
+// and returns a helper that stamps requests with the bearer header.
+func setupInventoryAuth(t *testing.T) func(r *http.Request) *http.Request {
+	t.Helper()
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	h := sha256.Sum256([]byte(inventoryTestToken))
+	tok := storage.PluginToken{
+		ID:        "tok-inv-shared",
+		TokenHash: fmt.Sprintf("%x", h),
+		Role:      "plugin",
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.CreatePluginToken(context.Background(), tok); err != nil {
+		t.Fatalf("setupInventoryAuth: %v", err)
+	}
+
+	return func(r *http.Request) *http.Request {
+		r.Header.Set("Authorization", "Bearer "+inventoryTestToken)
+		r.RemoteAddr = "127.0.0.1:8080"
+		return r
+	}
+}
 
 // TestGetInventoryAll tests returning all agents
 func TestGetInventoryAll(t *testing.T) {
-	httpReq := httptest.NewRequest("GET", "/api/inventory", nil)
+	withAuth := setupInventoryAuth(t)
+	httpReq := withAuth(httptest.NewRequest("GET", "/api/inventory", nil))
 	w := httptest.NewRecorder()
 
 	GetInventory(w, httpReq)
@@ -37,7 +72,8 @@ func TestGetInventoryAll(t *testing.T) {
 
 // TestGetInventoryOnlyConnected tests filtering to connected agents only
 func TestGetInventoryOnlyConnected(t *testing.T) {
-	httpReq := httptest.NewRequest("GET", "/api/inventory?only_connected=true", nil)
+	withAuth := setupInventoryAuth(t)
+	httpReq := withAuth(httptest.NewRequest("GET", "/api/inventory?only_connected=true", nil))
 	w := httptest.NewRecorder()
 
 	GetInventory(w, httpReq)
@@ -59,7 +95,8 @@ func TestGetInventoryOnlyConnected(t *testing.T) {
 
 // TestGetInventoryOnlyConnectedFalse tests disabling the filter
 func TestGetInventoryOnlyConnectedFalse(t *testing.T) {
-	httpReq := httptest.NewRequest("GET", "/api/inventory?only_connected=false", nil)
+	withAuth := setupInventoryAuth(t)
+	httpReq := withAuth(httptest.NewRequest("GET", "/api/inventory?only_connected=false", nil))
 	w := httptest.NewRecorder()
 
 	GetInventory(w, httpReq)
@@ -79,7 +116,8 @@ func TestGetInventoryOnlyConnectedFalse(t *testing.T) {
 
 // TestGetInventoryInvalidOnlyConnected tests invalid boolean value
 func TestGetInventoryInvalidOnlyConnected(t *testing.T) {
-	httpReq := httptest.NewRequest("GET", "/api/inventory?only_connected=not-a-bool", nil)
+	withAuth := setupInventoryAuth(t)
+	httpReq := withAuth(httptest.NewRequest("GET", "/api/inventory?only_connected=not-a-bool", nil))
 	w := httptest.NewRecorder()
 
 	GetInventory(w, httpReq)
@@ -99,7 +137,8 @@ func TestGetInventoryInvalidOnlyConnected(t *testing.T) {
 
 // TestGetInventoryFormat tests the Ansible inventory format structure
 func TestGetInventoryFormat(t *testing.T) {
-	httpReq := httptest.NewRequest("GET", "/api/inventory", nil)
+	withAuth := setupInventoryAuth(t)
+	httpReq := withAuth(httptest.NewRequest("GET", "/api/inventory", nil))
 	w := httptest.NewRecorder()
 
 	GetInventory(w, httpReq)
@@ -136,7 +175,8 @@ func TestGetInventoryFormat(t *testing.T) {
 
 // TestGetInventoryHostVarsCompleteness tests all required fields are present
 func TestGetInventoryHostVarsCompleteness(t *testing.T) {
-	httpReq := httptest.NewRequest("GET", "/api/inventory", nil)
+	withAuth := setupInventoryAuth(t)
+	httpReq := withAuth(httptest.NewRequest("GET", "/api/inventory", nil))
 	w := httptest.NewRecorder()
 
 	GetInventory(w, httpReq)
@@ -169,7 +209,8 @@ func TestGetInventoryHostVarsCompleteness(t *testing.T) {
 
 // TestGetInventoryContentType tests response content type
 func TestGetInventoryContentType(t *testing.T) {
-	httpReq := httptest.NewRequest("GET", "/api/inventory", nil)
+	withAuth := setupInventoryAuth(t)
+	httpReq := withAuth(httptest.NewRequest("GET", "/api/inventory", nil))
 	w := httptest.NewRecorder()
 
 	GetInventory(w, httpReq)

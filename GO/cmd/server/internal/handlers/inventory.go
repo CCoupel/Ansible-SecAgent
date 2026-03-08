@@ -54,6 +54,10 @@ type InventoryResponse struct {
 // Query parameter: only_connected (bool) - filter to connected agents only
 // HTTP 200 - returns Ansible-compatible inventory JSON
 func GetInventory(w http.ResponseWriter, r *http.Request) {
+	// Plugin token authentication (SECURITY.md §6)
+	if _, ok := requirePluginAuth(w, r); !ok {
+		return
+	}
 	// Parse query parameter
 	onlyConnected := false
 	if connStr := r.URL.Query().Get("only_connected"); connStr != "" {
