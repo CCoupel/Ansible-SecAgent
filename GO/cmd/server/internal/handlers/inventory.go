@@ -50,19 +50,8 @@ type InventoryResponse struct {
 	} `json:"_meta"`
 }
 
-// GetInventory returns all enrolled agents in Ansible JSON inventory format
-// Query parameter: only_connected (bool) - filter to connected agents only
-// HTTP 200 - returns Ansible-compatible inventory JSON
-func GetInventory(w http.ResponseWriter, r *http.Request) {
-	// Parse query parameter
-	onlyConnected := false
-	if connStr := r.URL.Query().Get("only_connected"); connStr != "" {
-		if val, err := strconv.ParseBool(connStr); err == nil {
-			onlyConnected = val
-		}
-	}
-
-	// Build inventory from live WS connections
+// buildInventoryResponse constructs an InventoryResponse from the live WS registry.
+func buildInventoryResponse(onlyConnected bool) InventoryResponse {
 	connectedHosts := ws.GetConnectedHostnames()
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -71,9 +60,7 @@ func GetInventory(w http.ResponseWriter, r *http.Request) {
 	response.Meta.Hostvars = make(map[string]HostVars)
 
 	for _, hostname := range connectedHosts {
-		if onlyConnected {
-			// connected-only: all entries from WS registry are connected by definition
-		}
+		_ = onlyConnected // connected-only: all WS registry entries are connected by definition
 		response.All.Hosts = append(response.All.Hosts, hostname)
 		response.Meta.Hostvars[hostname] = HostVars{
 			AnsibleConnection: "relay",
@@ -82,10 +69,44 @@ func GetInventory(w http.ResponseWriter, r *http.Request) {
 			RelayLastSeen:     now,
 		}
 	}
+	return response
+}
 
-	log.Printf("Inventory requested: only_connected=%v count=%d",
-		onlyConnected, len(response.All.Hosts))
+// parseOnlyConnected reads the only_connected query parameter (default false).
+func parseOnlyConnected(r *http.Request) bool {
+	if connStr := r.URL.Query().Get("only_connected"); connStr != "" {
+		if val, err := strconv.ParseBool(connStr); err == nil {
+			return val
+		}
+	}
+	return false
+}
 
+// GetInventory returns all enrolled agents in Ansible JSON inventory format.
+// Authenticated by plugin token (port 7770 — used by Ansible connection plugin).
+// Query parameter: only_connected (bool) - filter to connected agents only.
+func GetInventory(w http.ResponseWriter, r *http.Request) {
+	// Plugin token authentication (SECURITY.md §6)
+	if _, ok := requirePluginAuth(w, r); !ok {
+		return
+	}
+	onlyConnected := parseOnlyConnected(r)
+	response := buildInventoryResponse(onlyConnected)
+	log.Printf("Inventory requested: only_connected=%v count=%d", onlyConnected, len(response.All.Hosts))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+// AdminGetInventory returns the same inventory but authenticated by admin token.
+// Used by the CLI `inventory list` command via port 7771 (admin port).
+func AdminGetInventory(w http.ResponseWriter, r *http.Request) {
+	if !requireAdminAuth(w, r) {
+		return
+	}
+	onlyConnected := parseOnlyConnected(r)
+	response := buildInventoryResponse(onlyConnected)
+	log.Printf("Admin inventory requested: only_connected=%v count=%d", onlyConnected, len(response.All.Hosts))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(response)

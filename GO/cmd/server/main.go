@@ -34,7 +34,7 @@ func isCLIMode() bool {
 	}
 	// Known CLI top-level commands
 	switch first {
-	case "minions", "security", "inventory", "server", "help", "completion":
+	case "minions", "security", "inventory", "server", "tokens", "help", "completion":
 		return true
 	}
 	return false
@@ -163,6 +163,16 @@ func main() {
 	adminRouter.HandleFunc("GET /api/admin/security/tokens", handlers.AdminSecurityTokens)
 	adminRouter.HandleFunc("GET /api/admin/security/blacklist", handlers.AdminSecurityBlacklist)
 	adminRouter.HandleFunc("POST /api/admin/security/blacklist/purge", handlers.AdminSecurityBlacklistPurge)
+
+	// Inventory (admin CLI access via port 7771 — same data as /api/inventory on 7770)
+	adminRouter.HandleFunc("GET /api/inventory", handlers.AdminGetInventory)
+
+	// Enrollment + plugin tokens (Phase 10)
+	adminRouter.HandleFunc("POST /api/admin/tokens", handlers.AdminCreateToken)
+	adminRouter.HandleFunc("GET /api/admin/tokens", handlers.AdminListTokens)
+	adminRouter.HandleFunc("POST /api/admin/tokens/{id}/revoke", handlers.AdminRevokeToken)
+	adminRouter.HandleFunc("DELETE /api/admin/tokens/{id}", handlers.AdminDeleteToken)
+	adminRouter.HandleFunc("POST /api/admin/tokens/purge", handlers.AdminPurgeTokens)
 
 	// Server status / stats
 	adminRouter.HandleFunc("GET /api/admin/status", handlers.AdminStatus)

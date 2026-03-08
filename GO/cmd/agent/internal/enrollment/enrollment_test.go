@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -26,30 +27,123 @@ func generateTestKey(t *testing.T) *rsa.PrivateKey {
 	return key
 }
 
-// mockEnrollServer creates an httptest.Server that simulates the relay server enrollment endpoint.
-// It encrypts a JWT with the agent's public key and returns it.
-func mockEnrollServer(t *testing.T, agentPubKey *rsa.PublicKey, jwt string, statusCode int) *httptest.Server {
+// mockEnrollServer simulates the relay server challenge-response enrollment endpoint.
+// It implements the 2-step protocol:
+//   - POST with enrollment_token → {challenge, server_public_key_pem}
+//   - POST with response → {jwt_encrypted}
+func mockEnrollServer(t *testing.T, agentPubKey *rsa.PublicKey, serverKey *rsa.PrivateKey, jwt string, step1StatusCode int) *httptest.Server {
 	t.Helper()
+
+	var pendingNonce []byte
+
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if statusCode != http.StatusOK {
-			w.WriteHeader(statusCode)
-			json.NewEncoder(w).Encode(map[string]string{"error": "rejected"})
+		var body map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("mock server: decode body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 
-		// Encrypt the JWT with agent's public key using RSA-OAEP SHA-256
-		ciphertext, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, agentPubKey, []byte(jwt), nil)
-		if err != nil {
-			t.Errorf("mock server: encrypt JWT: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
+		// Determine step by presence of "challenge_response" (step2) first
+		if _, hasResponse := body["challenge_response"]; hasResponse {
+			// Step 2 : verification
+			var responseB64 string
+			json.Unmarshal(body["challenge_response"], &responseB64)
+
+			// Decrypt response with server private key
+			ciphertext, err := base64.StdEncoding.DecodeString(responseB64)
+			if err != nil {
+				t.Errorf("mock server: decode response base64: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			plaintext, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, serverKey, ciphertext, nil)
+			if err != nil {
+				t.Errorf("mock server: decrypt response: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+
+			// Verify nonce prefix
+			if len(plaintext) < len(pendingNonce) {
+				t.Errorf("mock server: response plaintext too short")
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			for i, b := range pendingNonce {
+				if plaintext[i] != b {
+					t.Errorf("mock server: nonce mismatch at byte %d", i)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+			}
+
+			// Encrypt JWT with agent public key
+			jwtCiphertext, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, agentPubKey, []byte(jwt), nil)
+			if err != nil {
+				t.Errorf("mock server: encrypt JWT: %v", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			jwtEncryptedB64 := base64.StdEncoding.EncodeToString(jwtCiphertext)
+
+			json.NewEncoder(w).Encode(map[string]string{
+				"jwt_encrypted": jwtEncryptedB64,
+			})
+
+		} else if _, hasToken := body["enrollment_token"]; hasToken {
+			// Step 1 : initiation
+			if step1StatusCode != http.StatusOK {
+				w.WriteHeader(step1StatusCode)
+				json.NewEncoder(w).Encode(map[string]string{"error": "rejected"})
+				return
+			}
+
+			// Generate nonce
+			nonce := make([]byte, 32)
+			if _, err := rand.Read(nonce); err != nil {
+				t.Errorf("mock server: generate nonce: %v", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			pendingNonce = nonce
+
+			// Encrypt nonce with agent public key
+			challengeCiphertext, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, agentPubKey, nonce, nil)
+			if err != nil {
+				t.Errorf("mock server: encrypt challenge: %v", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			challengeB64 := base64.StdEncoding.EncodeToString(challengeCiphertext)
+
+			// Serialize server public key
+			serverPubPEM, err := publicKeyToPEM(&serverKey.PublicKey)
+			if err != nil {
+				t.Errorf("mock server: serialize server pubkey: %v", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			json.NewEncoder(w).Encode(map[string]string{
+				"challenge":            challengeB64,
+				"server_public_key_pem": serverPubPEM,
+			})
+
+		} else {
+			t.Errorf("mock server: unexpected request body (no enrollment_token or challenge_response)")
+			w.WriteHeader(http.StatusBadRequest)
 		}
-		encoded := base64.StdEncoding.EncodeToString(ciphertext)
-		json.NewEncoder(w).Encode(map[string]string{
-			"token_encrypted":      encoded,
-			"server_public_key_pem": "dummy-server-key",
-		})
 	}))
+}
+
+// publicKeyToPEM serializes an RSA public key to PEM PKIX.
+func publicKeyToPEM(pub *rsa.PublicKey) (string, error) {
+	pubPEM, err := PublicKeyPEM(&rsa.PrivateKey{PublicKey: *pub})
+	if err != nil {
+		return "", err
+	}
+	return pubPEM, nil
 }
 
 // ========================================================================
@@ -57,24 +151,26 @@ func mockEnrollServer(t *testing.T, agentPubKey *rsa.PublicKey, jwt string, stat
 // ========================================================================
 
 func TestEnrollSuccess(t *testing.T) {
-	key := generateTestKey(t)
+	agentKey := generateTestKey(t)
+	serverKey := generateTestKey(t)
 	expectedJWT := "eyJhbGciOiJSUzI1NiJ9.test.payload"
 
-	srv := mockEnrollServer(t, &key.PublicKey, expectedJWT, http.StatusOK)
+	srv := mockEnrollServer(t, &agentKey.PublicKey, serverKey, expectedJWT, http.StatusOK)
 	defer srv.Close()
 
-	pubPEM, err := PublicKeyPEM(key)
+	pubPEM, err := PublicKeyPEM(agentKey)
 	if err != nil {
 		t.Fatalf("PublicKeyPEM: %v", err)
 	}
 
 	jwt, err := Enroll(context.Background(), Config{
-		RegisterURL:  srv.URL + "/api/register",
-		Hostname:     "test-agent",
-		PublicKeyPEM: pubPEM,
-		PrivateKey:   key,
-		Timeout:      5 * time.Second,
-		Insecure:     true,
+		RegisterURL:     srv.URL + "/api/register",
+		Hostname:        "test-agent",
+		PublicKeyPEM:    pubPEM,
+		PrivateKey:      agentKey,
+		EnrollmentToken: "relay_enr_test123",
+		Timeout:         5 * time.Second,
+		Insecure:        true,
 	})
 	if err != nil {
 		t.Fatalf("Enroll: %v", err)
@@ -85,23 +181,25 @@ func TestEnrollSuccess(t *testing.T) {
 }
 
 func TestEnrollPersistsJWT(t *testing.T) {
-	key := generateTestKey(t)
+	agentKey := generateTestKey(t)
+	serverKey := generateTestKey(t)
 	dir := t.TempDir()
 	jwtPath := filepath.Join(dir, "token.jwt")
 	expectedJWT := "test-jwt-token"
 
-	srv := mockEnrollServer(t, &key.PublicKey, expectedJWT, http.StatusOK)
+	srv := mockEnrollServer(t, &agentKey.PublicKey, serverKey, expectedJWT, http.StatusOK)
 	defer srv.Close()
 
-	pubPEM, _ := PublicKeyPEM(key)
+	pubPEM, _ := PublicKeyPEM(agentKey)
 	_, err := Enroll(context.Background(), Config{
-		RegisterURL:  srv.URL + "/api/register",
-		Hostname:     "test-agent",
-		PublicKeyPEM: pubPEM,
-		PrivateKey:   key,
-		JWTPath:      jwtPath,
-		Timeout:      5 * time.Second,
-		Insecure:     true,
+		RegisterURL:     srv.URL + "/api/register",
+		Hostname:        "test-agent",
+		PublicKeyPEM:    pubPEM,
+		PrivateKey:      agentKey,
+		EnrollmentToken: "relay_enr_test123",
+		JWTPath:         jwtPath,
+		Timeout:         5 * time.Second,
+		Insecure:        true,
 	})
 	if err != nil {
 		t.Fatalf("Enroll: %v", err)
@@ -121,22 +219,24 @@ func TestEnrollJWTFileMode(t *testing.T) {
 		t.Skip("file mode check skipped on Windows/CI")
 	}
 
-	key := generateTestKey(t)
+	agentKey := generateTestKey(t)
+	serverKey := generateTestKey(t)
 	dir := t.TempDir()
 	jwtPath := filepath.Join(dir, "token.jwt")
 
-	srv := mockEnrollServer(t, &key.PublicKey, "jwt", http.StatusOK)
+	srv := mockEnrollServer(t, &agentKey.PublicKey, serverKey, "jwt", http.StatusOK)
 	defer srv.Close()
 
-	pubPEM, _ := PublicKeyPEM(key)
+	pubPEM, _ := PublicKeyPEM(agentKey)
 	_, err := Enroll(context.Background(), Config{
-		RegisterURL:  srv.URL + "/api/register",
-		Hostname:     "test-agent",
-		PublicKeyPEM: pubPEM,
-		PrivateKey:   key,
-		JWTPath:      jwtPath,
-		Timeout:      5 * time.Second,
-		Insecure:     true,
+		RegisterURL:     srv.URL + "/api/register",
+		Hostname:        "test-agent",
+		PublicKeyPEM:    pubPEM,
+		PrivateKey:      agentKey,
+		EnrollmentToken: "relay_enr_test123",
+		JWTPath:         jwtPath,
+		Timeout:         5 * time.Second,
+		Insecure:        true,
 	})
 	if err != nil {
 		t.Fatalf("Enroll: %v", err)
@@ -152,19 +252,22 @@ func TestEnrollJWTFileMode(t *testing.T) {
 }
 
 func TestEnrollNoJWTPath(t *testing.T) {
-	key := generateTestKey(t)
-	srv := mockEnrollServer(t, &key.PublicKey, "jwt-no-persist", http.StatusOK)
+	agentKey := generateTestKey(t)
+	serverKey := generateTestKey(t)
+
+	srv := mockEnrollServer(t, &agentKey.PublicKey, serverKey, "jwt-no-persist", http.StatusOK)
 	defer srv.Close()
 
-	pubPEM, _ := PublicKeyPEM(key)
+	pubPEM, _ := PublicKeyPEM(agentKey)
 	jwt, err := Enroll(context.Background(), Config{
-		RegisterURL:  srv.URL + "/api/register",
-		Hostname:     "test-agent",
-		PublicKeyPEM: pubPEM,
-		PrivateKey:   key,
-		JWTPath:      "", // no persistence
-		Timeout:      5 * time.Second,
-		Insecure:     true,
+		RegisterURL:     srv.URL + "/api/register",
+		Hostname:        "test-agent",
+		PublicKeyPEM:    pubPEM,
+		PrivateKey:      agentKey,
+		EnrollmentToken: "relay_enr_test123",
+		JWTPath:         "", // no persistence
+		Timeout:         5 * time.Second,
+		Insecure:        true,
 	})
 	if err != nil {
 		t.Fatalf("Enroll without JWTPath: %v", err)
@@ -180,71 +283,71 @@ func TestEnrollNoJWTPath(t *testing.T) {
 
 func TestEnrollMissingPrivateKey(t *testing.T) {
 	_, err := Enroll(context.Background(), Config{
-		RegisterURL:  "http://localhost:9999/api/register",
-		Hostname:     "test-agent",
-		PublicKeyPEM: "pem",
-		PrivateKey:   nil, // missing
+		RegisterURL:     "http://localhost:9999/api/register",
+		Hostname:        "test-agent",
+		PublicKeyPEM:    "pem",
+		PrivateKey:      nil, // missing
+		EnrollmentToken: "relay_enr_test",
 	})
 	if err == nil {
 		t.Error("expected error for nil private key")
 	}
 }
 
-func TestEnrollServerRejects(t *testing.T) {
+func TestEnrollMissingEnrollmentToken(t *testing.T) {
 	key := generateTestKey(t)
-	srv := mockEnrollServer(t, &key.PublicKey, "", http.StatusForbidden)
+	_, err := Enroll(context.Background(), Config{
+		RegisterURL:     "http://localhost:9999/api/register",
+		Hostname:        "test-agent",
+		PublicKeyPEM:    "pem",
+		PrivateKey:      key,
+		EnrollmentToken: "", // missing
+	})
+	if err == nil {
+		t.Error("expected error for empty enrollment token")
+	}
+	if !strings.Contains(err.Error(), "RELAY_ENROLLMENT_TOKEN") {
+		t.Errorf("error should mention RELAY_ENROLLMENT_TOKEN, got: %v", err)
+	}
+}
+
+func TestEnrollStep1Rejected403(t *testing.T) {
+	agentKey := generateTestKey(t)
+	serverKey := generateTestKey(t)
+	srv := mockEnrollServer(t, &agentKey.PublicKey, serverKey, "", http.StatusForbidden)
 	defer srv.Close()
 
-	pubPEM, _ := PublicKeyPEM(key)
+	pubPEM, _ := PublicKeyPEM(agentKey)
 	_, err := Enroll(context.Background(), Config{
-		RegisterURL:  srv.URL + "/api/register",
-		Hostname:     "test-agent",
-		PublicKeyPEM: pubPEM,
-		PrivateKey:   key,
-		Timeout:      5 * time.Second,
-		Insecure:     true,
+		RegisterURL:     srv.URL + "/api/register",
+		Hostname:        "test-agent",
+		PublicKeyPEM:    pubPEM,
+		PrivateKey:      agentKey,
+		EnrollmentToken: "relay_enr_expired",
+		Timeout:         5 * time.Second,
+		Insecure:        true,
 	})
 	if err == nil {
 		t.Error("expected error for 403 response")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("error should contain 403, got: %v", err)
 	}
 }
 
 func TestEnrollServerUnreachable(t *testing.T) {
 	key := generateTestKey(t)
 	_, err := Enroll(context.Background(), Config{
-		RegisterURL:  "http://127.0.0.1:1/api/register",
-		Hostname:     "test-agent",
-		PublicKeyPEM: "pem",
-		PrivateKey:   key,
-		Timeout:      1 * time.Second,
-		Insecure:     true,
+		RegisterURL:     "http://127.0.0.1:1/api/register",
+		Hostname:        "test-agent",
+		PublicKeyPEM:    "pem",
+		PrivateKey:      key,
+		EnrollmentToken: "relay_enr_test",
+		Timeout:         1 * time.Second,
+		Insecure:        true,
 	})
 	if err == nil {
 		t.Error("expected error for unreachable server")
-	}
-}
-
-func TestEnrollBadBase64Token(t *testing.T) {
-	key := generateTestKey(t)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]string{
-			"token_encrypted": "!!! not base64 !!!",
-		})
-	}))
-	defer srv.Close()
-
-	pubPEM, _ := PublicKeyPEM(key)
-	_, err := Enroll(context.Background(), Config{
-		RegisterURL:  srv.URL + "/api/register",
-		Hostname:     "test-agent",
-		PublicKeyPEM: pubPEM,
-		PrivateKey:   key,
-		Timeout:      5 * time.Second,
-		Insecure:     true,
-	})
-	if err == nil {
-		t.Error("expected error for invalid base64 token")
 	}
 }
 
@@ -255,12 +358,13 @@ func TestEnrollContextCancelled(t *testing.T) {
 
 	pubPEM, _ := PublicKeyPEM(key)
 	_, err := Enroll(ctx, Config{
-		RegisterURL:  "http://127.0.0.1:1/api/register",
-		Hostname:     "test-agent",
-		PublicKeyPEM: pubPEM,
-		PrivateKey:   key,
-		Timeout:      5 * time.Second,
-		Insecure:     true,
+		RegisterURL:     "http://127.0.0.1:1/api/register",
+		Hostname:        "test-agent",
+		PublicKeyPEM:    pubPEM,
+		PrivateKey:      key,
+		EnrollmentToken: "relay_enr_test",
+		Timeout:         5 * time.Second,
+		Insecure:        true,
 	})
 	if err == nil {
 		t.Error("expected error for cancelled context")
@@ -268,22 +372,94 @@ func TestEnrollContextCancelled(t *testing.T) {
 }
 
 func TestEnrollDefaultTimeout(t *testing.T) {
-	key := generateTestKey(t)
-	srv := mockEnrollServer(t, &key.PublicKey, "jwt", http.StatusOK)
+	agentKey := generateTestKey(t)
+	serverKey := generateTestKey(t)
+	srv := mockEnrollServer(t, &agentKey.PublicKey, serverKey, "jwt", http.StatusOK)
 	defer srv.Close()
 
-	pubPEM, _ := PublicKeyPEM(key)
+	pubPEM, _ := PublicKeyPEM(agentKey)
 	// Timeout=0 → uses 30s default
 	_, err := Enroll(context.Background(), Config{
-		RegisterURL:  srv.URL + "/api/register",
-		Hostname:     "test-agent",
-		PublicKeyPEM: pubPEM,
-		PrivateKey:   key,
-		Timeout:      0,
-		Insecure:     true,
+		RegisterURL:     srv.URL + "/api/register",
+		Hostname:        "test-agent",
+		PublicKeyPEM:    pubPEM,
+		PrivateKey:      agentKey,
+		EnrollmentToken: "relay_enr_test",
+		Timeout:         0,
+		Insecure:        true,
 	})
 	if err != nil {
 		t.Fatalf("Enroll with default timeout: %v", err)
+	}
+}
+
+// TestEnrollChallengeDecryptFailure tests that if the challenge cannot be decrypted
+// (wrong key), enrollment fails properly.
+func TestEnrollChallengeDecryptFailure(t *testing.T) {
+	agentKey := generateTestKey(t)
+	serverKey := generateTestKey(t)
+	wrongKey := generateTestKey(t) // wrong key — cannot decrypt challenge
+
+	srv := mockEnrollServer(t, &agentKey.PublicKey, serverKey, "jwt", http.StatusOK)
+	defer srv.Close()
+
+	pubPEM, _ := PublicKeyPEM(agentKey)
+	_, err := Enroll(context.Background(), Config{
+		RegisterURL:     srv.URL + "/api/register",
+		Hostname:        "test-agent",
+		PublicKeyPEM:    pubPEM,
+		PrivateKey:      wrongKey, // wrong key
+		EnrollmentToken: "relay_enr_test",
+		Timeout:         5 * time.Second,
+		Insecure:        true,
+	})
+	if err == nil {
+		t.Error("expected error when decrypting challenge with wrong key")
+	}
+}
+
+// TestEnrollStep2BadResponse tests that a bad step2 response (empty jwt_encrypted) is rejected.
+func TestEnrollStep2BadResponse(t *testing.T) {
+	agentKey := generateTestKey(t)
+	serverKey := generateTestKey(t)
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var body map[string]json.RawMessage
+		json.NewDecoder(r.Body).Decode(&body)
+
+		if _, hasToken := body["enrollment_token"]; hasToken {
+			// Step 1: return valid challenge
+			nonce := make([]byte, 32)
+			rand.Read(nonce)
+			ct, _ := rsa.EncryptOAEP(sha256.New(), rand.Reader, &agentKey.PublicKey, nonce, nil)
+			serverPubPEM, _ := PublicKeyPEM(serverKey)
+			json.NewEncoder(w).Encode(map[string]string{
+				"challenge":            base64.StdEncoding.EncodeToString(ct),
+				"server_public_key_pem": serverPubPEM,
+			})
+		} else {
+			// Step 2: return empty jwt_encrypted
+			json.NewEncoder(w).Encode(map[string]string{
+				"jwt_encrypted": "",
+			})
+		}
+	}))
+	defer srv.Close()
+
+	pubPEM, _ := PublicKeyPEM(agentKey)
+	_, err := Enroll(context.Background(), Config{
+		RegisterURL:     srv.URL + "/api/register",
+		Hostname:        "test-agent",
+		PublicKeyPEM:    pubPEM,
+		PrivateKey:      agentKey,
+		EnrollmentToken: "relay_enr_test",
+		Timeout:         5 * time.Second,
+		Insecure:        true,
+	})
+	if err == nil {
+		t.Error("expected error for empty jwt_encrypted in step2")
 	}
 }
 
@@ -400,6 +576,33 @@ func TestLoadPrivateKeyFromFileInvalidKey(t *testing.T) {
 }
 
 // ========================================================================
+// parsePublicKeyPEM
+// ========================================================================
+
+func TestParsePublicKeyPEM(t *testing.T) {
+	key := generateTestKey(t)
+	pubPEM, err := PublicKeyPEM(key)
+	if err != nil {
+		t.Fatalf("PublicKeyPEM: %v", err)
+	}
+
+	parsed, err := parsePublicKeyPEM(pubPEM)
+	if err != nil {
+		t.Fatalf("parsePublicKeyPEM: %v", err)
+	}
+	if parsed.N.Cmp(key.N) != 0 {
+		t.Error("parsed public key does not match original")
+	}
+}
+
+func TestParsePublicKeyPEMInvalid(t *testing.T) {
+	_, err := parsePublicKeyPEM("not a PEM")
+	if err == nil {
+		t.Error("expected error for invalid PEM")
+	}
+}
+
+// ========================================================================
 // writeSecret
 // ========================================================================
 
@@ -455,20 +658,79 @@ func TestWriteSecretOverwrites(t *testing.T) {
 func TestConfigFields(t *testing.T) {
 	key := generateTestKey(t)
 	cfg := Config{
-		RegisterURL:  "https://relay.example.com/api/register",
-		Hostname:     "my-agent",
-		PublicKeyPEM: "pem",
-		PrivateKey:   key,
-		CABundle:     "/etc/ssl/certs/ca.pem",
-		JWTPath:      "/etc/relay-agent/token.jwt",
-		Timeout:      30 * time.Second,
-		Insecure:     false,
+		RegisterURL:     "https://relay.example.com/api/register",
+		Hostname:        "my-agent",
+		PublicKeyPEM:    "pem",
+		PrivateKey:      key,
+		EnrollmentToken: "relay_enr_abc123",
+		CABundle:        "/etc/ssl/certs/ca.pem",
+		JWTPath:         "/etc/relay-agent/token.jwt",
+		Timeout:         30 * time.Second,
+		Insecure:        false,
 	}
 	if cfg.Hostname != "my-agent" {
 		t.Error("Hostname not preserved")
 	}
 	if cfg.Insecure {
 		t.Error("Insecure should be false")
+	}
+	if cfg.EnrollmentToken != "relay_enr_abc123" {
+		t.Error("EnrollmentToken not preserved")
+	}
+}
+
+// ========================================================================
+// decryptChallenge
+// ========================================================================
+
+func TestDecryptChallenge(t *testing.T) {
+	agentKey := generateTestKey(t)
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+
+	// Encrypt nonce with agent public key (simulates server)
+	ct, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, &agentKey.PublicKey, nonce, nil)
+	if err != nil {
+		t.Fatalf("encrypt challenge: %v", err)
+	}
+	challengeB64 := base64.StdEncoding.EncodeToString(ct)
+
+	// Decrypt
+	decrypted, err := decryptChallenge(challengeB64, agentKey)
+	if err != nil {
+		t.Fatalf("decryptChallenge: %v", err)
+	}
+
+	if len(decrypted) != len(nonce) {
+		t.Fatalf("decrypted length: got %d, want %d", len(decrypted), len(nonce))
+	}
+	for i := range nonce {
+		if decrypted[i] != nonce[i] {
+			t.Errorf("decrypted nonce mismatch at byte %d", i)
+		}
+	}
+}
+
+func TestDecryptChallengeWrongKey(t *testing.T) {
+	agentKey := generateTestKey(t)
+	wrongKey := generateTestKey(t)
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+
+	ct, _ := rsa.EncryptOAEP(sha256.New(), rand.Reader, &agentKey.PublicKey, nonce, nil)
+	challengeB64 := base64.StdEncoding.EncodeToString(ct)
+
+	_, err := decryptChallenge(challengeB64, wrongKey)
+	if err == nil {
+		t.Error("expected error when decrypting with wrong key")
+	}
+}
+
+func TestDecryptChallengeInvalidBase64(t *testing.T) {
+	key := generateTestKey(t)
+	_, err := decryptChallenge("!!! not base64 !!!", key)
+	if err == nil {
+		t.Error("expected error for invalid base64")
 	}
 }
 

@@ -170,6 +170,11 @@ type EnrollConfig struct {
 	PrivateKey *rsa.PrivateKey
 	// JWTPath est le chemin de stockage du JWT persisté.
 	JWTPath string
+	// EnrollmentToken est le token d'enrollment (RELAY_ENROLLMENT_TOKEN) — requis Phase 10.
+	// JAMAIS loggé en clair.
+	EnrollmentToken string
+	// Insecure désactive la vérification TLS (tests uniquement).
+	Insecure bool
 	// MaxRetries est le nombre max de tentatives de ré-enrôlement avant abandon (défaut: 3).
 	MaxRetries int
 }
