@@ -109,14 +109,29 @@ class ConnectionPlugin(ConnectionBase):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _get_opt(self, name, env_var, default=""):
+        """Get option via get_option() with fallback to env var and default.
+
+        Ansible 2.19 may not register plugin config definitions for custom
+        plugins loaded via ansible.cfg paths, causing get_option() to raise
+        AnsibleUndefinedConfigEntry. This fallback ensures the plugin works.
+        """
+        try:
+            val = self.get_option(name)
+            if val is not None:
+                return val
+        except (KeyError, Exception):
+            pass
+        return os.environ.get(env_var, default)
+
     def _relay_server(self):
-        return self.get_option("relay_server").rstrip("/")
+        return self._get_opt("relay_server", "RELAY_SERVER_URL", "http://localhost:7770").rstrip("/")
 
     def _relay_token_file(self):
-        return self.get_option("relay_token_file")
+        return self._get_opt("relay_token_file", "RELAY_TOKEN_FILE", "/tmp/relay_token.jwt")
 
     def _relay_ca_bundle(self):
-        return self.get_option("relay_ca_bundle")
+        return self._get_opt("relay_ca_bundle", "RELAY_CA_BUNDLE", "")
 
     def _headers(self):
         token = self._load_jwt()
@@ -126,7 +141,7 @@ class ConnectionPlugin(ConnectionBase):
         return h
 
     def _timeout(self):
-        return int(self.get_option("relay_timeout"))
+        return int(self._get_opt("relay_timeout", "RELAY_TIMEOUT", "30"))
 
     def _hostname(self):
         return self._play_context.remote_addr
@@ -237,12 +252,11 @@ class ConnectionPlugin(ConnectionBase):
 
         hostname = self._hostname()
         payload = {
-            "hostname": hostname,
-            "command": cmd,
+            "cmd": cmd,
             "stdin": (in_data or b"").decode("utf-8", errors="replace"),
         }
 
-        result = self._post_relay("/api/exec", payload)
+        result = self._post_relay(f"/api/exec/{hostname}", payload)
 
         rc = int(result.get("rc", 1))
         stdout = result.get("stdout", "").encode("utf-8")
@@ -269,13 +283,12 @@ class ConnectionPlugin(ConnectionBase):
             )
 
         payload = {
-            "hostname": hostname,
             "dest": out_path,
             "data": base64.b64encode(data).decode("ascii"),
             "mode": "0644",
         }
 
-        result = self._post_relay("/api/upload", payload)
+        result = self._post_relay(f"/api/upload/{hostname}", payload)
         if int(result.get("rc", 1)) != 0:
             raise AnsibleError(
                 f"put_file failed on remote host: {result.get('stderr', '')}"
@@ -289,11 +302,10 @@ class ConnectionPlugin(ConnectionBase):
         display.vvv(f"RELAY: fetch_file {in_path} → {out_path}", host=hostname)
 
         payload = {
-            "hostname": hostname,
             "src": in_path,
         }
 
-        result = self._post_relay("/api/fetch", payload)
+        result = self._post_relay(f"/api/fetch/{hostname}", payload)
 
         if int(result.get("rc", 1)) != 0:
             raise AnsibleError(

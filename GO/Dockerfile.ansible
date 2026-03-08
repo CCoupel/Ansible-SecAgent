@@ -65,6 +65,7 @@ RUN pip install --no-cache-dir \
     jinja2 \
     netaddr \
     requests \
+    httpx \
     paramiko \
     cryptography
 
