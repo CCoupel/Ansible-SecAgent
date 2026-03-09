@@ -187,7 +187,17 @@ h2.section-title span { color: var(--rh-red); }
   font-size: 0.95rem; font-weight: 600;
   margin-bottom: 0.4rem; color: var(--text-primary);
 }
-.problem-card p { font-size: 0.85rem; color: var(--text-secondary); }
+.problem-card h3 {
+  font-size: 0.95rem; font-weight: 600;
+  margin-bottom: 0.5rem; color: var(--text-primary);
+}
+.problem-card p { font-size: 0.85rem; color: var(--text-secondary); line-height: 1.6; }
+.problem-quote {
+  font-style: italic; font-size: 0.82rem;
+  color: var(--text-muted);
+  border-left: 2px solid var(--rh-red);
+  padding-left: 0.7rem; margin-top: 0.75rem;
+}
 
 /* ── DEPLOY MODES ── */
 .deploy-grid {

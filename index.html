@@ -53,38 +53,70 @@
 <section id="problem">
   <div class="container">
     <span class="section-tag" data-i18n="problem.tag">Le problème</span>
-    <h2 data-i18n="problem.title">SSH entrant : un modèle qui montre ses limites</h2>
+    <h2 data-i18n="problem.title">8 risques que vous prenez à chaque playbook</h2>
     <p class="section-lead" data-i18n="problem.lead">
-      Ansible repose sur SSH : le Control Node doit joindre chaque hôte sur le port 22.
-      Ce modèle bloque sur les infrastructures modernes — et pose un risque sécurité souvent sous-estimé.
+      Ansible est un outil remarquable. Mais son modèle SSH classique crée des angles morts sécurité
+      et des dettes opérationnelles que la plupart des équipes découvrent trop tard.
     </p>
 
     <div class="problem-grid">
+
       <div class="problem-card">
-        <div class="icon">🔒</div>
-        <h3 data-i18n="problem.nat.title">NAT / Firewall</h3>
-        <p data-i18n="problem.nat.body">Les hôtes en réseau privé n'ont pas de port 22 accessible depuis l'extérieur. Ouvrir ce port représente une surface d'attaque inacceptable en 2025.</p>
+        <div class="icon">💥</div>
+        <h3 data-i18n="problem.blast.title">Une machine compromise, toute votre infra exposée</h3>
+        <p data-i18n="problem.blast.body">Votre Control Node centralise les accès SSH à <em>tous</em> vos hôtes. Un token CI/CD leaké, une dépendance malveillante, un accès mal révoqué — et c'est l'ensemble de votre parc qui est à portée d'un attaquant. En une seule étape. Sans alarme.</p>
+        <p class="problem-quote" data-i18n="problem.blast.quote">La surface d'attaque croît linéairement avec la taille de votre infra.</p>
       </div>
+
       <div class="problem-card">
-        <div class="icon">🏭</div>
-        <h3 data-i18n="problem.dmz.title">DMZ / Cloud privé</h3>
-        <p data-i18n="problem.dmz.body">Les politiques de sécurité interdisent les connexions entrantes dans les DMZ. Les flux de contrôle doivent partir de l'intérieur, pas de l'extérieur.</p>
+        <div class="icon">🔑</div>
+        <h3 data-i18n="problem.revoke.title">Révoquer une clef SSH : une urgence à 3h du matin</h3>
+        <p data-i18n="problem.revoke.body">Une clef volée. L'horloge tourne. Vous devez la supprimer sur 300 hôtes, maintenant. Avec SSH classique, c'est une opération manuelle, hôte par hôte, qui prend des heures — sans blacklist centrale, sans expiration automatique.</p>
+        <p class="problem-quote" data-i18n="problem.revoke.quote">La rotation de clefs n'est pas un événement planifié. C'est une urgence.</p>
       </div>
+
+      <div class="problem-card">
+        <div class="icon">📋</div>
+        <h3 data-i18n="problem.audit.title">Qui a lancé quoi, sur quoi, et quand ?</h3>
+        <p data-i18n="problem.audit.body">Ansible n'a pas de log d'audit centralisé. Les traces restent sur le Control Node — modifiables, supprimables. En cas d'incident ou de contrôle ISO 27001, NIS2 ou SOC2, vous ne pouvez pas prouver qu'une configuration a été appliquée, ni par qui.</p>
+        <p class="problem-quote" data-i18n="problem.audit.quote">L'auditeur pose la question. Vous cherchez dans des logs dispersés sur plusieurs machines.</p>
+      </div>
+
+      <div class="problem-card">
+        <div class="icon">🚪</div>
+        <h3 data-i18n="problem.rbac.title">Tout le monde peut tout faire</h3>
+        <p data-i18n="problem.rbac.body">Ansible n'a pas de RBAC natif. Sur un Control Node standard, quiconque a accès peut lancer n'importe quel playbook sur n'importe quel hôte. AWX apporte du contrôle d'accès — au prix d'une stack lourde, d'une base de données et d'une interface à maintenir.</p>
+        <p class="problem-quote" data-i18n="problem.rbac.quote">Vos droits sont gérés dans Azure AD. Votre automation n'a aucun contrôle d'accès.</p>
+      </div>
+
       <div class="problem-card">
         <div class="icon">📡</div>
-        <h3 data-i18n="problem.edge.title">Edge computing</h3>
-        <p data-i18n="problem.edge.body">Des centaines de sites distants avec connexions sortantes uniquement, IPs dynamiques, sans VPN centralisé disponible.</p>
+        <h3 data-i18n="problem.drift.title">Votre infra dérive. Vous ne le savez pas.</h3>
+        <p data-i18n="problem.drift.body">Ansible pousse une configuration, puis rien. Entre deux runs, un admin fait un changement manuel, un paquet se met à jour, une règle firewall est modifiée. Votre infra dérive silencieusement de l'état décrit dans vos playbooks — et vous ne le saurez qu'au prochain incident.</p>
+        <p class="problem-quote" data-i18n="problem.drift.quote">Push-and-forget n'est pas de la gestion de configuration. C'est de l'espoir.</p>
       </div>
-      <div class="problem-card">
-        <div class="icon">⚖️</div>
-        <h3 data-i18n="problem.salt.title">Salt Minion ? Non merci.</h3>
-        <p data-i18n="problem.salt.body">Salt résout la connexion mais abandonne la compatibilité Ansible. Impossible de réutiliser vos rôles, collections et inventaires sans tout réécrire.</p>
-      </div>
-    </div>
 
-    <div class="security-warning">
-      <h3>⚠️ <span data-i18n="problem.warning.title">Un serveur pour les gouverner tous</span></h3>
-      <p data-i18n="problem.warning.body">Votre Ansible Control Node a accès SSH à toute votre infrastructure. Un seul Control Node compromis — ou une clef volée — donne à un attaquant accès à l'intégralité de vos serveurs, en une seule étape. Ansible-SecAgent remplace SSH par une API sécurisée avec authentification forte par agent, révocation immédiate et audit centralisé.</p>
+      <div class="problem-card">
+        <div class="icon">⏸</div>
+        <h3 data-i18n="problem.offline.title">Un hôte offline ? La tâche disparaît.</h3>
+        <p data-i18n="problem.offline.body">Un redémarrage inattendu, une coupure réseau — si un hôte est indisponible au moment du playbook, la tâche échoue et n'est jamais rejouée. En rolling deploy sur 50 machines, il suffit d'une qui redémarre pour avoir un parc partiellement patché, sans alerte.</p>
+        <p class="problem-quote" data-i18n="problem.offline.quote">Votre fenêtre de maintenance a 4 heures. 3 hôtes n'ont pas reçu le patch. Vous ne le savez pas.</p>
+      </div>
+
+      <div class="problem-card">
+        <div class="icon">🔀</div>
+        <h3 data-i18n="problem.lateral.title">Un hôte compromis peut attaquer votre Control Node</h3>
+        <p data-i18n="problem.lateral.body">C'est votre Control Node qui initie les connexions SSH vers les hôtes. Un hôte compromis connaît son adresse IP — et cette machine détient les clefs SSH de tout votre parc. Compromettre un hôte → cibler le Control Node → accéder à l'intégralité de l'infrastructure.</p>
+        <p class="problem-quote" data-i18n="problem.lateral.quote">Vous avez segmenté vos hôtes. Mais le Control Node est le dénominateur commun de tous vos segments.</p>
+      </div>
+
+      <div class="problem-card">
+        <div class="icon">🌐</div>
+        <h3 data-i18n="problem.network.title">Multi-cloud, multi-site : une dette réseau permanente</h3>
+        <p data-i18n="problem.network.body">Production, DMZ, disaster recovery, cloud A, cloud B, sites edge — chaque segment doit avoir une route vers le Control Node. VPN site-à-site, peering cloud, tunnels SSH : chaque connexion est une règle firewall de plus, une surface d'attaque de plus, une configuration à maintenir.</p>
+        <p class="problem-quote" data-i18n="problem.network.quote">Votre infra est multi-cloud. Votre automation ne devrait pas exiger un réseau plat entre tous vos environnements.</p>
+      </div>
+
     </div>
 
     <div class="arch-diagram" style="margin-top:2.5rem"><span class="c-ansible">Ansible Control Node</span> <span class="c-arrow">──SSH──▶</span> <span class="c-agent">Hôte cible</span>   <span style="color:#f85149">← BLOQUÉ derrière NAT/firewall</span></div>
@@ -740,18 +772,32 @@ const T = {
     "hero.subtitle":"Exécutez vos playbooks sur des hôtes derrière NAT, firewall ou DMZ. Les agents initient eux-mêmes la connexion — vous n'ouvrez aucun port entrant.",
     "hero.cta.start":"Démarrage rapide","hero.cta.github":"Voir sur GitHub",
     "problem.tag":"Le problème",
-    "problem.title":"SSH entrant : un modèle qui montre ses limites",
-    "problem.lead":"Ansible repose sur SSH : le Control Node doit joindre chaque hôte sur le port 22. Ce modèle bloque sur les infrastructures modernes — et pose un risque sécurité souvent sous-estimé.",
-    "problem.nat.title":"NAT / Firewall",
-    "problem.nat.body":"Les hôtes en réseau privé n'ont pas de port 22 accessible depuis l'extérieur. Ouvrir ce port représente une surface d'attaque inacceptable en 2025.",
-    "problem.dmz.title":"DMZ / Cloud privé",
-    "problem.dmz.body":"Les politiques de sécurité interdisent les connexions entrantes dans les DMZ. Les flux de contrôle doivent partir de l'intérieur, pas de l'extérieur.",
-    "problem.edge.title":"Edge computing",
-    "problem.edge.body":"Des centaines de sites distants avec connexions sortantes uniquement, IPs dynamiques, sans VPN centralisé disponible.",
-    "problem.salt.title":"Salt Minion ? Non merci.",
-    "problem.salt.body":"Salt résout la connexion mais abandonne la compatibilité Ansible. Impossible de réutiliser vos rôles, collections et inventaires sans tout réécrire.",
-    "problem.warning.title":"Un serveur pour les gouverner tous",
-    "problem.warning.body":"Votre Ansible Control Node a accès SSH à toute votre infrastructure. Un seul Control Node compromis — ou une clef volée — donne à un attaquant accès à l'intégralité de vos serveurs, en une seule étape. Ansible-SecAgent remplace SSH par une API sécurisée avec authentification forte par agent, révocation immédiate et audit centralisé.",
+    "problem.title":"8 risques que vous prenez à chaque playbook",
+    "problem.lead":"Ansible est un outil remarquable. Mais son modèle SSH classique crée des angles morts sécurité et des dettes opérationnelles que la plupart des équipes découvrent trop tard.",
+    "problem.blast.title":"Une machine compromise, toute votre infra exposée",
+    "problem.blast.body":"Votre Control Node centralise les accès SSH à tous vos hôtes. Un token CI/CD leaké, une dépendance malveillante, un accès mal révoqué — et c'est l'ensemble de votre parc qui est à portée d'un attaquant. En une seule étape. Sans alarme.",
+    "problem.blast.quote":"La surface d'attaque croît linéairement avec la taille de votre infra.",
+    "problem.revoke.title":"Révoquer une clef SSH : une urgence à 3h du matin",
+    "problem.revoke.body":"Une clef volée. L'horloge tourne. Vous devez la supprimer sur 300 hôtes, maintenant. Avec SSH classique, c'est une opération manuelle, hôte par hôte, qui prend des heures — sans blacklist centrale, sans expiration automatique.",
+    "problem.revoke.quote":"La rotation de clefs n'est pas un événement planifié. C'est une urgence.",
+    "problem.audit.title":"Qui a lancé quoi, sur quoi, et quand ?",
+    "problem.audit.body":"Ansible n'a pas de log d'audit centralisé. Les traces restent sur le Control Node — modifiables, supprimables. En cas d'incident ou de contrôle ISO 27001, NIS2 ou SOC2, vous ne pouvez pas prouver qu'une configuration a été appliquée, ni par qui.",
+    "problem.audit.quote":"L'auditeur pose la question. Vous cherchez dans des logs dispersés sur plusieurs machines.",
+    "problem.rbac.title":"Tout le monde peut tout faire",
+    "problem.rbac.body":"Ansible n'a pas de RBAC natif. Sur un Control Node standard, quiconque a accès peut lancer n'importe quel playbook sur n'importe quel hôte. AWX apporte du contrôle d'accès — au prix d'une stack lourde, d'une base de données et d'une interface à maintenir.",
+    "problem.rbac.quote":"Vos droits sont gérés dans Azure AD. Votre automation n'a aucun contrôle d'accès.",
+    "problem.drift.title":"Votre infra dérive. Vous ne le savez pas.",
+    "problem.drift.body":"Ansible pousse une configuration, puis rien. Entre deux runs, un admin fait un changement manuel, un paquet se met à jour, une règle firewall est modifiée. Votre infra dérive silencieusement de l'état décrit dans vos playbooks — et vous ne le saurez qu'au prochain incident.",
+    "problem.drift.quote":"Push-and-forget n'est pas de la gestion de configuration. C'est de l'espoir.",
+    "problem.offline.title":"Un hôte offline ? La tâche disparaît.",
+    "problem.offline.body":"Un redémarrage inattendu, une coupure réseau — si un hôte est indisponible au moment du playbook, la tâche échoue et n'est jamais rejouée. En rolling deploy sur 50 machines, il suffit d'une qui redémarre pour avoir un parc partiellement patché, sans alerte.",
+    "problem.offline.quote":"Votre fenêtre de maintenance a 4 heures. 3 hôtes n'ont pas reçu le patch. Vous ne le savez pas.",
+    "problem.lateral.title":"Un hôte compromis peut attaquer votre Control Node",
+    "problem.lateral.body":"C'est votre Control Node qui initie les connexions SSH vers les hôtes. Un hôte compromis connaît son adresse IP — et cette machine détient les clefs SSH de tout votre parc. Compromettre un hôte → cibler le Control Node → accéder à l'intégralité de l'infrastructure.",
+    "problem.lateral.quote":"Vous avez segmenté vos hôtes. Mais le Control Node est le dénominateur commun de tous vos segments.",
+    "problem.network.title":"Multi-cloud, multi-site : une dette réseau permanente",
+    "problem.network.body":"Production, DMZ, disaster recovery, cloud A, cloud B, sites edge — chaque segment doit avoir une route vers le Control Node. VPN site-à-site, peering cloud, tunnels SSH : chaque connexion est une règle firewall de plus, une surface d'attaque de plus, une configuration à maintenir.",
+    "problem.network.quote":"Votre infra est multi-cloud. Votre automation ne devrait pas exiger un réseau plat entre tous vos environnements.",
     "solution.tag":"La solution",
     "solution.title":"Le modèle inversé Ansible-SecAgent",
     "solution.lead":"Ansible-SecAgent inverse le flux de contrôle. L'agent sur l'hôte cible initie une connexion WebSocket persistante vers le serveur relay. Ansible n'a besoin d'atteindre que le relay server — jamais les hôtes directement.",
@@ -881,18 +927,32 @@ const T = {
     "hero.subtitle":"Run your playbooks on hosts behind NAT, firewalls or DMZ. Agents initiate the connection themselves — you open zero inbound ports.",
     "hero.cta.start":"Quick start","hero.cta.github":"View on GitHub",
     "problem.tag":"The problem",
-    "problem.title":"Inbound SSH: a model reaching its limits",
-    "problem.lead":"Ansible relies on SSH: the Control Node must reach each host on port 22. This model breaks on modern infrastructures — and introduces a security risk that is often underestimated.",
-    "problem.nat.title":"NAT / Firewall",
-    "problem.nat.body":"Hosts on private networks have no port 22 reachable from outside. Opening that port is an unacceptable attack surface in 2025.",
-    "problem.dmz.title":"DMZ / Private cloud",
-    "problem.dmz.body":"Security policies prohibit inbound connections to DMZ segments. Control flows must originate from the inside, not the outside.",
-    "problem.edge.title":"Edge computing",
-    "problem.edge.body":"Hundreds of remote sites with outbound-only connectivity, dynamic IPs, no centralized VPN available.",
-    "problem.salt.title":"Salt Minion? No thanks.",
-    "problem.salt.body":"Salt solves the connection problem but drops Ansible compatibility. You can't reuse your existing roles, collections, and inventories without rewriting everything.",
-    "problem.warning.title":"One server to rule them all",
-    "problem.warning.body":"Your Ansible Control Node has SSH access to your entire infrastructure. One compromised Control Node — or a stolen key — gives an attacker access to all your servers in a single step. Ansible-SecAgent replaces SSH with a secure API backed by per-agent strong authentication, immediate revocation, and centralized audit.",
+    "problem.title":"8 risks you take with every playbook",
+    "problem.lead":"Ansible is a remarkable tool. But its classic SSH model creates security blind spots and operational debt that most teams discover too late.",
+    "problem.blast.title":"One machine compromised, your entire infra exposed",
+    "problem.blast.body":"Your Control Node centralizes SSH access to all your hosts. A leaked CI/CD token, a malicious dependency, a poorly revoked access — and your entire fleet is within reach of an attacker. In a single step. Without an alarm.",
+    "problem.blast.quote":"The attack surface grows linearly with the size of your infrastructure.",
+    "problem.revoke.title":"Revoking an SSH key: a 3am emergency",
+    "problem.revoke.body":"A key is stolen. The clock is ticking. You need to remove it from 300 hosts, right now. With classic SSH, that's a manual operation, host by host, taking hours — no central blacklist, no automatic expiration.",
+    "problem.revoke.quote":"Key rotation isn't a planned event. It's an emergency.",
+    "problem.audit.title":"Who ran what, on what, and when?",
+    "problem.audit.body":"Ansible has no centralized audit log. Traces stay on the Control Node — editable, deletable. In case of an incident or ISO 27001, NIS2, or SOC2 audit, you can't prove a configuration was applied, or by whom.",
+    "problem.audit.quote":"The auditor asks the question. You search through logs scattered across multiple machines.",
+    "problem.rbac.title":"Everyone can do everything",
+    "problem.rbac.body":"Ansible has no native RBAC. On a standard Control Node, anyone with access can run any playbook against any host. AWX adds access control — at the cost of a heavy stack, a database, and an interface to maintain.",
+    "problem.rbac.quote":"Your permissions are managed in Azure AD. Your automation has no access control.",
+    "problem.drift.title":"Your infra is drifting. You don't know it.",
+    "problem.drift.body":"Ansible pushes a configuration, then nothing. Between runs, an admin makes a manual change, a package auto-updates, a firewall rule is modified. Your infra silently drifts from the state in your playbooks — and you'll only find out at the next incident.",
+    "problem.drift.quote":"Push-and-forget isn't configuration management. It's hope.",
+    "problem.offline.title":"A host offline? The task vanishes.",
+    "problem.offline.body":"An unexpected reboot, a network outage — if a host is unavailable at playbook time, the task fails and is never retried. In a rolling deploy across 50 machines, one that reboots at the wrong time leaves your fleet partially patched, with no alert.",
+    "problem.offline.quote":"Your maintenance window is 4 hours. 3 hosts didn't get the patch. You don't know it.",
+    "problem.lateral.title":"A compromised host can attack your Control Node",
+    "problem.lateral.body":"Your Control Node initiates SSH connections to hosts. A compromised host knows its IP — and that machine holds SSH keys to your entire fleet. Compromise a host → target the Control Node → access the entire infrastructure.",
+    "problem.lateral.quote":"You've segmented your hosts. But the Control Node is the common denominator of all your segments.",
+    "problem.network.title":"Multi-cloud, multi-site: permanent network debt",
+    "problem.network.body":"Production, DMZ, disaster recovery, cloud A, cloud B, edge sites — every segment needs a route to the Control Node. Site-to-site VPNs, cloud peering, SSH tunnels: each connection is one more firewall rule, one more attack surface, one more configuration to maintain.",
+    "problem.network.quote":"Your infra is multi-cloud. Your automation shouldn't require a flat network between all your environments.",
     "solution.tag":"The solution",
     "solution.title":"The Ansible-SecAgent reversed model",
     "solution.lead":"Ansible-SecAgent inverts the control flow. The agent on the target host initiates a persistent WebSocket connection to the relay server. Ansible only needs to reach the relay server — never the hosts directly.",
