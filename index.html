@@ -343,6 +343,21 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
   </div>
 </section>
 
+    <div class="version-block">
+      <span class="version-tag current">v1.2 — Ansible Container</span>
+      <ul class="feature-list">
+        <li data-i18n="f12.1">Container relay-ansible : multi-stage build (Go builder + Python runtime)</li>
+        <li data-i18n="f12.2">relay-inventory : binaire Go standalone intégré dans le container</li>
+        <li data-i18n="f12.3">Connection plugin relay.py : chargé depuis ansible_plugins/connection_plugins/</li>
+        <li data-i18n="f12.4">ExecCommand handler : relaie commandes Ansible vers agents via WebSocket bloquant</li>
+        <li data-i18n="f12.5">Inventory filtering : par défaut retourne tous les minions, relay_status : "connected" | "disconnected"</li>
+        <li data-i18n="f12.6">End-to-end validation : ansible all -m ping, ansible-playbook, dynamic inventory ✅</li>
+        <li data-i18n="f12.7">Network : relay-ansible sur ansible_server_default (connecté à relay-api)</li>
+        <li data-i18n="f12.8">Dockerfile : golang:1.25-alpine (Stage 1) → python:3.11-slim (Stage 2)</li>
+        <li data-i18n="f12.9">Phase 11 COMPLETE : tous les composants Ansible natif + relay intégrés et testés ✅</li>
+      </ul>
+    </div>
+
 <!-- ══ MANAGEMENT ════════════════════════════════════════════════════════ -->
 <section id="mgmt">
   <div class="container">
@@ -813,6 +828,15 @@ const T = {
     "f11.7":"Message WS rekey : agents migrent vers le nouveau secret sans déconnexion",
     "f11.8":"AES-256-GCM : chiffrement RSA keypair serveur et JWT secrets en DB",
     "f11.9":"441 tests PASS, 0 fail · Audit sécurité : 0 CRITIQUE, 0 HAUT",
+    "f12.1":"Container relay-ansible : multi-stage build (Go builder + Python runtime)",
+    "f12.2":"relay-inventory : binaire Go standalone intégré dans le container",
+    "f12.3":"Connection plugin relay.py : chargé depuis ansible_plugins/connection_plugins/",
+    "f12.4":"ExecCommand handler : relaie commandes Ansible vers agents via WebSocket bloquant",
+    "f12.5":"Inventory filtering : par défaut retourne tous les minions, relay_status : \"connected\" | \"disconnected\"",
+    "f12.6":"End-to-end validation : ansible all -m ping, ansible-playbook, dynamic inventory ✅",
+    "f12.7":"Network : relay-ansible sur ansible_server_default (connecté à relay-api)",
+    "f12.8":"Dockerfile : golang:1.25-alpine (Stage 1) → python:3.11-slim (Stage 2)",
+    "f12.9":"Phase 11 COMPLETE : tous les composants Ansible natif + relay intégrés et testés ✅",
     "roadmap.title":"À venir",
     "roadmap.lead":"Les phases suivantes sont spécifiées dans ARCHITECTURE.md et prêtes à démarrer.",
     "roadmap.k8s.title":"Production Kubernetes",
@@ -945,6 +969,15 @@ const T = {
     "f11.7":"WS rekey message: agents migrate to new secret without disconnection",
     "f11.8":"AES-256-GCM: server RSA keypair and JWT secrets encrypted in DB",
     "f11.9":"441 tests PASS, 0 fail · Security audit: 0 CRITICAL, 0 HIGH",
+    "f12.1":"relay-ansible container: multi-stage build (Go builder + Python runtime)",
+    "f12.2":"relay-inventory: standalone Go binary integrated in container",
+    "f12.3":"Connection plugin relay.py: loaded from ansible_plugins/connection_plugins/",
+    "f12.4":"ExecCommand handler: relays Ansible commands to agents via blocking WebSocket",
+    "f12.5":"Inventory filtering: by default returns all minions, relay_status: \"connected\" | \"disconnected\"",
+    "f12.6":"End-to-end validation: ansible all -m ping, ansible-playbook, dynamic inventory ✅",
+    "f12.7":"Network: relay-ansible on ansible_server_default (connected to relay-api)",
+    "f12.8":"Dockerfile: golang:1.25-alpine (Stage 1) → python:3.11-slim (Stage 2)",
+    "f12.9":"Phase 11 COMPLETE: all native Ansible components + relay integrated and tested ✅",
     "roadmap.title":"Coming next",
     "roadmap.lead":"The following phases are specified in ARCHITECTURE.md and ready to start.",
     "roadmap.k8s.title":"Production Kubernetes",
