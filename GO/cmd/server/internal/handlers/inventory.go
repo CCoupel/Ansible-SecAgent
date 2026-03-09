@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -66,12 +67,15 @@ func buildInventoryResponse(onlyConnected bool) InventoryResponse {
 	response.Meta.Hostvars = make(map[string]HostVars)
 
 	// Query all enrolled agents from DB
-	store := GetAdminStore()
-	if store == nil {
+	if adminStore == nil {
 		return response // fallback: return empty if no store
 	}
 
-	agents := store.GetAllAgents()
+	agents, err := adminStore.ListAgents(context.Background(), false)
+	if err != nil {
+		log.Printf("buildInventoryResponse: ListAgents error: %v", err)
+		return response
+	}
 	for _, agent := range agents {
 		isConnected := connectedSet[agent.Hostname]
 
