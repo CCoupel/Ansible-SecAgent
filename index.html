@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AnsibleRelay — Des agents pour Ansible</title>
+  <title>Ansible-SecAgent — Des agents pour Ansible</title>
   <meta name="description" content="Exécutez des playbooks Ansible sur des hôtes derrière NAT, firewall ou DMZ. Connexions inversées, Zero Trust, TLS, JWT + RSA-4096.">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -19,7 +19,7 @@
     <li><a href="#features"     data-i18n="nav.features">Fonctionnalités</a></li>
     <li><a href="#mgmt"         data-i18n="nav.mgmt">Management</a></li>
     <li><a href="#install"      data-i18n="nav.install">Installation</a></li>
-    <li><a href="https://github.com/CCoupel/Ansible-Relay">GitHub ↗</a></li>
+    <li><a href="https://github.com/CCoupel/Ansible-SecAgent">GitHub ↗</a></li>
   </ul>
   <div class="lang-switcher">
     <button class="lang-btn active" data-lang="fr" onclick="setLang('fr')">FR</button>
@@ -44,7 +44,7 @@
     </p>
     <div class="cta-group">
       <a href="#install"                              class="btn btn-primary" data-i18n="hero.cta.start">Démarrage rapide</a>
-      <a href="https://github.com/CCoupel/Ansible-Relay" class="btn btn-outline" data-i18n="hero.cta.github">Voir sur GitHub</a>
+      <a href="https://github.com/CCoupel/Ansible-SecAgent" class="btn btn-outline" data-i18n="hero.cta.github">Voir sur GitHub</a>
     </div>
   </div>
 </section>
@@ -84,7 +84,7 @@
 
     <div class="security-warning">
       <h3>⚠️ <span data-i18n="problem.warning.title">Un serveur pour les gouverner tous</span></h3>
-      <p data-i18n="problem.warning.body">Votre Ansible Control Node a accès SSH à toute votre infrastructure. Un seul Control Node compromis — ou une clef volée — donne à un attaquant accès à l'intégralité de vos serveurs, en une seule étape. AnsibleRelay remplace SSH par une API sécurisée avec authentification forte par agent, révocation immédiate et audit centralisé.</p>
+      <p data-i18n="problem.warning.body">Votre Ansible Control Node a accès SSH à toute votre infrastructure. Un seul Control Node compromis — ou une clef volée — donne à un attaquant accès à l'intégralité de vos serveurs, en une seule étape. Ansible-SecAgent remplace SSH par une API sécurisée avec authentification forte par agent, révocation immédiate et audit centralisé.</p>
     </div>
 
     <div class="arch-diagram" style="margin-top:2.5rem"><span class="c-ansible">Ansible Control Node</span> <span class="c-arrow">──SSH──▶</span> <span class="c-agent">Hôte cible</span>   <span style="color:#f85149">← BLOQUÉ derrière NAT/firewall</span></div>
@@ -95,9 +95,9 @@
 <section id="solution">
   <div class="container">
     <span class="section-tag" data-i18n="solution.tag">La solution</span>
-    <h2 data-i18n="solution.title">Le modèle inversé AnsibleRelay</h2>
+    <h2 data-i18n="solution.title">Le modèle inversé Ansible-SecAgent</h2>
     <p class="section-lead" data-i18n="solution.lead">
-      AnsibleRelay inverse le flux de contrôle. L'agent sur l'hôte cible initie une connexion WebSocket persistante vers le serveur relay. Ansible n'a besoin d'atteindre que le relay server — jamais les hôtes directement.
+      Ansible-SecAgent inverse le flux de contrôle. L'agent sur l'hôte cible initie une connexion WebSocket persistante vers le serveur relay. Ansible n'a besoin d'atteindre que le relay server — jamais les hôtes directement.
     </p>
 
     <div class="arch-diagram"><span class="c-ansible">Ansible Control Node</span>
@@ -111,7 +111,7 @@
 <span class="c-arrow">               │ WSS persistant (TLS)</span>
 <span class="c-arrow">               │ ↑ initié par l'agent</span>
 <span class="c-agent">┌──────────────┴──────────────────────────┐</span>
-<span class="c-agent">│   Agents (relay-agent · systemd)        │</span>
+<span class="c-agent">│   Agents (secagent-minion · systemd)        │</span>
 <span class="c-agent">│   host-A   host-B   host-C   host-N     │</span>
 <span class="c-agent">│   NAT · DMZ · Cloud privé · Edge        │</span>
 <span class="c-agent">└─────────────────────────────────────────┘</span></div>
@@ -123,7 +123,7 @@
         <h3 data-i18n="deploy.mono.title">Simple &amp; rapide</h3>
         <p data-i18n="deploy.mono.desc">Un seul serveur relay pour démarrer. Idéal pour les petites infrastructures ou pour valider la solution en quelques minutes.</p>
         <ul class="deploy-specs">
-          <li data-i18n="deploy.mono.s1">1 relay-server (Go, 4.65 MiB)</li>
+          <li data-i18n="deploy.mono.s1">1 secagent-server (Go, 4.65 MiB)</li>
           <li data-i18n="deploy.mono.s2">1 NATS JetStream (embarqué)</li>
           <li data-i18n="deploy.mono.s3">1 Caddy (TLS automatique)</li>
           <li data-i18n="deploy.mono.s4">SQLite inclus — zéro config DB</li>
@@ -135,7 +135,7 @@
         <h3 data-i18n="deploy.ha.title">Scalable &amp; haute dispo</h3>
         <p data-i18n="deploy.ha.desc">Plusieurs nodes relay derrière un load balancer. Les agents se connectent à n'importe quel node, le routage est transparent via cluster NATS.</p>
         <ul class="deploy-specs">
-          <li data-i18n="deploy.ha.s1">N relay-server en parallèle</li>
+          <li data-i18n="deploy.ha.s1">N secagent-server en parallèle</li>
           <li data-i18n="deploy.ha.s2">Cluster NATS JetStream (3 nodes)</li>
           <li data-i18n="deploy.ha.s3">Load balancer (Nginx / Ingress K8s)</li>
           <li data-i18n="deploy.ha.s4">PostgreSQL externe (RDS/CloudSQL)</li>
@@ -152,7 +152,7 @@
     <span class="section-tag" data-i18n="compat.tag">Compatibilité</span>
     <h2 data-i18n="compat.title">Votre Ansible existant, inchangé</h2>
     <p class="section-lead" data-i18n="compat.lead">
-      AnsibleRelay s'intègre comme un plugin Ansible standard. Vos playbooks, rôles et collections fonctionnent sans modification. La transition est progressive : SSH reste disponible en parallèle.
+      Ansible-SecAgent s'intègre comme un plugin Ansible standard. Vos playbooks, rôles et collections fonctionnent sans modification. La transition est progressive : SSH reste disponible en parallèle.
     </p>
 
     <div class="compat-grid">
@@ -162,7 +162,7 @@
       </div>
       <div class="compat-card">
         <h3 data-i18n="compat.ssh.title">SSH toujours disponible</h3>
-        <p data-i18n="compat.ssh.body">AnsibleRelay ne supprime pas SSH. Les deux coexistent. Idéal pour une migration progressive : passez hôte par hôte sans rupture de service.</p>
+        <p data-i18n="compat.ssh.body">Ansible-SecAgent ne supprime pas SSH. Les deux coexistent. Idéal pour une migration progressive : passez hôte par hôte sans rupture de service.</p>
       </div>
       <div class="compat-card">
         <h3 data-i18n="compat.inventory.title">Inventaire dynamique</h3>
@@ -191,7 +191,7 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
     <span class="section-tag" data-i18n="security.tag">Sécurité</span>
     <h2 data-i18n="security.title">Sécurité by design</h2>
     <p class="section-lead" data-i18n="security.lead">
-      AnsibleRelay est conçu autour d'un modèle Zero Trust. Chaque décision d'architecture a une justification sécurité explicite, documentée dans les specs techniques.
+      Ansible-SecAgent est conçu autour d'un modèle Zero Trust. Chaque décision d'architecture a une justification sécurité explicite, documentée dans les specs techniques.
     </p>
 
     <div class="security-grid">
@@ -234,7 +234,7 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
         <tr>
           <th data-i18n="security.table.threat">Vecteur d'attaque</th>
           <th data-i18n="security.table.ssh">SSH classique</th>
-          <th>AnsibleRelay</th>
+          <th>Ansible-SecAgent</th>
         </tr>
       </thead>
       <tbody>
@@ -278,7 +278,7 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
   <div class="container">
     <span class="section-tag" data-i18n="features.tag">Fonctionnalités</span>
     <h2 data-i18n="features.title">Implémentées par version</h2>
-    <p data-i18n="features.lead">AnsibleRelay est développé par phases incrémentales, chacune validée par tests automatisés et audit sécurité avant déploiement.</p>
+    <p data-i18n="features.lead">Ansible-SecAgent est développé par phases incrémentales, chacune validée par tests automatisés et audit sécurité avant déploiement.</p>
 
     <div class="version-block">
       <span class="version-tag">v0.1 — Agent Python MVP</span>
@@ -320,7 +320,7 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
       <ul class="feature-list">
         <li data-i18n="f10.1">Serveur Go : binaire 4.65 MiB, 0 restart en production, goroutines</li>
         <li data-i18n="f10.2">Agent Go : 94 tests PASS, 3 agents qualif connectés en continu</li>
-        <li data-i18n="f10.3">relay-inventory : binaire Go standalone, 19 tests, format Ansible natif</li>
+        <li data-i18n="f10.3">secagent-inventory : binaire Go standalone, 19 tests, format Ansible natif</li>
         <li data-i18n="f10.4">SQLite via modernc (CGO-free), Gorilla WebSocket, JWT Go natif</li>
         <li data-i18n="f10.5">Dockerfile multi-stage golang:alpine → alpine : image minimale</li>
       </ul>
@@ -329,7 +329,7 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
     <div class="version-block">
       <span class="version-tag current">v1.1 — CLI Management</span>
       <ul class="feature-list">
-        <li data-i18n="f11.1">CLI cobra intégrée dans le binaire relay-server (zéro binaire supplémentaire)</li>
+        <li data-i18n="f11.1">CLI cobra intégrée dans le binaire secagent-server (zéro binaire supplémentaire)</li>
         <li data-i18n="f11.2">minions : list / get / suspend / resume / revoke / authorize / vars</li>
         <li data-i18n="f11.3">security : keys status / rotate --grace Nh · tokens list · blacklist list</li>
         <li data-i18n="f11.4">inventory list --only-connected · server status / stats</li>
@@ -347,7 +347,7 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
       <span class="version-tag current">v1.2 — Ansible Container</span>
       <ul class="feature-list">
         <li data-i18n="f12.1">Container relay-ansible : multi-stage build (Go builder + Python runtime)</li>
-        <li data-i18n="f12.2">relay-inventory : binaire Go standalone intégré dans le container</li>
+        <li data-i18n="f12.2">secagent-inventory : binaire Go standalone intégré dans le container</li>
         <li data-i18n="f12.3">Connection plugin relay.py : chargé depuis ansible_plugins/connection_plugins/</li>
         <li data-i18n="f12.4">ExecCommand handler : relaie commandes Ansible vers agents via WebSocket bloquant</li>
         <li data-i18n="f12.5">Inventory filtering : par défaut retourne tous les minions, relay_status : "connected" | "disconnected"</li>
@@ -364,7 +364,7 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
     <span class="section-tag" data-i18n="mgmt.tag">Management</span>
     <h2 data-i18n="mgmt.title">Administrez depuis le terminal</h2>
     <p class="section-lead" data-i18n="mgmt.lead">
-      La CLI cobra est intégrée directement dans le binaire <code>relay-server</code>.
+      La CLI cobra est intégrée directement dans le binaire <code>secagent-server</code>.
       Accessible depuis un container Docker ou un pod Kubernetes — sans binaire supplémentaire.
     </p>
 
@@ -374,9 +374,9 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
         <span class="dot dot-red"></span>
         <span class="dot dot-yellow"></span>
         <span class="dot dot-green"></span>
-        <span class="terminal-title">relay-server — management CLI</span>
+        <span class="terminal-title">secagent-server — management CLI</span>
       </div>
-      <div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">docker exec relay-api relay-server minions list --format table</span>
+      <div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">docker exec relay-api secagent-server minions list --format table</span>
 
 <span class="t-head">HOSTNAME          STATUS       LAST SEEN            VERSION   IP</span>
 <span class="t-ok">qualif-host-01    connected    2026-03-06 14:32     v1.1.0    192.168.1.101</span>
@@ -386,7 +386,7 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
 <span class="t-ok">prod-db-01        connected    2026-03-06 14:32     v1.1.0    10.0.1.20</span>
 <span class="t-dim">5 agents  (4 connected, 1 suspended)</span>
 
-<span class="t-prompt">$</span> <span class="t-cmd">docker exec relay-api relay-server security keys status --format table</span>
+<span class="t-prompt">$</span> <span class="t-cmd">docker exec relay-api secagent-server security keys status --format table</span>
 
 <span class="t-head">KEY           SECRET                STATUS     EXPIRES</span>
 <span class="t-ok">current       jwt_secret_current    active     2026-04-05 14:00</span>
@@ -402,14 +402,14 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
           <h3 data-i18n="mgmt.agents.title">Gestion des agents</h3>
         </div>
         <p data-i18n="mgmt.agents.desc">Listez, suspendez, révoquez et autorisez les agents. Gérez leurs variables d'inventaire.</p>
-        <pre><code>relay-server minions list
-relay-server minions get my-host
-relay-server minions suspend my-host
-relay-server minions resume  my-host
-relay-server minions revoke  my-host
-relay-server minions authorize new-host \
+        <pre><code>secagent-server minions list
+secagent-server minions get my-host
+secagent-server minions suspend my-host
+secagent-server minions resume  my-host
+secagent-server minions revoke  my-host
+secagent-server minions authorize new-host \
   --pubkey "$(cat pubkey.pem)"
-relay-server minions vars set my-host \
+secagent-server minions vars set my-host \
   env=prod region=eu-west</code></pre>
       </div>
 
@@ -420,15 +420,15 @@ relay-server minions vars set my-host \
         </div>
         <p data-i18n="mgmt.security.desc">Rotation des secrets JWT zero downtime, gestion des tokens actifs et de la blacklist JTI.</p>
         <pre><code># Rotation JWT (grace period configurable)
-relay-server security keys rotate --grace 24h
+secagent-server security keys rotate --grace 24h
 
 # État des clefs
-relay-server security keys status
+secagent-server security keys status
 
 # Tokens actifs et blacklist
-relay-server security tokens list
-relay-server security blacklist list
-relay-server security blacklist purge</code></pre>
+secagent-server security tokens list
+secagent-server security blacklist list
+secagent-server security blacklist purge</code></pre>
       </div>
 
       <div class="cmd-card">
@@ -438,13 +438,13 @@ relay-server security blacklist purge</code></pre>
         </div>
         <p data-i18n="mgmt.inventory.desc">Visualisez les agents connectés et leurs facts directement depuis la CLI.</p>
         <pre><code># Agents connectés uniquement
-relay-server inventory list --only-connected
+secagent-server inventory list --only-connected
 
 # Format JSON (compatible Ansible)
-relay-server inventory list --format json
+secagent-server inventory list --format json
 
 # Format YAML
-relay-server inventory list --format yaml</code></pre>
+secagent-server inventory list --format yaml</code></pre>
       </div>
 
       <div class="cmd-card">
@@ -454,10 +454,10 @@ relay-server inventory list --format yaml</code></pre>
         </div>
         <p data-i18n="mgmt.server.desc">Consultez l'état du serveur relay : uptime, connexions actives, tâches exécutées, mémoire.</p>
         <pre><code># État général
-relay-server server status --format table
+secagent-server server status --format table
 
 # Statistiques détaillées
-relay-server server stats --format json
+secagent-server server stats --format json
 
 # Exemple de sortie :
 # UPTIME    AGENTS  TASKS 24H  MEMORY
@@ -469,10 +469,10 @@ relay-server server stats --format json
       <strong data-i18n="mgmt.access.label">Accès :</strong>
       <span data-i18n="mgmt.access.body"> La CLI lit les variables d'environnement du container (<code>ADMIN_TOKEN</code>, <code>JWT_SECRET_KEY</code>). Aucune configuration supplémentaire requise.</span>
       <pre style="margin-top:0.75rem"><code># Docker
-docker exec relay-api relay-server &lt;commande&gt;
+docker exec relay-api secagent-server &lt;commande&gt;
 
 # Kubernetes
-kubectl exec -n ansible-relay deploy/relay-api -- relay-server &lt;commande&gt;</code></pre>
+kubectl exec -n ansible-relay deploy/relay-api -- secagent-server &lt;commande&gt;</code></pre>
     </div>
   </div>
 </section>
@@ -528,15 +528,15 @@ kubectl exec -n ansible-relay deploy/relay-api -- relay-server &lt;commande&gt;<
       <div id="tab-docker" class="itab-content active">
         <div class="enroll-flow" data-i18n="ins.enroll.note">
           <strong data-i18n="ins.enroll.title">Cycle d'enrollment :</strong>
-          <span data-i18n="ins.enroll.body"> l'agent génère sa paire RSA-4096 au <strong>premier démarrage</strong> et la stocke dans <code>/etc/relay-agent/id_rsa</code> (mode 0600). Il tente immédiatement de s'enroller auprès du serveur — mais le serveur refuse tant que la clef publique n'est pas pré-autorisée. L'agent retente automatiquement avec un backoff exponentiel.</span>
+          <span data-i18n="ins.enroll.body"> l'agent génère sa paire RSA-4096 au <strong>premier démarrage</strong> et la stocke dans <code>/etc/secagent-minion/id_rsa</code> (mode 0600). Il tente immédiatement de s'enroller auprès du serveur — mais le serveur refuse tant que la clef publique n'est pas pré-autorisée. L'agent retente automatiquement avec un backoff exponentiel.</span>
         </div>
         <div class="qs-steps">
           <div class="qs-step">
             <div class="step-num">1</div>
             <div>
               <h3 data-i18n="ins.d.s1">Cloner le dépôt et configurer</h3>
-              <pre><code>git clone https://github.com/CCoupel/Ansible-Relay.git
-cd Ansible-Relay/GO
+              <pre><code>git clone https://github.com/CCoupel/Ansible-SecAgent.git
+cd Ansible-SecAgent/GO
 
 export JWT_SECRET_KEY="$(openssl rand -hex 32)"
 export ADMIN_TOKEN="$(openssl rand -hex 16)"
@@ -555,16 +555,16 @@ export RSA_MASTER_KEY="$(openssl rand -hex 32)"</code></pre>
             <div>
               <h3 data-i18n="ins.d.s3">Déployer l'agent sur l'hôte cible</h3>
               <pre><code># === Sur l'hôte cible (accès initial : SSH, USB, provisioning existant…) ===
-cp relay-agent /usr/local/bin/relay-agent
+cp secagent-minion /usr/local/bin/secagent-minion
 
 # Variables d'environnement de l'agent
 export RELAY_SERVER_URL=wss://relay.example.com
 export RELAY_HOSTNAME=my-host
-# Clef privée : /etc/relay-agent/id_rsa  (créée au 1er démarrage, mode 0600)
-# JWT         : /etc/relay-agent/token.jwt (créé après enrollment réussi)
+# Clef privée : /etc/secagent-minion/id_rsa  (créée au 1er démarrage, mode 0600)
+# JWT         : /etc/secagent-minion/token.jwt (créé après enrollment réussi)
 
-./relay-agent
-# → Génère RSA-4096 dans /etc/relay-agent/id_rsa
+./secagent-minion
+# → Génère RSA-4096 dans /etc/secagent-minion/id_rsa
 # → POST /api/register → 403 (pas encore autorisé) → retente en backoff</code></pre>
             </div>
           </div>
@@ -573,14 +573,14 @@ export RELAY_HOSTNAME=my-host
             <div>
               <h3 data-i18n="ins.d.s4">Autoriser l'agent (pre-authorize)</h3>
               <pre><code># === Toujours sur l'hôte cible : extraire la clef publique ===
-openssl rsa -in /etc/relay-agent/id_rsa -pubout 2>/dev/null
+openssl rsa -in /etc/secagent-minion/id_rsa -pubout 2>/dev/null
 # → -----BEGIN PUBLIC KEY-----
 #    MIICIjANBgkqhkiG9w0BAQ...
 #    -----END PUBLIC KEY-----
 
 # === Sur le serveur relay : enregistrer la clef publique ===
-docker exec relay-api relay-server minions authorize my-host \
-  --pubkey "$(ssh user@my-host openssl rsa -in /etc/relay-agent/id_rsa -pubout 2>/dev/null)"
+docker exec relay-api secagent-server minions authorize my-host \
+  --pubkey "$(ssh user@my-host openssl rsa -in /etc/secagent-minion/id_rsa -pubout 2>/dev/null)"
 
 # → L'agent retente automatiquement et se connecte</code></pre>
             </div>
@@ -592,7 +592,7 @@ docker exec relay-api relay-server minions authorize my-host \
               <pre><code>ansible-playbook site.yml   # Aucune modification du playbook requise !
 
 # Vérifier la connexion
-docker exec relay-api relay-server minions list --format table</code></pre>
+docker exec relay-api secagent-server minions list --format table</code></pre>
             </div>
           </div>
         </div>
@@ -602,18 +602,18 @@ docker exec relay-api relay-server minions list --format table</code></pre>
       <div id="tab-manual" class="itab-content">
         <div class="enroll-flow">
           <strong data-i18n="ins.enroll.title">Cycle d'enrollment :</strong>
-          <span data-i18n="ins.enroll.body"> l'agent génère sa paire RSA-4096 au <strong>premier démarrage</strong> et la stocke dans <code>/etc/relay-agent/id_rsa</code> (mode 0600). Il tente immédiatement de s'enroller auprès du serveur — mais le serveur refuse tant que la clef publique n'est pas pré-autorisée. L'agent retente automatiquement avec un backoff exponentiel.</span>
+          <span data-i18n="ins.enroll.body"> l'agent génère sa paire RSA-4096 au <strong>premier démarrage</strong> et la stocke dans <code>/etc/secagent-minion/id_rsa</code> (mode 0600). Il tente immédiatement de s'enroller auprès du serveur — mais le serveur refuse tant que la clef publique n'est pas pré-autorisée. L'agent retente automatiquement avec un backoff exponentiel.</span>
         </div>
         <div class="qs-steps">
           <div class="qs-step">
             <div class="step-num">1</div>
             <div>
               <h3 data-i18n="ins.m.s1">Compiler depuis les sources</h3>
-              <pre><code>git clone https://github.com/CCoupel/Ansible-Relay.git
-cd Ansible-Relay/GO
-go build -o relay-server    ./cmd/server
-go build -o relay-agent     ./cmd/agent
-go build -o relay-inventory ./cmd/inventory</code></pre>
+              <pre><code>git clone https://github.com/CCoupel/Ansible-SecAgent.git
+cd Ansible-SecAgent/GO
+go build -o secagent-server    ./cmd/server
+go build -o secagent-minion     ./cmd/agent
+go build -o secagent-inventory ./cmd/inventory</code></pre>
             </div>
           </div>
           <div class="qs-step">
@@ -633,7 +633,7 @@ export ADMIN_TOKEN="$(openssl rand -hex 16)"
 export RSA_MASTER_KEY="$(openssl rand -hex 32)"
 export NATS_URL="nats://localhost:4222"
 
-./relay-server serve --addr :8080</code></pre>
+./secagent-server serve --addr :8080</code></pre>
             </div>
           </div>
           <div class="qs-step">
@@ -641,11 +641,11 @@ export NATS_URL="nats://localhost:4222"
             <div>
               <h3 data-i18n="ins.m.s4">Déployer l'agent sur l'hôte cible</h3>
               <pre><code># === Sur l'hôte cible ===
-cp relay-agent /usr/local/bin/
-cp relay-agent.service /etc/systemd/system/
+cp secagent-minion /usr/local/bin/
+cp secagent-minion.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now relay-agent
-# → Génère /etc/relay-agent/id_rsa (RSA-4096, mode 0600)
+systemctl enable --now secagent-minion
+# → Génère /etc/secagent-minion/id_rsa (RSA-4096, mode 0600)
 # → Tente l'enrollment → refusé → retente en backoff</code></pre>
             </div>
           </div>
@@ -654,13 +654,13 @@ systemctl enable --now relay-agent
             <div>
               <h3 data-i18n="ins.m.s5">Autoriser l'agent (pre-authorize)</h3>
               <pre><code># === Sur l'hôte cible : extraire la clef publique depuis la clef privée ===
-openssl rsa -in /etc/relay-agent/id_rsa -pubout 2>/dev/null
+openssl rsa -in /etc/secagent-minion/id_rsa -pubout 2>/dev/null
 
 # === Sur le serveur relay ===
-./relay-server minions authorize my-host \
-  --pubkey "$(ssh user@my-host openssl rsa -in /etc/relay-agent/id_rsa -pubout 2>/dev/null)"
+./secagent-server minions authorize my-host \
+  --pubkey "$(ssh user@my-host openssl rsa -in /etc/secagent-minion/id_rsa -pubout 2>/dev/null)"
 
-# → L'agent retente et se connecte. JWT stocké dans /etc/relay-agent/token.jwt</code></pre>
+# → L'agent retente et se connecte. JWT stocké dans /etc/secagent-minion/token.jwt</code></pre>
             </div>
           </div>
         </div>
@@ -696,7 +696,7 @@ kubectl create secret generic relay-secrets -n ansible-relay \
               <h3 data-i18n="ins.k.s3">Vérifier le déploiement</h3>
               <pre><code>kubectl get pods -n ansible-relay
 kubectl exec -n ansible-relay deploy/relay-api -- \
-  relay-server server status --format table</code></pre>
+  secagent-server server status --format table</code></pre>
             </div>
           </div>
           <div class="qs-step">
@@ -704,11 +704,11 @@ kubectl exec -n ansible-relay deploy/relay-api -- \
             <div>
               <h3 data-i18n="ins.k.s4">Gérer les agents et les clefs</h3>
               <pre><code>kubectl exec -n ansible-relay deploy/relay-api -- \
-  relay-server minions list --format table
+  secagent-server minions list --format table
 
 # Rotation JWT zero downtime
 kubectl exec -n ansible-relay deploy/relay-api -- \
-  relay-server security keys rotate --grace 24h</code></pre>
+  secagent-server security keys rotate --grace 24h</code></pre>
             </div>
           </div>
         </div>
@@ -720,11 +720,11 @@ kubectl exec -n ansible-relay deploy/relay-api -- \
 <footer>
   <div class="container">
     <div class="footer-inner">
-      <span>AnsibleRelay — Open Source · MIT License</span>
+      <span>Ansible-SecAgent — Open Source · MIT License</span>
       <div class="footer-links">
-        <a href="https://github.com/CCoupel/Ansible-Relay"                              data-i18n="footer.github">GitHub</a>
-        <a href="https://github.com/CCoupel/Ansible-Relay/blob/master/ARCHITECTURE.md" data-i18n="footer.specs">Specs techniques</a>
-        <a href="https://github.com/CCoupel/Ansible-Relay/issues"                      data-i18n="footer.issues">Issues</a>
+        <a href="https://github.com/CCoupel/Ansible-SecAgent"                              data-i18n="footer.github">GitHub</a>
+        <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/master/ARCHITECTURE.md" data-i18n="footer.specs">Specs techniques</a>
+        <a href="https://github.com/CCoupel/Ansible-SecAgent/issues"                      data-i18n="footer.issues">Issues</a>
       </div>
     </div>
   </div>
@@ -751,33 +751,33 @@ const T = {
     "problem.salt.title":"Salt Minion ? Non merci.",
     "problem.salt.body":"Salt résout la connexion mais abandonne la compatibilité Ansible. Impossible de réutiliser vos rôles, collections et inventaires sans tout réécrire.",
     "problem.warning.title":"Un serveur pour les gouverner tous",
-    "problem.warning.body":"Votre Ansible Control Node a accès SSH à toute votre infrastructure. Un seul Control Node compromis — ou une clef volée — donne à un attaquant accès à l'intégralité de vos serveurs, en une seule étape. AnsibleRelay remplace SSH par une API sécurisée avec authentification forte par agent, révocation immédiate et audit centralisé.",
+    "problem.warning.body":"Votre Ansible Control Node a accès SSH à toute votre infrastructure. Un seul Control Node compromis — ou une clef volée — donne à un attaquant accès à l'intégralité de vos serveurs, en une seule étape. Ansible-SecAgent remplace SSH par une API sécurisée avec authentification forte par agent, révocation immédiate et audit centralisé.",
     "solution.tag":"La solution",
-    "solution.title":"Le modèle inversé AnsibleRelay",
-    "solution.lead":"AnsibleRelay inverse le flux de contrôle. L'agent sur l'hôte cible initie une connexion WebSocket persistante vers le serveur relay. Ansible n'a besoin d'atteindre que le relay server — jamais les hôtes directement.",
+    "solution.title":"Le modèle inversé Ansible-SecAgent",
+    "solution.lead":"Ansible-SecAgent inverse le flux de contrôle. L'agent sur l'hôte cible initie une connexion WebSocket persistante vers le serveur relay. Ansible n'a besoin d'atteindre que le relay server — jamais les hôtes directement.",
     "deploy.mono.tag":"Mononode","deploy.mono.title":"Simple &amp; rapide",
     "deploy.mono.desc":"Un seul serveur relay pour démarrer. Idéal pour les petites infrastructures ou pour valider la solution en quelques minutes.",
-    "deploy.mono.s1":"1 relay-server (Go, 4.65 MiB)","deploy.mono.s2":"1 NATS JetStream (embarqué)",
+    "deploy.mono.s1":"1 secagent-server (Go, 4.65 MiB)","deploy.mono.s2":"1 NATS JetStream (embarqué)",
     "deploy.mono.s3":"1 Caddy (TLS automatique)","deploy.mono.s4":"SQLite inclus — zéro config DB",
     "deploy.mono.s5":"docker compose up -d → prêt en 30s",
     "deploy.ha.tag":"Multi-nodes · HA","deploy.ha.title":"Scalable &amp; haute dispo",
     "deploy.ha.desc":"Plusieurs nodes relay derrière un load balancer. Les agents se connectent à n'importe quel node, le routage est transparent via cluster NATS.",
-    "deploy.ha.s1":"N relay-server en parallèle","deploy.ha.s2":"Cluster NATS JetStream (3 nodes)",
+    "deploy.ha.s1":"N secagent-server en parallèle","deploy.ha.s2":"Cluster NATS JetStream (3 nodes)",
     "deploy.ha.s3":"Load balancer (Nginx / Ingress K8s)","deploy.ha.s4":"PostgreSQL externe (RDS/CloudSQL)",
     "deploy.ha.s5":"Helm chart Kubernetes inclus",
     "compat.tag":"Compatibilité","compat.title":"Votre Ansible existant, inchangé",
-    "compat.lead":"AnsibleRelay s'intègre comme un plugin Ansible standard. Vos playbooks, rôles et collections fonctionnent sans modification. La transition est progressive : SSH reste disponible en parallèle.",
+    "compat.lead":"Ansible-SecAgent s'intègre comme un plugin Ansible standard. Vos playbooks, rôles et collections fonctionnent sans modification. La transition est progressive : SSH reste disponible en parallèle.",
     "compat.playbooks.title":"Playbooks inchangés",
     "compat.playbooks.body":"Tous vos playbooks, rôles et collections Ansible Galaxy fonctionnent sans modification. Changez juste <code>connection: relay</code> dans ansible.cfg.",
     "compat.ssh.title":"SSH toujours disponible",
-    "compat.ssh.body":"AnsibleRelay ne supprime pas SSH. Les deux coexistent. Idéal pour une migration progressive : passez hôte par hôte sans rupture de service.",
+    "compat.ssh.body":"Ansible-SecAgent ne supprime pas SSH. Les deux coexistent. Idéal pour une migration progressive : passez hôte par hôte sans rupture de service.",
     "compat.inventory.title":"Inventaire dynamique",
     "compat.inventory.body":"Le plugin inventory liste automatiquement tous les agents connectés avec leurs facts. Vos inventaires statiques restent compatibles en parallèle.",
     "compat.become.title":"become / sudo supporté",
     "compat.become.body":"<code>become: true</code> et <code>become_user</code> fonctionnent comme avec SSH. Le become_pass est transmis de façon sécurisée, masqué dans tous les logs.",
     "compat.comment":"seul changement requis",
     "security.tag":"Sécurité","security.title":"Sécurité by design",
-    "security.lead":"AnsibleRelay est conçu autour d'un modèle Zero Trust. Chaque décision d'architecture a une justification sécurité explicite, documentée dans les specs techniques.",
+    "security.lead":"Ansible-SecAgent est conçu autour d'un modèle Zero Trust. Chaque décision d'architecture a une justification sécurité explicite, documentée dans les specs techniques.",
     "security.per-agent":"par agent","security.enrollment.title":"Enrôlement contrôlé",
     "security.rsa.body":"Chaque agent génère sa paire de clefs RSA-4096 au premier démarrage. La clef privée ne quitte jamais l'hôte.",
     "security.enrollment.body":"La clef publique de l'agent doit être pré-autorisée en base de données avant tout enrôlement. Zéro TOFU (Trust On First Use).",
@@ -796,7 +796,7 @@ const T = {
     "sec.r5.t":"Rotation des secrets","sec.r5.s":"Manuelle, downtime","sec.r5.r":"Dual-key, grace period, zero downtime",
     "sec.r6.t":"Fuite become_pass dans logs","sec.r6.s":"Risque selon configuration","sec.r6.r":"Masqué dans tous les logs",
     "features.tag":"Fonctionnalités","features.title":"Implémentées par version",
-    "features.lead":"AnsibleRelay est développé par phases incrémentales, chacune validée par tests automatisés et audit sécurité avant déploiement.",
+    "features.lead":"Ansible-SecAgent est développé par phases incrémentales, chacune validée par tests automatisés et audit sécurité avant déploiement.",
     "f01.1":"Enrollment RSA-4096 : génération clef, POST /api/register, JWT OAEP",
     "f01.2":"Connexion WSS persistante avec reconnexion backoff exponentiel (1s → 60s)",
     "f01.3":"Exécution de commandes via subprocess (buffer stdout 5 MB, timeout, kill)",
@@ -816,10 +816,10 @@ const T = {
     "f03.5":"Mapping HTTP → AnsibleConnectionError : 503 UNREACHABLE, 504 timeout",
     "f10.1":"Serveur Go : binaire 4.65 MiB, 0 restart en production, goroutines",
     "f10.2":"Agent Go : 94 tests PASS, 3 agents qualif connectés en continu",
-    "f10.3":"relay-inventory : binaire Go standalone, 19 tests, format Ansible natif",
+    "f10.3":"secagent-inventory : binaire Go standalone, 19 tests, format Ansible natif",
     "f10.4":"SQLite via modernc (CGO-free), Gorilla WebSocket, JWT Go natif",
     "f10.5":"Dockerfile multi-stage golang:alpine → alpine : image minimale",
-    "f11.1":"CLI cobra intégrée dans le binaire relay-server (zéro binaire supplémentaire)",
+    "f11.1":"CLI cobra intégrée dans le binaire secagent-server (zéro binaire supplémentaire)",
     "f11.2":"minions : list / get / suspend / resume / revoke / authorize / vars",
     "f11.3":"security : keys status / rotate --grace Nh · tokens list · blacklist list",
     "f11.4":"inventory list --only-connected · server status / stats",
@@ -829,7 +829,7 @@ const T = {
     "f11.8":"AES-256-GCM : chiffrement RSA keypair serveur et JWT secrets en DB",
     "f11.9":"441 tests PASS, 0 fail · Audit sécurité : 0 CRITIQUE, 0 HAUT",
     "f12.1":"Container relay-ansible : multi-stage build (Go builder + Python runtime)",
-    "f12.2":"relay-inventory : binaire Go standalone intégré dans le container",
+    "f12.2":"secagent-inventory : binaire Go standalone intégré dans le container",
     "f12.3":"Connection plugin relay.py : chargé depuis ansible_plugins/connection_plugins/",
     "f12.4":"ExecCommand handler : relaie commandes Ansible vers agents via WebSocket bloquant",
     "f12.5":"Inventory filtering : par défaut retourne tous les minions, relay_status : \"connected\" | \"disconnected\"",
@@ -849,7 +849,7 @@ const T = {
     "install.lead":"Choisissez votre méthode de déploiement.",
     "install.tab.docker":"Docker Compose","install.tab.manual":"Manuel (binaire)","install.tab.k8s":"Kubernetes (Helm)",
     "ins.enroll.title":"Cycle d'enrollment :",
-    "ins.enroll.body":" l'agent génère sa paire RSA-4096 au <strong>premier démarrage</strong> et la stocke dans <code>/etc/relay-agent/id_rsa</code> (mode 0600). Il tente immédiatement de s'enroller auprès du serveur — mais le serveur refuse tant que la clef publique n'est pas pré-autorisée. L'agent retente automatiquement avec un backoff exponentiel.",
+    "ins.enroll.body":" l'agent génère sa paire RSA-4096 au <strong>premier démarrage</strong> et la stocke dans <code>/etc/secagent-minion/id_rsa</code> (mode 0600). Il tente immédiatement de s'enroller auprès du serveur — mais le serveur refuse tant que la clef publique n'est pas pré-autorisée. L'agent retente automatiquement avec un backoff exponentiel.",
     "ins.d.s1":"Cloner le dépôt et configurer","ins.d.s2":"Démarrer le serveur (relay-api + NATS + Caddy)",
     "ins.d.s3":"Déployer l'agent sur l'hôte cible","ins.d.s4":"Autoriser l'agent (pre-authorize)",
     "ins.d.s5":"Lancer un playbook Ansible",
@@ -860,7 +860,7 @@ const T = {
     "ins.k.s3":"Vérifier le déploiement","ins.k.s4":"Gérer les agents et les clefs",
     "mgmt.tag":"Management",
     "mgmt.title":"Administrez depuis le terminal",
-    "mgmt.lead":"La CLI cobra est intégrée directement dans le binaire <code>relay-server</code>. Accessible depuis un container Docker ou un pod Kubernetes — sans binaire supplémentaire.",
+    "mgmt.lead":"La CLI cobra est intégrée directement dans le binaire <code>secagent-server</code>. Accessible depuis un container Docker ou un pod Kubernetes — sans binaire supplémentaire.",
     "mgmt.agents.title":"Gestion des agents",
     "mgmt.agents.desc":"Listez, suspendez, révoquez et autorisez les agents. Gérez leurs variables d'inventaire.",
     "mgmt.security.title":"Sécurité &amp; clefs",
@@ -892,33 +892,33 @@ const T = {
     "problem.salt.title":"Salt Minion? No thanks.",
     "problem.salt.body":"Salt solves the connection problem but drops Ansible compatibility. You can't reuse your existing roles, collections, and inventories without rewriting everything.",
     "problem.warning.title":"One server to rule them all",
-    "problem.warning.body":"Your Ansible Control Node has SSH access to your entire infrastructure. One compromised Control Node — or a stolen key — gives an attacker access to all your servers in a single step. AnsibleRelay replaces SSH with a secure API backed by per-agent strong authentication, immediate revocation, and centralized audit.",
+    "problem.warning.body":"Your Ansible Control Node has SSH access to your entire infrastructure. One compromised Control Node — or a stolen key — gives an attacker access to all your servers in a single step. Ansible-SecAgent replaces SSH with a secure API backed by per-agent strong authentication, immediate revocation, and centralized audit.",
     "solution.tag":"The solution",
-    "solution.title":"The AnsibleRelay reversed model",
-    "solution.lead":"AnsibleRelay inverts the control flow. The agent on the target host initiates a persistent WebSocket connection to the relay server. Ansible only needs to reach the relay server — never the hosts directly.",
+    "solution.title":"The Ansible-SecAgent reversed model",
+    "solution.lead":"Ansible-SecAgent inverts the control flow. The agent on the target host initiates a persistent WebSocket connection to the relay server. Ansible only needs to reach the relay server — never the hosts directly.",
     "deploy.mono.tag":"Single-node","deploy.mono.title":"Simple &amp; fast",
     "deploy.mono.desc":"A single relay server to get started. Ideal for small infrastructures or to validate the solution in minutes.",
-    "deploy.mono.s1":"1 relay-server (Go, 4.65 MiB)","deploy.mono.s2":"1 NATS JetStream (embedded)",
+    "deploy.mono.s1":"1 secagent-server (Go, 4.65 MiB)","deploy.mono.s2":"1 NATS JetStream (embedded)",
     "deploy.mono.s3":"1 Caddy (automatic TLS)","deploy.mono.s4":"SQLite included — zero DB config",
     "deploy.mono.s5":"docker compose up -d → ready in 30s",
     "deploy.ha.tag":"Multi-node · HA","deploy.ha.title":"Scalable &amp; high availability",
     "deploy.ha.desc":"Multiple relay nodes behind a load balancer. Agents connect to any node, routing is transparent via the NATS cluster.",
-    "deploy.ha.s1":"N relay-server nodes in parallel","deploy.ha.s2":"NATS JetStream cluster (3 nodes)",
+    "deploy.ha.s1":"N secagent-server nodes in parallel","deploy.ha.s2":"NATS JetStream cluster (3 nodes)",
     "deploy.ha.s3":"Load balancer (Nginx / K8s Ingress)","deploy.ha.s4":"External PostgreSQL (RDS/CloudSQL)",
     "deploy.ha.s5":"Kubernetes Helm chart included",
     "compat.tag":"Compatibility","compat.title":"Your existing Ansible, unchanged",
-    "compat.lead":"AnsibleRelay integrates as a standard Ansible plugin. Your playbooks, roles, and collections work without modification. The transition is incremental: SSH remains available side by side.",
+    "compat.lead":"Ansible-SecAgent integrates as a standard Ansible plugin. Your playbooks, roles, and collections work without modification. The transition is incremental: SSH remains available side by side.",
     "compat.playbooks.title":"Playbooks unchanged",
     "compat.playbooks.body":"All your playbooks, roles, and Ansible Galaxy collections work without modification. Just change <code>connection: relay</code> in ansible.cfg.",
     "compat.ssh.title":"SSH still available",
-    "compat.ssh.body":"AnsibleRelay doesn't remove SSH. Both coexist. Ideal for incremental migration: move host by host without disruption.",
+    "compat.ssh.body":"Ansible-SecAgent doesn't remove SSH. Both coexist. Ideal for incremental migration: move host by host without disruption.",
     "compat.inventory.title":"Dynamic inventory",
     "compat.inventory.body":"The inventory plugin automatically lists all connected agents with their facts. Your existing static inventories remain compatible in parallel.",
     "compat.become.title":"become / sudo supported",
     "compat.become.body":"<code>become: true</code> and <code>become_user</code> work just like SSH. The become_pass is transmitted securely, masked in all logs.",
     "compat.comment":"only change required",
     "security.tag":"Security","security.title":"Security by design",
-    "security.lead":"AnsibleRelay is built around a Zero Trust model. Every architectural decision has an explicit security justification, documented in the technical specs.",
+    "security.lead":"Ansible-SecAgent is built around a Zero Trust model. Every architectural decision has an explicit security justification, documented in the technical specs.",
     "security.per-agent":"per agent","security.enrollment.title":"Controlled enrollment",
     "security.rsa.body":"Each agent generates its own RSA-4096 keypair on first start. The private key never leaves the host.",
     "security.enrollment.body":"The agent's public key must be pre-authorized in the database before any enrollment. Zero TOFU (Trust On First Use).",
@@ -937,7 +937,7 @@ const T = {
     "sec.r5.t":"Secret rotation","sec.r5.s":"Manual, with downtime","sec.r5.r":"Dual-key, grace period, zero downtime",
     "sec.r6.t":"become_pass leak in logs","sec.r6.s":"Risk depending on configuration","sec.r6.r":"Masked in all logs",
     "features.tag":"Features","features.title":"Implemented by version",
-    "features.lead":"AnsibleRelay is developed in incremental phases, each validated by automated tests and a security audit before deployment.",
+    "features.lead":"Ansible-SecAgent is developed in incremental phases, each validated by automated tests and a security audit before deployment.",
     "f01.1":"RSA-4096 enrollment: key generation, POST /api/register, JWT OAEP",
     "f01.2":"Persistent WSS connection with exponential backoff reconnect (1s → 60s)",
     "f01.3":"Command execution via subprocess (5 MB stdout buffer, timeout, kill)",
@@ -957,10 +957,10 @@ const T = {
     "f03.5":"HTTP → AnsibleConnectionError mapping: 503 UNREACHABLE, 504 timeout",
     "f10.1":"Go server: 4.65 MiB binary, 0 restarts in production, goroutines",
     "f10.2":"Go agent: 94 tests PASS, 3 qualif agents connected continuously",
-    "f10.3":"relay-inventory: standalone Go binary, 19 tests, native Ansible format",
+    "f10.3":"secagent-inventory: standalone Go binary, 19 tests, native Ansible format",
     "f10.4":"SQLite via modernc (CGO-free), Gorilla WebSocket, native Go JWT",
     "f10.5":"Multi-stage Dockerfile golang:alpine → alpine: minimal image",
-    "f11.1":"cobra CLI integrated in relay-server binary (zero extra binary)",
+    "f11.1":"cobra CLI integrated in secagent-server binary (zero extra binary)",
     "f11.2":"minions: list / get / suspend / resume / revoke / authorize / vars",
     "f11.3":"security: keys status / rotate --grace Nh · tokens list · blacklist list",
     "f11.4":"inventory list --only-connected · server status / stats",
@@ -970,7 +970,7 @@ const T = {
     "f11.8":"AES-256-GCM: server RSA keypair and JWT secrets encrypted in DB",
     "f11.9":"441 tests PASS, 0 fail · Security audit: 0 CRITICAL, 0 HIGH",
     "f12.1":"relay-ansible container: multi-stage build (Go builder + Python runtime)",
-    "f12.2":"relay-inventory: standalone Go binary integrated in container",
+    "f12.2":"secagent-inventory: standalone Go binary integrated in container",
     "f12.3":"Connection plugin relay.py: loaded from ansible_plugins/connection_plugins/",
     "f12.4":"ExecCommand handler: relays Ansible commands to agents via blocking WebSocket",
     "f12.5":"Inventory filtering: by default returns all minions, relay_status: \"connected\" | \"disconnected\"",
@@ -990,7 +990,7 @@ const T = {
     "install.lead":"Choose your deployment method.",
     "install.tab.docker":"Docker Compose","install.tab.manual":"Manual (binary)","install.tab.k8s":"Kubernetes (Helm)",
     "ins.enroll.title":"Enrollment flow:",
-    "ins.enroll.body":" the agent generates its RSA-4096 keypair on <strong>first start</strong> and stores it at <code>/etc/relay-agent/id_rsa</code> (mode 0600). It immediately attempts enrollment — but the server rejects it until the public key is pre-authorized. The agent retries automatically with exponential backoff.",
+    "ins.enroll.body":" the agent generates its RSA-4096 keypair on <strong>first start</strong> and stores it at <code>/etc/secagent-minion/id_rsa</code> (mode 0600). It immediately attempts enrollment — but the server rejects it until the public key is pre-authorized. The agent retries automatically with exponential backoff.",
     "ins.d.s1":"Clone the repo and configure","ins.d.s2":"Start the server (relay-api + NATS + Caddy)",
     "ins.d.s3":"Deploy the agent on the target host","ins.d.s4":"Authorize the agent (pre-authorize)",
     "ins.d.s5":"Run an Ansible playbook",
@@ -1001,7 +1001,7 @@ const T = {
     "ins.k.s3":"Verify deployment","ins.k.s4":"Manage agents and keys",
     "mgmt.tag":"Management",
     "mgmt.title":"Administer from the terminal",
-    "mgmt.lead":"The cobra CLI is built directly into the <code>relay-server</code> binary. Accessible from a Docker container or a Kubernetes pod — no extra binary required.",
+    "mgmt.lead":"The cobra CLI is built directly into the <code>secagent-server</code> binary. Accessible from a Docker container or a Kubernetes pod — no extra binary required.",
     "mgmt.agents.title":"Agent management",
     "mgmt.agents.desc":"List, suspend, revoke, and authorize agents. Manage their inventory variables.",
     "mgmt.security.title":"Security &amp; keys",
