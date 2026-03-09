@@ -146,7 +146,7 @@ h2.section-title span { color: var(--rh-red); }
 .btn-outline:hover { border-color: var(--rh-red); color: var(--rh-red); }
 
 /* ── DIAGRAM / ASCII ── */
-.diagram {
+.diagram, .arch-diagram {
   background: var(--bg-code);
   border: 1px solid var(--border);
   border-left: 3px solid var(--rh-red);
@@ -160,6 +160,7 @@ h2.section-title span { color: var(--rh-red); }
 .c-agent  { color: #6fa3e8; }
 .c-nats   { color: #e8a56f; }
 .c-ansible{ color: var(--green-ok); }
+.c-arrow  { color: var(--text-muted);  }
 
 /* ── WARNING BLOCK ── */
 .warning-block {
