@@ -1,5 +1,5 @@
 #!/bin/bash
-# AnsibleRelay Deployment Script
+# Ansible-SecAgent Deployment Script
 # Usage:
 #   ./deploy.sh server       — Deploy relay server only
 #   ./deploy.sh minion       — Deploy relay minions only
@@ -52,7 +52,7 @@ deploy_server() {
 }
 
 deploy_minions() {
-    log_info "Deploying RELAY MINIONS (relay-agent-01/02/03)..."
+    log_info "Deploying RELAY MINIONS (secagent-minion-01/02/03)..."
     cd "$MINION_DIR"
     docker compose up --build -d
 
@@ -61,11 +61,11 @@ deploy_minions() {
 
     log_info "Checking agent status..."
     for i in 01 02 03; do
-        status=$(docker logs relay-agent-$i 2>&1 | grep -o "WebSocket connecté" | tail -1)
+        status=$(docker logs secagent-minion-$i 2>&1 | grep -o "WebSocket connecté" | tail -1)
         if [ -n "$status" ]; then
             log_info "✅ Agent $i connected"
         else
-            log_warn "⚠️  Agent $i status unknown - check logs with: docker logs relay-agent-$i"
+            log_warn "⚠️  Agent $i status unknown - check logs with: docker logs secagent-minion-$i"
         fi
     done
 }
@@ -104,7 +104,7 @@ deploy_ansible() {
     if docker ps | grep -q relay-ansible; then
         log_info "✅ Ansible container is running"
         log_info "Usage: docker exec -it relay-ansible bash"
-        log_info "Example: docker exec -it relay-ansible ansible-inventory -i relay_inventory -y"
+        log_info "Example: docker exec -it relay-ansible ansible-inventory -i secagent_inventory -y"
     else
         log_warn "⚠️  Ansible container status unknown - check logs with: docker logs relay-ansible"
     fi
@@ -146,14 +146,14 @@ show_status() {
 
 show_help() {
     cat << EOF
-AnsibleRelay Deployment Script
+Ansible-SecAgent Deployment Script
 
 Usage:
     ./deploy.sh [COMMAND] [OPTIONS]
 
 Commands:
     server           Deploy relay server only (nats + relay-api + caddy)
-    minion           Deploy relay minions only (relay-agent-01/02/03)
+    minion           Deploy relay minions only (secagent-minion-01/02/03)
     ansible          Deploy Ansible container with relay plugins
     all              Deploy server, minions, and Ansible container (default)
     stop             Stop all containers
@@ -209,7 +209,7 @@ case "${1:-all}" in
         ;;
     logs-agent)
         agent_id="${2:-01}"
-        docker logs relay-agent-$agent_id --tail 50 -f
+        docker logs secagent-minion-$agent_id --tail 50 -f
         ;;
     logs-ansible)
         docker logs relay-ansible --tail 50 -f

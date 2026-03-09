@@ -48,7 +48,7 @@
 
 ### GET /api/inventory
 - [x] Response format : `{"all": {"hosts": [...]}, "_meta": {"hostvars": {...}}}` — IDENTICAL
-- [x] Hostvars : `ansible_connection, ansible_host, relay_status, relay_last_seen` — IDENTICAL
+- [x] Hostvars : `ansible_connection, ansible_host, secagent_status, secagent_last_seen` — IDENTICAL
 - [ ] Data source : hardcoded mock — **NOT from SQLite DB** (TODO pending)
 
 ### POST /api/admin/authorize

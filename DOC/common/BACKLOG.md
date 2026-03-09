@@ -1,4 +1,4 @@
-# BACKLOG AnsibleRelay — 112 tâches
+# BACKLOG Ansible-SecAgent — 112 tâches
 
 Date création : 2026-03-03
 Date mise à jour : 2026-03-06
@@ -7,8 +7,8 @@ Status : Phase 1-3 ✅, Phase 6 ✅, Phase 7 ✅, Phase 8 ✅, Phase 9 ✅ — P
 ## Vue d'ensemble
 
 ### MVP (Python)
-- **Phase 1 (relay-agent)** : 13 tâches (#4 à #23) ✅ COMPLÈTE
-- **Phase 2 (relay-server)** : 11 tâches (#24 à #34) ✅ COMPLÈTE
+- **Phase 1 (secagent-minion)** : 13 tâches (#4 à #23) ✅ COMPLÈTE
+- **Phase 2 (secagent-server)** : 11 tâches (#24 à #34) ✅ COMPLÈTE
 - **Phase 3 (plugins Ansible)** : 7 tâches (#35 à #41) ✅ COMPLÈTE
 - **Phase 4 (Production Kubernetes)** : 12 tâches (#42 à #53) ⏸ SUSPENDU (no K8s prod)
 - **Phase 5 (Documentation & Hardening)** : 8 tâches (#54 à #61) ⏸ SUSPENDU
@@ -16,7 +16,7 @@ Status : Phase 1-3 ✅, Phase 6 ✅, Phase 7 ✅, Phase 8 ✅, Phase 9 ✅ — P
 ### Optimisation (GO) — COMPLÈTES
 - **Phase 7 (Server rewrite GO)** : ✅ COMPLÈTE — GO server 4.65 MiB, 0 restart
 - **Phase 8 (Agent rewrite GO)** : ✅ COMPLÈTE — 94 tests PASS, 3 agents connectés
-- **Phase 9 (Inventory binary GO)** : ✅ COMPLÈTE — relay-inventory, 19 tests PASS
+- **Phase 9 (Inventory binary GO)** : ✅ COMPLÈTE — secagent-inventory, 19 tests PASS
 
 ### CLI & Management (GO)
 - **Phase 6 (Management CLI GO)** : 8 tâches (#62 à #69) ✅ COMPLÈTE — CLI cobra opérationnelle, rotation clefs validée
@@ -28,7 +28,7 @@ Status : Phase 1-3 ✅, Phase 6 ✅, Phase 7 ✅, Phase 8 ✅, Phase 9 ✅ — P
 
 ---
 
-## PHASE 1 — relay-agent (dossier agent/) — 13 tâches
+## PHASE 1 — secagent-minion (dossier agent/) — 13 tâches
 
 ### Prérequis
 - Lire ARCHITECTURE.md section "Agent"
@@ -39,18 +39,18 @@ Status : Phase 1-3 ✅, Phase 6 ✅, Phase 7 ✅, Phase 8 ✅, Phase 9 ✅ — P
 | # | Tâche | Owner | Status | Bloquée par |
 |---|-------|-------|--------|------------|
 | #4 | facts_collector.py — collecte facts système | dev-agent | pending | - |
-| #6 | relay_agent.py — enrollment POST /api/register + RSA-4096 | dev-agent | pending | #4 |
-| #8 | relay_agent.py — connexion WSS + backoff exponentiel (1s→60s) | dev-agent | pending | #6 |
-| #9 | relay_agent.py — dispatcher messages WS (exec/put_file/fetch_file/cancel) | dev-agent | pending | #8 |
-| #11 | relay_agent.py — exec_command subprocess + stdout streaming + buffer 5MB | dev-agent | pending | #9 |
-| #13 | relay_agent.py — put_file (base64, mkdir -p, chmod) | dev-agent | pending | #9 |
-| #14 | relay_agent.py — fetch_file (lecture, base64, limite 500KB) | dev-agent | pending | #9 |
+| #6 | secagent_agent.py — enrollment POST /api/register + RSA-4096 | dev-agent | pending | #4 |
+| #8 | secagent_agent.py — connexion WSS + backoff exponentiel (1s→60s) | dev-agent | pending | #6 |
+| #9 | secagent_agent.py — dispatcher messages WS (exec/put_file/fetch_file/cancel) | dev-agent | pending | #8 |
+| #11 | secagent_agent.py — exec_command subprocess + stdout streaming + buffer 5MB | dev-agent | pending | #9 |
+| #13 | secagent_agent.py — put_file (base64, mkdir -p, chmod) | dev-agent | pending | #9 |
+| #14 | secagent_agent.py — fetch_file (lecture, base64, limite 500KB) | dev-agent | pending | #9 |
 | #15 | async_registry.py — registre JSON persisté, reprise redémarrage | dev-agent | pending | #9 |
-| #17 | relay-agent.service — unit file systemd (NoNewPrivileges, ProtectSystem) | dev-agent | pending | - |
-| #19 | Tests unitaires relay-agent Phase 1 | test-writer | pending | #4, #6, #8, #9, #11, #13, #14, #15, #17 |
+| #17 | secagent-minion.service — unit file systemd (NoNewPrivileges, ProtectSystem) | dev-agent | pending | - |
+| #19 | Tests unitaires secagent-minion Phase 1 | test-writer | pending | #4, #6, #8, #9, #11, #13, #14, #15, #17 |
 | #20 | QA — pytest Phase 1, rapport (nb tests, pass, fail, détails) | qa | pending | #19 |
-| #22 | Security review — audit Phase 1 relay-agent | security-reviewer | pending | #20 |
-| #23 | Deploy qualif Phase 1 — relay-agent sur 192.168.1.218 | deploy-qualif | pending | #22 |
+| #22 | Security review — audit Phase 1 secagent-minion | security-reviewer | pending | #20 |
+| #23 | Deploy qualif Phase 1 — secagent-minion sur 192.168.1.218 | deploy-qualif | pending | #22 |
 
 **Validation Phase 1 → Phase 2** :
 - ✓ TOUTES tâches #4-#23 completed
@@ -61,7 +61,7 @@ Status : Phase 1-3 ✅, Phase 6 ✅, Phase 7 ✅, Phase 8 ✅, Phase 9 ✅ — P
 
 ---
 
-## PHASE 2 — relay-server (dossier server/) — 11 tâches
+## PHASE 2 — secagent-server (dossier server/) — 11 tâches
 
 ### Prérequis
 - Lire ARCHITECTURE.md section "Server"
@@ -79,10 +79,10 @@ Status : Phase 1-3 ✅, Phase 6 ✅, Phase 7 ✅, Phase 8 ✅, Phase 9 ✅ — P
 | #28 | routes_exec.py — endpoints /api/exec, /api/upload, /api/fetch, /api/inventory | dev-relay | pending | #26, #27 |
 | #29 | main.py — FastAPI app (lifespan, health check) | dev-relay | pending | #25, #26, #27, #28 |
 | #30 | docker-compose.yml + Dockerfile — NATS, relay-api, caddy | dev-relay | pending | #29 |
-| #31 | Tests unitaires relay-server Phase 2 | test-writer | pending | #24-#30 |
+| #31 | Tests unitaires secagent-server Phase 2 | test-writer | pending | #24-#30 |
 | #32 | QA — pytest Phase 2, rapport | qa | pending | #31 |
-| #33 | Security review — audit Phase 2 relay-server | security-reviewer | pending | #32 |
-| #34 | Deploy qualif Phase 2 — relay-server complet sur 192.168.1.218 | deploy-qualif | pending | #33, #23 |
+| #33 | Security review — audit Phase 2 secagent-server | security-reviewer | pending | #32 |
+| #34 | Deploy qualif Phase 2 — secagent-server complet sur 192.168.1.218 | deploy-qualif | pending | #33, #23 |
 
 **Validation Phase 2 → Phase 3** :
 - ✓ TOUTES tâches #24-#34 completed
@@ -101,18 +101,18 @@ Status : Phase 1-3 ✅, Phase 6 ✅, Phase 7 ✅, Phase 8 ✅, Phase 9 ✅ — P
 - Phase 2 validée et déployée
 
 ### Notes architecture — Constraints Ansible
-**Plugins Ansible = PYTHON UNIQUEMENT** : Les API Ansible (`ConnectionBase`, `InventoryModule`) ne sont disponibles que en Python. Les plugins connection et inventory **ne peuvent pas être en GO**. Cela justifie la conservation d'une base Python dans le projet malgré la migration GO du serveur et agent. L'alternative GO (`relay-inventory` binaire, Phase 9) remplace le plugin inventory Python mais ne remplace pas le plugin connection (pas d'alternative).
+**Plugins Ansible = PYTHON UNIQUEMENT** : Les API Ansible (`ConnectionBase`, `InventoryModule`) ne sont disponibles que en Python. Les plugins connection et inventory **ne peuvent pas être en GO**. Cela justifie la conservation d'une base Python dans le projet malgré la migration GO du serveur et agent. L'alternative GO (`secagent-inventory` binaire, Phase 9) remplace le plugin inventory Python mais ne remplace pas le plugin connection (pas d'alternative).
 
 ### Tâches Phase 3
 
 | # | Tâche | Owner | Status | Bloquée par | Notes |
 |---|-------|-------|--------|------------|-------|
-| #35 | connection_plugins/relay.py — ConnectionBase (exec_command, put_file, fetch_file, pipelining, become) | dev-plugins | ✅ completed | #34 | **Obligatoire Python** — API Ansible uniquement |
-| #36 | inventory_plugins/relay_inventory.py — InventoryModule (GET /api/inventory) | dev-plugins | ⏸ OBSOLÈTE | #34 | **Alternative GO implémentée** : `relay-inventory` binaire (Phase 9) remplace ce plugin |
+| #35 | connection_plugins/secagent.py — ConnectionBase (exec_command, put_file, fetch_file, pipelining, become) | dev-plugins | ✅ completed | #34 | **Obligatoire Python** — API Ansible uniquement |
+| #36 | inventory_plugins/secagent_inventory.py — InventoryModule (GET /api/inventory) | dev-plugins | ⏸ OBSOLÈTE | #34 | **Alternative GO implémentée** : `secagent-inventory` binaire (Phase 9) remplace ce plugin |
 | #37 | Tests unitaires + E2E plugins Phase 3 | test-writer | ✅ completed | #35, #36 | Tests connection plugin uniquement |
-| #38 | QA — pytest Phase 3 (unitaire + E2E), rapport | qa | ✅ completed | #37 | QA connection plugin + relay-inventory binary |
+| #38 | QA — pytest Phase 3 (unitaire + E2E), rapport | qa | ✅ completed | #37 | QA connection plugin + secagent-inventory binary |
 | #39 | Security review global — audit Phase 3 + revue MVP complète | security-reviewer | ✅ completed | #38 | Audit global MVP |
-| #40 | Deploy qualif Phase 3 — test E2E complet sur 192.168.1.218 | deploy-qualif | ✅ completed | #39 | Connection plugin + relay-inventory binary déployés |
+| #40 | Deploy qualif Phase 3 — test E2E complet sur 192.168.1.218 | deploy-qualif | ✅ completed | #39 | Connection plugin + secagent-inventory binary déployés |
 | #41 | Deploy prod — Helm chart Kubernetes (après confirmation utilisateur) | deploy-prod | ⏸ SUSPENDU (no K8s prod) | #40 | Pas de K8s en production actuellement |
 
 **Validation Phase 3 → Prod** :
@@ -138,8 +138,8 @@ Status : Phase 1-3 ✅, Phase 6 ✅, Phase 7 ✅, Phase 8 ✅, Phase 9 ✅ — P
 |---|-------|-------|--------|------------|
 | #42 | Helm chart structure — values.yaml, templates/, Chart.yaml | deploy-prod | pending | #40 |
 | #43 | Helm StatefulSet NATS JetStream — persistance, replicas, antiaffinity | deploy-prod | pending | #42 |
-| #44 | Helm Deployment relay-server — multi-port, replicas, PDB | deploy-prod | pending | #42 |
-| #45 | Helm DaemonSet relay-agent — 1 par nœud, node affinity, tolerations | deploy-prod | pending | #42 |
+| #44 | Helm Deployment secagent-server — multi-port, replicas, PDB | deploy-prod | pending | #42 |
+| #45 | Helm DaemonSet secagent-minion — 1 par nœud, node affinity, tolerations | deploy-prod | pending | #42 |
 | #46 | Helm ConfigMap + Secrets — JWT_SECRET, ADMIN_TOKEN, TLS certs | deploy-prod | pending | #42 |
 | #47 | Helm Ingress — TLS termination, routing 7770/7771/7772 | deploy-prod | pending | #42 |
 | #48 | Helm Service (ClusterIP + LoadBalancer) — NATS, relay-api | deploy-prod | pending | #42 |
@@ -194,11 +194,11 @@ Status : Phase 1-3 ✅, Phase 6 ✅, Phase 7 ✅, Phase 8 ✅, Phase 9 ✅ — P
 - `cobra` ajouté aux dépendances go.mod
 
 ### Architecture : même binaire, deux modes
-Le binaire `relay-server` sert de CLI et de serveur (voir ARCHITECTURE.md §21) :
+Le binaire `secagent-server` sert de CLI et de serveur (voir ARCHITECTURE.md §21) :
 ```
-relay-server            # mode serveur (foreground)
-relay-server -d         # mode serveur (daemon)
-relay-server <cmd>      # mode CLI — auth via env vars du container
+secagent-server            # mode serveur (foreground)
+secagent-server -d         # mode serveur (daemon)
+secagent-server <cmd>      # mode CLI — auth via env vars du container
 ```
 
 ### Objectif — Commandes à implémenter
@@ -253,7 +253,7 @@ server stats
 **Validation Phase 6** :
 - ✓ TOUTES tâches #62-#69 completed
 - ✓ qa : 0 test en échec
-- ✓ CLI opérationnelle depuis `docker exec relay-server <cmd>`
+- ✓ CLI opérationnelle depuis `docker exec secagent-server <cmd>`
 - ✓ Rotation des clefs avec période de grâce : agents migrés sans interruption
 - ✓ Agent : handler `rekey` + ré-enrôlement sur 401 automatique
 - ✓ `--format json|table|yaml` sur toutes les commandes
@@ -261,7 +261,7 @@ server stats
 
 ---
 
-## PHASE 7 — Rewrite relay-server (GO) — 12 tâches
+## PHASE 7 — Rewrite secagent-server (GO) — 12 tâches
 
 ### Prérequis
 - Phase 6 complète (CLI opérationnelle)
@@ -269,7 +269,7 @@ server stats
 - Aucune modification aux API contracts (backward-compatible)
 
 ### Objectif
-Réécrire relay-server (FastAPI Python) en GO compilé pour performance + sécurité :
+Réécrire secagent-server (FastAPI Python) en GO compilé pour performance + sécurité :
 - Latency : 100ms → 5ms (20x faster)
 - Memory : 100MB → 10MB per instance
 - Single compiled binary (no runtime)
@@ -288,7 +288,7 @@ Réécrire relay-server (FastAPI Python) en GO compilé pour performance + sécu
 | #75 | ws/handler.go — WebSocket agent connections, dispatcher | dev-relay | pending | #71 |
 | #76 | storage/agent_store.go — SQLite wrapper (agents, authorized_keys, blacklist) | dev-relay | pending | #71 |
 | #77 | broker/nats.go — NATS JetStream client (RELAY_TASKS, RELAY_RESULTS) | dev-relay | pending | #71 |
-| #78 | Tests unitaires relay-server GO | test-writer | pending | #72-#77 |
+| #78 | Tests unitaires secagent-server GO | test-writer | pending | #72-#77 |
 | #79 | Migration Python → GO : verify API contracts, protocol compatibility | dev-relay | pending | #78 |
 | #80 | QA — pytest E2E vs GO server (agents enroll, exec, inventory) | qa | pending | #79 |
 | #81 | Deploy qualif Phase 7 — GO server on 192.168.1.218 | deploy-qualif | pending | #80 |
@@ -304,14 +304,14 @@ Réécrire relay-server (FastAPI Python) en GO compilé pour performance + sécu
 
 ---
 
-## PHASE 8 — Rewrite relay-agent (GO) — 10 tâches
+## PHASE 8 — Rewrite secagent-minion (GO) — 10 tâches
 
 ### Prérequis
 - Phase 7 déployée (GO server)
 - GO 1.21+ installé
 
 ### Objectif
-Réécrire relay-agent (Python daemon) en GO compilé :
+Réécrire secagent-minion (Python daemon) en GO compilé :
 - Memory : 30MB → 2-3MB per agent
 - Startup : 500ms → 10ms
 - Better subprocess isolation
@@ -329,7 +329,7 @@ Réécrire relay-agent (Python daemon) en GO compilé :
 | #86 | agent/files.go — put_file, fetch_file (base64, 500KB limit) | dev-agent | pending | #83 |
 | #87 | agent/registry.go — async task registry (JSON persistence) | dev-agent | pending | #83 |
 | #88 | agent/facts.go — system facts collection (via gopsutil) | dev-agent | pending | #83 |
-| #89 | Tests unitaires relay-agent GO | test-writer | pending | #85-#88 |
+| #89 | Tests unitaires secagent-minion GO | test-writer | pending | #85-#88 |
 | #90 | QA — pytest E2E vs GO agent (enrollment, exec, facts) | qa | pending | #89 |
 | #91 | Deploy qualif Phase 8 — GO agents on 192.168.1.218 | deploy-qualif | pending | #90 |
 
@@ -339,7 +339,7 @@ Réécrire relay-agent (Python daemon) en GO compilé :
 - ✓ Memory : < 3MB per agent
 - ✓ Startup : < 50ms
 - ✓ Subprocess isolation : no threads, separate processes
-- ✓ Systemd : works with existing relay-agent.service
+- ✓ Systemd : works with existing secagent-minion.service
 - ✓ Backward-compatible : no changes to agent protocol
 
 ---
@@ -352,8 +352,8 @@ Réécrire relay-agent (Python daemon) en GO compilé :
 
 ### Objectif
 Wrapper GO pour plugins Ansible (inventory + connection) :
-- relay-inventory-go : compiled binary called by relay_inventory.py
-- relay-exec-go : compiled binary called by relay.py ConnectionBase
+- secagent-inventory-go : compiled binary called by secagent_inventory.py
+- relay-exec-go : compiled binary called by secagent.py ConnectionBase
 - Transparent to Ansible (Python plugins unchanged)
 - Eliminates Python startup overhead (inventory refresh, exec)
 
@@ -361,19 +361,19 @@ Wrapper GO pour plugins Ansible (inventory + connection) :
 ```
 ansible-playbook
     ↓
-relay_inventory.py (Python, unchanged)
+secagent_inventory.py (Python, unchanged)
     ↓ subprocess call
-relay-inventory-go (compiled wrapper)
+secagent-inventory-go (compiled wrapper)
     ↓ HTTP
-relay-server:7772 (/api/inventory)
+secagent-server:7772 (/api/inventory)
     ↓
 response → Ansible inventory
 
-relay.py (Python ConnectionBase, unchanged)
+secagent.py (Python ConnectionBase, unchanged)
     ↓ subprocess call
 relay-exec-go (compiled wrapper)
     ↓ HTTP
-relay-server:7771 (/api/exec, /api/upload, /api/fetch)
+secagent-server:7771 (/api/exec, /api/upload, /api/fetch)
     ↓
 response → Ansible module result
 ```
@@ -423,7 +423,7 @@ Admin                    Server                        Agent (hôte cible)
   │ --hostname my-host     │                              │
   │ --expires 24h          │                              │
   │──────────────────────>│                              │
-  │ token: "relay_enr_..." │                              │  ← affiché une seule fois
+  │ token: "secagent_enr_..." │                              │  ← affiché une seule fois
   │<──────────────────────│                              │
   │                        │                              │
   │  (transmet le token à l'opérateur déployant l'agent) │
@@ -538,7 +538,7 @@ PHASE 10 (ENROLLMENT TOKEN SECURITY):
 
 ## Checklist sécurité par phase
 
-### Phase 1 (relay-agent)
+### Phase 1 (secagent-minion)
 - [ ] TLS obligatoire (WSS)
 - [ ] JWT signé côté agent
 - [ ] Masquage `become_pass` dans logs
@@ -546,7 +546,7 @@ PHASE 10 (ENROLLMENT TOKEN SECURITY):
 - [ ] Isolation subprocess (pas de threads)
 - [ ] RSA-4096 pour enrollment
 
-### Phase 2 (relay-server)
+### Phase 2 (secagent-server)
 - [ ] TLS obligatoire (WSS + HTTPS)
 - [ ] JWT signé + rôles agent/plugin/admin
 - [ ] Blacklist JTI (token revocation)
@@ -577,8 +577,8 @@ PHASE 10 (ENROLLMENT TOKEN SECURITY):
 
 | Phase | Métriques | Status |
 |-------|-----------|--------|
-| Phase 1 | 0 test en échec, relay-agent enregistré et connecté en WSS | ✅ COMPLÈTE |
-| Phase 2 | 0 test en échec, relay-server reçoit enregistrement, gère WebSocket | ✅ COMPLÈTE |
+| Phase 1 | 0 test en échec, secagent-minion enregistré et connecté en WSS | ✅ COMPLÈTE |
+| Phase 2 | 0 test en échec, secagent-server reçoit enregistrement, gère WebSocket | ✅ COMPLÈTE |
 | Phase 3 | 0 test en échec, playbook Ansible exécuté via plugin relay, inventaire dynamique | ✅ COMPLÈTE |
 | MVP Qualif | E2E : enrollment → playbook exec → résultat sur 192.168.1.218 | ✅ VALIDÉE |
 | Phase 4 | Helm deploy réussie, 3 agents K8s connectés, Ingress TLS OK, persistance vérifiée | 🆕 À FAIRE |

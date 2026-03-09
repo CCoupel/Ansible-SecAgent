@@ -1,4 +1,4 @@
-# AnsibleRelay — Quick Start Guide
+# Ansible-SecAgent — Quick Start Guide
 
 ## Déploiement Rapide
 
@@ -66,9 +66,9 @@ cd ansible_minion
 docker compose up --build -d
 
 # Vérifier logs
-docker logs relay-agent-01
-docker logs relay-agent-02
-docker logs relay-agent-03
+docker logs secagent-minion-01
+docker logs secagent-minion-02
+docker logs secagent-minion-03
 ```
 
 ---
@@ -103,9 +103,9 @@ curl http://192.168.1.218:7770/health
 # {"status":"ok","db":"ok","nats":"ok"}
 
 # 2. Agents connectés ?
-docker logs relay-agent-01 | grep "WebSocket connecté"
-docker logs relay-agent-02 | grep "WebSocket connecté"
-docker logs relay-agent-03 | grep "WebSocket connecté"
+docker logs secagent-minion-01 | grep "WebSocket connecté"
+docker logs secagent-minion-02 | grep "WebSocket connecté"
+docker logs secagent-minion-03 | grep "WebSocket connecté"
 
 # 3. Agents enregistrés en base ?
 # Les agents doivent d'abord être pré-autorisés (voir DEPLOYMENT.md)
@@ -116,7 +116,7 @@ docker logs relay-agent-03 | grep "WebSocket connecté"
 ## Structure
 
 ```
-ansible-relay/
+ansible-secagent/
 ├── deploy.sh                 ← Linux/macOS
 ├── deploy.bat               ← Windows
 ├── ansible_server/

@@ -150,7 +150,7 @@
   # Doit montrer :
   # - "Database ready"
   # - "NATS unavailable" (expected, NATS not running)
-  # - "AnsibleRelay multi-port server started"
+  # - "Ansible-SecAgent multi-port server started"
   # - Pas d'erreur
   ```
 

@@ -1,4 +1,4 @@
-# AnsibleRelay — Spécifications Techniques v1.1
+# Ansible-SecAgent — Spécifications Techniques v1.1
 
 > Document issu de la session de brainstorming architecture.
 > Décrit les décisions validées pour le MVP et les axes v2.
@@ -13,7 +13,7 @@
 3. [Architecture réseau et flux de données](#3-architecture-réseau-et-flux-de-données)
 4. [Protocole WebSocket](#4-protocole-websocket)
 5. [Bus de messages — NATS JetStream](#5-bus-de-messages--nats-jetstream)
-6. [API REST du relay server](#6-api-rest-du-relay-server)
+6. [API REST du relay server](#6-api-rest-du-secagent-server)
 7. [Sécurité et authentification](#7-sécurité-et-authentification)
 8. [Flow complet d'un playbook](#8-flow-complet-dun-playbook)
 9. [Gestion de la concurrence](#9-gestion-de-la-concurrence)
@@ -25,15 +25,15 @@
 15. [Haute disponibilité et scalabilité](#15-haute-disponibilité-et-scalabilité)
 16. [Configuration](#16-configuration)
 17. [Roadmap MVP vs V2](#17-roadmap-mvp-vs-v2)
-18. [Déploiement — relay-agent (systemd)](#18-déploiement--relay-agent-systemd)
-19. [Déploiement — relay server (Compose / Kubernetes)](#19-déploiement--relay-server-compose--kubernetes)
+18. [Déploiement — secagent-minion (systemd)](#18-déploiement--secagent-minion-systemd)
+19. [Déploiement — relay server (Compose / Kubernetes)](#19-déploiement--secagent-server-compose--kubernetes)
 20. [Persistance des données](#20-persistance-des-données)
 
 ---
 
 ## 1. Vue d'ensemble
 
-AnsibleRelay est un système permettant d'exécuter des playbooks Ansible sur des hôtes distants **sans connexion SSH entrante**. Les agents clients initient eux-mêmes la connexion vers un serveur central, inversant le sens traditionnel du flux de contrôle.
+Ansible-SecAgent est un système permettant d'exécuter des playbooks Ansible sur des hôtes distants **sans connexion SSH entrante**. Les agents clients initient eux-mêmes la connexion vers un serveur central, inversant le sens traditionnel du flux de contrôle.
 
 ### Principe fondamental
 
@@ -41,7 +41,7 @@ AnsibleRelay est un système permettant d'exécuter des playbooks Ansible sur de
 Modèle SSH classique :
   Ansible Control Node ──SSH──▶ Hôte cible
 
-Modèle AnsibleRelay :
+Modèle Ansible-SecAgent :
   Ansible Control Node ──REST──▶ Relay Server ◀──WSS── Agent (hôte cible)
 ```
 
@@ -57,12 +57,12 @@ Modèle AnsibleRelay :
 ## 2. Composants du système
 
 ```
-ansible-relay/
+ansible-secagent/
 ├── agent/                    # CLIENT : daemon sur chaque hôte géré
-│   ├── relay_agent.py        # Daemon principal (WebSocket + task runner)
+│   ├── secagent_agent.py        # Daemon principal (WebSocket + task runner)
 │   ├── facts_collector.py    # Collecte des facts Ansible
 │   ├── async_registry.py     # Registre des tâches async persisté
-│   └── relay-agent.service   # Unité systemd
+│   └── secagent-minion.service   # Unité systemd
 │
 ├── server/                   # SERVEUR : relay + broker
 │   ├── api/
@@ -78,9 +78,9 @@ ansible-relay/
 │
 ├── ansible_plugins/
 │   ├── connection_plugins/
-│   │   └── relay.py          # Plugin de connexion Ansible
+│   │   └── secagent.py          # Plugin de connexion Ansible
 │   └── inventory_plugins/
-│       └── relay_inventory.py# Plugin d'inventaire dynamique
+│       └── secagent_inventory.py# Plugin d'inventaire dynamique
 │
 └── playbooks/
     ├── ansible.cfg           # Configuration Ansible
@@ -91,14 +91,14 @@ ansible-relay/
 
 | Composant | Rôle | Langage | Notes |
 |---|---|---|---|
-| `relay-agent` | Daemon client, maintient la WSS, exécute les tâches | GO (Phase 8) | Binaire standalone |
-| `relay-server` | Bridge WSS↔NATS, expose REST API, gère l'authentification | GO (Phase 7) | Binaire standalone |
+| `secagent-minion` | Daemon client, maintient la WSS, exécute les tâches | GO (Phase 8) | Binaire standalone |
+| `secagent-server` | Bridge WSS↔NATS, expose REST API, gère l'authentification | GO (Phase 7) | Binaire standalone |
 | `NATS JetStream` | Bus de messages persistant, routing inter-nodes | GO (binaire) | Composant externe |
-| `relay-inventory` | Binaire inventaire compatible Ansible `--list`/`--host` | GO (Phase 9) | Binaire standalone |
-| `connection_plugins/relay.py` | Remplace SSH dans Ansible, appels REST bloquants | Python (Phase 3) | **Contrainte Ansible** : API `ConnectionBase` Python uniquement |
-| `inventory_plugins/relay.py` | Expose les agents enregistrés à Ansible | Python (Phase 3) | **Contrainte Ansible** : API `InventoryModule` Python uniquement |
+| `secagent-inventory` | Binaire inventaire compatible Ansible `--list`/`--host` | GO (Phase 9) | Binaire standalone |
+| `connection_plugins/secagent.py` | Remplace SSH dans Ansible, appels REST bloquants | Python (Phase 3) | **Contrainte Ansible** : API `ConnectionBase` Python uniquement |
+| `inventory_plugins/secagent.py` | Expose les agents enregistrés à Ansible | Python (Phase 3) | **Contrainte Ansible** : API `InventoryModule` Python uniquement |
 
-**Note architecture** : Les plugins Ansible (`connection_plugins/`, `inventory_plugins/`) **DOIVENT** rester en Python car Ansible n'expose que des API Python pour l'extension des plugins. Les plugins sont chargés dynamiquement par Ansible et doivent hériter de `ConnectionBase` ou `BaseInventoryPlugin`. L'alternative GO (`relay-inventory` binaire) est fournie pour les cas où le plugin Python n'est pas disponible (ex: restrictions environnement, automatisation externes).
+**Note architecture** : Les plugins Ansible (`connection_plugins/`, `inventory_plugins/`) **DOIVENT** rester en Python car Ansible n'expose que des API Python pour l'extension des plugins. Les plugins sont chargés dynamiquement par Ansible et doivent hériter de `ConnectionBase` ou `BaseInventoryPlugin`. L'alternative GO (`secagent-inventory` binaire) est fournie pour les cas où le plugin Python n'est pas disponible (ex: restrictions environnement, automatisation externes).
 
 ---
 
@@ -131,7 +131,7 @@ ansible-relay/
 
 | # | Connexion | Initiée par | Vers | Protocole |
 |---|---|---|---|---|
-| 1 | Session agent | `relay-agent` | Relay Server | WSS (WebSocket over TLS) |
+| 1 | Session agent | `secagent-minion` | Relay Server | WSS (WebSocket over TLS) |
 | 2 | Bus messages | Relay Server | NATS Cluster | NATS TCP |
 | 3 | Exécution tâche | Connection Plugin | Relay Server API | HTTPS (REST bloquant) |
 
@@ -331,7 +331,7 @@ Replicas    : 3
 ### Consumer par agent
 
 ```
-Nom         : relay-agent-{hostname}
+Nom         : secagent-minion-{hostname}
 Type        : Push (le serveur pousse à l'agent via WS)
 AckPolicy   : Explicit
 AckWait     : 30s
@@ -415,14 +415,14 @@ Requiert TLS. La clef publique doit figurer dans `authorized_keys` côté serveu
       "host-A": {
         "ansible_connection": "relay",
         "ansible_host": "host-A",
-        "relay_status": "connected",
-        "relay_last_seen": "2026-03-03T10:00:00Z"
+        "secagent_status": "connected",
+        "secagent_last_seen": "2026-03-03T10:00:00Z"
       },
       "host-B": {
         "ansible_connection": "relay",
         "ansible_host": "host-B",
-        "relay_status": "disconnected",
-        "relay_last_seen": "2026-03-03T08:00:00Z"
+        "secagent_status": "disconnected",
+        "secagent_last_seen": "2026-03-03T08:00:00Z"
       }
     }
   }
@@ -457,7 +457,7 @@ Requiert TLS. La clef publique doit figurer dans `authorized_keys` côté serveu
 
 | Code HTTP | Signification |
 |---|---|
-| `503` | Agent offline (`relay_status: disconnected`) |
+| `503` | Agent offline (`secagent_status: disconnected`) |
 | `504` | Timeout — agent n'a pas répondu dans le délai imparti |
 | `500` | Agent déconnecté pendant l'exécution |
 | `429` | Agent busy — `max_concurrent_tasks` atteint |
@@ -491,7 +491,7 @@ Requiert TLS. La clef publique doit figurer dans `authorized_keys` côté serveu
 #### `WebSocket /ws/agent` — Connexion agent
 
 ```
-wss://relay-server/ws/agent
+wss://secagent-server/ws/agent
 Headers: Authorization: Bearer <JWT>
 ```
 
@@ -528,8 +528,8 @@ Prérequis : clef publique de l'agent pré-enregistrée en base
 Table DB : authorized_keys(hostname, public_key_pem, approved_at, approved_by)
 
 1. Agent démarre
-   → génère paire RSA-4096 si absente (/etc/ansible-relay/id_rsa)
-   → POST https://relay-server/api/register
+   → génère paire RSA-4096 si absente (/etc/ansible-secagent/id_rsa)
+   → POST https://secagent-server/api/register
      { hostname: "host-A", public_key_pem: "..." }
 
 2. Relay server
@@ -542,8 +542,8 @@ Table DB : authorized_keys(hostname, public_key_pem, approved_at, approved_by)
 
 3. Agent
    → déchiffre token_encrypted avec sa clef privée → JWT
-   → stocke JWT localement (/etc/ansible-relay/token.jwt)
-   → stocke server_public_key (/etc/ansible-relay/server.pub)
+   → stocke JWT localement (/etc/ansible-secagent/token.jwt)
+   → stocke server_public_key (/etc/ansible-secagent/server.pub)
 ```
 
 ### Endpoint d'autorisation (pipeline de provisioning)
@@ -792,14 +792,14 @@ L'agent **daemonise** le subprocess et répond immédiatement :
 Le job est enregistré dans le registre async persisté sur disque :
 
 ```json
-// ~/.ansible-relay/async_jobs.json
+// ~/.ansible-secagent/async_jobs.json
 {
   "jid-uuid": {
     "pid": 4521,
     "cmd": "./deploy.sh",
     "started_at": 1234567890,
     "timeout": 3600,
-    "stdout_path": "/tmp/.ansible-relay/jid-uuid.stdout"
+    "stdout_path": "/tmp/.ansible-secagent/jid-uuid.stdout"
   }
 }
 ```
@@ -976,18 +976,18 @@ WS fermée code 4002 (expiré)
 
 ## 14. Inventaire dynamique
 
-### Plugin `relay_inventory.py`
+### Plugin `secagent_inventory.py`
 
 Interroge l'API du relay server et retourne le format JSON standard Ansible.
 
 ```python
 # ansible.cfg
 [defaults]
-inventory = relay_inventory.py
+inventory = secagent_inventory.py
 
-[relay_inventory]
-relay_server = https://relay.example.com
-token_file = /etc/ansible/relay_plugin.jwt
+[secagent_inventory]
+secagent_server = https://relay.example.com
+token_file = /etc/ansible/secagent_plugin.jwt
 only_connected = false   # true pour exclure les agents offline
 ```
 
@@ -1003,14 +1003,14 @@ only_connected = false   # true pour exclure les agents offline
       "host-A": {
         "ansible_connection": "relay",
         "ansible_host": "host-A",
-        "relay_status": "connected"
+        "secagent_status": "connected"
       }
     }
   }
 }
 ```
 
-Les agents `relay_status: disconnected` sont inclus. Ansible les marquera UNREACHABLE lors de la tentative d'exécution (HTTP 503 → `AnsibleConnectionError`).
+Les agents `secagent_status: disconnected` sont inclus. Ansible les marquera UNREACHABLE lors de la tentative d'exécution (HTTP 503 → `AnsibleConnectionError`).
 
 ---
 
@@ -1055,34 +1055,34 @@ PostgreSQL pour la production multi-nodes (Kubernetes). Voir section 20.
 
 ## 16. Configuration
 
-### Agent (`/etc/ansible-relay/agent.conf`)
+### Agent (`/etc/ansible-secagent/agent.conf`)
 
 ```ini
 [relay]
 server_url = wss://relay.example.com/ws/agent
-token_file = /etc/ansible-relay/token.jwt
-key_file = /etc/ansible-relay/id_rsa
+token_file = /etc/ansible-secagent/token.jwt
+key_file = /etc/ansible-secagent/id_rsa
 
 [agent]
 hostname =                    # auto-détecté si vide (socket.gethostname())
 max_concurrent_tasks = 10
-async_jobs_dir = /var/lib/ansible-relay/async/
+async_jobs_dir = /var/lib/ansible-secagent/async/
 stdout_max_bytes = 5242880    # 5MB
 
 [logging]
 level = INFO
-file = /var/log/ansible-relay/agent.log
+file = /var/log/ansible-secagent/agent.log
 mask_become_stdin = true
 ```
 
-### Relay server (`/etc/ansible-relay/server.conf`)
+### Relay server (`/etc/ansible-secagent/server.conf`)
 
 ```ini
 [server]
 host = 0.0.0.0
 port = 8443
-tls_cert = /etc/ansible-relay/server.crt
-tls_key = /etc/ansible-relay/server.key
+tls_cert = /etc/ansible-secagent/server.crt
+tls_key = /etc/ansible-secagent/server.key
 
 [nats]
 url = nats://nats-cluster:4222
@@ -1106,19 +1106,19 @@ admin_token = <token admin pour /api/admin/authorize>
 
 ```ini
 [defaults]
-inventory = /etc/ansible/relay_inventory.py
+inventory = /etc/ansible/secagent_inventory.py
 connection_plugins = /usr/lib/ansible/plugins/connection
 pipelining = true
 timeout = 30
 
-[relay_connection]
-relay_server = https://relay.example.com
-token_file = /etc/ansible/relay_plugin.jwt
-key_file = /etc/ansible/relay_plugin_id_rsa
+[secagent_connection]
+secagent_server = https://relay.example.com
+token_file = /etc/ansible/secagent_plugin.jwt
+key_file = /etc/ansible/secagent_plugin_id_rsa
 
-[relay_inventory]
-relay_server = https://relay.example.com
-token_file = /etc/ansible/relay_plugin.jwt
+[secagent_inventory]
+secagent_server = https://relay.example.com
+token_file = /etc/ansible/secagent_plugin.jwt
 only_connected = false
 ```
 
@@ -1130,13 +1130,13 @@ only_connected = false
 
 | Fonctionnalité | Statut |
 |---|---|
-| relay-agent : WebSocket + exec_command | MVP |
-| relay-agent : put_file / fetch_file (< 500KB) | MVP |
-| relay-agent : become via stdin | MVP |
-| relay-agent : tâches async (registre fichier) | MVP |
-| relay-agent : max_concurrent_tasks | MVP |
-| relay-agent : reconnexion avec backoff expo | MVP |
-| relay-agent : systemd unit file | MVP |
+| secagent-minion : WebSocket + exec_command | MVP |
+| secagent-minion : put_file / fetch_file (< 500KB) | MVP |
+| secagent-minion : become via stdin | MVP |
+| secagent-minion : tâches async (registre fichier) | MVP |
+| secagent-minion : max_concurrent_tasks | MVP |
+| secagent-minion : reconnexion avec backoff expo | MVP |
+| secagent-minion : systemd unit file | MVP |
 | relay server : FastAPI + WebSocket handler | MVP |
 | relay server : NATS JetStream (RELAY_TASKS + RELAY_RESULTS) | MVP |
 | relay server : REST API exec/upload/fetch | MVP |
@@ -1168,7 +1168,7 @@ only_connected = false
 
 ---
 
-## 18. Déploiement — relay-agent (systemd)
+## 18. Déploiement — secagent-minion (systemd)
 
 ### Philosophie : infrastructure immuable
 
@@ -1190,20 +1190,20 @@ Pipeline de provisioning (Terraform / Packer / cloud-init)
 ### Unit file systemd
 
 ```ini
-# /etc/systemd/system/relay-agent.service
+# /etc/systemd/system/secagent-minion.service
 
 [Unit]
-Description=AnsibleRelay Agent
-Documentation=https://github.com/org/ansible-relay
+Description=Ansible-SecAgent Agent
+Documentation=https://github.com/org/ansible-secagent
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=relay-agent
-Group=relay-agent
-ExecStart=/usr/bin/python3 /opt/relay-agent/relay_agent.py \
-    --config /etc/ansible-relay/agent.conf
+User=secagent-minion
+Group=secagent-minion
+ExecStart=/usr/bin/python3 /opt/secagent-minion/secagent_agent.py \
+    --config /etc/ansible-secagent/agent.conf
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
@@ -1212,15 +1212,15 @@ TimeoutStopSec=30s
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/ansible-relay /var/log/ansible-relay
+ReadWritePaths=/var/lib/ansible-secagent /var/log/ansible-secagent
 
 # Logs
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=relay-agent
+SyslogIdentifier=secagent-minion
 
 # Variables d'environnement
-EnvironmentFile=-/etc/ansible-relay/agent.env
+EnvironmentFile=-/etc/ansible-secagent/agent.env
 
 [Install]
 WantedBy=multi-user.target
@@ -1229,21 +1229,21 @@ WantedBy=multi-user.target
 ### Structure fichiers sur l'hôte
 
 ```
-/opt/relay-agent/
-  relay_agent.py          # daemon principal
+/opt/secagent-minion/
+  secagent_agent.py          # daemon principal
   async_registry.py       # registre jobs async
   facts_collector.py      # collecte facts
 
-/etc/ansible-relay/
+/etc/ansible-secagent/
   agent.conf              # configuration
-  id_rsa                  # clef privée (mode 600, owner relay-agent)
+  id_rsa                  # clef privée (mode 600, owner secagent-minion)
   token.jwt               # JWT courant (renouvelé automatiquement)
   server.pub              # clef publique du relay server
 
-/var/lib/ansible-relay/
+/var/lib/ansible-secagent/
   async/                  # registres JSON des jobs async
 
-/var/log/ansible-relay/
+/var/log/ansible-secagent/
   agent.log               # logs applicatifs (si pas journald)
 ```
 
@@ -1252,12 +1252,12 @@ WantedBy=multi-user.target
 ```bash
 # Installation
 systemctl daemon-reload
-systemctl enable relay-agent
-systemctl start relay-agent
+systemctl enable secagent-minion
+systemctl start secagent-minion
 
 # Vérification
-systemctl status relay-agent
-journalctl -u relay-agent -f
+systemctl status secagent-minion
+journalctl -u secagent-minion -f
 ```
 
 ---
@@ -1299,7 +1299,7 @@ services:
       TLS_CERT: /etc/relay/certs/server.crt
       TLS_KEY: /etc/relay/certs/server.key
     volumes:
-      - relay_data:/data
+      - secagent_data:/data
       - ./certs:/etc/relay/certs:ro
     expose:
       - "8443"
@@ -1317,7 +1317,7 @@ services:
 
 volumes:
   nats_data:
-  relay_data:
+  secagent_data:
   caddy_data:
 ```
 
@@ -1346,12 +1346,12 @@ Cible : infrastructure > 100 agents, haute disponibilité, multi-nodes.
 #### Schéma des ressources K8s
 
 ```
-Namespace: ansible-relay
+Namespace: ansible-secagent
 ─────────────────────────────────────────────────────────────────
 
 Deployment: relay-api
   replicas: 3
-  image: registry/ansible-relay-api:tag
+  image: registry/ansible-secagent-api:tag
   envFrom:
     - secretRef: relay-secrets          # JWT_SECRET_KEY, ADMIN_TOKEN, DB_URL
   resources:
@@ -1428,7 +1428,7 @@ annotations:
 | Admin token | Secret | Oui | Rare | `.env` / bind mount | Secret K8s |
 | TLS cert/key serveur | Secret | Oui | Rare (renouvellement) | bind mount `./certs` | cert-manager |
 | NATS JetStream state | Binaire NATS | Non | Continu | Volume nommé | PVC StatefulSet |
-| Async jobs (agent) | Fichier JSON | Non | Par tâche | `/var/lib/ansible-relay/` (hôte) | `/var/lib/ansible-relay/` (hôte) |
+| Async jobs (agent) | Fichier JSON | Non | Par tâche | `/var/lib/ansible-secagent/` (hôte) | `/var/lib/ansible-secagent/` (hôte) |
 
 ### Schéma de base de données
 
@@ -1491,16 +1491,16 @@ En cas de perte complète du relay server :
 
 ---
 
-## 21. CLI de Management — relay-server en mode CLI
+## 21. CLI de Management — secagent-server en mode CLI
 
 ### Philosophie : binaire unique, deux modes
 
-Le binaire `relay-server` est le point d'entrée unique pour le serveur ET pour l'administration :
+Le binaire `secagent-server` est le point d'entrée unique pour le serveur ET pour l'administration :
 
 ```
-relay-server           # démarre en mode serveur (foreground)
-relay-server -d        # démarre en mode serveur (daemon background)
-relay-server <cmd>     # mode CLI — agit sur le serveur local via env vars
+secagent-server           # démarre en mode serveur (foreground)
+secagent-server -d        # démarre en mode serveur (daemon background)
+secagent-server <cmd>     # mode CLI — agit sur le serveur local via env vars
 ```
 
 **Avantage** : exécuté depuis l'intérieur du container Docker, l'authentification est gratuite — le binaire lit directement `ADMIN_TOKEN` et `JWT_SECRET_KEY` depuis l'environnement, sans token réseau supplémentaire.
@@ -1510,76 +1510,76 @@ relay-server <cmd>     # mode CLI — agit sur le serveur local via env vars
 ### Commandes — Gestion des minions
 
 ```
-relay-server minions list [--format json|table|yaml]
+secagent-server minions list [--format json|table|yaml]
   → Tous les agents : hostname, état, last_seen, version
 
-relay-server minions get <hostname> [--format json|table|yaml]
+secagent-server minions get <hostname> [--format json|table|yaml]
   → Détail : facts, enrollment_date, authorized_key_fingerprint
 
-relay-server minions set-state <hostname> connected|disconnected
+secagent-server minions set-state <hostname> connected|disconnected
   → Forcer l'état en DB (sans fermer le WS actif)
 
-relay-server minions suspend <hostname>
+secagent-server minions suspend <hostname>
   → Bloquer nouvelles tâches (flag suspended=true en DB)
   → Répondre 503 à tout /api/exec/{hostname}
 
-relay-server minions resume <hostname>
+secagent-server minions resume <hostname>
   → Lever la suspension
 
-relay-server minions revoke <hostname>
+secagent-server minions revoke <hostname>
   → Blacklister le JTI actif → fermer WS (close 4001) → 403 à la reconnexion
 
-relay-server minions authorize <hostname> --key-file <pem>
+secagent-server minions authorize <hostname> --key-file <pem>
   → Pré-enregistrer la clef publique en DB (POST /api/admin/authorize interne)
 
-relay-server minions vars get <hostname> [--format json|yaml]
+secagent-server minions vars get <hostname> [--format json|yaml]
   → Afficher les variables Ansible du minion
 
-relay-server minions vars set <hostname> key=value [key2=value2 ...]
+secagent-server minions vars set <hostname> key=value [key2=value2 ...]
   → Modifier/ajouter des variables Ansible
 
-relay-server minions vars delete <hostname> <key>
+secagent-server minions vars delete <hostname> <key>
   → Supprimer une variable Ansible
 ```
 
 ### Commandes — Gestion de sécurité
 
 ```
-relay-server security keys status [--format json|table]
+secagent-server security keys status [--format json|table]
   → Current key   : sha256:abc... (actif depuis Xh)
   → Previous key  : sha256:def... (expire dans Xh)   [si rotation en cours]
   → Agents migrés : N/M
 
-relay-server security keys rotate [--grace 24h]
+secagent-server security keys rotate [--grace 24h]
   → Voir §22 — Rotation des clefs avec période de recouvrement
 
-relay-server security tokens list [--format json|table]
+secagent-server security tokens list [--format json|table]
   → JWT actifs : hostname, jti, issued_at, expires_at, key_generation
 
-relay-server security blacklist list [--format json|table]
+secagent-server security blacklist list [--format json|table]
   → JTI révoqués : jti, hostname, revoked_at, reason, expires_at
 
-relay-server security blacklist purge
+secagent-server security blacklist purge
   → Supprimer les entrées expirées de la blacklist (ménage DB)
 ```
 
 ### Commandes — Inventaire
 
 ```
-relay-server inventory list [--only-connected] [--format json|yaml|table]
+secagent-server inventory list [--only-connected] [--format json|yaml|table]
   → GET /api/inventory — tous les agents ou connectés uniquement
 ```
 
 ### Commandes — Santé serveur
 
 ```
-relay-server server status [--format json|table]
+secagent-server server status [--format json|table]
   → NATS    : connected (nats://localhost:4222) / unreachable
   → DB      : ok (relay.db, N agents enregistrés)
   → WS      : N connexions actives
   → Uptime  : Xh Xm
 
-relay-server server stats [--format json|table]
+secagent-server server stats [--format json|table]
   → Agents connectés   : N / M enregistrés
   → Tâches en cours    : N active
   → Tâches async       : N pending
@@ -1608,7 +1608,7 @@ Lors d'une rotation de clef JWT (`JWT_SECRET_KEY`), les agents déconnectés con
 #### Phase 1 — Lancement de la rotation
 
 ```
-relay-server security keys rotate [--grace 24h]
+secagent-server security keys rotate [--grace 24h]
 ```
 
 1. Génère un nouveau `jwt_secret_current`
@@ -1703,6 +1703,6 @@ Si le serveur rejette la connexion WS avec HTTP 401 (JWT expiré ou révoqué ap
 
 ---
 
-*Document généré le 2026-03-03 — Session de brainstorming architecture AnsibleRelay*
+*Document généré le 2026-03-03 — Session de brainstorming architecture Ansible-SecAgent*
 *Mise à jour v1.1 : déploiement systemd / Docker Compose / Kubernetes, persistance des données*
 *Mise à jour v1.2 : CLI management (§21), rotation des clefs avec période de recouvrement (§22)*

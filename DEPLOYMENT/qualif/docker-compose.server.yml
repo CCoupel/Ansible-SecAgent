@@ -1,4 +1,4 @@
-# docker-compose.yml — AnsibleRelay Server (Phase 2)
+# docker-compose.yml — Ansible-SecAgent Server (Phase 2)
 #
 # Déploiement du serveur relay uniquement (nats, relay-api, caddy)
 # Utiliser docker-compose.clients.yml pour les agents de test
@@ -13,7 +13,7 @@
 services:
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # PHASE 2 — relay-server (nats + relay-api + caddy)
+  # PHASE 2 — secagent-server (nats + relay-api + caddy)
   # ─────────────────────────────────────────────────────────────────────────────
 
   # ── NATS JetStream ────────────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ services:
       ADMIN_TOKEN: "${ADMIN_TOKEN}"
       LOG_LEVEL: "INFO"
     volumes:
-      - relay_data:/data
+      - secagent_data:/data
     expose:
       - "7770"
       - "7771"
@@ -88,6 +88,6 @@ services:
 
 volumes:
   nats_data:
-  relay_data:
+  secagent_data:
   caddy_data:
   caddy_config:

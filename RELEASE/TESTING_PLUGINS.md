@@ -1,4 +1,4 @@
-# Testing AnsibleRelay Plugins
+# Testing Ansible-SecAgent Plugins
 
 Complete guide for testing the Ansible plugins (connection + inventory) with the deployed relay server.
 
@@ -12,9 +12,9 @@ Complete guide for testing the Ansible plugins (connection + inventory) with the
 
 2. **Agents registered and connected**
    ```bash
-   docker logs relay-agent-01 | grep "WebSocket connecté"
-   docker logs relay-agent-02 | grep "WebSocket connecté"
-   docker logs relay-agent-03 | grep "WebSocket connecté"
+   docker logs secagent-minion-01 | grep "WebSocket connecté"
+   docker logs secagent-minion-02 | grep "WebSocket connecté"
+   docker logs secagent-minion-03 | grep "WebSocket connecté"
    ```
 
 3. **Local requirements**
@@ -74,7 +74,7 @@ EOF
 Save the token to an environment variable:
 ```bash
 export RELAY_TOKEN=$(python3 -c "...")  # Run the above
-export RELAY_TOKEN_FILE=/tmp/relay_token.jwt
+export RELAY_TOKEN_FILE=/tmp/secagent_token.jwt
 echo $RELAY_TOKEN > $RELAY_TOKEN_FILE
 ```
 
@@ -83,7 +83,7 @@ echo $RELAY_TOKEN > $RELAY_TOKEN_FILE
 ```bash
 # Get inventory in Ansible JSON format
 curl -s http://192.168.1.218:7770/api/inventory \
-  -H "Authorization: Bearer $(cat /tmp/relay_token.jwt)" | jq .
+  -H "Authorization: Bearer $(cat /tmp/secagent_token.jwt)" | jq .
 
 # Expected output:
 # {
@@ -95,8 +95,8 @@ curl -s http://192.168.1.218:7770/api/inventory \
 #       "qualif-host-01": {
 #         "ansible_connection": "relay",
 #         "ansible_host": "qualif-host-01",
-#         "relay_status": "connected",
-#         "relay_last_seen": "2026-03-05T..."
+#         "secagent_status": "connected",
+#         "secagent_last_seen": "2026-03-05T..."
 #       },
 #       ...
 #     }
@@ -110,32 +110,32 @@ If inventory plugin doesn't work, use static inventory:
 
 ```ini
 # tests/inventory_relay.ini
-[relay_agents]
+[secagent_agents]
 qualif-host-01 ansible_connection=relay ansible_host=qualif-host-01
 qualif-host-02 ansible_connection=relay ansible_host=qualif-host-02
 qualif-host-03 ansible_connection=relay ansible_host=qualif-host-03
 
 [all:vars]
-relay_server_url=http://192.168.1.218:7770
+secagent_server_url=http://192.168.1.218:7770
 ```
 
 #### Step 4: Run Ansible Playbook
 
 ```bash
-export RELAY_TOKEN_FILE=/tmp/relay_token.jwt
+export RELAY_TOKEN_FILE=/tmp/secagent_token.jwt
 export ANSIBLE_LIBRARY=./ansible_plugins
 export ANSIBLE_CONFIG=./ansible.cfg
 
 # Test with static inventory
-ansible-playbook playbooks/test_relay_plugins.yml -i tests/inventory_relay.ini -v
+ansible-playbook playbooks/test_secagent_plugins.yml -i tests/inventory_relay.ini -v
 
 # Or test with dynamic inventory
-ansible-playbook playbooks/test_relay_plugins.yml -i relay_inventory -v
+ansible-playbook playbooks/test_secagent_plugins.yml -i secagent_inventory -v
 ```
 
 ## What Gets Tested
 
-The playbook `playbooks/test_relay_plugins.yml` tests:
+The playbook `playbooks/test_secagent_plugins.yml` tests:
 
 1. **Connection Plugin**
    - Establish connection to agent via relay connection plugin
@@ -241,9 +241,9 @@ ansible all -i tests/inventory_relay.ini -m copy -a "content='test' dest=/tmp/te
 ### Test with Extra Variables
 
 ```bash
-ansible-playbook playbooks/test_relay_plugins.yml \
+ansible-playbook playbooks/test_secagent_plugins.yml \
   -i tests/inventory_relay.ini \
-  -e "relay_server_url=http://192.168.1.218:7770" \
+  -e "secagent_server_url=http://192.168.1.218:7770" \
   -e "ansible_connection_timeout=30" \
   -v
 ```
@@ -252,10 +252,10 @@ ansible-playbook playbooks/test_relay_plugins.yml \
 
 ```bash
 # Measure plugin execution time
-time ansible-playbook playbooks/test_relay_plugins.yml -i tests/inventory_relay.ini
+time ansible-playbook playbooks/test_secagent_plugins.yml -i tests/inventory_relay.ini
 
 # Run in parallel (default is sequential per agent)
-ansible-playbook playbooks/test_relay_plugins.yml \
+ansible-playbook playbooks/test_secagent_plugins.yml \
   -i tests/inventory_relay.ini \
   -f 3  # Run 3 tasks in parallel
 ```
@@ -266,13 +266,13 @@ To test full E2E with real Ansible workflow:
 
 ```bash
 # 1. Verify inventory discovery
-ansible-inventory -i relay_inventory --list | jq '.all.hosts[]'
+ansible-inventory -i secagent_inventory --list | jq '.all.hosts[]'
 
 # 2. Verify plugin is used
-ansible-playbook playbooks/test_relay_plugins.yml -i relay_inventory -vvv 2>&1 | grep -i relay
+ansible-playbook playbooks/test_secagent_plugins.yml -i secagent_inventory -vvv 2>&1 | grep -i relay
 
 # 3. Verify results are captured
-ansible-playbook playbooks/test_relay_plugins.yml -i relay_inventory -v 2>&1 | grep -i "ok\|changed"
+ansible-playbook playbooks/test_secagent_plugins.yml -i secagent_inventory -v 2>&1 | grep -i "ok\|changed"
 ```
 
 ## Next Steps

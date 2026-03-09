@@ -1,4 +1,4 @@
-# Build stage — relay-agent GO
+# Build stage — secagent-minion GO
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /build
@@ -17,7 +17,7 @@ COPY . .
 
 # Build the agent binary — no CGO (no sqlite in agent)
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -ldflags="-s -w" -o relay-agent ./cmd/agent
+    go build -ldflags="-s -w" -o secagent-minion ./cmd/agent
 
 # Runtime stage — minimal Alpine
 FROM alpine:3.18
@@ -31,7 +31,7 @@ RUN apk add --no-cache ca-certificates openssl su-exec python3
 RUN addgroup -S relay && adduser -S relay -G relay
 
 # Copy binary from builder
-COPY --from=builder /build/relay-agent /app/relay-agent
+COPY --from=builder /build/secagent-minion /app/secagent-minion
 
 # Entrypoint: runs as root to set up dirs + key, then drops to relay via su-exec
 # Workaround for Go os.IsNotExist() not handling wrapped errors (uses errors.Is instead)
@@ -39,9 +39,9 @@ COPY --chmod=755 <<'EOF' /app/entrypoint.sh
 #!/bin/sh
 set -e
 
-KEY_PATH="${RELAY_PRIVATE_KEY:-/var/lib/relay-agent/id_rsa}"
-JWT_PATH="${RELAY_JWT_PATH:-/var/lib/relay-agent/token.jwt}"
-ASYNC_DIR="${RELAY_ASYNC_DIR:-/var/lib/relay-agent/async}"
+KEY_PATH="${RELAY_PRIVATE_KEY:-/var/lib/secagent-minion/id_rsa}"
+JWT_PATH="${RELAY_JWT_PATH:-/var/lib/secagent-minion/token.jwt}"
+ASYNC_DIR="${RELAY_ASYNC_DIR:-/var/lib/secagent-minion/async}"
 
 # Create required directories
 mkdir -p "${ASYNC_DIR}"
@@ -63,15 +63,15 @@ chown -R relay:relay "$(dirname ${KEY_PATH})" 2>/dev/null || true
 chown -R relay:relay "$(dirname ${JWT_PATH})" 2>/dev/null || true
 chown -R relay:relay "${ASYNC_DIR}" 2>/dev/null || true
 
-exec su-exec relay /app/relay-agent "$@"
+exec su-exec relay /app/secagent-minion "$@"
 EOF
 
 # Default config via environment — overridden per container
 ENV RELAY_SERVER_URL="https://localhost:7770" \
     RELAY_WS_URL="wss://localhost:7772/ws/agent" \
-    RELAY_PRIVATE_KEY="/var/lib/relay-agent/id_rsa" \
-    RELAY_JWT_PATH="/var/lib/relay-agent/token.jwt" \
-    RELAY_ASYNC_DIR="/var/lib/relay-agent/async" \
+    RELAY_PRIVATE_KEY="/var/lib/secagent-minion/id_rsa" \
+    RELAY_JWT_PATH="/var/lib/secagent-minion/token.jwt" \
+    RELAY_ASYNC_DIR="/var/lib/secagent-minion/async" \
     RELAY_INSECURE_TLS="false" \
     MAX_CONCURRENT_TASKS="10"
 

@@ -1,7 +1,7 @@
-# Contrat d'interface — REST Plugin (Ansible → relay-server)
+# Contrat d'interface — REST Plugin (Ansible → secagent-server)
 
-> Interface entre les plugins Ansible (connection plugin, inventory plugin, relay-inventory binary)
-> et le relay-server.
+> Interface entre les plugins Ansible (connection plugin, inventory plugin, secagent-inventory binary)
+> et le secagent-server.
 > Endpoint : HTTPS :7770 (via Caddy)
 > Sources : `DOC/plugins/PLUGINS_SPEC.md` · `DOC/inventory/INVENTORY_SPEC.md` · `DOC/server/SERVER_SPEC.md` §3
 
@@ -17,7 +17,7 @@ Authorization: Bearer <PLUGIN_TOKEN>
 
 Le `PLUGIN_TOKEN` est un token statique créé par l'admin :
 ```bash
-relay-server tokens create --role plugin --description "ansible-control-prod" \
+secagent-server tokens create --role plugin --description "ansible-control-prod" \
   --allowed-ips "192.168.1.10/32" --allowed-hostname "ansible-control-prod"
 ```
 
@@ -59,14 +59,14 @@ Authorization: Bearer <PLUGIN_TOKEN>
       "host-A": {
         "ansible_connection": "relay",
         "ansible_host": "host-A",
-        "relay_status": "connected",
-        "relay_last_seen": "2026-03-06T10:00:00Z"
+        "secagent_status": "connected",
+        "secagent_last_seen": "2026-03-06T10:00:00Z"
       },
       "host-B": {
         "ansible_connection": "relay",
         "ansible_host": "host-B",
-        "relay_status": "disconnected",
-        "relay_last_seen": "2026-03-05T08:00:00Z"
+        "secagent_status": "disconnected",
+        "secagent_last_seen": "2026-03-05T08:00:00Z"
       }
     }
   }
@@ -239,7 +239,7 @@ Content-Type: application/json
 
 | Variable | Défaut | Description |
 |---|---|---|
-| `RELAY_SERVER_URL` | `https://localhost:7770` | URL du relay-server |
+| `RELAY_SERVER_URL` | `https://localhost:7770` | URL du secagent-server |
 | `RELAY_TOKEN` | — | PLUGIN_TOKEN (Bearer) |
 | `RELAY_CA_BUNDLE` | — | CA custom (certificat auto-signé) |
 | `RELAY_INSECURE_TLS` | `false` | Désactiver vérif TLS (tests uniquement) |
@@ -250,6 +250,6 @@ Content-Type: application/json
 ```yaml
 ansible_connection: relay
 ansible_host: my-host
-ansible_relay_server_url: https://relay.example.com
-ansible_relay_timeout: 60
+ansible_secagent_server_url: https://relay.example.com
+ansible_secagent_timeout: 60
 ```

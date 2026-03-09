@@ -1,6 +1,6 @@
 # Plugins Ansible — Spécifications techniques
 
-> Référence pour les plugins Ansible du projet AnsibleRelay (Python).
+> Référence pour les plugins Ansible du projet Ansible-SecAgent (Python).
 > Source canonique : `DOC/common/ARCHITECTURE.md` §2, §6, §8, §11, §12, §13, §14, §16
 > Sécurité : `DOC/security/SECURITY.md` §6 (auth plugin tokens)
 > **Contrat d'interface** : `DOC/contracts/REST_PLUGIN.md`
@@ -11,12 +11,12 @@
 ## 1. Vue d'ensemble
 
 Les plugins tournent sur l'**Ansible Control Node** (machine de confiance).
-Ils remplacent SSH par des appels REST HTTPS vers le relay-server.
+Ils remplacent SSH par des appels REST HTTPS vers le secagent-server.
 
 ```
 Ansible Control Node
-  ├── connection_plugins/relay.py   — remplace SSH (exec, upload, fetch) — OBLIGATOIRE PYTHON
-  └── inventory_plugins/relay.py   — inventaire dynamique (GET /api/inventory) — OPTIONNEL (voir §1b)
+  ├── connection_plugins/secagent.py   — remplace SSH (exec, upload, fetch) — OBLIGATOIRE PYTHON
+  └── inventory_plugins/secagent.py   — inventaire dynamique (GET /api/inventory) — OPTIONNEL (voir §1b)
           │
           │ HTTPS bloquant (requests/httpx)
           ▼
@@ -24,7 +24,7 @@ Ansible Control Node
           │
           │ WebSocket
           ▼
-      relay-agent (hôte cible)
+      secagent-minion (hôte cible)
 ```
 
 ### 1a. Contrainte Ansible : Python uniquement
@@ -36,7 +36,7 @@ Ansible Control Node
 - Ansible charge dynamiquement les `.py` depuis `connection_plugins/` et `inventory_plugins/`
 - Impossible d'écrire un plugin natif GO — ce n'est pas une limitation de l'architecture, c'est une contrainte d'Ansible
 
-→ **Conséquence** : `connection_plugins/relay.py` reste **obligatoirement Python**
+→ **Conséquence** : `connection_plugins/secagent.py` reste **obligatoirement Python**
 
 ### 1b. Inventaire : Plugin Python OU binaire GO
 
@@ -44,10 +44,10 @@ Deux approches pour l'inventaire Ansible :
 
 | Approche | Fichier | Langage | Contrainte | Usage |
 |----------|---------|---------|-----------|-------|
-| **Plugin Ansible** | `inventory_plugins/relay_inventory.py` | Python | Ansible API Python | Natif, zéro config |
-| **Binaire GO** | `relay-inventory` | GO (Phase 9) | Ansible external inventory protocol | Docker, CI/CD, restrictions env |
+| **Plugin Ansible** | `inventory_plugins/secagent_inventory.py` | Python | Ansible API Python | Natif, zéro config |
+| **Binaire GO** | `secagent-inventory` | GO (Phase 9) | Ansible external inventory protocol | Docker, CI/CD, restrictions env |
 
-**Recommandation** : Utiliser le **binaire GO** (`relay-inventory`) en production :
+**Recommandation** : Utiliser le **binaire GO** (`secagent-inventory`) en production :
 - ✅ Déjà implémenté (Phase 9, 19 tests PASS)
 - ✅ Moins de dépendances Python à gérer
 - ✅ Performance identique
@@ -69,7 +69,7 @@ X-Relay-Client-Host: <hostname du control node>  ← optionnel, pour le binding
 
 Ce token est créé par l'admin via :
 ```bash
-relay-server tokens create --role plugin --description "ansible-control-prod" \
+secagent-server tokens create --role plugin --description "ansible-control-prod" \
   --allowed-ips "192.168.1.10/32" --allowed-hostname "ansible-control-prod"
 ```
 
@@ -77,7 +77,7 @@ relay-server tokens create --role plugin --description "ansible-control-prod" \
 
 ---
 
-## 3. Connection Plugin (`relay.py`)
+## 3. Connection Plugin (`secagent.py`)
 
 ### Classe et méthodes
 
@@ -155,8 +155,8 @@ pipelining = true
 
 ```ini
 # ansible.cfg
-[relay_connection]
-relay_server_url = https://relay.example.com   # ou var RELAY_SERVER_URL
+[secagent_connection]
+secagent_server_url = https://relay.example.com   # ou var RELAY_SERVER_URL
 plugin_token     = <token>                     # ou var RELAY_PLUGIN_TOKEN
 ca_bundle        = /etc/ssl/certs/ca.pem       # ou var RELAY_CA_BUNDLE
 verify_tls       = true
@@ -166,25 +166,25 @@ timeout          = 30
 Variables hôte (`host_vars/my-host.yml`) :
 ```yaml
 ansible_connection: relay
-ansible_relay_server_url: https://relay.example.com
-ansible_relay_timeout: 60
+ansible_secagent_server_url: https://relay.example.com
+ansible_secagent_timeout: 60
 ```
 
 ---
 
 ## 4. Inventaire Ansible : Binaire GO recommandé
 
-### ⚠️ DÉPRÉCIÉE : Plugin Python `relay_inventory.py`
+### ⚠️ DÉPRÉCIÉE : Plugin Python `secagent_inventory.py`
 
-La tâche Phase 3 #36 (plugin Python inventory) ne sera **pas implémentée**. À la place, utilisez le **binaire GO** (`relay-inventory`, Phase 9) qui fournit une interface identique via le protocole Ansible `--list` / `--host`.
+La tâche Phase 3 #36 (plugin Python inventory) ne sera **pas implémentée**. À la place, utilisez le **binaire GO** (`secagent-inventory`, Phase 9) qui fournit une interface identique via le protocole Ansible `--list` / `--host`.
 
 **Raison** : Le binaire GO (Phase 9, complet + testé) remplace fonctionnellement le plugin Python sans ajouter de dépendances Python.
 
 ---
 
-### 4a. Approche recommandée : Binaire GO (`relay-inventory`)
+### 4a. Approche recommandée : Binaire GO (`secagent-inventory`)
 
-L'exécutable `relay-inventory` (Phase 9) interroge `GET /api/inventory` et retourne le format JSON Ansible standard.
+L'exécutable `secagent-inventory` (Phase 9) interroge `GET /api/inventory` et retourne le format JSON Ansible standard.
 
 **Endpoint serveur** :
 ```http
@@ -202,8 +202,8 @@ X-Relay-Client-Host: <hostname>  (optionnel, pour binding)
       "host-A": {
         "ansible_connection": "relay",
         "ansible_host": "host-A",
-        "relay_status": "connected",
-        "relay_last_seen": "2026-03-06T10:00:00Z"
+        "secagent_status": "connected",
+        "secagent_last_seen": "2026-03-06T10:00:00Z"
       }
     }
   }
@@ -213,17 +213,17 @@ X-Relay-Client-Host: <hostname>  (optionnel, pour binding)
 **Usage Ansible** :
 ```bash
 # En ligne de commande
-ansible-playbook -i relay-inventory site.yml
+ansible-playbook -i secagent-inventory site.yml
 
 # Ou dans ansible.cfg
 [defaults]
-inventory = /usr/local/bin/relay-inventory
+inventory = /usr/local/bin/secagent-inventory
 ```
 
 **Configuration via variables d'environnement** :
 ```bash
 export RELAY_SERVER_URL=https://relay.example.com
-export RELAY_PLUGIN_TOKEN=relay_plugin_xxxxx
+export RELAY_PLUGIN_TOKEN=secagent_plugin_xxxxx
 export RELAY_CA_BUNDLE=/etc/ssl/certs/ca.pem     # optionnel
 export RELAY_INSECURE_TLS=false                  # true = tests uniquement
 export RELAY_ONLY_CONNECTED=false                # true = hôtes connectés uniquement
@@ -233,7 +233,7 @@ Voir `DOC/inventory/INVENTORY_SPEC.md` pour spécifications complètes.
 
 ---
 
-### 4b. Alternative (non recommandée) : Plugin Python `relay_inventory.py`
+### 4b. Alternative (non recommandée) : Plugin Python `secagent_inventory.py`
 
 Si vous devez utiliser un plugin Python (cas exceptionnel), implémentez une classe `InventoryModule` suivant le modèle ci-dessous (référence, non produite) :
 
@@ -265,7 +265,7 @@ class InventoryModule(BaseInventoryPlugin):
 
 ## 6. Flow complet (référence)
 
-Exemple avec `ansible-playbook -i relay_inventory.py site.yml` :
+Exemple avec `ansible-playbook -i secagent_inventory.py site.yml` :
 
 ```
 1. Inventory plugin → GET /api/inventory → [host-A(connected), host-B(disconnected)]
@@ -289,11 +289,11 @@ Pour host-B :
 ```bash
 # Dans ansible.cfg
 [defaults]
-connection_plugins = /usr/lib/ansible-relay/connection_plugins
-inventory_plugins  = /usr/lib/ansible-relay/inventory_plugins
+connection_plugins = /usr/lib/ansible-secagent/connection_plugins
+inventory_plugins  = /usr/lib/ansible-secagent/inventory_plugins
 
 # Variables d'environnement du control node
 export RELAY_SERVER_URL=https://relay.example.com
-export RELAY_PLUGIN_TOKEN=relay_plugin_xxxxx
+export RELAY_PLUGIN_TOKEN=secagent_plugin_xxxxx
 export RELAY_CA_BUNDLE=/etc/ssl/certs/relay-ca.pem    # si CA custom
 ```

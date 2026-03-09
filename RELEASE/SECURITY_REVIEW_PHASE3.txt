@@ -16,7 +16,7 @@ Authentication:
 ✓ Role "plugin" enforced by server
 
 TLS/HTTPS:
-✓ Configurable via relay_server (http:// or https://)
+✓ Configurable via secagent_server (http:// or https://)
 ✓ CA bundle support for self-signed certificates
 ✓ Defaults to verify=True for secure mode
 
@@ -42,7 +42,7 @@ Credentials:
 MVP GLOBAL SECURITY AUDIT
 ========================================================
 
-relay-agent (Phase 1): ✓ SECURE
+secagent-minion (Phase 1): ✓ SECURE
   ✓ WSS encryption (ssl.create_default_context())
   ✓ RSA-4096 keys
   ✓ Subprocess isolation (no threads)
@@ -50,7 +50,7 @@ relay-agent (Phase 1): ✓ SECURE
   ✓ Become password masking
   ✓ Path traversal validation
 
-relay-server (Phase 2): ✓ SECURE
+secagent-server (Phase 2): ✓ SECURE
   ✓ Multi-port architecture (role separation)
   ✓ JWT + JTI blacklist
   ✓ RSA-OAEP encryption

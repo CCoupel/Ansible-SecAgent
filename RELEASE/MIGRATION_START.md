@@ -24,7 +24,7 @@ relay minions list  # (if CLI running)
 
 ### Codebase Size
 - **Server**: 240K (routes_register.py, routes_exec.py, ws_handler.py, agent_store.py, nats_client.py, main_multi_port.py)
-- **Agent**: 85K (relay_agent.py, facts_collector.py, async_registry.py)
+- **Agent**: 85K (secagent_agent.py, facts_collector.py, async_registry.py)
 - **Total Python**: ~325K
 
 ### Tools Ready
@@ -105,7 +105,7 @@ task build-server        # Compile binary
 
 ### Step 4: Build
 ```
-✅ Built: relay-server (single binary, ~10MB)
+✅ Built: secagent-server (single binary, ~10MB)
 ```
 
 ### Step 5: Test

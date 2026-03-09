@@ -1,11 +1,11 @@
 # Architecture — Réarchitecturation vers GO (Performance & Sécurité)
 
-## Analyse : Python vs GO pour AnsibleRelay
+## Analyse : Python vs GO pour Ansible-SecAgent
 
 ### Composants critiques
 
 ```
-relay-agent (client)      | relay-server (API + broker) | plugins Ansible
+secagent-minion (client)      | secagent-server (API + broker) | plugins Ansible
 ────────────────────────────────────────────────────────────────────────────
 Python (léger)            | Python FastAPI (bottleneck)  | Python (plugins)
 Subprocess exec           | JWT, RSA, NATS               | HTTP calls
@@ -29,7 +29,7 @@ WSS WebSocket             | Multi-port (7770/7771/7772)  | Inventory, exec
 ## Stratégie de migration par phases
 
 ### Phase 7 — Server Rewrite (GO)
-**Objectif** : Réécrire relay-server (FastAPI) en GO pour performance + sécurité
+**Objectif** : Réécrire secagent-server (FastAPI) en GO pour performance + sécurité
 
 **Composants à migrer** :
 - `routes_register.py` → `handlers/register.go` (enrollment, JWT)
@@ -59,10 +59,10 @@ WSS WebSocket             | Multi-port (7770/7771/7772)  | Inventory, exec
 ---
 
 ### Phase 8 — Agent Rewrite (GO)
-**Objectif** : Réécrire relay-agent (Python daemon) en GO
+**Objectif** : Réécrire secagent-minion (Python daemon) en GO
 
 **Composants à migrer** :
-- `relay_agent.py` → `agent/main.go` (enrollment, WSS, dispatcher)
+- `secagent_agent.py` → `agent/main.go` (enrollment, WSS, dispatcher)
 - `facts_collector.py` → `agent/facts.go` (system facts collection)
 - `async_registry.py` → `agent/registry.go` (async task registry)
 
@@ -93,19 +93,19 @@ WSS WebSocket             | Multi-port (7770/7771/7772)  | Inventory, exec
 ```
 ansible-playbook
     ↓
-relay_inventory.py (Python, unchanged)
+secagent_inventory.py (Python, unchanged)
     ↓ calls
-relay-inventory-go (compiled binary)
+secagent-inventory-go (compiled binary)
     ↓
-HTTP /api/inventory (relay-server:7772)
+HTTP /api/inventory (secagent-server:7772)
     ↓
     response
 
-relay.py (Python ConnectionBase, unchanged)
+secagent.py (Python ConnectionBase, unchanged)
     ↓ calls via exec
 relay-exec-go (compiled binary)
     ↓
-HTTP /api/exec/{host} (relay-server:7771)
+HTTP /api/exec/{host} (secagent-server:7771)
     ↓
 response
 ```
@@ -122,9 +122,9 @@ response
 
 ### Current state (MVP Python)
 ```
-relay-agent (Python 3.11)    ← daemon léger
+secagent-minion (Python 3.11)    ← daemon léger
     ↓ (WSS)
-relay-server (Python FastAPI) ← API bottleneck ⚠️
+secagent-server (Python FastAPI) ← API bottleneck ⚠️
     ↓ (HTTP)
 ansible_plugins/ (Python)    ← required by Ansible
     ↓
@@ -133,13 +133,13 @@ playbooks (Ansible standard)
 
 ### Post-migration (optimized GO)
 ```
-relay-agent (GO compiled)           ← 2-3MB, 10ms startup
+secagent-minion (GO compiled)           ← 2-3MB, 10ms startup
     ↓ (WSS)
-relay-server (GO compiled)          ← 10MB, 5ms latency, high concurrency
+secagent-server (GO compiled)          ← 10MB, 5ms latency, high concurrency
     ↓ (HTTP)
-relay-inventory-go wrapper (GO)     ← calls Python plugin for Ansible
-ansible_plugins/relay.py (Python)   ← unchanged, calls relay-exec-go
-ansible_plugins/relay_inventory.py  ← unchanged
+secagent-inventory-go wrapper (GO)     ← calls Python plugin for Ansible
+ansible_plugins/secagent.py (Python)   ← unchanged, calls relay-exec-go
+ansible_plugins/secagent_inventory.py  ← unchanged
     ↓
 playbooks (Ansible standard)
 ```

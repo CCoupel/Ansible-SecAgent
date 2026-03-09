@@ -1,8 +1,8 @@
-# AnsibleRelay — GO Implementation (Phase 7+)
+# Ansible-SecAgent — GO Implementation (Phase 7+)
 
 **Status**: ✅ CONVERSION COMPLETE — Ready for Integration Testing
 
-This directory contains the high-performance GO rewrite of AnsibleRelay relay-server and related components.
+This directory contains the high-performance GO rewrite of Ansible-SecAgent secagent-server and related components.
 
 ## Directory Structure
 
@@ -66,7 +66,7 @@ GO/
 - `GetInventory()`: GET /api/inventory
   - Ansible JSON format
   - Query filtering (only_connected)
-  - Hostvars (relay_status, relay_last_seen)
+  - Hostvars (secagent_status, secagent_last_seen)
 
 ### 2. WebSocket Handler (ws/)
 
@@ -152,13 +152,13 @@ go get github.com/gorilla/websocket
 
 ```bash
 # Build server binary
-go build -o relay-server ./cmd/server
+go build -o secagent-server ./cmd/server
 
 # Build with optimizations
-go build -ldflags="-s -w" -o relay-server ./cmd/server
+go build -ldflags="-s -w" -o secagent-server ./cmd/server
 
 # Cross-compile (Linux)
-GOOS=linux GOARCH=amd64 go build -o relay-server ./cmd/server
+GOOS=linux GOARCH=amd64 go build -o secagent-server ./cmd/server
 ```
 
 ## Usage
@@ -180,7 +180,7 @@ export DATABASE_URL="sqlite:///./relay.db"
 export RSA_MASTER_KEY="test-key-for-dev"
 
 # Run server
-./relay-server
+./secagent-server
 ```
 
 ### CLI Access via Container
@@ -194,24 +194,24 @@ docker-compose up -d
 **Access CLI commands via container** (Phase 6 — admin commands) :
 ```bash
 # Minions management
-docker-compose exec relay-api relay-server minions list --format table
-docker-compose exec relay-api relay-server minions get <hostname>
-docker-compose exec relay-api relay-server minions suspend <hostname>
-docker-compose exec relay-api relay-server minions resume <hostname>
-docker-compose exec relay-api relay-server minions revoke <hostname>
-docker-compose exec relay-api relay-server minions vars set <hostname> <key> <value>
+docker-compose exec relay-api secagent-server minions list --format table
+docker-compose exec relay-api secagent-server minions get <hostname>
+docker-compose exec relay-api secagent-server minions suspend <hostname>
+docker-compose exec relay-api secagent-server minions resume <hostname>
+docker-compose exec relay-api secagent-server minions revoke <hostname>
+docker-compose exec relay-api secagent-server minions vars set <hostname> <key> <value>
 
 # Security — Key rotation
-docker-compose exec relay-api relay-server security keys status
-docker-compose exec relay-api relay-server security keys rotate --grace 2h
-docker-compose exec relay-api relay-server security tokens list
-docker-compose exec relay-api relay-server security blacklist list
+docker-compose exec relay-api secagent-server security keys status
+docker-compose exec relay-api secagent-server security keys rotate --grace 2h
+docker-compose exec relay-api secagent-server security tokens list
+docker-compose exec relay-api secagent-server security blacklist list
 
 # Inventory
-docker-compose exec relay-api relay-server inventory list --only-connected
+docker-compose exec relay-api secagent-server inventory list --only-connected
 
 # Server status
-docker-compose exec relay-api relay-server server status --format json
+docker-compose exec relay-api secagent-server server status --format json
 ```
 
 **Format options** : `--format table|json|yaml` (default: table)
@@ -232,9 +232,9 @@ RSA_MASTER_KEY=test go test ./cmd/agent/... -v -count=1
 **Smoke tests (basic CLI validation)** :
 ```bash
 docker-compose up -d
-docker-compose exec relay-api relay-server minions list
-docker-compose exec relay-api relay-server security keys status
-docker-compose exec relay-api relay-server server status
+docker-compose exec relay-api secagent-server minions list
+docker-compose exec relay-api secagent-server security keys status
+docker-compose exec relay-api secagent-server server status
 docker-compose down
 ```
 
@@ -245,27 +245,27 @@ Test the full enrollment flow by revoking agents and validating ré-enrôlement:
 docker-compose up -d
 
 # 1. Verify agents are connected
-docker-compose exec relay-api relay-server minions list --format table
+docker-compose exec relay-api secagent-server minions list --format table
 # Expected: qualif-host-01/02/03 with status=enrolled
 
 # 2. Revoke agents to force ré-enrôlement
-docker-compose exec relay-api relay-server minions revoke qualif-host-01
-docker-compose exec relay-api relay-server minions revoke qualif-host-02
-docker-compose exec relay-api relay-server minions revoke qualif-host-03
+docker-compose exec relay-api secagent-server minions revoke qualif-host-01
+docker-compose exec relay-api secagent-server minions revoke qualif-host-02
+docker-compose exec relay-api secagent-server minions revoke qualif-host-03
 
 # 3. Verify revocation (agents should disconnect then ré-enroll)
 sleep 5
-docker-compose exec relay-api relay-server minions list --format table
+docker-compose exec relay-api secagent-server minions list --format table
 # Expected: status should cycle through revoked → enrolled as agents reconnect
 
 # 4. Validate ré-enrôlement completed
-docker-compose exec relay-api relay-server minions get qualif-host-01 --format json
+docker-compose exec relay-api secagent-server minions get qualif-host-01 --format json
 # Check: enrolled_at timestamp updated, token_jti set in DB
 
 # 5. Test authorized_keys flow (optional)
 # Pre-authorize an agent's public key, then trigger ré-enrôlement
-docker-compose exec relay-api relay-server minions authorize qualif-host-01 --key-file agent_pubkey.pem
-docker-compose exec relay-api relay-server minions revoke qualif-host-01
+docker-compose exec relay-api secagent-server minions authorize qualif-host-01 --key-file agent_pubkey.pem
+docker-compose exec relay-api secagent-server minions revoke qualif-host-01
 # Verify agent ré-enrôles with authorized key validation passing
 
 docker-compose down
@@ -280,7 +280,7 @@ docker-compose down
 
 ### E2E Tests
 - Full GO agent ↔ GO server
-- Ansible playbook execution via relay-inventory plugin
+- Ansible playbook execution via secagent-inventory plugin
 - Dynamic inventory with connected agents
 - Multiple concurrent agents with key rotation
 - JWT rotation with grace period (dual-key validation)
@@ -358,7 +358,7 @@ docker-compose down
 - ✅ Handler rekey + 401 ré-enrôlement
 
 ### Phase 9 — Inventory Plugin ✅
-- ✅ cmd/inventory/main.go — relay-inventory binary
+- ✅ cmd/inventory/main.go — secagent-inventory binary
 - ✅ Ansible plugin wrapper
 - ✅ Dynamic inventory format
 

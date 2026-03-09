@@ -1,6 +1,6 @@
-# AnsibleRelay — Project Index
+# Ansible-SecAgent — Project Index
 
-**Project**: AnsibleRelay — Ansible execution via inverse-connection agents
+**Project**: Ansible-SecAgent — Ansible execution via inverse-connection agents
 **Status**: MVP Complete (Phase 1-3) ✅ | GO Migration Complete (Phase 7) ✅
 **Last Updated**: 2026-03-05
 
@@ -11,8 +11,8 @@
 ```
 Ansible_Agent/
 ├── PYTHON/                     # Phase 1-3 Python MVP (Complete)
-│   ├── agent/                  # relay-agent daemon
-│   ├── server/                 # relay-server FastAPI + NATS
+│   ├── agent/                  # secagent-minion daemon
+│   ├── server/                 # secagent-server FastAPI + NATS
 │   ├── ansible_plugins/        # Ansible connection + inventory plugins
 │   ├── tests/                  # Test suite
 │   ├── docker-compose.yml      # Local dev environment
@@ -89,8 +89,8 @@ python -m server.api.main
 **Build**:
 ```bash
 cd GO
-go build -o relay-server ./cmd/server
-./relay-server
+go build -o secagent-server ./cmd/server
+./secagent-server
 ```
 
 ---
@@ -124,8 +124,8 @@ go build -o relay-server ./cmd/server
 ## 📊 Project Status
 
 ### Phase 1-3: Python MVP ✅ COMPLETE
-- ✅ relay-agent: Enrollment, WSS, dispatcher, subprocess execution
-- ✅ relay-server: FastAPI, JWT auth, NATS, SQLite, WebSocket
+- ✅ secagent-minion: Enrollment, WSS, dispatcher, subprocess execution
+- ✅ secagent-server: FastAPI, JWT auth, NATS, SQLite, WebSocket
 - ✅ ansible_plugins: Connection plugin (relay), inventory plugin
 - ✅ Tests: Unit + integration + E2E
 - ✅ Deployment: Docker Compose working on 192.168.1.218
@@ -183,17 +183,17 @@ docker-compose up -d
 python -m server.api.main
 
 # Start agent
-python agent/relay_agent.py
+python agent/secagent_agent.py
 ```
 
 ### Working on GO Rewrite
 ```bash
 cd GO
 # Build
-go build -o relay-server ./cmd/server
+go build -o secagent-server ./cmd/server
 
 # Run
-./relay-server
+./secagent-server
 
 # Test (TODO)
 go test ./cmd/server/internal/...
@@ -247,7 +247,7 @@ go test ./cmd/server/internal/...
 
 ### Code Files
 - **Python server**: `PYTHON/server/api/main.py`
-- **Python agent**: `PYTHON/agent/relay_agent.py`
+- **Python agent**: `PYTHON/agent/secagent_agent.py`
 - **GO server**: `GO/cmd/server/internal/handlers/register.go`
 - **GO broker**: `GO/cmd/server/internal/broker/nats.go`
 

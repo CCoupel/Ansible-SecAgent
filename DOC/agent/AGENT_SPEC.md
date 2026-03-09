@@ -1,6 +1,6 @@
-# relay-agent — Spécifications techniques
+# secagent-minion — Spécifications techniques
 
-> Référence complète pour le composant relay-agent (GO).
+> Référence complète pour le composant secagent-minion (GO).
 > Source canonique : `DOC/common/ARCHITECTURE.md` §2, §4, §9-§13, §16, §18
 > Sécurité : `DOC/security/SECURITY.md` §3 (enrollment), §4 (connexion WS)
 > **Contrats d'interface** : `DOC/contracts/REST_ENROLLMENT.md` · `DOC/contracts/WEBSOCKET.md`
@@ -9,11 +9,11 @@
 
 ## 1. Rôle et périmètre
 
-Le relay-agent est un **daemon** déployé sur chaque hôte géré. Il initie et maintient
-une connexion WebSocket sortante vers le relay-server. Il n'écoute sur aucun port.
+Le secagent-minion est un **daemon** déployé sur chaque hôte géré. Il initie et maintient
+une connexion WebSocket sortante vers le secagent-server. Il n'écoute sur aucun port.
 
 ```
-Ansible Control Node ──REST──▶ Relay Server ◀──WSS── relay-agent (hôte cible)
+Ansible Control Node ──REST──▶ Relay Server ◀──WSS── secagent-minion (hôte cible)
 ```
 
 **L'agent ne connaît pas NATS.** Il parle uniquement WebSocket avec le serveur.
@@ -44,10 +44,10 @@ GO/cmd/agent/
 
 | Chemin (défaut) | Variable d'env | Contenu | Permissions |
 |---|---|---|---|
-| `/etc/relay-agent/id_rsa` | `RELAY_PRIVATE_KEY` | Clef privée RSA-4096 PEM | 0600 |
-| `/etc/relay-agent/token.jwt` | `RELAY_JWT_PATH` | JWT courant (réécrit à chaque enrollment) | 0600 |
-| `/var/lib/relay-agent/async_jobs.json` | — | Registre jobs async persisté | 0644 |
-| `/var/log/relay-agent/agent.log` | — | Logs (become_pass masqué) | 0644 |
+| `/etc/secagent-minion/id_rsa` | `RELAY_PRIVATE_KEY` | Clef privée RSA-4096 PEM | 0600 |
+| `/etc/secagent-minion/token.jwt` | `RELAY_JWT_PATH` | JWT courant (réécrit à chaque enrollment) | 0600 |
+| `/var/lib/secagent-minion/async_jobs.json` | — | Registre jobs async persisté | 0644 |
+| `/var/log/secagent-minion/agent.log` | — | Logs (become_pass masqué) | 0644 |
 
 ---
 
@@ -219,7 +219,7 @@ Job persisté dans `async_jobs.json` :
     "cmd": "./deploy.sh",
     "started_at": 1234567890,
     "timeout": 3600,
-    "stdout_path": "/tmp/.ansible-relay/jid-uuid.stdout"
+    "stdout_path": "/tmp/.ansible-secagent/jid-uuid.stdout"
   }
 }
 ```
@@ -285,8 +285,8 @@ if stdinData != nil {
 |---|---|---|
 | `RELAY_SERVER_URL` | `wss://localhost:7772/ws/agent` | URL WSS du relay server |
 | `RELAY_API_URL` | `https://localhost:7770` | URL HTTPS pour enrollment |
-| `RELAY_PRIVATE_KEY` | `/etc/relay-agent/id_rsa` | Chemin clef privée RSA-4096 |
-| `RELAY_JWT_PATH` | `/etc/relay-agent/token.jwt` | Chemin token JWT |
+| `RELAY_PRIVATE_KEY` | `/etc/secagent-minion/id_rsa` | Chemin clef privée RSA-4096 |
+| `RELAY_JWT_PATH` | `/etc/secagent-minion/token.jwt` | Chemin token JWT |
 | `RELAY_MAX_TASKS` | `10` | Tâches simultanées max |
 | `RELAY_STDOUT_MAX` | `5242880` | Buffer stdout max (5MB) |
 | `RELAY_INSECURE_TLS` | `false` | Désactiver vérif TLS (tests uniquement) |
@@ -296,21 +296,21 @@ if stdinData != nil {
 ## 12. Déploiement systemd
 
 ```ini
-# /etc/systemd/system/relay-agent.service
+# /etc/systemd/system/secagent-minion.service
 [Unit]
-Description=AnsibleRelay Agent
+Description=Ansible-SecAgent Agent
 After=network.target
 
 [Service]
 Type=simple
-User=relay-agent
-Group=relay-agent
-ExecStart=/usr/local/bin/relay-agent
+User=secagent-minion
+Group=secagent-minion
+ExecStart=/usr/local/bin/secagent-minion
 Restart=on-failure
 RestartSec=5s
 Environment=RELAY_SERVER_URL=wss://relay.example.com/ws/agent
 Environment=RELAY_API_URL=https://relay.example.com
-EnvironmentFile=-/etc/relay-agent/env
+EnvironmentFile=-/etc/secagent-minion/env
 
 [Install]
 WantedBy=multi-user.target
@@ -318,8 +318,8 @@ WantedBy=multi-user.target
 
 ```bash
 # Installation
-useradd -r -s /sbin/nologin relay-agent
-mkdir -p /etc/relay-agent && chown relay-agent: /etc/relay-agent && chmod 700 /etc/relay-agent
-cp relay-agent /usr/local/bin/ && chmod 755 /usr/local/bin/relay-agent
-systemctl daemon-reload && systemctl enable --now relay-agent
+useradd -r -s /sbin/nologin secagent-minion
+mkdir -p /etc/secagent-minion && chown secagent-minion: /etc/secagent-minion && chmod 700 /etc/secagent-minion
+cp secagent-minion /usr/local/bin/ && chmod 755 /usr/local/bin/secagent-minion
+systemctl daemon-reload && systemctl enable --now secagent-minion
 ```

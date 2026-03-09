@@ -4,10 +4,10 @@
 set -e
 
 RELAY_SERVER="192.168.1.218:7770"
-TOKEN_FILE="/tmp/relay_token.jwt"
+TOKEN_FILE="/tmp/secagent_token.jwt"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "[*] AnsibleRelay Plugin Test"
+echo "[*] Ansible-SecAgent Plugin Test"
 echo "[*] Server: http://$RELAY_SERVER"
 echo ""
 
@@ -77,7 +77,7 @@ else
 fi
 echo ""
 
-# 5. Run Ansible playbook test (uses relay_inventory.yml with port 7772 for inventory, 7771 for exec)
+# 5. Run Ansible playbook test (uses secagent_inventory.yml with port 7772 for inventory, 7771 for exec)
 echo "[*] Step 5: Running Ansible playbook with relay connection plugin..."
 cd "$SCRIPT_DIR"
 
@@ -85,12 +85,12 @@ export RELAY_TOKEN_FILE="$TOKEN_FILE"
 export ANSIBLE_LIBRARY="./ansible_plugins"
 export ANSIBLE_CONFIG="./ansible.cfg"
 
-echo "[*] Command: ansible-playbook playbooks/test_relay_plugins.yml -i playbooks/relay_inventory.yml -v"
+echo "[*] Command: ansible-playbook playbooks/test_secagent_plugins.yml -i playbooks/secagent_inventory.yml -v"
 echo ""
 
 if ansible-playbook \
-  playbooks/test_relay_plugins.yml \
-  -i playbooks/relay_inventory.yml \
+  playbooks/test_secagent_plugins.yml \
+  -i playbooks/secagent_inventory.yml \
   -v; then
     echo ""
     echo "[OK] All tests completed successfully!"

@@ -1,4 +1,4 @@
-# docker-compose.yml — AnsibleRelay Test Minions (Phase 8 — GO agents)
+# docker-compose.yml — Ansible-SecAgent Test Minions (Phase 8 — GO agents)
 #
 # Remplace les agents Python (Phase 1) par les agents GO (Phase 8).
 # Les agents accèdent au GO server via network_mode: host (localhost:7770/7772)
@@ -7,80 +7,80 @@
 #   cd ansible_minion && DOCKER_HOST=tcp://192.168.1.218:2375 docker compose up --build -d
 #
 # Vérification :
-#   DOCKER_HOST=tcp://192.168.1.218:2375 docker logs relay-agent-go-01
-#   DOCKER_HOST=tcp://192.168.1.218:2375 docker logs relay-agent-go-02
-#   DOCKER_HOST=tcp://192.168.1.218:2375 docker logs relay-agent-go-03
+#   DOCKER_HOST=tcp://192.168.1.218:2375 docker logs secagent-minion-go-01
+#   DOCKER_HOST=tcp://192.168.1.218:2375 docker logs secagent-minion-go-02
+#   DOCKER_HOST=tcp://192.168.1.218:2375 docker logs secagent-minion-go-03
 #
 
 services:
 
-  # ── relay-agent-go-01 : GO agent #1 (qualif-host-01) ──────────────────────
-  relay-agent-go-01:
+  # ── secagent-minion-go-01 : GO agent #1 (qualif-host-01) ──────────────────────
+  secagent-minion-go-01:
     build:
       context: ../GO
       dockerfile: Dockerfile.agent
-    image: relay-agent-go:latest
-    container_name: relay-agent-go-01
+    image: secagent-minion-go:latest
+    container_name: secagent-minion-go-01
     restart: unless-stopped
     environment:
       RELAY_SERVER_URL: "http://localhost:7770"
       RELAY_WS_URL: "ws://localhost:7772/ws/agent"
       RELAY_AGENT_HOSTNAME: "qualif-host-01"
-      RELAY_PRIVATE_KEY: "/var/lib/relay-agent/id_rsa"
-      RELAY_JWT_PATH: "/var/lib/relay-agent/token.jwt"
+      RELAY_PRIVATE_KEY: "/var/lib/secagent-minion/id_rsa"
+      RELAY_JWT_PATH: "/var/lib/secagent-minion/token.jwt"
       RELAY_ENROLLMENT_TOKEN: "${RELAY_ENROLLMENT_TOKEN}"
-      RELAY_ASYNC_DIR: "/var/lib/relay-agent/async"
+      RELAY_ASYNC_DIR: "/var/lib/secagent-minion/async"
       RELAY_INSECURE_TLS: "true"
       MAX_CONCURRENT_TASKS: "10"
     volumes:
-      - relay_agent_go_01_data:/var/lib/relay-agent
+      - secagent_agent_go_01_data:/var/lib/secagent-minion
     network_mode: host
 
-  # ── relay-agent-go-02 : GO agent #2 (qualif-host-02) ──────────────────────
-  relay-agent-go-02:
+  # ── secagent-minion-go-02 : GO agent #2 (qualif-host-02) ──────────────────────
+  secagent-minion-go-02:
     build:
       context: ../GO
       dockerfile: Dockerfile.agent
-    image: relay-agent-go:latest
-    container_name: relay-agent-go-02
+    image: secagent-minion-go:latest
+    container_name: secagent-minion-go-02
     restart: unless-stopped
     environment:
       RELAY_SERVER_URL: "http://localhost:7770"
       RELAY_WS_URL: "ws://localhost:7772/ws/agent"
       RELAY_AGENT_HOSTNAME: "qualif-host-02"
-      RELAY_PRIVATE_KEY: "/var/lib/relay-agent/id_rsa"
-      RELAY_JWT_PATH: "/var/lib/relay-agent/token.jwt"
+      RELAY_PRIVATE_KEY: "/var/lib/secagent-minion/id_rsa"
+      RELAY_JWT_PATH: "/var/lib/secagent-minion/token.jwt"
       RELAY_ENROLLMENT_TOKEN: "${RELAY_ENROLLMENT_TOKEN}"
-      RELAY_ASYNC_DIR: "/var/lib/relay-agent/async"
+      RELAY_ASYNC_DIR: "/var/lib/secagent-minion/async"
       RELAY_INSECURE_TLS: "true"
       MAX_CONCURRENT_TASKS: "10"
     volumes:
-      - relay_agent_go_02_data:/var/lib/relay-agent
+      - secagent_agent_go_02_data:/var/lib/secagent-minion
     network_mode: host
 
-  # ── relay-agent-go-03 : GO agent #3 (qualif-host-03) ──────────────────────
-  relay-agent-go-03:
+  # ── secagent-minion-go-03 : GO agent #3 (qualif-host-03) ──────────────────────
+  secagent-minion-go-03:
     build:
       context: ../GO
       dockerfile: Dockerfile.agent
-    image: relay-agent-go:latest
-    container_name: relay-agent-go-03
+    image: secagent-minion-go:latest
+    container_name: secagent-minion-go-03
     restart: unless-stopped
     environment:
       RELAY_SERVER_URL: "http://localhost:7770"
       RELAY_WS_URL: "ws://localhost:7772/ws/agent"
       RELAY_AGENT_HOSTNAME: "qualif-host-03"
-      RELAY_PRIVATE_KEY: "/var/lib/relay-agent/id_rsa"
-      RELAY_JWT_PATH: "/var/lib/relay-agent/token.jwt"
+      RELAY_PRIVATE_KEY: "/var/lib/secagent-minion/id_rsa"
+      RELAY_JWT_PATH: "/var/lib/secagent-minion/token.jwt"
       RELAY_ENROLLMENT_TOKEN: "${RELAY_ENROLLMENT_TOKEN}"
-      RELAY_ASYNC_DIR: "/var/lib/relay-agent/async"
+      RELAY_ASYNC_DIR: "/var/lib/secagent-minion/async"
       RELAY_INSECURE_TLS: "true"
       MAX_CONCURRENT_TASKS: "10"
     volumes:
-      - relay_agent_go_03_data:/var/lib/relay-agent
+      - secagent_agent_go_03_data:/var/lib/secagent-minion
     network_mode: host
 
 volumes:
-  relay_agent_go_01_data:
-  relay_agent_go_02_data:
-  relay_agent_go_03_data:
+  secagent_agent_go_01_data:
+  secagent_agent_go_02_data:
+  secagent_agent_go_03_data:

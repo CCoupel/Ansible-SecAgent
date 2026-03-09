@@ -1,8 +1,8 @@
-# AnsibleRelay — Instructions projet pour Claude Code
+# Ansible-SecAgent — Instructions projet pour Claude Code
 
 ## Présentation
 
-**AnsibleRelay** est un système permettant d'exécuter des playbooks Ansible sur des hôtes distants sans connexion SSH entrante. Les agents clients initient eux-mêmes la connexion vers un serveur central (modèle Salt Minion, connexions inversées).
+**Ansible-SecAgent** est un système permettant d'exécuter des playbooks Ansible sur des hôtes distants sans connexion SSH entrante. Les agents clients initient eux-mêmes la connexion vers un serveur central (modèle Salt Minion, connexions inversées).
 
 ## Documentation de référence
 
@@ -12,17 +12,17 @@
 | `DOC/common/ARCHITECTURE.md` | Spécifications techniques détaillées (protocoles, formats, sécurité, déploiement) |
 | `DOC/security/SECURITY.md` | Modèle de sécurité complet (enrollment, rôles, tokens, rotation) |
 | `DOC/common/BACKLOG.md` | État des phases et tâches |
-| `DOC/server/SERVER_SPEC.md` | Specs relay-server (API, WS, CLI, schéma DB) |
-| `DOC/agent/AGENT_SPEC.md` | Specs relay-agent (enrollment, WS, executor, async) |
+| `DOC/server/SERVER_SPEC.md` | Specs secagent-server (API, WS, CLI, schéma DB) |
+| `DOC/agent/AGENT_SPEC.md` | Specs secagent-minion (enrollment, WS, executor, async) |
 | `DOC/plugins/PLUGINS_SPEC.md` | Specs plugins Ansible (connection + inventory) |
-| `DOC/inventory/INVENTORY_SPEC.md` | Specs relay-inventory binary GO |
+| `DOC/inventory/INVENTORY_SPEC.md` | Specs secagent-inventory binary GO |
 
 **Lire ces fichiers avant toute implémentation.**
 
 ## Structure du projet
 
 ```
-ansible-relay/
+ansible-secagent/
 ├── README.md                 # Point d'entrée projet
 ├── CLAUDE.md                 # Instructions Claude Code
 ├── DOC/                      # Documentation vivante (specs, architecture, sécurité)
@@ -32,12 +32,12 @@ ansible-relay/
 │   │   └── BACKLOG.md        # Phases et tâches
 │   ├── security/             # Modèle de sécurité
 │   │   └── SECURITY.md       # Enrollment, rôles, tokens, rotation
-│   ├── server/               # Specs relay-server
+│   ├── server/               # Specs secagent-server
 │   │   ├── SERVER_SPEC.md
 │   │   └── MANAGEMENT_CLI_SPECS.md
-│   ├── agent/                # Specs relay-agent
+│   ├── agent/                # Specs secagent-minion
 │   │   └── AGENT_SPEC.md
-│   ├── inventory/            # Specs relay-inventory
+│   ├── inventory/            # Specs secagent-inventory
 │   │   └── INVENTORY_SPEC.md
 │   ├── plugins/              # Specs plugins Ansible
 │   │   └── PLUGINS_SPEC.md
@@ -46,9 +46,9 @@ ansible-relay/
 │       └── DEPLOYMENT.md
 ├── RELEASE/                  # Historique d'implémentation (phases, rapports, migrations)
 ├── GO/                       # Code source GO
-│   ├── cmd/server/           # relay-server (API + WS + CLI cobra)
-│   ├── cmd/agent/            # relay-agent
-│   └── cmd/inventory/        # relay-inventory binary
+│   ├── cmd/server/           # secagent-server (API + WS + CLI cobra)
+│   ├── cmd/agent/            # secagent-minion
+│   └── cmd/inventory/        # secagent-inventory binary
 ├── DEPLOYMENT/               # Scripts et configs de déploiement
 │   ├── deploy.sh / deploy.bat
 │   └── qualif/               # Docker Compose qualif (192.168.1.218)
@@ -59,7 +59,7 @@ ansible-relay/
 
 - **Agent** : GO, gorilla/websocket, subprocess, RSA-4096, JWT
 - **Serveur** : GO, net/http, gorilla/websocket, NATS JetStream, SQLite (modernc)
-- **Inventory** : GO binary standalone (`relay-inventory`)
+- **Inventory** : GO binary standalone (`secagent-inventory`)
 - **Plugins Ansible** : Python (contrainte Ansible — ConnectionBase / InventoryModule)
 - **Tests** : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v`
 - **Déploiement** : systemd (agent), Docker Compose (qualif), Kubernetes (prod)
@@ -88,8 +88,8 @@ ansible-relay/
 
 ## Workflow équipe
 
-- `/start-session` : démarre la team complète AnsibleRelay (8 agents)
-- Ordre d'implémentation MVP : `relay-agent` → `relay server` → `plugins Ansible`
+- `/start-session` : démarre la team complète Ansible-SecAgent (8 agents)
+- Ordre d'implémentation MVP : `secagent-minion` → `relay server` → `plugins Ansible`
 - Chaque composant est validé par `qa` avant de passer au suivant
 - `security-reviewer` audite chaque PR avant merge
 

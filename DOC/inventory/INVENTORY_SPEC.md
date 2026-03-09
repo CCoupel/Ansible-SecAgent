@@ -1,6 +1,6 @@
-# relay-inventory — Spécifications techniques
+# secagent-inventory — Spécifications techniques
 
-> Référence pour le binaire relay-inventory GO (Phase 9).
+> Référence pour le binaire secagent-inventory GO (Phase 9).
 > Source canonique : `DOC/common/ARCHITECTURE.md` §14
 > Plugin Python : `DOC/plugins/PLUGINS_SPEC.md` §4
 > **Contrat d'interface** : `DOC/contracts/REST_PLUGIN.md` §2 (GET /api/inventory)
@@ -9,10 +9,10 @@
 
 ## 1. Rôle
 
-`relay-inventory` est un binaire GO standalone compatible avec le protocole
+`secagent-inventory` est un binaire GO standalone compatible avec le protocole
 d'inventaire externe Ansible (`--list` / `--host`).
 
-Il interroge `GET /api/inventory` sur le relay-server et formate la réponse
+Il interroge `GET /api/inventory` sur le secagent-server et formate la réponse
 en JSON Ansible standard.
 
 ---
@@ -21,10 +21,10 @@ en JSON Ansible standard.
 
 ```bash
 # Inventaire complet (utilisé par Ansible)
-relay-inventory --list
+secagent-inventory --list
 
 # Vars d'un hôte spécifique
-relay-inventory --host my-host
+secagent-inventory --host my-host
 ```
 
 ---
@@ -33,7 +33,7 @@ relay-inventory --host my-host
 
 ```bash
 RELAY_SERVER_URL=https://relay.example.com    # défaut: https://localhost:7770
-RELAY_TOKEN=relay_plugin_xxxxx                # Bearer token (PLUGIN_TOKEN)
+RELAY_TOKEN=secagent_plugin_xxxxx                # Bearer token (PLUGIN_TOKEN)
 RELAY_CA_BUNDLE=/path/to/ca.pem               # CA custom (optionnel)
 RELAY_INSECURE_TLS=false                      # true = désactiver vérif TLS (TESTS)
 RELAY_ONLY_CONNECTED=false                    # true = hôtes connectés uniquement
@@ -55,14 +55,14 @@ RELAY_ONLY_CONNECTED=false                    # true = hôtes connectés uniquem
       "host-A": {
         "ansible_connection": "relay",
         "ansible_host": "host-A",
-        "relay_status": "connected",
-        "relay_last_seen": "2026-03-06T10:00:00Z"
+        "secagent_status": "connected",
+        "secagent_last_seen": "2026-03-06T10:00:00Z"
       },
       "host-B": {
         "ansible_connection": "relay",
         "ansible_host": "host-B",
-        "relay_status": "disconnected",
-        "relay_last_seen": "2026-03-05T08:00:00Z"
+        "secagent_status": "disconnected",
+        "secagent_last_seen": "2026-03-05T08:00:00Z"
       }
     }
   }
@@ -75,8 +75,8 @@ RELAY_ONLY_CONNECTED=false                    # true = hôtes connectés uniquem
 {
   "ansible_connection": "relay",
   "ansible_host": "host-A",
-  "relay_status": "connected",
-  "relay_last_seen": "2026-03-06T10:00:00Z"
+  "secagent_status": "connected",
+  "secagent_last_seen": "2026-03-06T10:00:00Z"
 }
 ```
 
@@ -87,12 +87,12 @@ RELAY_ONLY_CONNECTED=false                    # true = hôtes connectés uniquem
 ```ini
 # ansible.cfg
 [defaults]
-inventory = /usr/local/bin/relay-inventory
+inventory = /usr/local/bin/secagent-inventory
 ```
 
 Ou en ligne de commande :
 ```bash
-ansible-playbook -i relay-inventory site.yml
+ansible-playbook -i secagent-inventory site.yml
 ```
 
 ---
@@ -106,7 +106,7 @@ Authorization: Bearer <PLUGIN_TOKEN>
 → voir DOC/server/SERVER_SPEC.md §3 pour le format de réponse complet
 ```
 
-Les agents `relay_status: disconnected` sont inclus par défaut.
+Les agents `secagent_status: disconnected` sont inclus par défaut.
 Ansible les marquera UNREACHABLE lors de l'exécution (HTTP 503 → `AnsibleConnectionError`).
 
 ---

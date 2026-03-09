@@ -1,6 +1,6 @@
-# relay-server — Spécifications techniques
+# secagent-server — Spécifications techniques
 
-> Référence complète pour le composant relay-server (GO).
+> Référence complète pour le composant secagent-server (GO).
 > Source canonique : `DOC/common/ARCHITECTURE.md` §2, §5, §6, §15, §20, §21, §22
 > Sécurité : `DOC/security/SECURITY.md` §2 (rôles), §5 (rotation), §6 (tokens plugin)
 > **Contrats d'interface** : `DOC/contracts/REST_PLUGIN.md` · `DOC/contracts/REST_ENROLLMENT.md` · `DOC/contracts/REST_ADMIN.md` · `DOC/contracts/WEBSOCKET.md` · `DOC/contracts/NATS.md`
@@ -9,7 +9,7 @@
 
 ## 1. Rôle et périmètre
 
-Le relay-server est le **hub central** du système. Il :
+Le secagent-server est le **hub central** du système. Il :
 - Expose une API REST HTTPS pour les plugins Ansible
 - Maintient les connexions WebSocket avec les agents
 - Route les tâches via NATS JetStream (HA multi-nodes)
@@ -36,10 +36,10 @@ GO/cmd/server/
 │   │   └── store.go                 — SQLite (modernc), toutes les tables
 │   └── cli/
 │       ├── root.go                  — cobra root command
-│       ├── minions.go               — relay-server minions *
-│       ├── security.go              — relay-server security keys|tokens *
-│       ├── inventory.go             — relay-server inventory list
-│       └── server.go                — relay-server server status|stats
+│       ├── minions.go               — secagent-server minions *
+│       ├── security.go              — secagent-server security keys|tokens *
+│       ├── inventory.go             — secagent-server inventory list
+│       └── server.go                — secagent-server server status|stats
 ```
 
 ---
@@ -75,7 +75,7 @@ Le port 7771 ne doit **jamais** être exposé hors du container.
 
 **Étape 1 — Initiation :**
 ```json
-Requête : { "hostname": "host-A", "pubkey_pem": "...", "enrollment_token": "relay_enr_..." }
+Requête : { "hostname": "host-A", "pubkey_pem": "...", "enrollment_token": "secagent_enr_..." }
 Réponse : { "challenge": "<OAEP(nonce, agent_pubkey) base64>" }
 ```
 
@@ -132,8 +132,8 @@ Réponse : { "rc": 0, "data": "<base64>" }
       "host-A": {
         "ansible_connection": "relay",
         "ansible_host": "host-A",
-        "relay_status": "connected",
-        "relay_last_seen": "2026-03-06T10:00:00Z"
+        "secagent_status": "connected",
+        "secagent_last_seen": "2026-03-06T10:00:00Z"
       }
     }
   }
@@ -231,7 +231,7 @@ CREATE TABLE server_config (
 
 ```bash
 # Déclencher une rotation
-relay-server security keys rotate --grace 24h
+secagent-server security keys rotate --grace 24h
 
 # Pendant grace_period : jwt_secret_previous et jwt_secret_current tous deux valides
 # Après deadline : jwt_secret_previous = nil, JTIs pré-rotation blacklistés
@@ -251,37 +251,37 @@ Validation JWT dual-key (dans `ws/jwt.go`) :
 
 ```bash
 # Accès exclusif depuis le container (port 7771 interne)
-docker exec relay-api relay-server <commande>
+docker exec relay-api secagent-server <commande>
 
 # Minions
-relay-server minions list [--format table|json|yaml]
-relay-server minions get <hostname>
-relay-server minions authorize <hostname>    # enrollment token
-relay-server minions revoke <hostname>
-relay-server minions suspend <hostname>
-relay-server minions resume <hostname>
-relay-server minions vars get|set|delete <hostname> [key] [value]
+secagent-server minions list [--format table|json|yaml]
+secagent-server minions get <hostname>
+secagent-server minions authorize <hostname>    # enrollment token
+secagent-server minions revoke <hostname>
+secagent-server minions suspend <hostname>
+secagent-server minions resume <hostname>
+secagent-server minions vars get|set|delete <hostname> [key] [value]
 
 # Tokens
-relay-server tokens create --role plugin --description "..." --allowed-ips "..." --allowed-hostname "..." --expires 365d
-relay-server tokens list [--role plugin|enrollment|all]
-relay-server tokens revoke <id>
-relay-server tokens delete <id>
-relay-server tokens purge --expired
+secagent-server tokens create --role plugin --description "..." --allowed-ips "..." --allowed-hostname "..." --expires 365d
+secagent-server tokens list [--role plugin|enrollment|all]
+secagent-server tokens revoke <id>
+secagent-server tokens delete <id>
+secagent-server tokens purge --expired
 
 # Sécurité
-relay-server security keys status
-relay-server security keys rotate [--grace 24h]
-relay-server security tokens list
-relay-server security blacklist list
-relay-server security blacklist purge
+secagent-server security keys status
+secagent-server security keys rotate [--grace 24h]
+secagent-server security tokens list
+secagent-server security blacklist list
+secagent-server security blacklist purge
 
 # Inventaire
-relay-server inventory list [--only-connected]
+secagent-server inventory list [--only-connected]
 
 # Serveur
-relay-server server status [--format json]
-relay-server server stats
+secagent-server server status [--format json]
+secagent-server server stats
 ```
 
 ---

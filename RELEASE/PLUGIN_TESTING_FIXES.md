@@ -33,42 +33,42 @@ INVENTORY=$(curl -s "http://$RELAY_INVENTORY/api/inventory" \
 ```bash
 # Avant (incorrect)
 ansible-playbook \
-  playbooks/test_relay_plugins.yml \
-  -i relay_inventory \
-  -e "relay_server_url=http://$RELAY_SERVER"
+  playbooks/test_secagent_plugins.yml \
+  -i secagent_inventory \
+  -e "secagent_server_url=http://$RELAY_SERVER"
 
 # Après (correct)
 ansible-playbook \
-  playbooks/test_relay_plugins.yml \
-  -i playbooks/relay_inventory.yml
+  playbooks/test_secagent_plugins.yml \
+  -i playbooks/secagent_inventory.yml
 ```
 
-### 2. Configuration d'inventory (playbooks/relay_inventory.yml - créé)
+### 2. Configuration d'inventory (playbooks/secagent_inventory.yml - créé)
 
 Nouveau fichier YAML qui configure les plugins avec les bons ports:
 ```yaml
-plugin: relay_inventory
-relay_server: http://192.168.1.218:7772  # Port 7772 = inventory plugin
-relay_token_file: /tmp/relay_token.jwt
+plugin: secagent_inventory
+secagent_server: http://192.168.1.218:7772  # Port 7772 = inventory plugin
+secagent_token_file: /tmp/secagent_token.jwt
 only_connected: false
 
 all:
   hosts:
   vars:
-    ansible_relay_server: http://192.168.1.218:7771  # Port 7771 = exec/upload/fetch
-    ansible_relay_token_file: /tmp/relay_token.jwt
+    ansible_secagent_server: http://192.168.1.218:7771  # Port 7771 = exec/upload/fetch
+    ansible_secagent_token_file: /tmp/secagent_token.jwt
 ```
 
-### 3. Playbook de test (playbooks/test_relay_plugins.yml)
+### 3. Playbook de test (playbooks/test_secagent_plugins.yml)
 
-Suppression de la variable hardcoded `relay_server_url` qui n'était pas utilisée et créait de la confusion:
+Suppression de la variable hardcoded `secagent_server_url` qui n'était pas utilisée et créait de la confusion:
 ```yaml
 # Avant
 vars:
-  relay_server_url: "http://192.168.1.218:7770"
+  secagent_server_url: "http://192.168.1.218:7770"
 
 # Après
-# (variables gérées par relay_inventory.yml)
+# (variables gérées par secagent_inventory.yml)
 ```
 
 ## Résultats du test
@@ -92,8 +92,8 @@ vars:
       "qualif-host-01": {
         "ansible_connection": "relay",
         "ansible_host": "qualif-host-01",
-        "relay_status": "connected",
-        "relay_last_seen": "2026-03-04T16:49:30.692509+00:00"
+        "secagent_status": "connected",
+        "secagent_last_seen": "2026-03-04T16:49:30.692509+00:00"
       },
       ...
     }
@@ -105,15 +105,15 @@ vars:
 
 | Port | Service | Endpoints | Client |
 |------|---------|-----------|--------|
-| 7770 | relay-api (client) | `/api/register`, `/ws/agent`, `/health` | relay-agent (clients) |
+| 7770 | relay-api (client) | `/api/register`, `/ws/agent`, `/health` | secagent-minion (clients) |
 | 7771 | relay-api (plugin) | `/api/exec/{host}`, `/api/upload/{host}`, `/api/fetch/{host}` | Ansible connection plugin |
 | 7772 | relay-api (inventory) | `/api/inventory` | Ansible inventory plugin |
 
 ## Fichiers modifiés
 
 1. `test_plugins.sh` — Correction des ports (Steps 3-5)
-2. `playbooks/relay_inventory.yml` — Nouveau fichier de configuration inventory
-3. `playbooks/test_relay_plugins.yml` — Suppression variable hardcoded
+2. `playbooks/secagent_inventory.yml` — Nouveau fichier de configuration inventory
+3. `playbooks/test_secagent_plugins.yml` — Suppression variable hardcoded
 
 ## Prochaines étapes
 

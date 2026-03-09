@@ -1,6 +1,6 @@
-# Contrat d'interface — NATS JetStream (relay-server ↔ relay-server)
+# Contrat d'interface — NATS JetStream (secagent-server ↔ secagent-server)
 
-> Interface interne entre les nœuds relay-server pour le routage HA des tâches.
+> Interface interne entre les nœuds secagent-server pour le routage HA des tâches.
 > Invisible pour l'agent et les plugins.
 > Sources : `DOC/common/ARCHITECTURE.md` §5 · `DOC/server/SERVER_SPEC.md` §4
 
@@ -8,7 +8,7 @@
 
 ## 1. Rôle
 
-NATS JetStream est le bus de messages interne qui permet à N nœuds relay-server de collaborer :
+NATS JetStream est le bus de messages interne qui permet à N nœuds secagent-server de collaborer :
 - Un plugin POST sur le nœud #2
 - L'agent `host-A` est connecté au nœud #1
 - NATS achemine la tâche du nœud #2 vers le nœud #1, puis le résultat en sens inverse
@@ -45,7 +45,7 @@ Replicas    : 3
 ### Consumer par agent
 
 ```
-Nom         : relay-agent-{hostname}
+Nom         : secagent-minion-{hostname}
 Type        : Push durable
 AckPolicy   : Explicit
 AckWait     : 30s
@@ -144,7 +144,7 @@ Node #1 (a la WS de host-A)  ◀─────────┘
     │
     │ WS exec message
     ▼
-relay-agent host-A
+secagent-minion host-A
     │
     │ WS result message
     ▼

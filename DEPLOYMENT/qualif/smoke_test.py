@@ -1,5 +1,5 @@
 """
-smoke_test.py — Smoke tests Phase 2 : relay-server complet.
+smoke_test.py — Smoke tests Phase 2 : secagent-server complet.
 
 Tests :
 1. GET /health                    → 200, status ok/degraded
@@ -7,7 +7,7 @@ Tests :
 3. POST /api/register             → 200, JWT retourné
 4. WebSocket /ws/agent            → connexion ouverte
 5. GET /api/inventory             → format JSON Ansible valide
-6. relay-agent Phase 1 connecté  → visible dans inventaire (status=connected)
+6. secagent-minion Phase 1 connecté  → visible dans inventaire (status=connected)
 """
 
 import asyncio
@@ -173,7 +173,7 @@ async def test_inventory(client: httpx.AsyncClient) -> bool:
 
 
 async def test_agent_connected(client: httpx.AsyncClient) -> bool:
-    print("\n--- Test 6 : relay-agent Phase 1 connecté et visible dans inventaire ---")
+    print("\n--- Test 6 : secagent-minion Phase 1 connecté et visible dans inventaire ---")
     try:
         plugin_jwt = _make_plugin_jwt()
 
@@ -188,11 +188,11 @@ async def test_agent_connected(client: httpx.AsyncClient) -> bool:
                 hostvars = data.get("_meta", {}).get("hostvars", {})
                 connected_agents = [
                     h for h, v in hostvars.items()
-                    if v.get("relay_status") == "connected"
+                    if v.get("secagent_status") == "connected"
                 ]
                 if connected_agents:
                     print(f"  Agents connectés : {connected_agents}")
-                    print(f"  {PASS} relay-agent Phase 1 connecté et visible dans inventaire")
+                    print(f"  {PASS} secagent-minion Phase 1 connecté et visible dans inventaire")
                     return True
                 else:
                     print(f"  Tentative {attempt + 1}/6 — aucun agent connecté (attente 5s)...")
@@ -200,7 +200,7 @@ async def test_agent_connected(client: httpx.AsyncClient) -> bool:
             else:
                 await asyncio.sleep(5)
 
-        print(f"  {FAIL} relay-agent Phase 1 non connecté après 30s")
+        print(f"  {FAIL} secagent-minion Phase 1 non connecté après 30s")
         print(f"  Note : normal si l'agent Phase 1 pointe encore vers relay.qualif:8443")
         print(f"  (l'agent est configuré pour http://relay-api:8443 dans ce compose)")
         return False
@@ -211,7 +211,7 @@ async def test_agent_connected(client: httpx.AsyncClient) -> bool:
 
 async def main():
     print("=" * 60)
-    print("SMOKE TEST Phase 2 — relay-server")
+    print("SMOKE TEST Phase 2 — secagent-server")
     print(f"Cible : {RELAY_API_URL}")
     print(f"Date  : {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
@@ -255,7 +255,7 @@ async def main():
     print(f"{PASS if results.get('enrollment') else FAIL} Enrollment agent → 200")
     print(f"{PASS if results.get('websocket') else FAIL} WS agent connectée")
     print(f"{PASS if results.get('inventory') else FAIL} Inventaire → format Ansible valide")
-    print(f"{PASS if results.get('agent_connected') else FAIL} relay-agent Phase 1 connecté et visible dans inventaire")
+    print(f"{PASS if results.get('agent_connected') else FAIL} secagent-minion Phase 1 connecté et visible dans inventaire")
     print()
     all_pass = all(results.values())
     print(f"VERDICT : {'PASS' if all_pass else 'PARTIAL/FAIL'}")

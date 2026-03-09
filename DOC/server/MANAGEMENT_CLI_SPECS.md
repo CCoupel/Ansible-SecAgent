@@ -2,7 +2,7 @@
 
 ## Vue d'ensemble
 
-CLI de management pour administrer les minions (agents) et l'inventaire Ansible dans AnsibleRelay.
+CLI de management pour administrer les minions (agents) et l'inventaire Ansible dans Ansible-SecAgent.
 
 **Utilisateurs cibles** :
 - Administrateurs système (gestion minions, revoke, delete)
@@ -13,7 +13,7 @@ CLI de management pour administrer les minions (agents) et l'inventaire Ansible 
 - PyPI package : `pip install ansiblerelay-cli`
 - Bin : `/usr/local/bin/relay` (symlink ou entry point)
 - Bash completion : `relay --help`, `_relay` completion script
-- Man pages : `man relay`, `man relay-minion`, `man relay-inventory`
+- Man pages : `man relay`, `man relay-minion`, `man secagent-inventory`
 
 **Authentification** :
 - File local : `~/.config/ansiblerelay/credentials.json` (chmod 600)
@@ -169,12 +169,12 @@ relay inventory view [OPTIONS]
   #   hosts:
   #     qualif-01:
   #       ansible_connection: relay
-  #       ansible_relay_server: http://192.168.1.218:7771
+  #       ansible_secagent_server: http://192.168.1.218:7771
   #     qualif-02:
   #       ansible_connection: relay
-  #       ansible_relay_server: http://192.168.1.218:7771
+  #       ansible_secagent_server: http://192.168.1.218:7771
   #   vars:
-  #     ansible_relay_token_file: /etc/ansible/relay_plugin.jwt
+  #     ansible_secagent_token_file: /etc/ansible/secagent_plugin.jwt
 
 # Edit inventory (opens $EDITOR)
 relay inventory edit [OPTIONS]
@@ -210,7 +210,7 @@ relay inventory diff [OPTIONS]
   # -qualif-03:
   # +qualif-04:
   #    ansible_connection: relay
-  # +  ansible_relay_timeout: 45
+  # +  ansible_secagent_timeout: 45
 
 # Show inventory history (backups)
 relay inventory history [OPTIONS]
@@ -221,7 +221,7 @@ relay inventory history [OPTIONS]
   # Output:
   # VERSION  TIMESTAMP           EDITED BY    DESCRIPTION
   # 1 (cur)  2026-03-05 10:00:00 admin        Added qualif-04
-  # 2        2026-03-04 15:30:00 devops       Modified ansible_relay_timeout
+  # 2        2026-03-04 15:30:00 devops       Modified ansible_secagent_timeout
   # 3        2026-03-04 10:15:00 admin        Initial setup
 
 # Rollback inventory to previous version
@@ -320,7 +320,7 @@ relay config set <key> <value>
 relay version
   # Output:
   # ansiblerelay-cli version 1.0.0
-  # compatible with relay-server >= 1.0.0
+  # compatible with secagent-server >= 1.0.0
   # Python 3.11.0
   # Built: 2026-03-05
 

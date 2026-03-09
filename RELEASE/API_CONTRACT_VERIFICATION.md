@@ -140,8 +140,8 @@ Same auth gap (GAP 6) and stub gap (GAP 7) as exec. Request/response format is i
 | Response: all.hosts | `[]string` | `[]string` | YES |
 | Response: _meta.hostvars.*.ansible_connection | `"relay"` | `"relay"` | YES |
 | Response: _meta.hostvars.*.ansible_host | `string` | `string` | YES |
-| Response: _meta.hostvars.*.relay_status | `string` | `string` | YES |
-| Response: _meta.hostvars.*.relay_last_seen | `string` | `string` | YES |
+| Response: _meta.hostvars.*.secagent_status | `string` | `string` | YES |
+| Response: _meta.hostvars.*.secagent_last_seen | `string` | `string` | YES |
 | JWT Auth | role=plugin required | **NO AUTH** | **CRITICAL GAP** |
 | DB query | real agents from SQLite | **hardcoded mock data** | **GAP** |
 

@@ -25,7 +25,7 @@ Vérification hypercorn: ✓ OK (importable)
 Déploiement services  : ✓ OK
   ├─ nats              ✓ Healthy
   ├─ relay-api         ✓ Healthy (3 ports actifs)
-  ├─ relay-agent       ✓ Running
+  ├─ secagent-minion       ✓ Running
   └─ relay-caddy       ✓ Running
 
 
@@ -66,7 +66,7 @@ PHASE 5 : LOGS ET DIAGNOSTICS ✓
 ─────────────────────────────────
 
 Logs du container    : ✓ Propres, pas d'erreur critique
-Démarrage            : ✓ "AnsibleRelay server started"
+Démarrage            : ✓ "Ansible-SecAgent server started"
 Health checks        : ✓ Tous les 200 OK
 Erreurs attendues    : ✓ 404 isolation endpoints (CORRECT)
                        ✓ 403 enrollment non-autorisé (CORRECT)
@@ -102,7 +102,7 @@ RÉSUMÉ SERVICES
 relay-nats       Healthy    (4222)    ✓ Running
 relay-api        Healthy    (3 ports) ✓ Running (hypercorn 3 workers)
 relay-caddy      Running    (7443)    ✓ Running
-relay-agent      Running    (agent)   ✓ Running
+secagent-minion      Running    (agent)   ✓ Running
 relay-mock-server Running   (legacy)  ✓ Running
 
 
@@ -139,7 +139,7 @@ Tests passants   : 100%
 RECOMMANDATIONS
 ────────────────
 
-1. Vérifier que relay-agent configuration utilise bien port 7770
+1. Vérifier que secagent-minion configuration utilise bien port 7770
 2. Configurer les règles firewall par port/rôle (voir PORTS_SECURITY.md)
 3. Mettre à jour les tests avec les nouveaux ports
 4. Documenter pour les control nodes les nouveaux endpoints
@@ -155,7 +155,7 @@ Pour le CDP (team leader) :
   → Lancer tests unitaires/E2E avec nouveaux ports
 
 Pour les développeurs :
-  → Adapter agent/relay_agent.py (RELAY_SERVER_URL port 7770)
+  → Adapter agent/secagent_agent.py (RELAY_SERVER_URL port 7770)
   → Adapter tests avec les nouveaux ports
   → Valider que smoke-test fonctionne
 

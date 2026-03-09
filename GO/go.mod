@@ -1,4 +1,4 @@
-module relay-server
+module secagent-server
 
 go 1.24.0
 

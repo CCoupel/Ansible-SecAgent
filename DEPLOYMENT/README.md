@@ -1,12 +1,12 @@
-# AnsibleRelay Deployment Guide
+# Ansible-SecAgent Deployment Guide
 
 ## Overview
 
-Ce répertoire contient les scripts et configurations pour déployer AnsibleRelay sur qualif (192.168.1.218).
+Ce répertoire contient les scripts et configurations pour déployer Ansible-SecAgent sur qualif (192.168.1.218).
 
 **Composants :**
 - **Relay Server** : serveur central (NATS + relay-api + caddy)
-- **Relay Agents** : agents clients (relay-agent-01/02/03)
+- **Relay Agents** : agents clients (secagent-minion-01/02/03)
 - **Ansible Container** : container Ansible avec plugins relay pour exécuter des playbooks
 
 ---
@@ -98,9 +98,9 @@ DEPLOYMENT/
 - Persist state locally
 
 **Containers :**
-- `relay-agent-01` (qualif-host-01)
-- `relay-agent-02` (qualif-host-02)
-- `relay-agent-03` (qualif-host-03)
+- `secagent-minion-01` (qualif-host-01)
+- `secagent-minion-02` (qualif-host-02)
+- `secagent-minion-03` (qualif-host-03)
 
 **Environment :**
 - `RELAY_SERVER_URL` : Server address (default: http://relay-api:7770)
@@ -115,7 +115,7 @@ DEPLOYMENT/
 - Supports all standard Ansible features
 
 **Features :**
-- Pre-installed plugins (relay.py, relay_inventory.py)
+- Pre-installed plugins (secagent.py, secagent_inventory.py)
 - Mounted playbooks, inventory, and roles
 - Ansible CLI and modules
 
@@ -125,13 +125,13 @@ DEPLOYMENT/
 docker exec -it relay-ansible bash
 
 # Run playbook
-ansible-playbook -i relay_inventory /ansible/playbooks/my-playbook.yml
+ansible-playbook -i secagent_inventory /ansible/playbooks/my-playbook.yml
 
 # List inventory
-ansible-inventory -i relay_inventory -y
+ansible-inventory -i secagent_inventory -y
 
 # Run command on all agents
-ansible all -i relay_inventory -m command -a "uptime"
+ansible all -i secagent_inventory -m command -a "uptime"
 ```
 
 ---
@@ -170,7 +170,7 @@ sleep 15
 ./deploy.sh minion
 
 # Check agent status
-docker logs relay-agent-01 | tail -20
+docker logs secagent-minion-01 | tail -20
 ```
 
 ### 4. Deploy Ansible Container
@@ -179,7 +179,7 @@ docker logs relay-agent-01 | tail -20
 ./deploy.sh ansible
 
 # Test Ansible
-docker exec -it relay-ansible ansible-inventory -i relay_inventory -y
+docker exec -it relay-ansible ansible-inventory -i secagent_inventory -y
 ```
 
 ### 5. Verify Full Stack
@@ -189,10 +189,10 @@ docker exec -it relay-ansible ansible-inventory -i relay_inventory -y
 ./deploy.sh status
 
 # Check relay inventory
-docker exec -it relay-ansible ansible-inventory -i relay_inventory -y
+docker exec -it relay-ansible ansible-inventory -i secagent_inventory -y
 
 # Test playbook execution
-docker exec -it relay-ansible ansible-playbook -i relay_inventory \
+docker exec -it relay-ansible ansible-playbook -i secagent_inventory \
   -c relay playbooks/ping.yml  # Use relay connection plugin
 ```
 
@@ -211,14 +211,14 @@ Server configuration with NATS and relay-api.
 
 **Volumes :**
 - `nats_data` : NATS persistence
-- `relay_data` : Server database + state
+- `secagent_data` : Server database + state
 
 ### minion/docker-compose.yml
 
 Agent configuration with 3 containers.
 
 **Key services :**
-- `relay-agent-01/02/03` : GO agent instances
+- `secagent-minion-01/02/03` : GO agent instances
 
 **Environment :**
 - `RELAY_ENROLLMENT_TOKEN` : Required for enrollment (Phase 10)
@@ -255,7 +255,7 @@ netstat -an | grep 777
 
 ```bash
 # Check agent logs
-docker logs relay-agent-01
+docker logs secagent-minion-01
 
 # Verify enrollment token (Phase 10)
 echo $RELAY_ENROLLMENT_TOKEN
@@ -277,7 +277,7 @@ docker exec relay-ansible ls /ansible/ansible_plugins/
 docker exec relay-ansible ansible --version
 
 # Test inventory plugin
-docker exec relay-ansible ansible-inventory -i relay_inventory -y
+docker exec relay-ansible ansible-inventory -i secagent_inventory -y
 ```
 
 ---
@@ -321,7 +321,7 @@ docker exec relay-ansible ansible-inventory -i relay_inventory -y
 
 ```bash
 docker logs -f relay-api       # Server
-docker logs -f relay-agent-01  # Agent
+docker logs -f secagent-minion-01  # Agent
 docker logs -f relay-ansible   # Ansible container
 ```
 
@@ -332,7 +332,7 @@ docker logs -f relay-ansible   # Ansible container
 ### Credentials
 
 - Store `JWT_SECRET_KEY` and `ADMIN_TOKEN` securely
-- Rotate tokens regularly (see `relay-server security keys rotate`)
+- Rotate tokens regularly (see `secagent-server security keys rotate`)
 - Use environment variables or `.env` files, not hardcoded values
 
 ### Network
@@ -360,7 +360,7 @@ See [ANSIBLE_DEPLOYMENT.md](./ANSIBLE_DEPLOYMENT.md) for playbook examples.
 
 ```bash
 # Parallel execution
-ansible-playbook -i relay_inventory -f 5 playbooks/my-playbook.yml
+ansible-playbook -i secagent_inventory -f 5 playbooks/my-playbook.yml
 
 # Enable fact caching
 export ANSIBLE_FACT_CACHING=jsonfile

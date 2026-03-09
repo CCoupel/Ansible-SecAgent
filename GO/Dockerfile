@@ -17,7 +17,7 @@ COPY . .
 
 # Build the binary — CGO required by go-sqlite3
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-    go build -ldflags="-s -w" -o relay-server ./cmd/server
+    go build -ldflags="-s -w" -o secagent-server ./cmd/server
 
 # Runtime stage
 FROM alpine:3.18
@@ -28,7 +28,7 @@ WORKDIR /app
 RUN apk add --no-cache ca-certificates sqlite-libs
 
 # Copy binary from builder
-COPY --from=builder /build/relay-server /app/relay-server
+COPY --from=builder /build/secagent-server /app/secagent-server
 
 # Create non-root user
 RUN addgroup -S relay && adduser -S relay -G relay
@@ -45,4 +45,4 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
 EXPOSE 7770 7771 7772
 
 # Run server
-CMD ["/app/relay-server"]
+CMD ["/app/secagent-server"]

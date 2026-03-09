@@ -1,4 +1,4 @@
-# AnsibleRelay — High-Level Design (HLD)
+# Ansible-SecAgent — High-Level Design (HLD)
 
 > Vue d'ensemble architecturale du système.
 > Pour les spécifications techniques détaillées, voir [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -25,7 +25,7 @@
 
 ## 1. Contexte système
 
-AnsibleRelay permet d'exécuter des playbooks Ansible sur des hôtes distants **sans ouvrir de port entrant**. Les agents initient toutes les connexions vers le serveur central.
+Ansible-SecAgent permet d'exécuter des playbooks Ansible sur des hôtes distants **sans ouvrir de port entrant**. Les agents initient toutes les connexions vers le serveur central.
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
@@ -47,7 +47,7 @@ AnsibleRelay permet d'exécuter des playbooks Ansible sur des hôtes distants **
 ║                                          ┌─────────────┴──────────────┐  ║
 ║                                          │      HÔTES GÉRÉS           │  ║
 ║                                          │   host-A  host-B  host-C   │  ║
-║                                          │  (relay-agent + systemd)   │  ║
+║                                          │  (secagent-minion + systemd)   │  ║
 ║                                          └────────────────────────────┘  ║
 ║                                                                          ║
 ║  Flux sortants uniquement depuis les hôtes gérés (NAT/firewall friendly) ║
@@ -62,7 +62,7 @@ AnsibleRelay permet d'exécuter des playbooks Ansible sur des hôtes distants **
 | Pipeline CI/CD | Provisionne les serveurs et pré-enregistre leurs clefs |
 | Ansible Control Node | Hôte exécutant `ansible-playbook`, portant les plugins relay |
 | Relay Server | Broker central — reçoit les tâches, les route aux agents |
-| Hôtes gérés | Serveurs cibles portant le `relay-agent` en tant que service systemd |
+| Hôtes gérés | Serveurs cibles portant le `secagent-minion` en tant que service systemd |
 
 ---
 
@@ -78,7 +78,7 @@ AnsibleRelay permet d'exécuter des playbooks Ansible sur des hôtes distants **
 ║  │                                                                               │ ║
 ║  │  ┌──────────────────────────┐     ┌──────────────────────────────────────┐  │ ║
 ║  │  │   INVENTORY PLUGIN       │     │        CONNECTION PLUGIN             │  │ ║
-║  │  │   relay_inventory.py     │     │        relay.py                      │  │ ║
+║  │  │   secagent_inventory.py     │     │        secagent.py                      │  │ ║
 ║  │  │                          │     │                                      │  │ ║
 ║  │  │  • GET /api/inventory    │     │  • POST /api/exec/{host}   (exec)    │  │ ║
 ║  │  │  • retourne JSON Ansible │     │  • POST /api/upload/{host} (put)     │  │ ║
@@ -428,7 +428,7 @@ CAS C — Agent déconnecté pendant l'exécution
 │  │                                │   volume: nats_data          │  │   │
 │  │                                └──────────────────────────────┘  │   │
 │  │                                                                   │   │
-│  │  Volumes nommés:  relay_data (SQLite)  nats_data  caddy_data     │   │
+│  │  Volumes nommés:  secagent_data (SQLite)  nats_data  caddy_data     │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                           │
 │  Fichiers bind-mount:  ./certs/   ./Caddyfile   .env                     │
@@ -439,7 +439,7 @@ CAS C — Agent déconnecté pendant l'exécution
           │                                    │
 ┌─────────┴──────────┐              ┌──────────┴─────────────┐
 │   HÔTE GÉRÉ        │              │  ANSIBLE CONTROL NODE  │
-│   relay-agent      │              │  inventory + conn       │
+│   secagent-minion      │              │  inventory + conn       │
 │   systemd          │              │  plugin                 │
 └────────────────────┘              └────────────────────────┘
 ```
@@ -448,7 +448,7 @@ CAS C — Agent déconnecté pendant l'exécution
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                    CLUSTER KUBERNETES  namespace: ansible-relay               │
+│                    CLUSTER KUBERNETES  namespace: ansible-secagent               │
 │                                                                               │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
 │  │  Ingress (nginx)                                                        │  │
@@ -491,7 +491,7 @@ CAS C — Agent déconnecté pendant l'exécution
             │                                         │
 ┌───────────▼──────────────┐             ┌────────────▼────────────────┐
 │   HÔTES GÉRÉS (N)        │             │   PostgreSQL (externe)      │
-│   relay-agent + systemd  │             │   RDS / CloudSQL / CrunchyData│
+│   secagent-minion + systemd  │             │   RDS / CloudSQL / CrunchyData│
 │   connexion WSS sortante │             │   agents, authorized_keys,  │
 └──────────────────────────┘             │   blacklist                 │
                                          └─────────────────────────────┘
@@ -504,8 +504,8 @@ CAS C — Agent déconnecté pendant l'exécution
 | # | De | Vers | Protocole | Endpoint / Subject | Sens | Auth |
 |---|---|---|---|---|---|---|
 | I1 | Pipeline CI/CD | Relay Server | HTTPS | `POST /api/admin/authorize` | → | Bearer admin token |
-| I2 | relay-agent | Relay Server | HTTPS | `POST /api/register` | → | Public key + TLS |
-| I3 | relay-agent | Relay Server | WSS | `/ws/agent` | ↔ | Bearer JWT agent |
+| I2 | secagent-minion | Relay Server | HTTPS | `POST /api/register` | → | Public key + TLS |
+| I3 | secagent-minion | Relay Server | WSS | `/ws/agent` | ↔ | Bearer JWT agent |
 | I4 | Inventory Plugin | Relay Server | HTTPS | `GET /api/inventory` | → | Bearer JWT plugin |
 | I5 | Connection Plugin | Relay Server | HTTPS | `POST /api/exec/{host}` | → | Bearer JWT plugin |
 | I6 | Connection Plugin | Relay Server | HTTPS | `POST /api/upload/{host}` | → | Bearer JWT plugin |
@@ -514,8 +514,8 @@ CAS C — Agent déconnecté pendant l'exécution
 | I9 | NATS | Relay Server | NATS TCP | `tasks.{hostname}` | → deliver | NATS creds |
 | I10 | Relay Server | NATS | NATS TCP | `results.{task_id}` | → publish | NATS creds |
 | I11 | NATS | Relay Server | NATS TCP | `results.{task_id}` | → deliver | NATS creds |
-| I12 | Relay Server | relay-agent | WSS (WS msg) | `exec / put_file / fetch_file / cancel` | → | Session WS |
-| I13 | relay-agent | Relay Server | WSS (WS msg) | `ack / stdout / result` | → | Session WS |
+| I12 | Relay Server | secagent-minion | WSS (WS msg) | `exec / put_file / fetch_file / cancel` | → | Session WS |
+| I13 | secagent-minion | Relay Server | WSS (WS msg) | `ack / stdout / result` | → | Session WS |
 | I14 | Relay Server | PostgreSQL/SQLite | TCP | SQL | ↔ | DB creds |
 
 ### Formats de messages WebSocket (I12 / I13)
@@ -555,5 +555,5 @@ Serveur → Agent                        Agent → Serveur
 
 ---
 
-*HLD généré le 2026-03-03 — AnsibleRelay*
+*HLD généré le 2026-03-03 — Ansible-SecAgent*
 *Basé sur les spécifications détaillées : [ARCHITECTURE.md](ARCHITECTURE.md)*

@@ -1,4 +1,4 @@
-# AnsibleRelay
+# Ansible-SecAgent
 
 Système permettant d'exécuter des playbooks Ansible sur des hôtes distants sans connexion SSH entrante. Les agents clients initient eux-mêmes la connexion vers un serveur central (modèle **Salt Minion**, connexions inversées).
 
@@ -15,22 +15,22 @@ curl http://localhost:7770/health
 ```bash
 cd ansible_minion
 docker compose up --build -d
-docker logs relay-agent-01  # Vérifier la connexion
+docker logs secagent-minion-01  # Vérifier la connexion
 ```
 
 ## Structure du Projet
 
 ```
-ansible-relay/
+ansible-secagent/
 ├── ansible_server/              # Déploiement serveur (Phase 2)
 │   ├── docker-compose.yml       - nats, relay-api, caddy
 │   └── .env                     - Variables d'environnement
 │
 ├── ansible_minion/              # Déploiement agents (Phase 1)
-│   └── docker-compose.yml       - relay-agent-01/02/03
+│   └── docker-compose.yml       - secagent-minion-01/02/03
 │
 ├── agent/                       # Code agent client
-│   ├── relay_agent.py           - Point d'entrée principal
+│   ├── secagent_agent.py           - Point d'entrée principal
 │   ├── async_registry.py        - Registre des tâches async
 │   ├── facts_collector.py       - Collecte system facts
 │   ├── agent_entrypoint.py      - Wrapper d'initialisation
@@ -52,9 +52,9 @@ ansible-relay/
 │
 ├── ansible_plugins/             # Plugins Ansible
 │   ├── connection_plugins/
-│   │   └── relay.py             - ConnectionBase (remplace SSH)
+│   │   └── secagent.py             - ConnectionBase (remplace SSH)
 │   └── inventory_plugins/
-│       └── relay_inventory.py   - InventoryModule dynamique
+│       └── secagent_inventory.py   - InventoryModule dynamique
 │
 ├── tests/                       # Tests & qualification
 │   ├── unit/                    - Tests unitaires
@@ -102,7 +102,7 @@ ansible-relay/
 
 ### Avantages par rapport à SSH
 
-| Aspect | SSH | AnsibleRelay |
+| Aspect | SSH | Ansible-SecAgent |
 |--------|-----|--------------|
 | **Connexion** | Entrante (serveur initie) | Sortante (agent initie) |
 | **Firewall** | SSH port ouvert | Sortante HTTPS uniquement |
@@ -133,8 +133,8 @@ ansible-relay/
 ## Phase de Développement
 
 - ✅ **Phase 0** : Backlog + architecture (41 tâches)
-- ✅ **Phase 1** : relay-agent + tests
-- ✅ **Phase 2** : relay-server + NATS JetStream
+- ✅ **Phase 1** : secagent-minion + tests
+- ✅ **Phase 2** : secagent-server + NATS JetStream
 - ✅ **Phase 3** : Plugins Ansible + E2E tests
 - ⏳ **Phase 4** : Production Kubernetes (après validation)
 

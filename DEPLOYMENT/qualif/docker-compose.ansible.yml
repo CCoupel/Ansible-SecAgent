@@ -1,19 +1,19 @@
-# docker-compose.yml — Ansible Container with AnsibleRelay Plugins
+# docker-compose.yml — Ansible Container with Ansible-SecAgent Plugins
 #
 # Container Ansible standalone incluant les plugins relay
-# Permet d'exécuter des playbooks Ansible contre les agents AnsibleRelay
+# Permet d'exécuter des playbooks Ansible contre les agents Ansible-SecAgent
 #
 # Déploiement via Docker remote access :
 #   DOCKER_HOST=tcp://192.168.1.218:2375 docker compose -f docker-compose.ansible.yml up -d
 #
 # Variables d'environnement requises (fichier .env ou export) :
 #   RELAY_SERVER_URL : URL du serveur relay (ex: http://relay-api:7770)
-#   RELAY_TOKEN : plugin token pour relay-inventory (Bearer auth)
+#   RELAY_TOKEN : plugin token pour secagent-inventory (Bearer auth)
 
 services:
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Ansible Container with AnsibleRelay Plugins
+  # Ansible Container with Ansible-SecAgent Plugins
   # ─────────────────────────────────────────────────────────────────────────────
 
   relay-ansible:
@@ -25,7 +25,7 @@ services:
 
     # Environment variables pour les plugins relay
     environment:
-      # Relay server configuration (relay-inventory binary)
+      # Relay server configuration (secagent-inventory binary)
       RELAY_SERVER_URL: "${RELAY_SERVER_URL:-http://relay-api:7770}"
       RELAY_TOKEN: "${RELAY_TOKEN}"
       RELAY_CA_BUNDLE: "${RELAY_CA_BUNDLE:-}"

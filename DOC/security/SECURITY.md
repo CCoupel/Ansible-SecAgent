@@ -1,6 +1,6 @@
-# AnsibleRelay — Security Design
+# Ansible-SecAgent — Security Design
 
-> Document de référence pour le modèle de sécurité d'AnsibleRelay.
+> Document de référence pour le modèle de sécurité d'Ansible-SecAgent.
 > Remplace et étend ARCHITECTURE.md §7.
 > Dernière mise à jour : 2026-03-06
 
@@ -21,7 +21,7 @@ Défense en profondeur        : IP binding + hostname claim + token secret + TLS
 |---|---|---|
 | Relay Server | Racine de confiance | PKI interne, secrets en DB chiffrés |
 | Ansible Control Node | Machine de confiance | Administrée par l'équipe Ops |
-| relay-agent | Hôte non fiable | Déployé derrière NAT/DMZ/firewall |
+| secagent-minion | Hôte non fiable | Déployé derrière NAT/DMZ/firewall |
 
 ---
 
@@ -29,7 +29,7 @@ Défense en profondeur        : IP binding + hostname claim + token secret + TLS
 
 | Rôle | Porteur | Endpoints autorisés | Mécanisme d'auth |
 |---|---|---|---|
-| `agent` | relay-agent (hôte cible) | `POST /api/register`, `WSS /ws/agent` | JWT HMAC-HS256 chiffré RSA-OAEP |
+| `agent` | secagent-minion (hôte cible) | `POST /api/register`, `WSS /ws/agent` | JWT HMAC-HS256 chiffré RSA-OAEP |
 | `plugin` | Ansible Control Node | `GET /api/inventory`, `POST /api/exec`, `/api/upload`, `/api/fetch` | Token statique hashé (SHA-256) |
 | `admin` | CLI dans le container serveur | Port 7771 — tous les endpoints d'administration | `ADMIN_TOKEN` env var (container-interne) |
 
@@ -61,7 +61,7 @@ Admin                    Server                        Agent (hôte cible)
   │ --hostname my-host     │                              │
   │ --expires 24h          │                              │
   │──────────────────────>│                              │
-  │ token: "relay_enr_..." │                              │  ← montré une seule fois
+  │ token: "secagent_enr_..." │                              │  ← montré une seule fois
   │<──────────────────────│                              │
   │                        │                              │
   │  (transmet le token à l'opérateur qui déploie l'agent)
@@ -331,32 +331,32 @@ Pour une preuve cryptographique du hostname : utiliser mTLS (PKI interne, hors s
 
 ```bash
 # One-shot : un seul hôte précis (défaut)
-relay-server tokens create \
+secagent-server tokens create \
   --role enrollment \
   --hostname-pattern "vp-db-01" \
   --expires 4h
 
 # One-shot : le 1er hôte vp-* qui se présente dans les 24h
-relay-server tokens create \
+secagent-server tokens create \
   --role enrollment \
   --hostname-pattern "vp.*" \
   --expires 24h
 
 # Permanent : pipeline CI/CD — N hôtes vp-* peuvent s'enrôler à volonté
-relay-server tokens create \
+secagent-server tokens create \
   --role enrollment \
   --hostname-pattern "vp.*" \
   --reusable
 
 # Permanent avec expiry : vague de déploiement 30 jours
-relay-server tokens create \
+secagent-server tokens create \
   --role enrollment \
   --hostname-pattern ".*-prod-.*" \
   --reusable \
   --expires 30d
 
 # Token plugin avec restrictions IP (CIDR) + hostname (regexp)
-relay-server tokens create \
+secagent-server tokens create \
   --role plugin \
   --description "ansible-control-prod" \
   --allowed-ips "192.168.1.0/24,10.0.0.0/8" \
@@ -364,12 +364,12 @@ relay-server tokens create \
   --expires 365d
 
 # Token plugin sans restriction (dev/test)
-relay-server tokens create --role plugin --description "dev"
+secagent-server tokens create --role plugin --description "dev"
 ```
 
 Sortie :
 ```
-Token créé : relay_enr_aB3xK9...      ← affiché UNE SEULE FOIS, stocker immédiatement
+Token créé : secagent_enr_aB3xK9...      ← affiché UNE SEULE FOIS, stocker immédiatement
 ID         : 550e8400-e29b-41d4-a716-446655440000
 Rôle       : enrollment
 Hostname   : vp.*  (regexp)
@@ -381,7 +381,7 @@ Usages     : 0
 ### Listage
 
 ```bash
-relay-server tokens list [--role plugin|enrollment|all]
+secagent-server tokens list [--role plugin|enrollment|all]
 
 ID          RÔLE        HOSTNAME PATTERN         MODE        EXPIRES     USAGES  LAST USED
 550e84...   plugin      ansible-control-[0-9]+   -           2027-03-06  -       2026-03-05 14:32
@@ -394,15 +394,15 @@ c4d5e6...   enrollment  .*-prod-.*               one-shot    2026-03-07  1      
 
 ```bash
 # Révocation immédiate (permanent ou non)
-relay-server tokens revoke <id>
+secagent-server tokens revoke <id>
 
 # Suppression définitive
-relay-server tokens delete <id>
+secagent-server tokens delete <id>
 
 # Purge sélective
-relay-server tokens purge --expired          # tokens dont expires_at est dépassé
-relay-server tokens purge --used             # one-shot déjà consommés (use_count > 0)
-relay-server tokens purge --expired --used   # les deux
+secagent-server tokens purge --expired          # tokens dont expires_at est dépassé
+secagent-server tokens purge --used             # one-shot déjà consommés (use_count > 0)
+secagent-server tokens purge --expired --used   # les deux
 ```
 
 ---
@@ -416,7 +416,7 @@ relay-server tokens purge --expired --used   # les deux
 | `7772` | Publique (WSS via Caddy) | Agents | `/ws/agent` |
 
 Le port 7771 ne doit **jamais** figurer dans la section `ports:` du docker-compose.
-L'accès admin se fait exclusivement via `docker exec relay-api relay-server <cmd>`.
+L'accès admin se fait exclusivement via `docker exec relay-api secagent-server <cmd>`.
 
 ---
 

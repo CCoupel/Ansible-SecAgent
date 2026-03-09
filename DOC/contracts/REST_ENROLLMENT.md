@@ -1,6 +1,6 @@
-# Contrat d'interface — REST Enrollment (relay-agent → relay-server)
+# Contrat d'interface — REST Enrollment (secagent-minion → secagent-server)
 
-> Protocole d'enrôlement et de refresh JWT pour le relay-agent.
+> Protocole d'enrôlement et de refresh JWT pour le secagent-minion.
 > Endpoint : HTTPS :7770
 > Sources : `DOC/security/SECURITY.md` §3 · `DOC/server/SERVER_SPEC.md` §3 · `DOC/agent/AGENT_SPEC.md` §3
 
@@ -13,7 +13,7 @@ L'enrollment est un **protocole en 2 étapes** combinant :
 - Un **challenge RSA-OAEP** (preuve de possession de la clef privée)
 
 ```
-relay-agent                          relay-server
+secagent-minion                          secagent-server
     │                                    │
     │── POST /api/register (étape 1) ──▶ │  vérif token OTP + hostname
     │◀── { challenge } ─────────────── │  nonce chiffré avec pubkey agent
@@ -30,7 +30,7 @@ relay-agent                          relay-server
 
 Avant tout enrollment, l'admin doit avoir exécuté :
 ```bash
-relay-server minions authorize <hostname>
+secagent-server minions authorize <hostname>
 ```
 Ce qui insère dans la table `enrollment_tokens` un token OTP avec :
 - `hostname` lié
@@ -52,7 +52,7 @@ Content-Type: application/json
 {
   "hostname": "host-A",
   "pubkey_pem": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkq...\n-----END PUBLIC KEY-----",
-  "enrollment_token": "relay_enr_xxxxxxxxxxxxx"
+  "enrollment_token": "secagent_enr_xxxxxxxxxxxxx"
 }
 ```
 
@@ -60,7 +60,7 @@ Content-Type: application/json
 |---|---|
 | `hostname` | Nom d'hôte de l'agent (doit correspondre au token) |
 | `pubkey_pem` | Clef publique RSA-4096 de l'agent en format PEM |
-| `enrollment_token` | Token OTP délivré par `relay-server minions authorize` |
+| `enrollment_token` | Token OTP délivré par `secagent-server minions authorize` |
 
 ### Réponse 200
 

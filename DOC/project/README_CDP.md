@@ -1,4 +1,4 @@
-# AnsibleRelay — Guide CDP & Exécution du projet
+# Ansible-SecAgent — Guide CDP & Exécution du projet
 
 **Ce document est le point d'entrée unique pour comprendre et exécuter le projet.**
 
@@ -18,8 +18,8 @@ Lire **dans cet ordre avant toute action** :
 ## État du projet
 
 - **Phase 0** : ✓ COMPLÈTE — Backlog créé (41 tâches, 3 phases, dépendances OK)
-- **Phase 1** : ⏳ En attente de lancement (relay-agent)
-- **Phase 2** : À partir de Phase 1 validée (relay-server)
+- **Phase 1** : ⏳ En attente de lancement (secagent-minion)
+- **Phase 2** : À partir de Phase 1 validée (secagent-server)
 - **Phase 3** : À partir de Phase 2 validée (plugins Ansible)
 - **Production** : Après clôture MVP + confirmation utilisateur explicite
 
@@ -57,18 +57,18 @@ Ansible_Agent/
 ├── ARCHITECTURE.md         ← Spécifications techniques
 ├── BACKLOG.md              ← 41 tâches, 3 phases, dépendances
 ├── PLAN_CDP.md             ← Workflow CDP, règles absolues
-├── agent/                  ← Phase 1 : relay-agent daemon
-│   ├── relay_agent.py
+├── agent/                  ← Phase 1 : secagent-minion daemon
+│   ├── secagent_agent.py
 │   ├── facts_collector.py
 │   ├── async_registry.py
-│   └── relay-agent.service
-├── server/                 ← Phase 2 : relay-server FastAPI
+│   └── secagent-minion.service
+├── server/                 ← Phase 2 : secagent-server FastAPI
 │   ├── api/
 │   ├── db/
 │   └── broker/
 ├── ansible_plugins/        ← Phase 3 : plugins Ansible
-│   ├── connection_plugins/relay.py
-│   └── inventory_plugins/relay_inventory.py
+│   ├── connection_plugins/secagent.py
+│   └── inventory_plugins/secagent_inventory.py
 ├── tests/                  ← Tests unitaires + E2E
 │   ├── unit/
 │   ├── integration/
@@ -95,7 +95,7 @@ Ansible_Agent/
 
 ## Workflow des phases
 
-### PHASE 1 : relay-agent (13 tâches #4-#23)
+### PHASE 1 : secagent-minion (13 tâches #4-#23)
 
 Pour chaque tâche, dans l'ordre des dépendances :
 1. Assigner à dev-agent
@@ -113,7 +113,7 @@ Pour chaque tâche, dans l'ordre des dépendances :
 - ✓ deploy-qualif : OK
 - ✓ Confirmation utilisateur
 
-### PHASE 2 : relay-server (11 tâches #24-#34)
+### PHASE 2 : secagent-server (11 tâches #24-#34)
 
 Même processus, avec dev-relay. **Dépend de Phase 1 déployée.**
 
@@ -145,7 +145,7 @@ Déploiement Kubernetes via Helm chart.
 
 ## Checklist sécurité
 
-### Phase 1 (relay-agent)
+### Phase 1 (secagent-minion)
 - [ ] TLS obligatoire (WSS)
 - [ ] JWT signé côté agent
 - [ ] Masquage `become_pass` dans logs
@@ -153,7 +153,7 @@ Déploiement Kubernetes via Helm chart.
 - [ ] Isolation subprocess (pas de threads)
 - [ ] RSA-4096 pour enrollment
 
-### Phase 2 (relay-server)
+### Phase 2 (secagent-server)
 - [ ] TLS obligatoire (WSS + HTTPS)
 - [ ] JWT signé + rôles agent/plugin/admin
 - [ ] Blacklist JTI (token revocation)
@@ -186,7 +186,7 @@ Déploiement Kubernetes via Helm chart.
 
 ## Comment lancer une phase
 
-### Phase 1 (relay-agent)
+### Phase 1 (secagent-minion)
 
 ```bash
 # Utilisateur confirme le lancement
@@ -285,8 +285,8 @@ SendMessage(type: "message", recipient: "dev-agent", content: "...")
 
 | Étape | Métrique |
 |-------|----------|
-| Phase 1 | relay-agent enregistré + connecté WSS, 0 test fail |
-| Phase 2 | relay-server reçoit enrollment + gère WebSocket, 0 test fail |
+| Phase 1 | secagent-minion enregistré + connecté WSS, 0 test fail |
+| Phase 2 | secagent-server reçoit enrollment + gère WebSocket, 0 test fail |
 | Phase 3 | Playbook Ansible exécuté via plugin relay, 0 test fail |
 | MVP | E2E : enrollment → playbook → résultat, 0 fail, prod déployée Kubernetes |
 

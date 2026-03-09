@@ -1,8 +1,8 @@
-# AnsibleRelay — Deployment Guide
+# Ansible-SecAgent — Deployment Guide
 
 ## Architecture
 
-AnsibleRelay est composé de deux éléments distincts :
+Ansible-SecAgent est composé de deux éléments distincts :
 
 ### 1. **ansible_server** — Serveur Relay (Phase 2)
 - **NATS JetStream** : Message broker pour les tâches/résultats
@@ -15,9 +15,9 @@ AnsibleRelay est composé de deux éléments distincts :
 **Network** : bridge (ansible_server_default)
 
 ### 2. **ansible_minion** — Agents Clients (Phase 1)
-- **relay-agent-01** : qualif-host-01
-- **relay-agent-02** : qualif-host-02
-- **relay-agent-03** : qualif-host-03
+- **secagent-minion-01** : qualif-host-01
+- **secagent-minion-02** : qualif-host-02
+- **secagent-minion-03** : qualif-host-03
 
 Chaque agent :
 - S'enregistre auprès du serveur via POST /api/register
@@ -59,9 +59,9 @@ docker compose up --build -d
 
 Vérifier les inscriptions des agents :
 ```bash
-docker logs relay-agent-01
-docker logs relay-agent-02
-docker logs relay-agent-03
+docker logs secagent-minion-01
+docker logs secagent-minion-02
+docker logs secagent-minion-03
 # Rechercher : "WebSocket connecté — en attente de tâches"
 ```
 
@@ -71,9 +71,9 @@ Les agents doivent être pré-autorisés dans la table `authorized_keys` avant l
 
 ```bash
 # Récupérer les clefs publiques
-docker cp relay-agent-01:/var/lib/relay-agent/public_key.pem /tmp/pk01.pem
-docker cp relay-agent-02:/var/lib/relay-agent/public_key.pem /tmp/pk02.pem
-docker cp relay-agent-03:/var/lib/relay-agent/public_key.pem /tmp/pk03.pem
+docker cp secagent-minion-01:/var/lib/secagent-minion/public_key.pem /tmp/pk01.pem
+docker cp secagent-minion-02:/var/lib/secagent-minion/public_key.pem /tmp/pk02.pem
+docker cp secagent-minion-03:/var/lib/secagent-minion/public_key.pem /tmp/pk03.pem
 
 # Autoriser chaque agent
 ADMIN_TOKEN="dev-admin-token-for-qualification-only-change-in-prod"
@@ -88,7 +88,7 @@ for i in 01 02 03; do
 done
 
 # Redémarrer les agents pour qu'ils s'inscrivent
-docker restart relay-agent-01 relay-agent-02 relay-agent-03
+docker restart secagent-minion-01 secagent-minion-02 secagent-minion-03
 ```
 
 ---
@@ -145,9 +145,9 @@ docker logs relay-nats --follow
 
 ### Voir les logs des agents
 ```bash
-docker logs relay-agent-01 --follow
-docker logs relay-agent-02 --follow
-docker logs relay-agent-03 --follow
+docker logs secagent-minion-01 --follow
+docker logs secagent-minion-02 --follow
+docker logs secagent-minion-03 --follow
 ```
 
 ### Arrêter complètement
@@ -161,15 +161,15 @@ cd ../ansible_server && docker compose down
 
 ### Redémarrer un agent
 ```bash
-docker restart relay-agent-02
+docker restart secagent-minion-02
 ```
 
 ### Nettoyer les volumes (données persistantes)
 ```bash
-docker volume rm ansible_minion_relay_agent_01_data
-docker volume rm ansible_minion_relay_agent_02_data
-docker volume rm ansible_minion_relay_agent_03_data
-docker volume rm ansible_server_relay_data
+docker volume rm ansible_minion_secagent_agent_01_data
+docker volume rm ansible_minion_secagent_agent_02_data
+docker volume rm ansible_minion_secagent_agent_03_data
+docker volume rm ansible_server_secagent_data
 docker volume rm ansible_server_nats_data
 ```
 
@@ -187,7 +187,7 @@ ADMIN_TOKEN=dev-admin-token-for-qualification-only-change-in-prod
 ```
 RELAY_SERVER_URL=http://localhost:7770
 RELAY_HOSTNAME=qualif-host-01
-RELAY_DATA_DIR=/var/lib/relay-agent
+RELAY_DATA_DIR=/var/lib/secagent-minion
 ```
 
 ---
@@ -220,9 +220,9 @@ RELAY_DATA_DIR=/var/lib/relay-agent
 │  │ ansible_minion (host network)    │  │
 │  │                                  │  │
 │  │ ┌──────────────────────────────┐ │  │
-│  │ │ relay-agent-01 (localhost)   │ │  │
-│  │ │ relay-agent-02 (localhost)   │ │  │
-│  │ │ relay-agent-03 (localhost)   │ │  │
+│  │ │ secagent-minion-01 (localhost)   │ │  │
+│  │ │ secagent-minion-02 (localhost)   │ │  │
+│  │ │ secagent-minion-03 (localhost)   │ │  │
 │  │ └──────────────────────────────┘ │  │
 │  └──────────────────────────────────┘  │
 │                                         │

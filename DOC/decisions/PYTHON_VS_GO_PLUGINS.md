@@ -36,16 +36,16 @@ Ansible **NE SUPPORTE PAS** les plugins GO nativement. Les alternatives sont :
 
 **Deux cas de figure** :
 
-#### 1. Connection Plugin (`connection_plugins/relay.py`)
+#### 1. Connection Plugin (`connection_plugins/secagent.py`)
 
 - **Status** : OBLIGATOIRE en Python (Phase 3, #35)
 - **Raison** : Pas d'alternative. L'API `exec_command()`, `put_file()`, `fetch_file()` n'existe que en Python
 - **Implémentation** : COMPLÈTÉE (Phase 3 MVP)
 
-#### 2. Inventory Plugin (`inventory_plugins/relay_inventory.py`)
+#### 2. Inventory Plugin (`inventory_plugins/secagent_inventory.py`)
 
 - **Status** : OBSOLÈTE (Phase 3, #36) — remplacé par binaire GO
-- **Raison** : Le binaire `relay-inventory` (Phase 9, GO) fournit la même fonctionnalité via le protocole Ansible `--list`/`--host`
+- **Raison** : Le binaire `secagent-inventory` (Phase 9, GO) fournit la même fonctionnalité via le protocole Ansible `--list`/`--host`
 - **Avantages du binaire** :
   - Zéro dépendance Python additionnelle
   - Déjà implémenté, testé, déployé (Phase 9, 19 tests PASS)
@@ -57,24 +57,24 @@ Ansible **NE SUPPORTE PAS** les plugins GO nativement. Les alternatives sont :
 
 | Composant | Langage | Phase | Status | Raison |
 |-----------|---------|-------|--------|--------|
-| `relay-server` | GO | 7 | ✅ Complète | Décision de réécriture v2 |
-| `relay-agent` | GO | 8 | ✅ Complète | Décision de réécriture v2 |
-| `relay-inventory` | GO | 9 | ✅ Complète | Binaire standalone (alternative à plugin) |
-| `connection_plugins/relay.py` | Python | 3 | ✅ Complète | **Contrainte Ansible** : ConnectionBase Python uniquement |
-| `inventory_plugins/relay_inventory.py` | Python | 3 #36 | ⏸ OBSOLÈTE | Remplacé par `relay-inventory` (GO) |
+| `secagent-server` | GO | 7 | ✅ Complète | Décision de réécriture v2 |
+| `secagent-minion` | GO | 8 | ✅ Complète | Décision de réécriture v2 |
+| `secagent-inventory` | GO | 9 | ✅ Complète | Binaire standalone (alternative à plugin) |
+| `connection_plugins/secagent.py` | Python | 3 | ✅ Complète | **Contrainte Ansible** : ConnectionBase Python uniquement |
+| `inventory_plugins/secagent_inventory.py` | Python | 3 #36 | ⏸ OBSOLÈTE | Remplacé par `secagent-inventory` (GO) |
 
 ## Implications
 
 ### Pour le déploiement
 
 - Le **container Ansible** inclut :
-  - ✅ `relay.py` (connection plugin, Python)
-  - ✅ `relay-inventory` (binaire GO)
+  - ✅ `secagent.py` (connection plugin, Python)
+  - ✅ `secagent-inventory` (binaire GO)
   - ✅ `ansible.cfg` pointe sur binaire GO pour l'inventaire
 
 - Le **Dockerfile.ansible** installe :
   - Python 3.11 + ansible-core (pour connection plugin API)
-  - GO relay-inventory binaire (copié depuis build GO)
+  - GO secagent-inventory binaire (copié depuis build GO)
 
 ### Pour la maintenance
 
@@ -96,9 +96,9 @@ Ansible **NE SUPPORTE PAS** les plugins GO nativement. Les alternatives sont :
 
 - `DOC/common/ARCHITECTURE.md` §2 : tableau composants
 - `DOC/plugins/PLUGINS_SPEC.md` §1 : constraint Ansible expliquée
-- `DOC/inventory/INVENTORY_SPEC.md` : specs relay-inventory binary
+- `DOC/inventory/INVENTORY_SPEC.md` : specs secagent-inventory binary
 - `GO/cmd/inventory/main.go` : implémentation binaire
-- `PYTHON/ansible_plugins/connection_plugins/relay.py` : plugin connection
+- `PYTHON/ansible_plugins/connection_plugins/secagent.py` : plugin connection
 
 ---
 

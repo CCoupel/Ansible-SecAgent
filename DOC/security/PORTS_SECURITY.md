@@ -9,7 +9,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ Serveur AnsibleRelay (192.168.1.218)                        │
+│ Serveur Ansible-SecAgent (192.168.1.218)                        │
 │                                                              │
 │  Port 7770 ─ Client (enrollment + WSS)                      │
 │  Port 7771 ─ Plugin connection (exec/upload/fetch)         │
@@ -21,7 +21,7 @@
 
 ## Port 7770 — Client (enrollment + WebSocket)
 
-**Rôle** : Agents clients (relay-agent daemon)
+**Rôle** : Agents clients (secagent-minion daemon)
 
 **Endpoints** :
 ```
@@ -53,7 +53,7 @@ GET    /health                    → Health check
 
 ## Port 7771 — Plugin connection (exec/upload/fetch)
 
-**Rôle** : Plugins Ansible (connection_plugins/relay.py)
+**Rôle** : Plugins Ansible (connection_plugins/secagent.py)
 
 **Endpoints** :
 ```
@@ -115,7 +115,7 @@ GET    /health                    → Health check
       "qualif-host-01": {
         "ansible_host": "192.168.1.100",
         "ansible_connection": "relay",
-        "relay_port": "7771",
+        "secagent_port": "7771",
         "os": "Linux"
       }
     }
@@ -175,7 +175,7 @@ PORT_PLUGIN = os.getenv("PORT_PLUGIN", "7771")      # Plugin connection
 PORT_INVENTORY = os.getenv("PORT_INVENTORY", "7772") # Admin
 ```
 
-### Côté relay-agent (agent/relay_agent.py)
+### Côté secagent-minion (agent/secagent_agent.py)
 
 ```python
 # Configuration d'enrollment
@@ -184,7 +184,7 @@ ENROLLMENT_ENDPOINT = f"{RELAY_SERVER_URL}/api/register"
 WS_ENDPOINT = f"{RELAY_SERVER_URL}/ws/agent"
 ```
 
-### Côté plugin Ansible (ansible_plugins/connection_plugins/relay.py)
+### Côté plugin Ansible (ansible_plugins/connection_plugins/secagent.py)
 
 ```python
 # Configuration du plugin
@@ -193,7 +193,7 @@ RELAY_API_URL = os.getenv("ANSIBLE_RELAY_API_URL",
 ADMIN_TOKEN = os.getenv("ANSIBLE_RELAY_ADMIN_TOKEN")
 ```
 
-### Côté inventaire (ansible_plugins/inventory_plugins/relay_inventory.py)
+### Côté inventaire (ansible_plugins/inventory_plugins/secagent_inventory.py)
 
 ```python
 # Configuration de l'inventaire
@@ -240,7 +240,7 @@ Caddy écoute **3 sockets différents**, route vers relay-api selon le port :
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: ansible-relay
+  name: ansible-secagent
 spec:
   rules:
   - host: agents.example.com

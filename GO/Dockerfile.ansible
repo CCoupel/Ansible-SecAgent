@@ -1,23 +1,23 @@
-# Dockerfile — Ansible Container with AnsibleRelay Plugins
+# Dockerfile — Ansible Container with Ansible-SecAgent Plugins
 #
 # Multi-stage build :
-# Stage 1 : Build relay-inventory binary (GO)
+# Stage 1 : Build secagent-inventory binary (GO)
 # Stage 2 : Ansible container (Python 3.11 + plugins)
 #
 # Container Ansible complet incluant :
 # - ansible + ansible-core
 # - Plugins relay (connection plugin Python)
-# - relay-inventory (binaire GO pour inventaire dynamique)
+# - secagent-inventory (binaire GO pour inventaire dynamique)
 # - Configuration ansible.cfg
 # - Outils courants (curl, git, jq, etc.)
 #
 # Usage :
 #   docker build -f Dockerfile.ansible -t relay-ansible .
 #   docker run -it relay-ansible bash
-#   ansible-playbook -i /usr/local/bin/relay-inventory my-playbook.yml
+#   ansible-playbook -i /usr/local/bin/secagent-inventory my-playbook.yml
 
 # ────────────────────────────────────────────────────────────────────────────
-# Stage 1 : Build relay-inventory binary (GO)
+# Stage 1 : Build secagent-inventory binary (GO)
 # ────────────────────────────────────────────────────────────────────────────
 
 FROM golang:1.25-alpine AS builder
@@ -31,8 +31,8 @@ RUN apk add --no-cache git make
 COPY GO/go.mod GO/go.sum GO/go.work ./
 COPY GO/cmd/inventory ./cmd/inventory
 
-# Build relay-inventory binary
-RUN go build -o /tmp/relay-inventory ./cmd/inventory
+# Build secagent-inventory binary
+RUN go build -o /tmp/secagent-inventory ./cmd/inventory
 
 # ────────────────────────────────────────────────────────────────────────────
 # Stage 2 : Ansible container
@@ -41,8 +41,8 @@ RUN go build -o /tmp/relay-inventory ./cmd/inventory
 FROM python:3.11-slim
 
 # Metadata
-LABEL maintainer="AnsibleRelay Team"
-LABEL description="Ansible container with AnsibleRelay connection + inventory plugins"
+LABEL maintainer="Ansible-SecAgent Team"
+LABEL description="Ansible container with Ansible-SecAgent connection + inventory plugins"
 LABEL version="1.0"
 
 # Set working directory
@@ -75,13 +75,13 @@ COPY PYTHON/ansible.cfg /ansible/
 # Copy plugins directory structure
 RUN mkdir -p /ansible/ansible_plugins/{connection_plugins,inventory_plugins}
 
-# Copy connection plugin (relay.py)
-COPY PYTHON/ansible_plugins/connection_plugins/relay.py /ansible/ansible_plugins/connection_plugins/
+# Copy connection plugin (secagent.py)
+COPY PYTHON/ansible_plugins/connection_plugins/secagent.py /ansible/ansible_plugins/connection_plugins/
 COPY PYTHON/ansible_plugins/connection_plugins/__init__.py /ansible/ansible_plugins/connection_plugins/
 
-# Copy relay-inventory binary from builder stage
-COPY --from=builder /tmp/relay-inventory /usr/local/bin/relay-inventory
-RUN chmod +x /usr/local/bin/relay-inventory
+# Copy secagent-inventory binary from builder stage
+COPY --from=builder /tmp/secagent-inventory /usr/local/bin/secagent-inventory
+RUN chmod +x /usr/local/bin/secagent-inventory
 
 # Create inventory directory
 RUN mkdir -p /ansible/inventory /ansible/playbooks /ansible/roles
@@ -90,8 +90,8 @@ RUN mkdir -p /ansible/inventory /ansible/playbooks /ansible/roles
 ENV ANSIBLE_LIBRARY=/ansible/ansible_plugins/modules
 ENV ANSIBLE_PLUGINS=/ansible/ansible_plugins
 
-# Verify relay-inventory is available
-RUN relay-inventory --help > /dev/null || echo "Warning: relay-inventory not found"
+# Verify secagent-inventory is available
+RUN secagent-inventory --help > /dev/null || echo "Warning: secagent-inventory not found"
 
 # Expose volume mount points
 VOLUME ["/ansible/inventory", "/ansible/playbooks", "/ansible/roles", "/ansible/roles/defaults"]

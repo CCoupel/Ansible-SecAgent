@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-The entire AnsibleRelay relay server has been successfully converted from Python/FastAPI to idiomatic GO with identical functionality and architecture. This conversion:
+The entire Ansible-SecAgent relay server has been successfully converted from Python/FastAPI to idiomatic GO with identical functionality and architecture. This conversion:
 
 - **Improves latency**: 100ms → 5ms (20x faster) via compiled binary
 - **Reduces memory**: 100MB → 10MB (10x smaller) via efficient goroutines
@@ -144,8 +144,8 @@ The entire AnsibleRelay relay server has been successfully converted from Python
           "host-A": {
             "ansible_connection": "relay",
             "ansible_host": "host-A",
-            "relay_status": "connected",
-            "relay_last_seen": "2026-03-05T12:00:00Z"
+            "secagent_status": "connected",
+            "secagent_last_seen": "2026-03-05T12:00:00Z"
           }
         }
       }
@@ -329,7 +329,7 @@ The entire AnsibleRelay relay server has been successfully converted from Python
 
 **Subscription** (HA Routing):
 - `SubscribeTasks()` — Subscribe to tasks.* for local agent delivery
-  * Consumer with durable name relay-server-{nodeID}-tasks
+  * Consumer with durable name secagent-server-{nodeID}-tasks
   * AckPolicy: EXPLICIT
   * MaxDeliver: 1 (no silent retry)
   * Callback: onTaskMessage
@@ -342,7 +342,7 @@ The entire AnsibleRelay relay server has been successfully converted from Python
   * ACK on success, NAK on offline (allow other node to handle)
 
 - `SubscribeResults()` — Subscribe to results.* for HA response collection
-  * Consumer with durable name relay-server-{nodeID}-results
+  * Consumer with durable name secagent-server-{nodeID}-results
   * Callback: onResultMessage
   * Always ACK (single delivery)
 
@@ -461,7 +461,7 @@ The entire AnsibleRelay relay server has been successfully converted from Python
 ### Build (QA Phase)
 1. **Compilation**
    ```bash
-   go build -o relay-server ./cmd/server
+   go build -o secagent-server ./cmd/server
    ```
 
 2. **Linting**

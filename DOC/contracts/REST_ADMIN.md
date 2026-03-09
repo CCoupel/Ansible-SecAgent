@@ -1,6 +1,6 @@
-# Contrat d'interface — REST Admin (CLI → relay-server)
+# Contrat d'interface — REST Admin (CLI → secagent-server)
 
-> Interface d'administration entre le CLI cobra et le relay-server.
+> Interface d'administration entre le CLI cobra et le secagent-server.
 > Endpoint : HTTP :7771 — **container-interne uniquement**, jamais exposé externalement.
 > Sources : `DOC/server/SERVER_SPEC.md` §7 · `DOC/server/MANAGEMENT_CLI_SPECS.md` · `DOC/security/SECURITY.md` §8
 
@@ -11,7 +11,7 @@
 ```
 Port    : 7771 (expose: seulement dans docker-compose, jamais ports:)
 Auth    : Authorization: Bearer <ADMIN_TOKEN>
-Accès   : docker exec relay-api relay-server <commande>
+Accès   : docker exec relay-api secagent-server <commande>
 ```
 
 Le CLI lit `ADMIN_TOKEN` depuis les variables d'environnement du container et appelle `http://localhost:7771/api/admin/*`.
@@ -75,7 +75,7 @@ Content-Type: application/json
 **Réponse 200 :**
 ```json
 {
-  "enrollment_token": "relay_enr_xxxxxxxxxxxxx",
+  "enrollment_token": "secagent_enr_xxxxxxxxxxxxx",
   "hostname": "host-A",
   "expires_at": "2026-03-07T10:00:00Z"
 }
@@ -202,7 +202,7 @@ Content-Type: application/json
 ```json
 {
   "id": "tok-uuid",
-  "token": "relay_plugin_xxxxxxxxxxxxx"
+  "token": "secagent_plugin_xxxxxxxxxxxxx"
 }
 ```
 

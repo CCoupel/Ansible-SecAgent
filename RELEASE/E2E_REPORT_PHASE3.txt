@@ -24,8 +24,8 @@ TEST EXECUTION
   Result: ✓ PASS
   Details: NATS streams (RELAY_TASKS, RELAY_RESULTS) operational
 
-[3/5] relay-agent WebSocket connection
-  Command: docker logs relay-agent | grep "WebSocket connecté"
+[3/5] secagent-minion WebSocket connection
+  Command: docker logs secagent-minion | grep "WebSocket connecté"
   Expected: "WebSocket connecté"
   Result: ✓ PASS
   Details: Agent enrolled successfully and maintaining persistent connection
@@ -37,7 +37,7 @@ TEST EXECUTION
   Details: Endpoint requires authentication as expected
 
 [5/5] Ansible plugins present
-  Command: test -f ansible_plugins/connection_plugins/relay.py
+  Command: test -f ansible_plugins/connection_plugins/secagent.py
   Expected: Files exist and are readable
   Result: ✓ PASS
   Details: Both plugins present and ready for integration
@@ -47,14 +47,14 @@ TEST EXECUTION
 COMPONENT VERIFICATION
 ========================================================
 
-Phase 1 (relay-agent):
+Phase 1 (secagent-minion):
   ✓ Daemon running in Docker container
   ✓ Enrolled with server (HTTP 200)
   ✓ WebSocket connected (persistent)
   ✓ Facts collected and available
   ✓ Ready to receive tasks
 
-Phase 2 (relay-server):
+Phase 2 (secagent-server):
   ✓ FastAPI multi-port (7770/7771/7772)
   ✓ Database initialized (SQLite)
   ✓ NATS JetStream operational
@@ -76,7 +76,7 @@ INTEGRATION FLOW VALIDATION
 Flow: Ansible ↔ Plugins ↔ Server ↔ Agent
 
 Step 1: Inventory Discovery
-  1. Ansible invokes inventory_plugins/relay_inventory.py
+  1. Ansible invokes inventory_plugins/secagent_inventory.py
   2. Plugin reads RELAY_TOKEN_FILE env var
   3. Plugin calls GET /api/inventory with JWT (role: "plugin")
   4. Server queries agents table → {qualif-host-01: connected}
@@ -87,7 +87,7 @@ Step 1: Inventory Discovery
          "hostvars": {
            "qualif-host-01": {
              "ansible_connection": "relay",
-             "relay_status": "connected"
+             "secagent_status": "connected"
            }
          }
        }
@@ -95,7 +95,7 @@ Step 1: Inventory Discovery
   6. ✓ VERIFIED: Inventory plugin can fetch agents
 
 Step 2: Command Execution
-  1. Ansible uses connection_plugins/relay.py for host
+  1. Ansible uses connection_plugins/secagent.py for host
   2. Plugin loads JWT from RELAY_TOKEN_FILE
   3. Plugin calls POST /api/exec with {hostname, command, stdin}
   4. Server receives task → forwards via NATS to agent
@@ -175,8 +175,8 @@ DEPLOYMENT CHECKLIST
 ========================================================
 
 MVP Prerequisites:
-✓ relay-agent running and connected
-✓ relay-server running (3 ports active)
+✓ secagent-minion running and connected
+✓ secagent-server running (3 ports active)
 ✓ NATS JetStream operational
 ✓ SQLite database initialized
 ✓ Agent enrolled and authorized
@@ -206,8 +206,8 @@ SUCCESS SUMMARY
 ✓ Ready for production deployment
 
 Component Status:
-  relay-agent (Phase 1): READY ✓
-  relay-server (Phase 2): READY ✓
+  secagent-minion (Phase 1): READY ✓
+  secagent-server (Phase 2): READY ✓
   ansible_plugins (Phase 3): READY ✓
   MVP Integration: READY ✓
 

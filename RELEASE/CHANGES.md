@@ -18,7 +18,7 @@
 | Nouveau | start_multi_port.sh | ✓ Créé | Script lancement optionnel |
 | Modifié | server/Dockerfile | ✓ Maj | EXPOSE 7770/7771/7772, hypercorn |
 | Modifié | docker-compose.yml | ✓ Maj | Ports et URLs actualisées |
-| À vérifier | agent/relay_agent.py | ⚠ Révision | RELAY_SERVER_URL → port 7770 |
+| À vérifier | agent/secagent_agent.py | ⚠ Révision | RELAY_SERVER_URL → port 7770 |
 | À vérifier | qualif/Dockerfile.smoke | ⚠ Révision | RELAY_API_URL → port 7770 |
 
 ---
@@ -153,7 +153,7 @@ relay-api:
 -          "import urllib.request; urllib.request.urlopen('http://localhost:8443/health')"]
 +          "import urllib.request; urllib.request.urlopen('http://localhost:7770/health')"]
 
-relay-agent:
+secagent-minion:
   # ...
   environment:
 -   RELAY_SERVER_URL: "http://relay-api:8443"
@@ -175,7 +175,7 @@ caddy:
 
 ### À vérifier
 
-#### 1. agent/relay_agent.py
+#### 1. agent/secagent_agent.py
 Vérifier que `RELAY_SERVER_URL` utilise port 7770 :
 ```python
 RELAY_SERVER_URL = "http://192.168.1.218:7770"  # Client port
@@ -243,7 +243,7 @@ Pour revenir à l'architecture mono-port (8443) :
 
 ```bash
 # Restaurer fichiers
-git checkout server/Dockerfile docker-compose.yml agent/relay_agent.py
+git checkout server/Dockerfile docker-compose.yml agent/secagent_agent.py
 
 # Rebuild
 docker compose build relay-api

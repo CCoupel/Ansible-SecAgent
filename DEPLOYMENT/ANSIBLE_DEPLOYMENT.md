@@ -2,20 +2,20 @@
 
 ## Overview
 
-Le container Ansible inclut les plugins/binaires relay pour exécuter des playbooks Ansible contre les agents AnsibleRelay.
+Le container Ansible inclut les plugins/binaires relay pour exécuter des playbooks Ansible contre les agents Ansible-SecAgent.
 
 **Architecture :**
 ```
 Ansible Container (relay-ansible)
-    ├── relay_inventory (binaire GO)   — inventaire dynamique
-    ├── relay.py (plugin connection)   — exécution tâches
+    ├── secagent_inventory (binaire GO)   — inventaire dynamique
+    ├── secagent.py (plugin connection)   — exécution tâches
     ↓
 Relay Server (relay-api, port 7770)
     ↓
 Relay Agents (qualif-host-01/02/03)
 ```
 
-**Note** : L'inventaire utilise le binaire `relay-inventory` (Phase 9, GO) plutôt qu'un plugin Python. Le plugin connection `relay.py` reste Python (contrainte Ansible API).
+**Note** : L'inventaire utilise le binaire `secagent-inventory` (Phase 9, GO) plutôt qu'un plugin Python. Le plugin connection `secagent.py` reste Python (contrainte Ansible API).
 
 ---
 
@@ -96,20 +96,20 @@ cat > /ansible/playbooks/my-playbook.yml <<'EOF'
         msg: "{{ result.stdout }}"
 EOF
 
-# 3. List inventory (via relay-inventory binary — external inventory)
-ansible-inventory -i /usr/local/bin/relay-inventory --list -y
+# 3. List inventory (via secagent-inventory binary — external inventory)
+ansible-inventory -i /usr/local/bin/secagent-inventory --list -y
 
 # Or directly list agents
-relay-inventory --list
+secagent-inventory --list
 
-# 4. Run playbook (using relay-inventory binary)
-ansible-playbook -i /usr/local/bin/relay-inventory /ansible/playbooks/my-playbook.yml
+# 4. Run playbook (using secagent-inventory binary)
+ansible-playbook -i /usr/local/bin/secagent-inventory /ansible/playbooks/my-playbook.yml
 
 # 5. Run with verbosity
-ansible-playbook -i /usr/local/bin/relay-inventory -vvv /ansible/playbooks/my-playbook.yml
+ansible-playbook -i /usr/local/bin/secagent-inventory -vvv /ansible/playbooks/my-playbook.yml
 ```
 
-**Note** : The container uses `relay-inventory` (GO binary, Phase 9) for dynamic inventory.
+**Note** : The container uses `secagent-inventory` (GO binary, Phase 9) for dynamic inventory.
 This is an external inventory script compatible with Ansible's `--list` / `--host` protocol.
 
 ### From Host (docker exec)
@@ -117,19 +117,19 @@ This is an external inventory script compatible with Ansible's `--list` / `--hos
 ```bash
 # Run playbook without entering container
 docker exec -it relay-ansible \
-  ansible-playbook -i /usr/local/bin/relay-inventory /ansible/playbooks/my-playbook.yml
+  ansible-playbook -i /usr/local/bin/secagent-inventory /ansible/playbooks/my-playbook.yml
 
 # List inventory (binary)
 docker exec -it relay-ansible \
-  relay-inventory --list
+  secagent-inventory --list
 
 # List inventory (Ansible interface)
 docker exec -it relay-ansible \
-  ansible-inventory -i /usr/local/bin/relay-inventory --list -y
+  ansible-inventory -i /usr/local/bin/secagent-inventory --list -y
 
 # Get facts from all hosts
 docker exec -it relay-ansible \
-  ansible all -i /usr/local/bin/relay-inventory -m setup
+  ansible all -i /usr/local/bin/secagent-inventory -m setup
 ```
 
 ---
@@ -141,7 +141,7 @@ docker exec -it relay-ansible \
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RELAY_SERVER_URL` | `http://relay-api:7770` | Relay server API URL |
-| `RELAY_TOKEN` | (required) | Plugin token for relay-inventory (Bearer auth) |
+| `RELAY_TOKEN` | (required) | Plugin token for secagent-inventory (Bearer auth) |
 | `RELAY_CA_BUNDLE` | (empty) | Path to CA certificate bundle (for TLS) |
 | `RELAY_ONLY_CONNECTED` | `false` | Only include connected agents in inventory |
 | `RELAY_INSECURE_TLS` | `false` | Disable TLS verification (TESTS ONLY) |
@@ -155,8 +155,8 @@ Located in `/ansible/ansible.cfg` :
 
 ```ini
 [defaults]
-# Using relay-inventory binary (external inventory script)
-inventory = /usr/local/bin/relay-inventory
+# Using secagent-inventory binary (external inventory script)
+inventory = /usr/local/bin/secagent-inventory
 
 # Plugins for connection (still needed for execution)
 connection_plugins = ./ansible_plugins/connection_plugins
@@ -164,13 +164,13 @@ connection_plugins = ./ansible_plugins/connection_plugins
 host_key_checking = False
 timeout = 30
 
-[relay_connection]
-relay_server_url = http://relay-api:7770
+[secagent_connection]
+secagent_server_url = http://relay-api:7770
 plugin_token = $RELAY_ADMIN_TOKEN
-relay_ca_bundle =
+secagent_ca_bundle =
 ```
 
-**Inventory method** : External binary (`relay-inventory`) instead of plugin. See `DOC/inventory/INVENTORY_SPEC.md` for details.
+**Inventory method** : External binary (`secagent-inventory`) instead of plugin. See `DOC/inventory/INVENTORY_SPEC.md` for details.
 
 ---
 
@@ -213,7 +213,7 @@ cat > /ansible/playbooks/ping.yml <<'EOF'
 EOF
 
 # Run playbook
-ansible-playbook -i relay_inventory /ansible/playbooks/ping.yml
+ansible-playbook -i secagent_inventory /ansible/playbooks/ping.yml
 ```
 
 **Expected Output :**
@@ -266,23 +266,23 @@ qualif-host-03 : ok=1 changed=0
 
 ```bash
 # Execute on multiple hosts in parallel (3 processes)
-ansible-playbook -i relay_inventory -f 3 /ansible/playbooks/my-playbook.yml
+ansible-playbook -i secagent_inventory -f 3 /ansible/playbooks/my-playbook.yml
 
 # Execute on single host
-ansible-playbook -i relay_inventory -l qualif-host-01 /ansible/playbooks/my-playbook.yml
+ansible-playbook -i secagent_inventory -l qualif-host-01 /ansible/playbooks/my-playbook.yml
 ```
 
 ---
 
 ## Troubleshooting
 
-### Issue : "relay_inventory not found"
+### Issue : "secagent_inventory not found"
 
 ```
-ERROR! Unable to parse /ansible/relay_inventory as an inventory source
+ERROR! Unable to parse /ansible/secagent_inventory as an inventory source
 ```
 
-**Solution :** Vérifier que le fichier `ansible_plugins/inventory_plugins/relay_inventory.py` est monté.
+**Solution :** Vérifier que le fichier `ansible_plugins/inventory_plugins/secagent_inventory.py` est monté.
 
 ```bash
 docker exec relay-ansible ls -la /ansible/ansible_plugins/inventory_plugins/
@@ -309,7 +309,7 @@ No hosts matched
 **Solution :** Vérifier que les agents sont connectés au serveur.
 
 ```bash
-docker exec relay-api /app/relay-server minions list
+docker exec relay-api /app/secagent-server minions list
 ```
 
 ### Issue : "Permission denied on playbook"
@@ -334,7 +334,7 @@ chmod +r DEPLOYMENT/qualif/playbooks/my-playbook.yml
 ```bash
 # Default : serial execution
 # Parallel with 5 processes
-ansible-playbook -i relay_inventory -f 5 /ansible/playbooks/my-playbook.yml
+ansible-playbook -i secagent_inventory -f 5 /ansible/playbooks/my-playbook.yml
 ```
 
 ### 2. Use Async for Long Tasks
@@ -376,7 +376,7 @@ ansible_deploy:
   stage: deploy
   image: relay-ansible:latest
   script:
-    - ansible-playbook -i relay_inventory /ansible/playbooks/my-playbook.yml
+    - ansible-playbook -i secagent_inventory /ansible/playbooks/my-playbook.yml
   only:
     - main
   environment:
@@ -392,7 +392,7 @@ stage('Ansible Deploy') {
         script {
             sh '''
                 docker exec relay-ansible \
-                  ansible-playbook -i relay_inventory /ansible/playbooks/my-playbook.yml
+                  ansible-playbook -i secagent_inventory /ansible/playbooks/my-playbook.yml
             '''
         }
     }
@@ -426,6 +426,6 @@ DOCKER_HOST=tcp://192.168.1.218:2375 docker-compose -f docker-compose.ansible.ym
 ## Reference
 
 - [Ansible Documentation](https://docs.ansible.com/)
-- [AnsibleRelay Plugin Documentation](../../PYTHON/ansible.cfg)
-- [Connection Plugin Spec](../../PYTHON/ansible_plugins/connection_plugins/relay.py)
+- [Ansible-SecAgent Plugin Documentation](../../PYTHON/ansible.cfg)
+- [Connection Plugin Spec](../../PYTHON/ansible_plugins/connection_plugins/secagent.py)
 - [Inventory Plugin Spec](../../DOC/plugins/PLUGINS_SPEC.md)

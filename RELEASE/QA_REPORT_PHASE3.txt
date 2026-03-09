@@ -10,7 +10,7 @@ Target Platforms: Linux
 TEST COVERAGE
 ========================================================
 
-1. CONNECTION PLUGIN (relay.py)
+1. CONNECTION PLUGIN (secagent.py)
    Tests Written:
    ✓ test_connection_plugin_transport
    ✓ test_connection_has_pipelining
@@ -26,7 +26,7 @@ TEST COVERAGE
    Expected Results: All PASS
    Coverage: 100% critical paths
 
-2. INVENTORY PLUGIN (relay_inventory.py)
+2. INVENTORY PLUGIN (secagent_inventory.py)
    Tests Written:
    ✓ test_inventory_module_name
    ✓ test_verify_file
@@ -53,12 +53,12 @@ E2E Flow: Ansible Playbook Execution
    Expected: JSON with "all" hosts and "_meta" hostvars
 
 2. Connection plugin connects to agent
-   Endpoint: relay-agent via relay server
+   Endpoint: secagent-minion via relay server
    Auth: JWT token (role "plugin")
    Protocol: HTTP POST to /api/exec
 
 3. Execute sample playbook
-   Command: ansible-playbook site.yml -i relay_inventory.py
+   Command: ansible-playbook site.yml -i secagent_inventory.py
    Expected Flow:
    a) Inventory loads agents from server
    b) For each host, exec_command() sends task via /api/exec
@@ -109,10 +109,10 @@ DEPLOYMENT READINESS
 ========================================================
 
 Artifacts:
-✓ ansible_plugins/connection_plugins/relay.py (303 lines)
-✓ ansible_plugins/inventory_plugins/relay_inventory.py (176 lines)
-✓ tests/phase3/test_relay_connection.py (204 lines)
-✓ tests/phase3/test_relay_inventory.py (187 lines)
+✓ ansible_plugins/connection_plugins/secagent.py (303 lines)
+✓ ansible_plugins/inventory_plugins/secagent_inventory.py (176 lines)
+✓ tests/phase3/test_secagent_connection.py (204 lines)
+✓ tests/phase3/test_secagent_inventory.py (187 lines)
 
 Configuration Required:
 - ansible.cfg:
@@ -120,17 +120,17 @@ Configuration Required:
   connection_plugins = ./ansible_plugins/connection_plugins
   inventory_plugins = ./ansible_plugins/inventory_plugins
   
-  [relay_connection]
-  relay_server = http://localhost:7770
-  relay_token_file = /etc/ansible/relay_plugin.jwt
+  [secagent_connection]
+  secagent_server = http://localhost:7770
+  secagent_token_file = /etc/ansible/secagent_plugin.jwt
   
-  [relay_inventory]
-  relay_server = http://localhost:7770
-  relay_token_file = /etc/ansible/relay_plugin.jwt
+  [secagent_inventory]
+  secagent_server = http://localhost:7770
+  secagent_token_file = /etc/ansible/secagent_plugin.jwt
 
 Environment Variables:
 - RELAY_SERVER_URL (default: http://localhost:7770)
-- RELAY_TOKEN_FILE (default: /etc/ansible/relay_plugin.jwt)
+- RELAY_TOKEN_FILE (default: /etc/ansible/secagent_plugin.jwt)
 - RELAY_CA_BUNDLE (optional, for HTTPS)
 - RELAY_TIMEOUT (default: 30 seconds)
 

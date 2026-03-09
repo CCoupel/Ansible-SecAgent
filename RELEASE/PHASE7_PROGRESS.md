@@ -8,7 +8,7 @@
 
 ## Objective
 
-Rewrite Python relay-server (2,585 LOC) to idiomatic GO for:
+Rewrite Python secagent-server (2,585 LOC) to idiomatic GO for:
 - **Performance**: p95 latency 100ms → 5ms (20x improvement)
 - **Memory**: 100MB → 10MB per instance (10x reduction)
 - **Type Safety**: Compiled binary prevents reverse engineering of .pyc files

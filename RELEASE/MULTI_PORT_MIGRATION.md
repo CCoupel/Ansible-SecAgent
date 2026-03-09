@@ -69,7 +69,7 @@ Modifié pour :
 ### 3. **docker-compose.yml**
 Changements :
 - **relay-api** : ports 7770/7771/7772 (au lieu de 8443)
-- **relay-agent** : RELAY_SERVER_URL=`http://relay-api:7770` (au lieu de 8443)
+- **secagent-minion** : RELAY_SERVER_URL=`http://relay-api:7770` (au lieu de 8443)
 - **smoke-test** : RELAY_API_URL=`http://relay-api:7770`
 - **caddy** : PORT_* env vars pour router correctement
 
@@ -190,7 +190,7 @@ curl http://192.168.1.218:7772/health
 
 ## Migration des configurations
 
-### relay-agent
+### secagent-minion
 
 **Avant** :
 ```python
@@ -229,7 +229,7 @@ ADMIN_TOKEN = "..."
 | main.py | single app | multi-port app_client/app_plugin/app_inventory | ✓ Implémenté |
 | Dockerfile | EXPOSE 8443 | EXPOSE 7770 7771 7772 | ✓ Mis à jour |
 | docker-compose.yml | 8080:8443 | 7770/7771/7772 | ✓ Mis à jour |
-| relay-agent config | port 8443 | port 7770 | ✓ Mis à jour |
+| secagent-minion config | port 8443 | port 7770 | ✓ Mis à jour |
 | Caddyfile | facultatif | documenté | ✓ Nouveau |
 
 ---
@@ -288,7 +288,7 @@ ADMIN_TOKEN = "..."
 Pour revenir à l'architecture mono-port :
 1. Restaurer `server/api/main.py` original (port 8443)
 2. Mettre à jour docker-compose.yml (ports 8080:8443)
-3. Mettre à jour relay-agent (RELAY_SERVER_URL port 8443)
+3. Mettre à jour secagent-minion (RELAY_SERVER_URL port 8443)
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## Vue d'ensemble
 
-Conversion semi-automatique du code Python (relay-agent, relay-server) vers GO compilé.
+Conversion semi-automatique du code Python (secagent-minion, secagent-server) vers GO compilé.
 
 **Approche** : Combinaison d'outils automatiques + refactoring manuel
 
@@ -88,17 +88,17 @@ print(json.dumps({
 #### 1.2 Type Hints Extraction
 ```bash
 # Use pylint to extract types
-pylint --disable=all --enable=type-hints relay_agent.py > types.json
+pylint --disable=all --enable=type-hints secagent_agent.py > types.json
 
 # Or mypy
-mypy --strict --ignore-missing-imports relay_agent.py > types.txt
+mypy --strict --ignore-missing-imports secagent_agent.py > types.txt
 
 # Extract via inspecting runtime annotations
 python3 -c "
-import relay_agent
+import secagent_agent
 import inspect
 
-for name, obj in inspect.getmembers(relay_agent):
+for name, obj in inspect.getmembers(secagent_agent):
     if callable(obj):
         sig = inspect.signature(obj)
         print(f'{name}: {sig}')
@@ -162,7 +162,7 @@ Return ONLY the GO code, with comments explaining key differences.""",
     return message.content[0].text
 
 # Usage
-with open('relay_agent.py', 'r') as f:
+with open('secagent_agent.py', 'r') as f:
     python_code = f.read()
 
 go_code = convert_python_to_go(python_code)
@@ -220,7 +220,7 @@ tasks:
 
   convert:
     cmds:
-      - python3 convert_python_to_go.py < relay_agent.py > relay_agent.go
+      - python3 convert_python_to_go.py < secagent_agent.py > secagent_agent.go
 
   generate:
     cmds:
@@ -228,8 +228,8 @@ tasks:
 
   build:
     cmds:
-      - go build -o relay-agent ./cmd/agent
-      - go build -o relay-server ./cmd/server
+      - go build -o secagent-minion ./cmd/agent
+      - go build -o secagent-server ./cmd/server
 
   test:
     cmds:
@@ -459,7 +459,7 @@ Week 4: Testing & Integration
 
 ```
 Week 1-2: Conversion
-  ✅ Extract relay_agent.py → relay_agent.go (main.go)
+  ✅ Extract secagent_agent.py → secagent_agent.go (main.go)
   ✅ Convert facts_collector.py → agent/facts.go
   ✅ Convert async_registry.py → agent/registry.go
   ✅ Subprocess handling: os/exec package
@@ -541,7 +541,7 @@ print(f'Python: {elapsed/1000*1000:.2f}ms per request')
 
 ```bash
 #!/bin/bash
-# convert_relay_server.sh — Automated conversion pipeline
+# convert_secagent_server.sh — Automated conversion pipeline
 
 set -e
 
@@ -589,7 +589,7 @@ mypy server/api/ --show-column-numbers > types.txt 2>&1 || true
 
 echo "=== Step 3: Generate GO structure ==="
 mkdir -p "$GO_SRC"/cmd/server "$GO_SRC"/pkg/{handlers,storage,broker}
-go mod init ansiblerelay-server || true
+go mod init ansiblesecagent-server || true
 go mod edit -require github.com/gorilla/websocket@latest
 go mod edit -require github.com/nats-io/nats.go@latest
 go mod tidy

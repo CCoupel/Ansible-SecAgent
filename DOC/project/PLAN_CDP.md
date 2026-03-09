@@ -1,4 +1,4 @@
-# PLAN CDP — Workflow AnsibleRelay
+# PLAN CDP — Workflow Ansible-SecAgent
 
 Date : 2026-03-03
 Role : Chef de Projet (CDP) — orchestration team sans code
@@ -12,7 +12,7 @@ Role : Chef de Projet (CDP) — orchestration team sans code
 2. ✓ Planner crée TaskList (41 tâches, 3 phases, dépendances)
 3. ⏳ **En attente** : confirmation utilisateur pour lancer Phase 1
 
-### PHASE 1 — relay-agent (13 tâches #4-#23)
+### PHASE 1 — secagent-minion (13 tâches #4-#23)
 
 Pour chaque tâche Phase 1 dans l'ordre des dépendances :
 
@@ -37,10 +37,10 @@ Pour chaque tâche Phase 1 dans l'ordre des dépendances :
 - ✓ Message deploy-qualif : "Déploie Phase 1 sur 192.168.1.218. Rapport : statut services, URL accessible."
 - ✓ Attendre rapport deploy-qualif
   - **Si ÉCHEC** : alerte utilisateur + rapport complet + attendre instructions
-  - **Si OK** : notifier utilisateur "Phase 1 terminée. relay-agent déployé. Lancer Phase 2 ?"
+  - **Si OK** : notifier utilisateur "Phase 1 terminée. secagent-minion déployé. Lancer Phase 2 ?"
 - ✓ **Attendre ordre utilisateur** avant Phase 2
 
-### PHASE 2 — relay-server (11 tâches #24-#34)
+### PHASE 2 — secagent-server (11 tâches #24-#34)
 
 Même processus que Phase 1, avec **dev-relay** à la place de dev-agent.
 
@@ -53,7 +53,7 @@ Même processus que Phase 1, avec **dev-relay** à la place de dev-agent.
 - ✓ Message deploy-qualif : "Déploie Phase 2 sur 192.168.1.218. Rapport : statut services, URL accessible."
 - ✓ Attendre rapport deploy-qualif
   - **Si ÉCHEC** : alerte utilisateur + rapport complet + attendre instructions
-  - **Si OK** : notifier utilisateur "Phase 2 terminée. relay-server déployé. Lancer Phase 3 ?"
+  - **Si OK** : notifier utilisateur "Phase 2 terminée. secagent-server déployé. Lancer Phase 3 ?"
 - ✓ **Attendre ordre utilisateur** avant Phase 3
 
 ### PHASE 3 — plugins Ansible (7 tâches #35-#41)
@@ -71,7 +71,7 @@ Même processus, avec **dev-plugins**.
    - **Si ÉCHEC** : alerte utilisateur + rapport complet + attendre instructions
    - **Si OK** : notifier utilisateur "Validation qualif réussie. Tous composants déployés sur 192.168.1.218. Lancer déploiement prod (Kubernetes) ?"
 5. **Attendre ordre EXPLICITE utilisateur** avant prod
-6. **Message deploy-prod** : "Déploie AnsibleRelay Kubernetes via Helm chart. Kubeconfig : C:/Users/cyril/Documents/VScode/kubeconfig.txt. Rapport : pods Running, ingress accessible."
+6. **Message deploy-prod** : "Déploie Ansible-SecAgent Kubernetes via Helm chart. Kubeconfig : C:/Users/cyril/Documents/VScode/kubeconfig.txt. Rapport : pods Running, ingress accessible."
 7. **Attendre rapport deploy-prod**
    - **Si ÉCHEC** : alerte utilisateur + rapport complet + attendre instructions
    - **Si OK** : consolider résultats + notifier utilisateur "MVP terminé et déployé en production. Rapport : [résumé]."

@@ -1,6 +1,6 @@
-# Contrat d'interface — WebSocket (relay-server ↔ relay-agent)
+# Contrat d'interface — WebSocket (secagent-server ↔ secagent-minion)
 
-> Interface opérationnelle entre le relay-server et le relay-agent.
+> Interface opérationnelle entre le secagent-server et le secagent-minion.
 > Canal bidirectionnel multiplexé par `task_id`.
 > Sources : `DOC/common/ARCHITECTURE.md` §4 · `DOC/agent/AGENT_SPEC.md` §4-§6
 
@@ -10,7 +10,7 @@
 
 ```
 Endpoint  : WSS /ws/agent  (port 7772 via Caddy)
-Initiateur: relay-agent (sortant uniquement)
+Initiateur: secagent-minion (sortant uniquement)
 Auth      : Authorization: Bearer <JWT HMAC-HS256>
 TLS       : obligatoire — connexion refusée sans TLS
 ```
