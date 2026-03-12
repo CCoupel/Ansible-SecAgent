@@ -1,591 +1,166 @@
-# BACKLOG Ansible-SecAgent — 112 tâches
+# BACKLOG Ansible-SecAgent — Migré vers GitHub Issues
 
-Date création : 2026-03-03
-Date mise à jour : 2026-03-06
-Status : Phase 1-3 ✅, Phase 6 ✅, Phase 7 ✅, Phase 8 ✅, Phase 9 ✅ — Phase 4/5 SUSPENDUES (no K8s prod actuelle) — Phase 10 🆕 PROCHAINE
+> **⚠️ Ce fichier est désormais archivé.**
+> Le suivi des tâches est entièrement géré via **GitHub Issues**.
 
-## Vue d'ensemble
+## 🔗 Liens directs
 
-### MVP (Python)
-- **Phase 1 (secagent-minion)** : 13 tâches (#4 à #23) ✅ COMPLÈTE
-- **Phase 2 (secagent-server)** : 11 tâches (#24 à #34) ✅ COMPLÈTE
-- **Phase 3 (plugins Ansible)** : 7 tâches (#35 à #41) ✅ COMPLÈTE
-- **Phase 4 (Production Kubernetes)** : 12 tâches (#42 à #53) ⏸ SUSPENDU (no K8s prod)
-- **Phase 5 (Documentation & Hardening)** : 8 tâches (#54 à #61) ⏸ SUSPENDU
-
-### Optimisation (GO) — COMPLÈTES
-- **Phase 7 (Server rewrite GO)** : ✅ COMPLÈTE — GO server 4.65 MiB, 0 restart
-- **Phase 8 (Agent rewrite GO)** : ✅ COMPLÈTE — 94 tests PASS, 3 agents connectés
-- **Phase 9 (Inventory binary GO)** : ✅ COMPLÈTE — secagent-inventory, 19 tests PASS
-
-### CLI & Management (GO)
-- **Phase 6 (Management CLI GO)** : 8 tâches (#62 à #69) ✅ COMPLÈTE — CLI cobra opérationnelle, rotation clefs validée
-
-### Sécurité enrollment (prochaine phase active)
-- **Phase 10 (Enrollment Token Security)** : 10 tâches (#97 à #106) 🆕 À FAIRE
-
-**Total actif** : 10 tâches (Phase 10)
+| Lien | Description |
+|------|-------------|
+| **[Toutes les issues](https://github.com/CCoupel/Ansible-SecAgent/issues)** | Vue complète du backlog |
+| **[Issues ouvertes (à faire)](https://github.com/CCoupel/Ansible-SecAgent/issues?q=is%3Aopen)** | Tâches actives — Phase 10 |
+| **[Issues fermées (terminées)](https://github.com/CCoupel/Ansible-SecAgent/issues?q=is%3Aclosed)** | Phases 1–9 complètes |
+| **[Phase 10 — Enrollment Token](https://github.com/CCoupel/Ansible-SecAgent/issues?q=label%3Aphase%3A10-enrollment+is%3Aopen)** | Prochaine phase active |
 
 ---
 
-## PHASE 1 — secagent-minion (dossier agent/) — 13 tâches
+## Vue d'ensemble des milestones
 
-### Prérequis
-- Lire ARCHITECTURE.md section "Agent"
-- Lire HLD.md schémas agent
-
-### Tâches Phase 1
-
-| # | Tâche | Owner | Status | Bloquée par |
-|---|-------|-------|--------|------------|
-| #4 | facts_collector.py — collecte facts système | dev-agent | pending | - |
-| #6 | secagent_agent.py — enrollment POST /api/register + RSA-4096 | dev-agent | pending | #4 |
-| #8 | secagent_agent.py — connexion WSS + backoff exponentiel (1s→60s) | dev-agent | pending | #6 |
-| #9 | secagent_agent.py — dispatcher messages WS (exec/put_file/fetch_file/cancel) | dev-agent | pending | #8 |
-| #11 | secagent_agent.py — exec_command subprocess + stdout streaming + buffer 5MB | dev-agent | pending | #9 |
-| #13 | secagent_agent.py — put_file (base64, mkdir -p, chmod) | dev-agent | pending | #9 |
-| #14 | secagent_agent.py — fetch_file (lecture, base64, limite 500KB) | dev-agent | pending | #9 |
-| #15 | async_registry.py — registre JSON persisté, reprise redémarrage | dev-agent | pending | #9 |
-| #17 | secagent-minion.service — unit file systemd (NoNewPrivileges, ProtectSystem) | dev-agent | pending | - |
-| #19 | Tests unitaires secagent-minion Phase 1 | test-writer | pending | #4, #6, #8, #9, #11, #13, #14, #15, #17 |
-| #20 | QA — pytest Phase 1, rapport (nb tests, pass, fail, détails) | qa | pending | #19 |
-| #22 | Security review — audit Phase 1 secagent-minion | security-reviewer | pending | #20 |
-| #23 | Deploy qualif Phase 1 — secagent-minion sur 192.168.1.218 | deploy-qualif | pending | #22 |
-
-**Validation Phase 1 → Phase 2** :
-- ✓ TOUTES tâches #4-#23 completed
-- ✓ qa : 0 test en échec
-- ✓ security-reviewer : 0 finding CRITIQUE/HAUT
-- ✓ deploy-qualif : OK
-- ✓ Confirmation utilisateur
+| Milestone | Status | Lien |
+|-----------|--------|------|
+| Phase 1 — secagent-minion | ✅ COMPLÈTE | [issues](https://github.com/CCoupel/Ansible-SecAgent/milestone/1?closed=1) |
+| Phase 2 — secagent-server | ✅ COMPLÈTE | [issues](https://github.com/CCoupel/Ansible-SecAgent/milestone/2?closed=1) |
+| Phase 3 — plugins Ansible | ✅ COMPLÈTE | [issues](https://github.com/CCoupel/Ansible-SecAgent/milestone/3?closed=1) |
+| Phase 4 — Production Kubernetes | ⏸ SUSPENDU | [issues](https://github.com/CCoupel/Ansible-SecAgent/milestone/4?closed=1) |
+| Phase 5 — Hardening & Docs | ⏸ SUSPENDU | [issues](https://github.com/CCoupel/Ansible-SecAgent/milestone/5?closed=1) |
+| Phase 6 — Management CLI GO | ✅ COMPLÈTE | [issues](https://github.com/CCoupel/Ansible-SecAgent/milestone/6?closed=1) |
+| Phase 7 — Server GO | ✅ COMPLÈTE | [issues](https://github.com/CCoupel/Ansible-SecAgent/milestone/7?closed=1) |
+| Phase 8 — Agent GO | ✅ COMPLÈTE | [issues](https://github.com/CCoupel/Ansible-SecAgent/milestone/8?closed=1) |
+| Phase 9 — Plugins GO | ✅ COMPLÈTE | [issues](https://github.com/CCoupel/Ansible-SecAgent/milestone/9?closed=1) |
+| Phase 10 — Enrollment Token | 🆕 À FAIRE | [issues](https://github.com/CCoupel/Ansible-SecAgent/milestone/10) |
 
 ---
 
-## PHASE 2 — secagent-server (dossier server/) — 11 tâches
+## Labels disponibles
 
-### Prérequis
-- Lire ARCHITECTURE.md section "Server"
-- Lire HLD.md flux messages et broker
-- Phase 1 validée et déployée
+### Par phase
+`phase:1-minion` · `phase:2-server` · `phase:3-plugins` · `phase:4-k8s` · `phase:5-hardening` · `phase:6-cli` · `phase:7-server-go` · `phase:8-agent-go` · `phase:9-plugins-go` · `phase:10-enrollment`
 
-### Tâches Phase 2
+### Par statut
+`status:todo` · `status:completed` · `status:suspended` · `status:obsolete`
 
-| # | Tâche | Owner | Status | Bloquée par |
-|---|-------|-------|--------|------------|
-| #24 | agent_store.py — modèles SQLite (agents, authorized_keys, blacklist) | dev-relay | pending | - |
-| #25 | routes_register.py — enrollment + auth JWT + blacklist JTI | dev-relay | pending | #24 |
-| #26 | ws_handler.py — connexions WS, futures, on_ws_close | dev-relay | pending | #25 |
-| #27 | nats_client.py — NATS JetStream (RELAY_TASKS, RELAY_RESULTS) | dev-relay | pending | #24 |
-| #28 | routes_exec.py — endpoints /api/exec, /api/upload, /api/fetch, /api/inventory | dev-relay | pending | #26, #27 |
-| #29 | main.py — FastAPI app (lifespan, health check) | dev-relay | pending | #25, #26, #27, #28 |
-| #30 | docker-compose.yml + Dockerfile — NATS, relay-api, caddy | dev-relay | pending | #29 |
-| #31 | Tests unitaires secagent-server Phase 2 | test-writer | pending | #24-#30 |
-| #32 | QA — pytest Phase 2, rapport | qa | pending | #31 |
-| #33 | Security review — audit Phase 2 secagent-server | security-reviewer | pending | #32 |
-| #34 | Deploy qualif Phase 2 — secagent-server complet sur 192.168.1.218 | deploy-qualif | pending | #33, #23 |
+### Par propriétaire
+`owner:dev-agent` · `owner:dev-relay` · `owner:dev-plugins` · `owner:test-writer` · `owner:qa` · `owner:security` · `owner:deploy-qualif` · `owner:deploy-prod` · `owner:cdp`
 
-**Validation Phase 2 → Phase 3** :
-- ✓ TOUTES tâches #24-#34 completed
-- ✓ qa : 0 test en échec
-- ✓ security-reviewer : 0 finding CRITIQUE/HAUT
-- ✓ deploy-qualif : OK
-- ✓ Confirmation utilisateur
+### Par type
+`type:implementation` · `type:test` · `type:qa` · `type:security` · `type:deploy` · `type:validation`
 
 ---
 
-## PHASE 3 — plugins Ansible (dossier ansible_plugins/) — 7 tâches
+## Correspondance numéros backlog → issues GitHub
 
-### Prérequis
-- Lire ARCHITECTURE.md section "Ansible Plugins"
-- Lire HLD.md flux plugins
-- Phase 2 validée et déployée
-
-### Notes architecture — Constraints Ansible
-**Plugins Ansible = PYTHON UNIQUEMENT** : Les API Ansible (`ConnectionBase`, `InventoryModule`) ne sont disponibles que en Python. Les plugins connection et inventory **ne peuvent pas être en GO**. Cela justifie la conservation d'une base Python dans le projet malgré la migration GO du serveur et agent. L'alternative GO (`secagent-inventory` binaire, Phase 9) remplace le plugin inventory Python mais ne remplace pas le plugin connection (pas d'alternative).
-
-### Tâches Phase 3
-
-| # | Tâche | Owner | Status | Bloquée par | Notes |
-|---|-------|-------|--------|------------|-------|
-| #35 | connection_plugins/secagent.py — ConnectionBase (exec_command, put_file, fetch_file, pipelining, become) | dev-plugins | ✅ completed | #34 | **Obligatoire Python** — API Ansible uniquement |
-| #36 | inventory_plugins/secagent_inventory.py — InventoryModule (GET /api/inventory) | dev-plugins | ⏸ OBSOLÈTE | #34 | **Alternative GO implémentée** : `secagent-inventory` binaire (Phase 9) remplace ce plugin |
-| #37 | Tests unitaires + E2E plugins Phase 3 | test-writer | ✅ completed | #35, #36 | Tests connection plugin uniquement |
-| #38 | QA — pytest Phase 3 (unitaire + E2E), rapport | qa | ✅ completed | #37 | QA connection plugin + secagent-inventory binary |
-| #39 | Security review global — audit Phase 3 + revue MVP complète | security-reviewer | ✅ completed | #38 | Audit global MVP |
-| #40 | Deploy qualif Phase 3 — test E2E complet sur 192.168.1.218 | deploy-qualif | ✅ completed | #39 | Connection plugin + secagent-inventory binary déployés |
-| #41 | Deploy prod — Helm chart Kubernetes (après confirmation utilisateur) | deploy-prod | ⏸ SUSPENDU (no K8s prod) | #40 | Pas de K8s en production actuellement |
-
-**Validation Phase 3 → Prod** :
-- ✓ TOUTES tâches #35-#40 completed
-- ✓ qa : 0 test en échec, tests E2E couvrant cas nominaux + erreurs + async
-- ✓ security-reviewer : 0 finding CRITIQUE/HAUT, audit global MVP cohérent
-- ✓ deploy-qualif : OK
-- ✓ Confirmation utilisateur explicite pour #41 (prod)
-
----
-
-## PHASE 4 — Production Kubernetes — 12 tâches
-
-### Prérequis
-- Phase 3 complète et validée
-- Confirmation utilisateur explicite
-- Kubernetes cluster disponible
-- Helm 3.x installé
-
-### Tâches Phase 4
-
-| # | Tâche | Owner | Status | Bloquée par |
-|---|-------|-------|--------|------------|
-| #42 | Helm chart structure — values.yaml, templates/, Chart.yaml | deploy-prod | pending | #40 |
-| #43 | Helm StatefulSet NATS JetStream — persistance, replicas, antiaffinity | deploy-prod | pending | #42 |
-| #44 | Helm Deployment secagent-server — multi-port, replicas, PDB | deploy-prod | pending | #42 |
-| #45 | Helm DaemonSet secagent-minion — 1 par nœud, node affinity, tolerations | deploy-prod | pending | #42 |
-| #46 | Helm ConfigMap + Secrets — JWT_SECRET, ADMIN_TOKEN, TLS certs | deploy-prod | pending | #42 |
-| #47 | Helm Ingress — TLS termination, routing 7770/7771/7772 | deploy-prod | pending | #42 |
-| #48 | Helm Service (ClusterIP + LoadBalancer) — NATS, relay-api | deploy-prod | pending | #42 |
-| #49 | Helm PersistentVolumeClaim — NATS data, relay DB, agent state | deploy-prod | pending | #42 |
-| #50 | Helm tests — helm lint, helm template, helm dry-run | deploy-prod | pending | #42 |
-| #51 | Helm deployment script — helm install/upgrade sur cluster K8s | deploy-prod | pending | #50 |
-| #52 | Documentation Helm — values.yaml comments, deployment guide, troubleshooting | deploy-prod | pending | #51 |
-| #53 | Deploy prod Phase 4 — Helm install sur Kubernetes cluster | deploy-prod | pending | #52 |
-
-**Validation Phase 4 → Phase 5** :
-- ✓ Helm lint : 0 erreurs
-- ✓ Helm template : YAML valide
-- ✓ Helm dry-run : OK
-- ✓ Deploy sur cluster K8s : 3 agents enregistrés et connectés
-- ✓ Ingress TLS fonctionnelle
-- ✓ Persistance NATS et DB vérifiée après redémarrage pod
-
----
-
-## PHASE 5 — Documentation & Hardening — 8 tâches
-
-### Prérequis
-- Phase 4 déployée en production
-
-### Tâches Phase 5
-
-| # | Tâche | Owner | Status | Bloquée par |
-|---|-------|-------|--------|------------|
-| #54 | Runbooks prod — escalade, diagnostics, rollback | deploy-prod | pending | #53 |
-| #55 | Monitoring setup — Prometheus métriques, alerting, dashboards Grafana | deploy-prod | pending | #53 |
-| #56 | Hardening sécurité prod — network policies, RBAC, admission controllers | security-reviewer | pending | #53 |
-| #57 | Disaster recovery — backup NATS, DB recovery, failover procedure | deploy-prod | pending | #53 |
-| #58 | Performance tuning — load testing, baseline metrics, optimization | qa | pending | #53 |
-| #59 | Migration guide — from qualif to prod, zero-downtime strategy | deploy-prod | pending | #53 |
-| #60 | SLA & Support — métriques, escalade, on-call procedure | deploy-prod | pending | #53 |
-| #61 | MVP Final Review & Sign-off | cdp | pending | #54-#60 |
-
-**Validation Phase 5 → Live** :
-- ✓ Runbooks testées
-- ✓ Monitoring opérationnel
-- ✓ Security audit : 0 findings CRITIQUE/HAUT
-- ✓ DR tested : RTO/RPO validés
-- ✓ Performance : SLA met
-- ✓ Sign-off CDO + Utilisateur
-
----
-
-## PHASE 6 — Management CLI GO — 8 tâches
-
-### Prérequis
-- Phase 7 + 8 + 9 complètes (GO server + agent + inventory binary)
-- `cobra` ajouté aux dépendances go.mod
-
-### Architecture : même binaire, deux modes
-Le binaire `secagent-server` sert de CLI et de serveur (voir ARCHITECTURE.md §21) :
-```
-secagent-server            # mode serveur (foreground)
-secagent-server -d         # mode serveur (daemon)
-secagent-server <cmd>      # mode CLI — auth via env vars du container
-```
-
-### Objectif — Commandes à implémenter
-
-**Gestion des minions** :
-```
-minions list [--format json|table|yaml]
-minions get <hostname>
-minions set-state <hostname> connected|disconnected
-minions suspend <hostname>
-minions resume <hostname>
-minions revoke <hostname>
-minions authorize <hostname> --key-file <pem>
-minions vars get <hostname>
-minions vars set <hostname> key=value [...]
-minions vars delete <hostname> <key>
-```
-
-**Gestion de sécurité** (voir ARCHITECTURE.md §22 — rotation avec grâce) :
-```
-security keys status
-security keys rotate [--grace 24h]
-security tokens list
-security blacklist list
-security blacklist purge
-```
-
-**Inventaire** :
-```
-inventory list [--only-connected] [--format json|yaml|table]
-```
-
-**Santé serveur** :
-```
-server status
-server stats
-```
-
-### Tâches Phase 6
-
-| # | Tâche | Owner | Status | Bloquée par |
-|---|-------|-------|--------|------------|
-| #62 | Server — endpoints admin manquants : `GET /api/admin/minions`, suspend/resume, vars CRUD, `GET /api/admin/status` | dev-relay | pending | — |
-| #63 | Server — DB `server_config` + persistance RSA keypair + dual-key JWT validation | dev-relay | pending | #62 |
-| #64 | Server — rotation des clefs : `POST /api/admin/keys/rotate`, grace period, message WS `rekey` | dev-relay | pending | #63 |
-| #65 | Agent — handler WS `rekey` + gestion 401 sur connect → ré-enrôlement auto | dev-agent | pending | #64 |
-| #66 | CLI cobra — intégration dans `cmd/server/main.go` : toutes les commandes §21 | dev-relay | pending | #64 |
-| #67 | Tests GO — CLI commands, rotation, rekey, 401 ré-enrôlement | test-writer | pending | #65, #66 |
-| #68 | QA — `go test ./...` 0 fail + smoke test CLI depuis container | qa | pending | #67 |
-| #69 | Deploy qualif Phase 6 — CLI fonctionnelle sur 192.168.1.218 | deploy-qualif | pending | #68 |
-
-**Validation Phase 6** :
-- ✓ TOUTES tâches #62-#69 completed
-- ✓ qa : 0 test en échec
-- ✓ CLI opérationnelle depuis `docker exec secagent-server <cmd>`
-- ✓ Rotation des clefs avec période de grâce : agents migrés sans interruption
-- ✓ Agent : handler `rekey` + ré-enrôlement sur 401 automatique
-- ✓ `--format json|table|yaml` sur toutes les commandes
-- ✓ Confirmation utilisateur
+| Backlog | GitHub Issue | Titre |
+|---------|-------------|-------|
+| #4 | [#1](https://github.com/CCoupel/Ansible-SecAgent/issues/1) | facts_collector.py |
+| #6 | [#2](https://github.com/CCoupel/Ansible-SecAgent/issues/2) | secagent_agent.py — enrollment RSA-4096 |
+| #8 | [#3](https://github.com/CCoupel/Ansible-SecAgent/issues/3) | secagent_agent.py — connexion WSS |
+| #9 | [#4](https://github.com/CCoupel/Ansible-SecAgent/issues/4) | dispatcher messages WS |
+| #11 | [#5](https://github.com/CCoupel/Ansible-SecAgent/issues/5) | exec_command subprocess |
+| #13 | [#6](https://github.com/CCoupel/Ansible-SecAgent/issues/6) | put_file |
+| #14 | [#7](https://github.com/CCoupel/Ansible-SecAgent/issues/7) | fetch_file |
+| #15 | [#8](https://github.com/CCoupel/Ansible-SecAgent/issues/8) | async_registry.py |
+| #17 | [#9](https://github.com/CCoupel/Ansible-SecAgent/issues/9) | systemd service |
+| #19 | [#10](https://github.com/CCoupel/Ansible-SecAgent/issues/10) | Tests Phase 1 |
+| #20 | [#11](https://github.com/CCoupel/Ansible-SecAgent/issues/11) | QA Phase 1 |
+| #22 | [#12](https://github.com/CCoupel/Ansible-SecAgent/issues/12) | Security review Phase 1 |
+| #23 | [#13](https://github.com/CCoupel/Ansible-SecAgent/issues/13) | Deploy qualif Phase 1 |
+| #24 | [#14](https://github.com/CCoupel/Ansible-SecAgent/issues/14) | agent_store.py SQLite |
+| #25 | [#15](https://github.com/CCoupel/Ansible-SecAgent/issues/15) | routes_register.py |
+| #26 | [#16](https://github.com/CCoupel/Ansible-SecAgent/issues/16) | ws_handler.py |
+| #27 | [#17](https://github.com/CCoupel/Ansible-SecAgent/issues/17) | nats_client.py |
+| #28 | [#18](https://github.com/CCoupel/Ansible-SecAgent/issues/18) | routes_exec.py |
+| #29 | [#19](https://github.com/CCoupel/Ansible-SecAgent/issues/19) | main.py FastAPI |
+| #30 | [#20](https://github.com/CCoupel/Ansible-SecAgent/issues/20) | docker-compose.yml |
+| #31 | [#21](https://github.com/CCoupel/Ansible-SecAgent/issues/21) | Tests Phase 2 |
+| #32 | [#22](https://github.com/CCoupel/Ansible-SecAgent/issues/22) | QA Phase 2 |
+| #33 | [#23](https://github.com/CCoupel/Ansible-SecAgent/issues/23) | Security review Phase 2 |
+| #34 | [#24](https://github.com/CCoupel/Ansible-SecAgent/issues/24) | Deploy qualif Phase 2 |
+| #35 | [#25](https://github.com/CCoupel/Ansible-SecAgent/issues/25) | connection plugin secagent.py |
+| #36 | [#26](https://github.com/CCoupel/Ansible-SecAgent/issues/26) | inventory plugin (OBSOLÈTE) |
+| #37 | [#27](https://github.com/CCoupel/Ansible-SecAgent/issues/27) | Tests Phase 3 |
+| #38 | [#28](https://github.com/CCoupel/Ansible-SecAgent/issues/28) | QA Phase 3 |
+| #39 | [#29](https://github.com/CCoupel/Ansible-SecAgent/issues/29) | Security review global |
+| #40 | [#30](https://github.com/CCoupel/Ansible-SecAgent/issues/30) | Deploy qualif Phase 3 |
+| #41 | [#31](https://github.com/CCoupel/Ansible-SecAgent/issues/31) | Deploy prod Phase 3 (SUSPENDU) |
+| #42 | [#32](https://github.com/CCoupel/Ansible-SecAgent/issues/32) | Helm chart structure |
+| #43 | [#33](https://github.com/CCoupel/Ansible-SecAgent/issues/33) | Helm StatefulSet NATS |
+| #44 | [#34](https://github.com/CCoupel/Ansible-SecAgent/issues/34) | Helm Deployment server |
+| #45 | [#35](https://github.com/CCoupel/Ansible-SecAgent/issues/35) | Helm DaemonSet minion |
+| #46 | [#36](https://github.com/CCoupel/Ansible-SecAgent/issues/36) | Helm ConfigMap + Secrets |
+| #47 | [#37](https://github.com/CCoupel/Ansible-SecAgent/issues/37) | Helm Ingress |
+| #48 | [#38](https://github.com/CCoupel/Ansible-SecAgent/issues/38) | Helm Service |
+| #49 | [#39](https://github.com/CCoupel/Ansible-SecAgent/issues/39) | Helm PVC |
+| #50 | [#40](https://github.com/CCoupel/Ansible-SecAgent/issues/40) | Helm tests |
+| #51 | [#41](https://github.com/CCoupel/Ansible-SecAgent/issues/41) | Helm deploy script |
+| #52 | [#42](https://github.com/CCoupel/Ansible-SecAgent/issues/42) | Helm documentation |
+| #53 | [#43](https://github.com/CCoupel/Ansible-SecAgent/issues/43) | Deploy prod Phase 4 |
+| #54 | [#44](https://github.com/CCoupel/Ansible-SecAgent/issues/44) | Runbooks prod |
+| #55 | [#45](https://github.com/CCoupel/Ansible-SecAgent/issues/45) | Monitoring Prometheus/Grafana |
+| #56 | [#46](https://github.com/CCoupel/Ansible-SecAgent/issues/46) | Hardening sécurité |
+| #57 | [#47](https://github.com/CCoupel/Ansible-SecAgent/issues/47) | Disaster recovery |
+| #58 | [#48](https://github.com/CCoupel/Ansible-SecAgent/issues/48) | Performance tuning |
+| #59 | [#49](https://github.com/CCoupel/Ansible-SecAgent/issues/49) | Migration guide |
+| #60 | [#50](https://github.com/CCoupel/Ansible-SecAgent/issues/50) | SLA & Support |
+| #61 | [#51](https://github.com/CCoupel/Ansible-SecAgent/issues/51) | MVP Final Review & Sign-off |
+| #62 | [#52](https://github.com/CCoupel/Ansible-SecAgent/issues/52) | Endpoints admin |
+| #63 | [#53](https://github.com/CCoupel/Ansible-SecAgent/issues/53) | DB server_config + RSA keypair |
+| #64 | [#54](https://github.com/CCoupel/Ansible-SecAgent/issues/54) | Rotation clefs JWT |
+| #65 | [#55](https://github.com/CCoupel/Ansible-SecAgent/issues/55) | Agent handler rekey |
+| #66 | [#56](https://github.com/CCoupel/Ansible-SecAgent/issues/56) | CLI cobra |
+| #67 | [#57](https://github.com/CCoupel/Ansible-SecAgent/issues/57) | Tests GO CLI |
+| #68 | [#58](https://github.com/CCoupel/Ansible-SecAgent/issues/58) | QA Phase 6 |
+| #69 | [#59](https://github.com/CCoupel/Ansible-SecAgent/issues/59) | Deploy qualif Phase 6 |
+| #70 | [#60](https://github.com/CCoupel/Ansible-SecAgent/issues/60) | Specs GO server |
+| #71 | [#61](https://github.com/CCoupel/Ansible-SecAgent/issues/61) | Server main.go |
+| #72 | [#62](https://github.com/CCoupel/Ansible-SecAgent/issues/62) | handlers/register.go |
+| #73 | [#63](https://github.com/CCoupel/Ansible-SecAgent/issues/63) | handlers/exec.go |
+| #74 | [#64](https://github.com/CCoupel/Ansible-SecAgent/issues/64) | handlers/inventory.go |
+| #75 | [#65](https://github.com/CCoupel/Ansible-SecAgent/issues/65) | ws/handler.go |
+| #76 | [#66](https://github.com/CCoupel/Ansible-SecAgent/issues/66) | storage/agent_store.go |
+| #77 | [#67](https://github.com/CCoupel/Ansible-SecAgent/issues/67) | broker/nats.go |
+| #78 | [#68](https://github.com/CCoupel/Ansible-SecAgent/issues/68) | Tests GO server |
+| #79 | [#69](https://github.com/CCoupel/Ansible-SecAgent/issues/69) | Migration Python→GO |
+| #80 | [#70](https://github.com/CCoupel/Ansible-SecAgent/issues/70) | QA Phase 7 |
+| #81 | [#71](https://github.com/CCoupel/Ansible-SecAgent/issues/71) | Deploy qualif Phase 7 |
+| #82 | [#72](https://github.com/CCoupel/Ansible-SecAgent/issues/72) | Agent architecture GO |
+| #83 | [#73](https://github.com/CCoupel/Ansible-SecAgent/issues/73) | agent/main.go |
+| #84 | [#74](https://github.com/CCoupel/Ansible-SecAgent/issues/74) | agent/dispatcher.go |
+| #85 | [#75](https://github.com/CCoupel/Ansible-SecAgent/issues/75) | agent/executor.go |
+| #86 | [#76](https://github.com/CCoupel/Ansible-SecAgent/issues/76) | agent/files.go |
+| #87 | [#77](https://github.com/CCoupel/Ansible-SecAgent/issues/77) | agent/registry.go |
+| #88 | [#78](https://github.com/CCoupel/Ansible-SecAgent/issues/78) | agent/facts.go |
+| #89 | [#79](https://github.com/CCoupel/Ansible-SecAgent/issues/79) | Tests GO agent |
+| #90 | [#80](https://github.com/CCoupel/Ansible-SecAgent/issues/80) | QA Phase 8 |
+| #91 | [#81](https://github.com/CCoupel/Ansible-SecAgent/issues/81) | Deploy qualif Phase 8 |
+| #92 | [#82](https://github.com/CCoupel/Ansible-SecAgent/issues/82) | inventory-wrapper/main.go |
+| #93 | [#83](https://github.com/CCoupel/Ansible-SecAgent/issues/83) | inventory-wrapper/inventory.go |
+| #94 | [#84](https://github.com/CCoupel/Ansible-SecAgent/issues/84) | exec-wrapper/main.go |
+| #95 | [#85](https://github.com/CCoupel/Ansible-SecAgent/issues/85) | Tests integration GO wrappers |
+| #96 | [#86](https://github.com/CCoupel/Ansible-SecAgent/issues/86) | Deploy qualif Phase 9 |
+| #97 | [#87](https://github.com/CCoupel/Ansible-SecAgent/issues/87) | Store enrollment_tokens |
+| #98 | [#88](https://github.com/CCoupel/Ansible-SecAgent/issues/88) | Store plugin_tokens |
+| #99 | [#89](https://github.com/CCoupel/Ansible-SecAgent/issues/89) | Server RegisterAgent refactor |
+| #100 | [#90](https://github.com/CCoupel/Ansible-SecAgent/issues/90) | Endpoints admin tokens |
+| #101 | [#91](https://github.com/CCoupel/Ansible-SecAgent/issues/91) | Plugin token CIDR + regexp |
+| #102 | [#92](https://github.com/CCoupel/Ansible-SecAgent/issues/92) | Agent enrollment token |
+| #103 | [#93](https://github.com/CCoupel/Ansible-SecAgent/issues/93) | CLI tokens commands |
+| #104 | [#94](https://github.com/CCoupel/Ansible-SecAgent/issues/94) | Tests GO enrollment tokens |
+| #105 | [#95](https://github.com/CCoupel/Ansible-SecAgent/issues/95) | QA Phase 10 |
+| #106 | [#96](https://github.com/CCoupel/Ansible-SecAgent/issues/96) | Deploy qualif Phase 10 |
 
 ---
 
-## PHASE 7 — Rewrite secagent-server (GO) — 12 tâches
+## Comment ajouter de nouvelles issues
 
-### Prérequis
-- Phase 6 complète (CLI opérationnelle)
-- GO 1.21+ installé
-- Aucune modification aux API contracts (backward-compatible)
+Les nouvelles tâches doivent être créées directement dans [GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues/new).
 
-### Objectif
-Réécrire secagent-server (FastAPI Python) en GO compilé pour performance + sécurité :
-- Latency : 100ms → 5ms (20x faster)
-- Memory : 100MB → 10MB per instance
-- Single compiled binary (no runtime)
-- Type-safe crypto (RSA, JWT, SHA256)
-- High-concurrency WebSocket (500+ agents)
+Utiliser les labels appropriés :
+- `phase:N-xxx` pour associer à une phase
+- `status:todo` pour les nouvelles tâches
+- `owner:xxx` pour l'assignation
+- `type:xxx` pour la nature de la tâche
 
-### Tâches Phase 7
-
-| # | Tâche | Owner | Status | Bloquée par |
-|---|-------|-------|--------|------------|
-| #70 | Spécifications architecture GO — project layout, dependencies | dev-relay | pending | #69 |
-| #71 | Server main.go — multi-port app (7770/7771/7772), lifespan | dev-relay | pending | #70 |
-| #72 | handlers/register.go — enrollment, JWT, RSA-4096 encryption | dev-relay | pending | #71 |
-| #73 | handlers/exec.go — /api/exec, /api/upload, /api/fetch endpoints | dev-relay | pending | #71 |
-| #74 | handlers/inventory.go — /api/inventory (Ansible format) | dev-relay | pending | #71 |
-| #75 | ws/handler.go — WebSocket agent connections, dispatcher | dev-relay | pending | #71 |
-| #76 | storage/agent_store.go — SQLite wrapper (agents, authorized_keys, blacklist) | dev-relay | pending | #71 |
-| #77 | broker/nats.go — NATS JetStream client (RELAY_TASKS, RELAY_RESULTS) | dev-relay | pending | #71 |
-| #78 | Tests unitaires secagent-server GO | test-writer | pending | #72-#77 |
-| #79 | Migration Python → GO : verify API contracts, protocol compatibility | dev-relay | pending | #78 |
-| #80 | QA — pytest E2E vs GO server (agents enroll, exec, inventory) | qa | pending | #79 |
-| #81 | Deploy qualif Phase 7 — GO server on 192.168.1.218 | deploy-qualif | pending | #80 |
-
-**Validation Phase 7 → Phase 8** :
-- ✓ TOUTES tâches #70-#81 completed
-- ✓ API contracts : 100% compatible with Python version
-- ✓ qa : 0 test en échec, E2E tests pass vs GO server
-- ✓ Performance : p95 latency < 10ms, p99 < 20ms
-- ✓ Memory : < 10MB per instance
-- ✓ Throughput : 1000+ req/s
-- ✓ deploy-qualif : GO server running stable 24h
-
----
-
-## PHASE 8 — Rewrite secagent-minion (GO) — 10 tâches
-
-### Prérequis
-- Phase 7 déployée (GO server)
-- GO 1.21+ installé
-
-### Objectif
-Réécrire secagent-minion (Python daemon) en GO compilé :
-- Memory : 30MB → 2-3MB per agent
-- Startup : 500ms → 10ms
-- Better subprocess isolation
-- Single systemd binary
-- No Python garbage collector latency
-
-### Tâches Phase 8
-
-| # | Tâche | Owner | Status | Bloquée par |
-|---|-------|-------|--------|------------|
-| #82 | Agent architecture GO — project layout, async model | dev-agent | pending | #81 |
-| #83 | agent/main.go — enrollment, WSS connection, reconnection backoff | dev-agent | pending | #82 |
-| #84 | agent/dispatcher.go — message dispatcher (exec/put_file/fetch_file) | dev-agent | pending | #83 |
-| #85 | agent/executor.go — exec_command subprocess + stdout streaming (5MB buffer) | dev-agent | pending | #83 |
-| #86 | agent/files.go — put_file, fetch_file (base64, 500KB limit) | dev-agent | pending | #83 |
-| #87 | agent/registry.go — async task registry (JSON persistence) | dev-agent | pending | #83 |
-| #88 | agent/facts.go — system facts collection (via gopsutil) | dev-agent | pending | #83 |
-| #89 | Tests unitaires secagent-minion GO | test-writer | pending | #85-#88 |
-| #90 | QA — pytest E2E vs GO agent (enrollment, exec, facts) | qa | pending | #89 |
-| #91 | Deploy qualif Phase 8 — GO agents on 192.168.1.218 | deploy-qualif | pending | #90 |
-
-**Validation Phase 8 → Phase 9** :
-- ✓ TOUTES tâches #82-#91 completed
-- ✓ qa : 0 test en échec
-- ✓ Memory : < 3MB per agent
-- ✓ Startup : < 50ms
-- ✓ Subprocess isolation : no threads, separate processes
-- ✓ Systemd : works with existing secagent-minion.service
-- ✓ Backward-compatible : no changes to agent protocol
-
----
-
-## PHASE 9 — Plugins wrapper (GO) — 5 tâches
-
-### Prérequis
-- Phase 8 déployée (GO agents)
-- Ansible plugins Python working
-
-### Objectif
-Wrapper GO pour plugins Ansible (inventory + connection) :
-- secagent-inventory-go : compiled binary called by secagent_inventory.py
-- relay-exec-go : compiled binary called by secagent.py ConnectionBase
-- Transparent to Ansible (Python plugins unchanged)
-- Eliminates Python startup overhead (inventory refresh, exec)
-
-### Architecture
+Le CDP et les agents doivent consulter les issues GitHub en temps réel via l'API :
 ```
-ansible-playbook
-    ↓
-secagent_inventory.py (Python, unchanged)
-    ↓ subprocess call
-secagent-inventory-go (compiled wrapper)
-    ↓ HTTP
-secagent-server:7772 (/api/inventory)
-    ↓
-response → Ansible inventory
-
-secagent.py (Python ConnectionBase, unchanged)
-    ↓ subprocess call
-relay-exec-go (compiled wrapper)
-    ↓ HTTP
-secagent-server:7771 (/api/exec, /api/upload, /api/fetch)
-    ↓
-response → Ansible module result
+GET https://api.github.com/repos/CCoupel/Ansible-SecAgent/issues?state=open
 ```
-
-### Tâches Phase 9
-
-| # | Tâche | Owner | Status | Bloquée par |
-|---|-------|-------|--------|------------|
-| #92 | inventory-wrapper/main.go — CLI arg parsing, HTTP client | dev-plugins | pending | #91 |
-| #93 | inventory-wrapper/inventory.go — fetch /api/inventory, format for Ansible | dev-plugins | pending | #92 |
-| #94 | exec-wrapper/main.go — CLI arg parsing, subprocess handling | dev-plugins | pending | #91 |
-| #95 | Tests + integration : Python plugins → GO wrappers | test-writer | pending | #93, #94 |
-| #96 | Deploy qualif Phase 9 — E2E Ansible playbook via GO wrappers | deploy-qualif | pending | #95 |
-
-**Validation Phase 9 → Production** :
-- ✓ TOUTES tâches #92-#96 completed
-- ✓ qa : 0 test en échec, E2E playbooks pass with GO wrappers
-- ✓ Ansible plugins : unchanged (backward compatible)
-- ✓ Performance : inventory refresh < 500ms, exec < 1s startup
-- ✓ No Python startup overhead
-
----
-
-## PHASE 10 — Enrollment Token Security — 9 tâches
-
-### Contexte
-
-Le modèle d'enrollment actuel utilise des `authorized_keys` pré-provisionnées (admin ajoute
-`{hostname, pubkey_pem}` avant le démarrage de l'agent). Ce modèle est circulaire en pratique :
-l'admin doit connaître la pubkey de l'agent avant son 1er démarrage.
-
-Le modèle cible (SECURITY.md §3) utilise un **enrollment token single-use** + **challenge-response
-RSA-OAEP** : l'admin émet un token lié à un hostname, l'agent l'utilise pour prouver son
-identité sans que la pubkey soit connue à l'avance.
-
-### Prérequis
-- Phases 7 + 8 complètes (GO server + agent)
-- Lire SECURITY.md §3 (enrollment token + challenge-response) et §6 (plugin tokens)
-
-### Architecture cible
-
-```
-Admin                    Server                        Agent (hôte cible)
-  │                        │                              │
-  │ CLI: tokens create     │                              │
-  │ --role enrollment      │                              │
-  │ --hostname my-host     │                              │
-  │ --expires 24h          │                              │
-  │──────────────────────>│                              │
-  │ token: "secagent_enr_..." │                              │  ← affiché une seule fois
-  │<──────────────────────│                              │
-  │                        │                              │
-  │  (transmet le token à l'opérateur déployant l'agent) │
-  │                        │                              │
-  │                        │  POST /api/register          │
-  │                        │  {hostname, pubkey, token}   │
-  │                        │<─────────────────────────────│
-  │                        │                              │
-  │                        │ [valide token :              │
-  │                        │  existe, non expiré,         │
-  │                        │  non utilisé,                │
-  │                        │  hostname correspond]        │
-  │                        │                              │
-  │                        │  {challenge: OAEP(nonce, agent_pubkey)}
-  │                        │─────────────────────────────>│
-  │                        │                              │ [déchiffre nonce]
-  │                        │  {response: OAEP(nonce+token, server_pubkey)}
-  │                        │<─────────────────────────────│
-  │                        │                              │
-  │                        │ [vérifie nonce == nonce émis]│
-  │                        │ [marque token used=true]     │
-  │                        │  {jwt: OAEP(jwt, agent_pubkey)}
-  │                        │─────────────────────────────>│
-```
-
-### Tâches Phase 10
-
-| # | Tâche | Owner | Status | Bloquée par |
-|---|-------|-------|--------|-------------|
-| #97 | Store — table `enrollment_tokens` : `token_hash`, `hostname_pattern` (regexp), `reusable` (0=one-shot/1=permanent), `use_count`, `last_used_at`, `expires_at` (nullable), `created_by` | dev-relay | pending | — |
-| #98 | Store — table `plugin_tokens` : `token_hash`, `description`, `role`, `allowed_ips` (CIDRs virgule), `allowed_hostname_pattern` (regexp), `expires_at`, `last_used_at`, `revoked` | dev-relay | pending | — |
-| #99 | Server — refactorer `RegisterAgent` : accepter `enrollment_token`, valider (non expiré, `reusable=0` → `use_count==0`, regexp hostname), challenge-response OAEP nonce, incrémenter `use_count` + `last_used_at` | dev-relay | pending | #97 |
-| #100 | Server — endpoints admin tokens : `POST /api/admin/tokens` (create, champs `reusable`, `expires_at` nullable), `GET /api/admin/tokens` (list + filtre role), `POST /api/admin/tokens/:id/revoke`, `DELETE /api/admin/tokens/:id`, `POST /api/admin/tokens/purge?expired=1&used=1` | dev-relay | pending | #97, #98 |
-| #101 | Server — vérification plugin token : CIDR matching multi-valeurs (`net.ParseCIDR` pour chaque CIDR), regexp matching `allowed_hostname_pattern` sur header `X-Relay-Client-Host` | dev-relay | pending | #98 |
-| #102 | Agent — passer `RELAY_ENROLLMENT_TOKEN` (env var) dans POST /api/register + gérer le challenge-response (déchiffre nonce OAEP, répond `OAEP(nonce+token, server_pubkey)`) | dev-agent | pending | #99 |
-| #103 | CLI — `tokens create --role enrollment --hostname-pattern "vp.*" [--reusable] [--expires 30d]` / `--role plugin --allowed-ips "10.0.0.0/8" --allowed-hostname-pattern "ansible-.*"` ; `tokens list [--role ...]` (affiche MODE one-shot/permanent + USAGES) ; `tokens revoke/delete <id>` ; `tokens purge --expired --used` | dev-relay | pending | #100 |
-| #104 | Tests GO — one-shot (consommé après 1 usage, rejeté au 2ème), permanent (N usages, use_count incrémenté), regexp match/no-match, token expiré, token permanent sans expiry, CIDR multi-valeurs, plugin token CIDR + regexp | test-writer | pending | #99, #100, #101, #102, #103 |
-| #105 | QA — `go test ./...` 0 fail + smoke test enrollment complet depuis container | qa | pending | #104 |
-| #106 | Deploy qualif Phase 10 — ré-enrollment des 3 agents avec enrollment tokens sur 192.168.1.218, token `hostname_pattern = "qualif-host-[0-9]+"` | deploy-qualif | pending | #105 |
-
-**Validation Phase 10** :
-- ✓ TOUTES tâches #97-#106 completed
-- ✓ `enrollment_tokens` : one-shot ET permanent, TTL optionnel, `hostname_pattern` regexp
-- ✓ One-shot : rejeté au 2ème usage, `use_count` tracé
-- ✓ Permanent : N enrollements successifs, `use_count` incrémenté à chaque fois
-- ✓ Challenge-response OAEP : token volé sans keypair → challenge échoue
-- ✓ `plugin_tokens` : CIDR multi-valeurs + `allowed_hostname_pattern` regexp
-- ✓ Agents existants ré-enrôlés via enrollment tokens (migration authorized_keys)
-- ✓ CLI : `tokens create/list/revoke/delete/purge` opérationnels avec regexp et CIDR
-- ✓ `RELAY_ENROLLMENT_TOKEN` env var documentée dans le service systemd
-- ✓ qa : 0 test en échec
-- ✓ deploy-qualif : 3 agents enrôlés via tokens, 0 régression
-
----
-
-## Dépendances critiques
-
-```
-PHASE 1:
-#4 (facts) → #6 (enrollment) → #8 (WSS) → #9 (dispatcher) → #11/#13/#14/#15
-#19 (tests) bloque par toutes tâches Phase 1
-#20 (QA) → #22 (security) → #23 (deploy-qualif Phase 1)
-
-PHASE 2:
-#24 (DB) → #25 (auth) → #26 (WS) + #27 (NATS)
-#26+#27 → #28 (endpoints) → #29 (main)
-#31 (tests) bloque par toutes tâches Phase 2
-#32 (QA) → #33 (security) → #34 (deploy-qualif Phase 2)
-
-PHASE 3:
-#34 (Phase 2 déployée) → #35 (connection) + #36 (inventory)
-#37 (tests E2E) → #38 (QA) → #39 (security global) → #40 (deploy E2E)
-#40 (deploy qualif Phase 3) → #41 (prod MVP final) [après confirmation utilisateur]
-
-PHASE 4 (PRODUCTION K8S):
-#40 (MVP qualifié) → #42 (structure Helm)
-#42 → #43/#44/#45/#46/#47/#48/#49 (en parallèle)
-#42 → #50 (tests Helm) → #51 (deploy script) → #52 (docs) → #53 (prod deploy)
-
-PHASE 5 (HARDENING & LIVE):
-#53 (prod déployée) → #54/#55/#56/#57/#58/#59/#60 (en parallèle)
-#54/#55/#56/#57/#58/#59/#60 → #61 (final review & sign-off)
-
-PHASE 6 (MANAGEMENT CLI):
-#61 (sign-off) → #62 (specs)
-#62 → #63 (backend API) + #64 (CLI tool)
-#63 → #65 (auth) bloqué par #63
-#64/#65/#66 (inventory editor) bloqué par #64
-#64/#65/#66 → #67 (tests) → #68 (QA) → #69 (CLI package)
-
-PHASE 7 (SERVER REWRITE GO):
-#69 (CLI done) → #70 (GO specs)
-#70 → #71 (main.go) → #72-#77 (handlers, storage, broker, ws - parallèle)
-#72-#77 → #78 (tests) → #79 (migration verify) → #80 (QA E2E) → #81 (deploy)
-
-PHASE 8 (AGENT REWRITE GO):
-#81 (GO server done) → #82 (agent specs)
-#82 → #83 (main.go) → #84-#88 (dispatcher, executor, files, registry, facts - parallèle)
-#84-#88 → #89 (tests) → #90 (QA E2E) → #91 (deploy)
-
-PHASE 9 (PLUGINS WRAPPER GO):
-#91 (GO agent done) → #92 (inventory wrapper) + #94 (exec wrapper - parallèle)
-#92/#94 → #95 (tests + integration) → #96 (E2E playbook)
-
-PHASE 10 (ENROLLMENT TOKEN SECURITY):
-#97 (enrollment_tokens table) → #99 (RegisterAgent + regexp matching) → #102 (agent challenge-response)
-#98 (plugin_tokens table) → #101 (CIDR + regexp plugin verification) → #100 (admin token endpoints) → #103 (CLI tokens)
-#99 + #100 + #101 + #102 + #103 → #104 (tests) → #105 (QA) → #106 (deploy qualif)
-```
-
----
-
-## Checklist sécurité par phase
-
-### Phase 1 (secagent-minion)
-- [ ] TLS obligatoire (WSS)
-- [ ] JWT signé côté agent
-- [ ] Masquage `become_pass` dans logs
-- [ ] Validation entrées (command injection)
-- [ ] Isolation subprocess (pas de threads)
-- [ ] RSA-4096 pour enrollment
-
-### Phase 2 (secagent-server)
-- [ ] TLS obligatoire (WSS + HTTPS)
-- [ ] JWT signé + rôles agent/plugin/admin
-- [ ] Blacklist JTI (token revocation)
-- [ ] Validation entrées API (injection)
-- [ ] Masquage `become_pass` dans logs et stockage
-- [ ] Rate limiting
-
-### Phase 3 (plugins Ansible)
-- [ ] Validation tokens plugin
-- [ ] Pas de fuite credentials dans logs
-- [ ] TLS sur appels REST au serveur
-- [ ] Audit global bout-en-bout
-
-### Phase 6 (Management CLI)
-- [ ] Authentification JWT avec session expiry
-- [ ] Autorisation : admin-only commands (revoke, delete minions)
-- [ ] Token storage : secure (chmod 600, XDG_CONFIG_HOME)
-- [ ] Validation input (inventory YAML, host names, command injection)
-- [ ] Masquage données sensibles (JWT tokens masqués, secrets non loggés)
-- [ ] Audit logs : changements inventaire, revokes, deletes
-- [ ] TLS obligatoire (API calls over HTTPS)
-- [ ] Rate limiting sur API management
-- [ ] Pas de credentials stockées en clair (token refresh obligatoire)
-
----
-
-## Métriques de succès
-
-| Phase | Métriques | Status |
-|-------|-----------|--------|
-| Phase 1 | 0 test en échec, secagent-minion enregistré et connecté en WSS | ✅ COMPLÈTE |
-| Phase 2 | 0 test en échec, secagent-server reçoit enregistrement, gère WebSocket | ✅ COMPLÈTE |
-| Phase 3 | 0 test en échec, playbook Ansible exécuté via plugin relay, inventaire dynamique | ✅ COMPLÈTE |
-| MVP Qualif | E2E : enrollment → playbook exec → résultat sur 192.168.1.218 | ✅ VALIDÉE |
-| Phase 4 | Helm deploy réussie, 3 agents K8s connectés, Ingress TLS OK, persistance vérifiée | 🆕 À FAIRE |
-| Phase 5 | Runbooks testées, monitoring opérationnel, DR validated, sign-off utilisateur | 🆕 À FAIRE |
-| Phase 6 | CLI opérationnelle : minions list/detail/revoke/delete, inventory edit/diff/rollback | 🆕 À FAIRE |
-| Phase 7 | GO server : p95 latency < 10ms, memory < 10MB, 1000+ req/s, API 100% compatible | 🆕 À FAIRE |
-| Phase 8 | GO agent : memory < 3MB, startup < 50ms, systemd service, backward-compatible | 🆕 À FAIRE |
-| Phase 9 | GO wrappers : inventory refresh < 500ms, exec < 1s, Ansible plugins unchanged | ✅ COMPLÈTE |
-| Phase 10 | Enrollment token single-use + challenge-response OAEP + hostname_pattern regexp + CIDR multi-valeurs | 🆕 À FAIRE |
-| LIVE | Production Kubernetes optimisée GO : SLA garantis, performance, CLI management | ⏸ SUSPENDU |

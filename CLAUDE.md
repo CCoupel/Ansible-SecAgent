@@ -11,7 +11,8 @@
 | `DOC/common/HLD.md` | Architecture haut niveau, schémas composants et flux de messages |
 | `DOC/common/ARCHITECTURE.md` | Spécifications techniques détaillées (protocoles, formats, sécurité, déploiement) |
 | `DOC/security/SECURITY.md` | Modèle de sécurité complet (enrollment, rôles, tokens, rotation) |
-| `DOC/common/BACKLOG.md` | État des phases et tâches |
+| [GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues) | État des phases et tâches — **source de vérité** |
+| `DOC/common/BACKLOG.md` | Table de correspondance backlog→issues (archivé, ne pas éditer) |
 | `DOC/server/SERVER_SPEC.md` | Specs secagent-server (API, WS, CLI, schéma DB) |
 | `DOC/agent/AGENT_SPEC.md` | Specs secagent-minion (enrollment, WS, executor, async) |
 | `DOC/plugins/PLUGINS_SPEC.md` | Specs plugins Ansible (connection + inventory) |
@@ -29,7 +30,7 @@ ansible-secagent/
 │   ├── common/               # Specs transversales
 │   │   ├── ARCHITECTURE.md   # Spécifications techniques v1.1+ (§1-§22)
 │   │   ├── HLD.md            # High-Level Design
-│   │   └── BACKLOG.md        # Phases et tâches
+│   │   └── BACKLOG.md        # Table correspondance backlog→GitHub Issues (archivé)
 │   ├── security/             # Modèle de sécurité
 │   │   └── SECURITY.md       # Enrollment, rôles, tokens, rotation
 │   ├── server/               # Specs secagent-server
@@ -101,7 +102,7 @@ ansible-secagent/
 - **Aucun agent ne démarre de travail de sa propre initiative**
 - Le **CDP attend un ordre explicite de l'utilisateur** avant toute action
 - Les agents spécialisés (dev, qa, security, deploy…) attendent une affectation de tâche par le CDP
-- **Interdit** : lire le backlog, créer des tâches, coder ou déployer au lancement sans ordre préalable
+- **Interdit** : consulter les issues GitHub, créer des tâches, coder ou déployer au lancement sans ordre préalable
 
 Séquence correcte :
 1. `/start-session` → agents démarrés → tous en IDLE

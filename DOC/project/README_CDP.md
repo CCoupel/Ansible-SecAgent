@@ -10,7 +10,7 @@ Lire **dans cet ordre avant toute action** :
 
 1. **HLD.md** — Architecture haut niveau, schémas, flux de messages
 2. **ARCHITECTURE.md** — Spécifications techniques détaillées (protocoles, sécurité, déploiement)
-3. **BACKLOG.md** — 41 tâches, 3 phases, dépendances, métriques
+3. **[GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues)** — 96 issues, 10 phases, labels, milestones (source de vérité)
 4. **PLAN_CDP.md** — Workflow CDP, règles absolues, conditions passage phases
 
 ---
@@ -31,7 +31,7 @@ Lire **dans cet ordre avant toute action** :
 
 1. Lire ce README_CDP.md (ce fichier)
 2. Lire HLD.md + ARCHITECTURE.md
-3. Consulter BACKLOG.md pour l'état des tâches
+3. Consulter les [GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues) pour l'état des tâches
 4. Consulter PLAN_CDP.md pour le workflow
 5. Consulter TaskList (système interne) pour l'état en temps réel
 
@@ -55,7 +55,7 @@ Ansible_Agent/
 ├── README_CDP.md           ← Vous êtes ici
 ├── HLD.md                  ← Architecture haute niveau
 ├── ARCHITECTURE.md         ← Spécifications techniques
-├── BACKLOG.md              ← 41 tâches, 3 phases, dépendances
+├── BACKLOG.md              ← Table correspondance (archivé) → voir GitHub Issues
 ├── PLAN_CDP.md             ← Workflow CDP, règles absolues
 ├── agent/                  ← Phase 1 : secagent-minion daemon
 │   ├── secagent_agent.py
@@ -227,7 +227,8 @@ TaskList → voir tâches #4-#23 (Phase 1)
 |---------|---------|-----------|
 | **HLD.md** | Architecture haute niveau, schémas, flux | Phase 1 |
 | **ARCHITECTURE.md** | Spécifications détaillées (v1.1) | Phase 1 |
-| **BACKLOG.md** | 41 tâches, phases, dépendances | Assignation |
+| **[GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues)** | 96 issues, phases, labels, milestones — source de vérité | Assignation |
+| **BACKLOG.md** | Table correspondance backlog→issues (archivé) | Référence |
 | **PLAN_CDP.md** | Workflow CDP, messages types, règles | Chaque phase |
 | **.claude/commands/start-session.md** | Démarrage automatique team (si dispo) | Initial |
 
@@ -295,8 +296,8 @@ SendMessage(type: "message", recipient: "dev-agent", content: "...")
 ## Points clés à retenir
 
 1. **Démarrage IDLE obligatoire** : Au lancement, CDP et tous les agents restent en IDLE — aucune action sans ordre utilisateur
-2. **Autonomie du projet** : Tous les documents (HLD, ARCHITECTURE, BACKLOG, PLAN) sont dans le dossier du projet
-3. **Traçabilité** : TaskList = source de vérité pour l'état des tâches
+2. **Autonomie du projet** : Tous les documents (HLD, ARCHITECTURE, PLAN) sont dans le dossier du projet
+3. **Traçabilité** : [GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues) = source de vérité pour l'état des tâches
 4. **Validation stricte** : qa 0 fail + security 0 CRITIQUE/HAUT obligatoires pour chaque phase
 5. **Pas de parallélisation** : Phases séquentielles uniquement, dépendances gérées par TaskList
 6. **Confirmation utilisateur** : Jamais d'action sans ordre explicite pour passer une phase
