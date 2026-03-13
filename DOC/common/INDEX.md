@@ -36,7 +36,7 @@ Ansible_Agent/
 │   └── CONVERSION_STATUS.md    # Conversion matrix + progress
 │
 ├── Configuration/
-│   ├── BACKLOG.md              # 102 tasks across 9 phases
+│   ├── BACKLOG.md              # Table de correspondance backlog→GitHub Issues (archivé)
 │   ├── PLAN_CDP.md             # Workflow for team coordination
 │   ├── .env                    # Environment variables
 │   └── .claude/commands/       # Claude Code command definitions
@@ -109,7 +109,8 @@ go build -o secagent-server ./cmd/server
 ### Planning & Tracking
 | Document | Purpose | Location |
 |----------|---------|----------|
-| **BACKLOG.md** | 102 tasks across Phases 1-9, dependencies | Root |
+| **[GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues)** | Task tracking — source de vérité (96 issues, 10 phases) | GitHub |
+| **BACKLOG.md** | Table de correspondance backlog→GitHub Issues (archivé) | Root |
 | **PLAN_CDP.md** | Team coordination workflow | Root |
 | **INDEX.md** | This file | Root |
 
@@ -166,7 +167,7 @@ go build -o secagent-server ./cmd/server
 ### Before Starting Work
 1. Read `CLAUDE.md` — Project conventions
 2. Read `ARCHITECTURE.md` — Technical context
-3. Check `BACKLOG.md` — Current task status
+3. Check [GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues) — Current task status (open = todo, closed = done)
 4. Review `PLAN_CDP.md` — Coordination rules
 
 ### Working on Python MVP
@@ -259,7 +260,7 @@ go test ./cmd/server/internal/...
 
 ### Configuration
 - **Environment**: `.env`
-- **Backlog**: `BACKLOG.md`
+- **Backlog**: [GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues)
 - **Workflow**: `PLAN_CDP.md`
 
 ---
@@ -279,7 +280,7 @@ A: Yes — they use same API contracts, NATS, SQLite. See `ARCHITECTURE.md` for 
 A: E2E tests in Python agent ↔ GO server (after main.go implementation).
 
 **Q: What's the next phase after GO migration?**
-A: Phase 8 (Agent GO rewrite) and Phase 9 (Plugins wrapper). See `BACKLOG.md #82+`.
+A: Phase 8 (Agent GO rewrite) and Phase 9 (Plugins wrapper). See [GitHub Issues — Phase 8](https://github.com/CCoupel/Ansible-SecAgent/issues?q=label%3Aphase%3A8-agent-go).
 
 ---
 
@@ -287,7 +288,7 @@ A: Phase 8 (Agent GO rewrite) and Phase 9 (Plugins wrapper). See `BACKLOG.md #82
 
 - **Architecture questions**: See `ARCHITECTURE.md`
 - **Design decisions**: See `HLD.md` + `PHASE7_COMPLETE.md`
-- **Task tracking**: See `BACKLOG.md`
+- **Task tracking**: See [GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues)
 - **Code conventions**: See `CLAUDE.md`
 - **Team workflow**: See `PLAN_CDP.md`
 
