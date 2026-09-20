@@ -1,8 +1,8 @@
 # Ansible-SecAgent — Project Index
 
 **Project**: Ansible-SecAgent — Ansible execution via inverse-connection agents
-**Status**: MVP Complete (Phase 1-3) ✅ | GO Migration Complete (Phase 7) ✅
-**Last Updated**: 2026-03-05
+**Status**: Phases 1-3, 6-9 ✅ Complete | Phase 10 (Enrollment Token) 🆕 In Progress
+**Last Updated**: 2026-03-27
 
 ---
 
@@ -36,7 +36,6 @@ Ansible_Agent/
 │   └── CONVERSION_STATUS.md    # Conversion matrix + progress
 │
 ├── Configuration/
-│   ├── BACKLOG.md              # Table de correspondance backlog→GitHub Issues (archivé)
 │   ├── PLAN_CDP.md             # Workflow for team coordination
 │   ├── .env                    # Environment variables
 │   └── .claude/commands/       # Claude Code command definitions
@@ -110,7 +109,6 @@ go build -o secagent-server ./cmd/server
 | Document | Purpose | Location |
 |----------|---------|----------|
 | **[GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues)** | Task tracking — source de vérité (96 issues, 10 phases) | GitHub |
-| **BACKLOG.md** | Table de correspondance backlog→GitHub Issues (archivé) | Root |
 | **PLAN_CDP.md** | Team coordination workflow | Root |
 | **INDEX.md** | This file | Root |
 
@@ -153,12 +151,17 @@ go build -o secagent-server ./cmd/server
 
 ---
 
-### Phase 4-6, 8-9: Pending
+### Phase 6, 8, 9: GO Components ✅ COMPLETE
+- Phase 6: Management CLI GO ✅
+- Phase 8: Agent GO rewrite ✅
+- Phase 9: Plugins wrapper GO ✅
+
+### Phase 4, 5: Suspended ⏸
 - Phase 4: Production Kubernetes (Helm)
 - Phase 5: Documentation & Hardening
-- Phase 6: Management CLI
-- Phase 8: Agent GO rewrite
-- Phase 9: Plugins wrapper
+
+### Phase 10: Enrollment Token 🆕 IN PROGRESS
+- See [GitHub Issues — Phase 10](https://github.com/CCoupel/Ansible-SecAgent/issues?q=label%3Aphase%3A10-enrollment)
 
 ---
 

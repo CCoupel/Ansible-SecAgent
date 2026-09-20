@@ -17,7 +17,7 @@ Lire **dans cet ordre avant toute action** :
 
 ## État du projet
 
-- **Phase 0** : ✓ COMPLÈTE — Backlog créé (41 tâches, 3 phases, dépendances OK)
+- **Phase 0** : ✓ COMPLÈTE — Issues GitHub créées (10 phases, milestones configurés)
 - **Phase 1** : ⏳ En attente de lancement (secagent-minion)
 - **Phase 2** : À partir de Phase 1 validée (secagent-server)
 - **Phase 3** : À partir de Phase 2 validée (plugins Ansible)
@@ -55,7 +55,6 @@ Ansible_Agent/
 ├── README_CDP.md           ← Vous êtes ici
 ├── HLD.md                  ← Architecture haute niveau
 ├── ARCHITECTURE.md         ← Spécifications techniques
-├── BACKLOG.md              ← Table correspondance (archivé) → voir GitHub Issues
 ├── PLAN_CDP.md             ← Workflow CDP, règles absolues
 ├── agent/                  ← Phase 1 : secagent-minion daemon
 │   ├── secagent_agent.py
@@ -228,7 +227,6 @@ TaskList → voir tâches #4-#23 (Phase 1)
 | **HLD.md** | Architecture haute niveau, schémas, flux | Phase 1 |
 | **ARCHITECTURE.md** | Spécifications détaillées (v1.1) | Phase 1 |
 | **[GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues)** | 96 issues, phases, labels, milestones — source de vérité | Assignation |
-| **BACKLOG.md** | Table correspondance backlog→issues (archivé) | Référence |
 | **PLAN_CDP.md** | Workflow CDP, messages types, règles | Chaque phase |
 | **.claude/commands/start-session.md** | Démarrage automatique team (si dispo) | Initial |
 
@@ -255,8 +253,7 @@ SendMessage(type: "message", recipient: "dev-agent", content: "...")
 ## Conditions absolues de passage entre phases
 
 ### Phase 0 → 1
-- ✓ Backlog créé (41 tâches)
-- ✓ Dépendances configurées
+- ✓ Issues GitHub créées et milestones configurés
 - ✓ Confirmation utilisateur
 
 ### Phase 1 → 2

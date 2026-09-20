@@ -105,7 +105,7 @@ Lorsque la team est créée via `/start-session` :
 
 | Outil | Usage |
 |-------|-------|
-| **TaskCreate** | Créer tâches (non utilisé, backlog pré-créé) |
+| **TaskCreate** | Créer tâches internes de coordination |
 | **TaskList** | Consulter état complet des tâches + dépendances |
 | **TaskUpdate** | Assigner owner, changer status, configurer dépendances |
 | **SendMessage** | Communiquer avec teammates (type: "message") |

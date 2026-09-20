@@ -90,13 +90,14 @@ services:
       dockerfile: Dockerfile
     image: secagent-server:latest
     container_name: relay-proxy
+    user: "0:0"    # root pour qualif — volume /data owned by root
     restart: unless-stopped
     depends_on:
       nats-proxy:
         condition: service_healthy
     environment:
       NATS_URL: "nats://nats-proxy:4222"
-      DATABASE_URL: "sqlite:////data/relay-proxy.db"
+      DATABASE_URL: "/data/relay-proxy.db"
       JWT_SECRET_KEY: "${JWT_SECRET_KEY}"
       ADMIN_TOKEN: "${ADMIN_TOKEN}"
       LOG_LEVEL: "INFO"
@@ -106,10 +107,12 @@ services:
       # relay_id : identifiant de zone
       # url      : URL interne Docker (relay-proxy est sur dmz1-net ET dmz2-net)
       # token    : ADMIN_TOKEN du relay DMZ (partagé ici pour simplicité qualif)
+      # PROXY_RELAYS : liste JSON des relays downstream
+      # url pointe sur le port admin 7771 — GET /api/inventory y est authentifié par ADMIN_TOKEN
       PROXY_RELAYS: >-
         [
-          {"relay_id":"dmz1","url":"http://relay-dmz1:7770","token":"${ADMIN_TOKEN}","description":"Zone DMZ1"},
-          {"relay_id":"dmz2","url":"http://relay-dmz2:7770","token":"${ADMIN_TOKEN}","description":"Zone DMZ2"}
+          {"relay_id":"dmz1","url":"http://relay-dmz1:7771","token":"${ADMIN_TOKEN}","description":"Zone DMZ1"},
+          {"relay_id":"dmz2","url":"http://relay-dmz2:7771","token":"${ADMIN_TOKEN}","description":"Zone DMZ2"}
         ]
     volumes:
       - relay_proxy_data:/data
@@ -139,13 +142,14 @@ services:
       dockerfile: Dockerfile
     image: secagent-server:latest
     container_name: relay-dmz1
+    user: "0:0"    # root pour qualif — volume /data owned by root
     restart: unless-stopped
     depends_on:
       nats-dmz1:
         condition: service_healthy
     environment:
       NATS_URL: "nats://nats-dmz1:4222"
-      DATABASE_URL: "sqlite:////data/relay-dmz1.db"
+      DATABASE_URL: "/data/relay-dmz1.db"
       JWT_SECRET_KEY: "${JWT_SECRET_KEY}"
       ADMIN_TOKEN: "${ADMIN_TOKEN}"
       LOG_LEVEL: "INFO"
@@ -174,13 +178,14 @@ services:
       dockerfile: Dockerfile
     image: secagent-server:latest
     container_name: relay-dmz2
+    user: "0:0"    # root pour qualif — volume /data owned by root
     restart: unless-stopped
     depends_on:
       nats-dmz2:
         condition: service_healthy
     environment:
       NATS_URL: "nats://nats-dmz2:4222"
-      DATABASE_URL: "sqlite:////data/relay-dmz2.db"
+      DATABASE_URL: "/data/relay-dmz2.db"
       JWT_SECRET_KEY: "${JWT_SECRET_KEY}"
       ADMIN_TOKEN: "${ADMIN_TOKEN}"
       LOG_LEVEL: "INFO"
@@ -219,7 +224,7 @@ services:
       RELAY_AGENT_HOSTNAME: "dmz1-host-01"
       RELAY_PRIVATE_KEY: "/var/lib/secagent-minion/id_rsa"
       RELAY_JWT_PATH: "/var/lib/secagent-minion/token.jwt"
-      RELAY_ENROLLMENT_TOKEN: "${RELAY_ENROLLMENT_TOKEN}"
+      RELAY_ENROLLMENT_TOKEN: "${RELAY_ENROLLMENT_TOKEN_DMZ1}"
       RELAY_ASYNC_DIR: "/var/lib/secagent-minion/async"
       RELAY_INSECURE_TLS: "true"
       MAX_CONCURRENT_TASKS: "5"
@@ -244,7 +249,7 @@ services:
       RELAY_AGENT_HOSTNAME: "dmz2-host-01"
       RELAY_PRIVATE_KEY: "/var/lib/secagent-minion/id_rsa"
       RELAY_JWT_PATH: "/var/lib/secagent-minion/token.jwt"
-      RELAY_ENROLLMENT_TOKEN: "${RELAY_ENROLLMENT_TOKEN}"
+      RELAY_ENROLLMENT_TOKEN: "${RELAY_ENROLLMENT_TOKEN_DMZ2}"
       RELAY_ASYNC_DIR: "/var/lib/secagent-minion/async"
       RELAY_INSECURE_TLS: "true"
       MAX_CONCURRENT_TASKS: "5"
