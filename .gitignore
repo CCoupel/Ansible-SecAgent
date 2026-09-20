@@ -61,3 +61,18 @@ qualif/*.env
 
 # Claude local settings
 .claude/settings.local.json
+
+# Claude template (fetch depuis GitHub, jamais édité manuellement)
+TEMPLATE_claude/
+
+# Commandes template générées (*.md — invocables comme /xxx, non editées)
+.claude/commands/*.md
+.claude/commands/*.template.md
+.claude/commands/context/
+
+# Agents template (*.template.md — non édités manuellement)
+.claude/agents/*.template.md
+.claude/agents/context/
+
+# Dossier de travail inter-agents
+_work/

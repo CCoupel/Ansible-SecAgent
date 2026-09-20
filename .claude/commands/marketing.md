@@ -1,187 +1,286 @@
-# /marketing — Site GitHub Pages AnsibleRelay
+# Commande /marketing
 
-Génère ou met à jour le site marketing AnsibleRelay sur la branche `gh-pages`.
+Mettre a jour le site marketing Github Pages (branche `gh-pages`) apres une release.
 
-## Instructions
+## Usage
 
-### Étape 1 — Lire les sources du projet
+```
+/marketing [version]
+```
 
-Lis ces fichiers pour extraire les informations nécessaires :
-- `C:/Users/cyril/Documents/VScode/Ansible_Agent/DOC/common/ARCHITECTURE.md` — specs techniques, fonctionnalités, sécurité
-- `C:/Users/cyril/Documents/VScode/Ansible_Agent/DOC/common/HLD.md` — schémas d'architecture, flux, décisions
-- `C:/Users/cyril/Documents/VScode/Ansible_Agent/DOC/common/BACKLOG.md` — phases complètes + phases à venir
-- `C:/Users/cyril/Documents/VScode/Ansible_Agent/DOC/security/SECURITY.md` — modèle de sécurité (enrollment, rôles, tokens)
+## Argument recu
 
-### Étape 2 — Préparer la branche gh-pages
+$ARGUMENTS
 
-Exécute les commandes suivantes depuis `C:/Users/cyril/Documents/VScode/Ansible_Agent/` :
+## Mots-cles de controle
+
+**Reference :** Voir `context/COMMON.md` section 12
+
+| Mot-cle | Action |
+|---------|--------|
+| `help` | Affiche l'aide et les mots-cles disponibles |
+| `status` | Affiche l'etat du workflow en cours |
+| `plan` | Affiche le plan sans executer |
+| `skip <section>` | Saute une section du site |
+
+Si `$ARGUMENTS` commence par un mot-cle -> executer l'action correspondante.
+Sinon -> workflow normal.
+
+## Exemples
+
+```
+/marketing               # Met a jour le site avec la derniere release
+/marketing v1.3.0        # Force la version a documenter
+/marketing plan          # Affiche ce qui sera mis a jour sans modifier
+```
+
+## Role
+
+Generer ou mettre a jour le site statique publie sur la branche `gh-pages`.
+Le site est **bilingue (FR/EN)** avec un commutateur de langue.
+La version affichee est recuperee dynamiquement depuis les **tags Git** du repo.
+
+## Recuperation de la version
+
+Si aucune version n'est passee en argument, recuperer le dernier tag semantique :
 
 ```bash
-cd C:/Users/cyril/Documents/VScode/Ansible_Agent
-
-# Récupère l'URL du remote GitHub
-REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
-
-# Vérifie si la branche gh-pages existe (remote)
-git fetch origin gh-pages 2>/dev/null || true
-
-# Crée un répertoire temporaire pour le site
-SITE_DIR=$(mktemp -d)
+git tag --sort=-version:refname | head -1
 ```
 
-Si la branche `gh-pages` existe déjà en remote :
-```bash
-git worktree add "$SITE_DIR" gh-pages 2>/dev/null || git worktree add "$SITE_DIR" origin/gh-pages
-```
-
-Si elle n'existe pas :
-```bash
-git worktree add --orphan -b gh-pages "$SITE_DIR"
-```
-
-### Étape 3 — Générer les fichiers du site
-
-Dans le répertoire `$SITE_DIR`, crée les fichiers suivants :
-
-#### `index.html`
-
-Génère une page HTML5 complète avec les sections suivantes :
-
-**Structure de la page :**
-
-```
-<nav> — Logo AnsibleRelay + liens de navigation
-<section id="hero"> — Tagline + CTA
-<section id="problem"> — Le problème Ansible
-<section id="solution"> — La solution AnsibleRelay
-<section id="security"> — Sécurité by design
-<section id="features"> — Fonctionnalités implémentées (par version/phase)
-<section id="roadmap"> — Roadmap / fonctionnalités à venir
-<section id="architecture"> — Schéma d'architecture ASCII converti en visuel
-<section id="quickstart"> — Démarrage rapide
-<footer> — Liens GitHub, licence
-```
-
-**Contenu à inclure** (extrait des fichiers sources) :
-
-**Hero :**
-- Titre : "AnsibleRelay — Ansible sans SSH entrant"
-- Sous-titre : "Exécutez vos playbooks sur des hôtes derrière NAT, firewall ou DMZ. Les agents initient eux-mêmes la connexion."
-- Badge sécurité : "Zero Trust · TLS Everywhere · JWT + RSA-4096"
-
-**Section problème (extraire de ARCHITECTURE.md §1) :**
-- SSH entrant impossible derrière NAT/firewall
-- Exposition de port 22 = surface d'attaque
-- Salt Minion : alternative lourde, incompatible Ansible natif
-- Edge computing, DMZ, cloud privé : cas d'usage réels
-
-**Section solution :**
-- Modèle inverse : agent → serveur (jamais l'inverse)
-- Compatible Ansible natif (connection plugin + inventory plugin)
-- Schéma ASCII simplifié :
-  ```
-  Ansible Control Node → [HTTPS] → Relay Server ← [WSS] ← Agent
-  ```
-
-**Section sécurité (axe principal, extraire de ARCHITECTURE.md §7) :**
-- RSA-4096 : chaque agent génère sa paire de clefs au boot
-- Enrôlement contrôlé : `authorized_keys` en DB, jamais TOFU
-- JWT signé + chiffré RSAES-OAEP : token illisible sans la clef privée de l'agent
-- Blacklist JTI : révocation immédiate, connexion WS fermée (code 4001)
-- Dual-key JWT : rotation des secrets sans interruption de service (grace period configurable)
-- TLS obligatoire sur toutes les connexions (WSS + HTTPS)
-- `become_pass` masqué dans tous les logs
-
-**Section fonctionnalités implémentées** (par phase, extraire de BACKLOG.md) :
-- v0.1 — Agent Python MVP (enrollment, exec, put_file, fetch_file, become, async)
-- v0.2 — Server Python MVP (FastAPI, NATS JetStream, inventaire dynamique)
-- v0.3 — Plugins Ansible (connection plugin, inventory plugin)
-- v1.0 — Réécriture GO (server 4.65 MiB, agent, inventory binary)
-- v1.1 — CLI Management (15 commandes cobra, rotation des clefs, dual-key JWT)
-
-**Section roadmap** (phases suspendues = à venir) :
-- Production Kubernetes (Helm chart, StatefulSet NATS, Ingress TLS)
-- Documentation & Hardening (rate limiting, audit logs, RBAC)
-- Plugin FreeIPA (intégration PKI enterprise, inventory LDAP)
-
-**Quickstart :**
-```bash
-# Sur le serveur
-docker compose up -d
-
-# Autoriser un agent
-docker exec relay-api relay-server minions authorize my-host
-
-# Sur l'hôte cible
-# relay-agent s'installe via systemd et se connecte automatiquement
-
-# Lancer un playbook Ansible
-ansible-playbook -i relay_inventory.py site.yml
-```
-
-#### `style.css`
-
-Génère un CSS moderne, sobre et professionnel :
-- Palette : fond sombre (#0d1117), accent vert sécurité (#00d4aa), texte clair (#e6edf3)
-- Police : system-ui / monospace pour le code
-- Layout : sections full-width, max-width 1100px centré
-- Hero : gradient sombre avec badge sécurité en accent
-- Cards pour les fonctionnalités (grid 3 colonnes)
-- Timeline pour la roadmap
-- Code blocks avec fond #161b22
-- Responsive (mobile-first)
-- Pas de framework externe (CSS pur, zéro dépendance)
-
-#### `_config.yml`
-
-```yaml
-# GitHub Pages config
-theme: null
-plugins: []
-```
-
-### Étape 4 — Committer et pousser
+Si le repo est GitHub, on peut aussi utiliser l'API :
 
 ```bash
-cd "$SITE_DIR"
-
-# Ajoute tous les fichiers
-git add index.html style.css _config.yml
-
-# Commit avec date
-git commit -m "marketing: update GitHub Pages site $(date +%Y-%m-%d)"
-
-# Pousse vers origin gh-pages
-git push origin gh-pages
-
-# Nettoie le worktree
-cd C:/Users/cyril/Documents/VScode/Ansible_Agent
-git worktree remove "$SITE_DIR" --force
+gh api repos/CCoupel/Ansible-SecAgent/tags --jq '.[0].name'
 ```
 
-### Étape 5 — Confirmer à l'utilisateur
+La version recuperee est utilisee dans toutes les sections du site (Hero, Features, Roadmap).
 
-Affiche :
+## Prerequis
+
+**Reference** : Voir `context/GITHUB.md` sections 1 (auth), 3 (milestones), 5 (releases/tags)
+
+- [ ] Un tag Git existe sur le repo (`git tag --list`)
+- [ ] `CHANGELOG.md` a jour
+- [ ] `README.md` a jour avec le positionnement produit
+- [ ] Issues GitHub ouvertes/fermees (pour la Roadmap)
+- [ ] Milestone GitHub correspondant a la version (recommande)
+
+## Workflow
+
 ```
-Site marketing mis à jour sur gh-pages.
-
-URL GitHub Pages : https://<owner>.github.io/<repo>/
-(Accessible dans ~2 minutes après le push)
-
-Sections générées :
-- Hero + tagline sécurité
-- Problème SSH entrant
-- Solution AnsibleRelay
-- Sécurité by design (RSA-4096, JWT, blacklist, dual-key)
-- Fonctionnalités v0.1 → v1.1
-- Roadmap (K8s, FreeIPA, hardening)
-- Quickstart
+/marketing [version]
+    |
+    v
+[COLLECTE] --> Lire CHANGELOG, README, releases GitHub, issues GitHub, milestone GitHub
+    |
+    v
+[GENERATION] --> Generer ou mettre a jour les sections du site
+    |
+    v
+[TRADUCTION] --> Produire les fichiers locales/fr.json et locales/en.json
+    |
+    v
+[COMMIT gh-pages] --> Commiter et pousser sur la branche gh-pages
+    |
+    v
+[RAPPORT] --> Confirmer les sections mises a jour
 ```
 
-## Contraintes de génération
+## Collecte du milestone
 
-- **HTML pur** — zéro dépendance JS externe, zéro CDN (site statique autonome)
-- **Contenu précis** — toutes les affirmations sécurité doivent être vérifiées dans ARCHITECTURE.md avant d'être écrites
-- **Ton pragmatique** — pas de marketing creux, des faits techniques concrets
-- **Axe sécurité prioritaire** — c'est la différenciation principale vs SSH classique
-- **Versioning** — les features sont rattachées à leur phase/version réelle du BACKLOG.md
+Dans la phase COLLECTE, recuperer les donnees du milestone correspondant a la version :
+
+```bash
+# Milestone cloture correspondant a la version — matching par PREFIXE, jamais par titre exact
+# (le titre reel peut porter un nom descriptif apres un separateur non garanti — convention
+# " — " via /milestone new, mais milestones plus anciens/manuels parfois en " - " ou autre,
+# voir context/COMMON.md section 5.7)
+TITLE=$(gh api repos/{owner}/{repo}/milestones \
+  --jq '.[] | select(.title == "<version>" or ((.title | ltrimstr("<version>")) as $rest
+        | $rest != .title and ($rest == "" or ($rest[0:1] | test("[0-9.]") | not)))) | .title')
+
+# Issues fermees dans ce milestone (= ce qui a ete livre)
+gh issue list --milestone "$TITLE" --state closed \
+  --json number,title,labels \
+  --jq '.[] | [.number, .title, (.labels | map(.name) | join(", "))] | @tsv'
+
+# Issues ouvertes dans le prochain milestone (= roadmap "a venir")
+NEXT_TITLE=$(gh api repos/{owner}/{repo}/milestones \
+  --jq '[.[] | select(.state=="open")] | sort_by(.due_on) | .[0].title')
+gh issue list --milestone "$NEXT_TITLE" --state open \
+  --json number,title,labels
+```
+
+Si aucun milestone n'existe pour la version → fallback sur CHANGELOG.md et issues GitHub classiques.
+
+## Structure du site genere
+
+```
+gh-pages/
+├── index.html              # Page principale (FR par defaut)
+├── assets/
+│   ├── style.css           # Styles communs
+│   └── lang.js             # Gestion commutateur FR/EN
+└── locales/
+    ├── fr.json             # Textes FR
+    └── en.json             # Textes EN
+```
+
+## Sections obligatoires
+
+### Hero / Accroche (`id="hero"`)
+
+- Nom du projet et baseline en FR et EN
+- **Version courante recuperee dynamiquement** via `git tag --sort=-version:refname | head -1`
+- Bouton "Voir les releases" pointant vers `https://github.com/CCoupel/Ansible-SecAgent/releases`
+- Call-to-action principal (ex : "Installer", "Voir la doc")
+
+### Problematiques (`id="problems"`)
+
+Decrire les problemes concrets que le projet resout :
+- Contexte et situation actuelle (avant le projet)
+- Pain points identifies, illustres avec icones
+- Public cible concerne
+
+Source : extraire depuis `README.md` section probleme/contexte et `CLAUDE.md` si disponible.
+
+### Solutions (`id="solutions"`)
+
+Presenter les reponses apportees :
+- Correspondance probleme → solution (format avant/apres)
+- Benefices mesurables (gain de temps, fiabilite, securite...)
+- Fonctionnalites cles de la version courante (depuis `CHANGELOG.md`)
+
+### Fonctionnalites (`id="features"`)
+
+Liste des fonctionnalites principales :
+- Icone + titre + description courte pour chaque fonctionnalite
+- Badge "Nouveau" sur les fonctionnalites de la derniere version
+- Distinguer fonctionnalites stables et experimentales si applicable
+
+### Installation (`id="install"`)
+
+Couvrir les 3 scenarios :
+
+**Depuis les sources**
+```bash
+git clone https://github.com/CCoupel/Ansible-SecAgent.git
+cd Ansible-SecAgent
+<commande d'installation specifique au projet>
+<commande de demarrage>
+```
+
+**Depuis les releases binaires**
+
+| Plateforme | Fichier | Commande |
+|------------|---------|----------|
+| Windows | `.exe` | Double-cliquer sur l'installeur |
+| Linux (Debian) | `.deb` | `sudo dpkg -i {project}_X.Y.Z.deb` |
+| macOS | `.dmg` | Ouvrir et suivre l'installeur |
+
+**Configuration**
+- Variables d'environnement ou fichier de config principal
+- Ports par defaut
+- Permissions systeme si applicable
+
+### Roadmap (`id="roadmap"`)
+
+Generer automatiquement en privilegiant les milestones GitHub (source la plus precise) :
+
+**Source prioritaire — milestones** :
+- **Milestone cloture** correspondant a la version → colonne "Livre" (issues fermees du milestone)
+- **Milestone(s) ouvert(s)** → colonnes "En cours" et "A venir" selon les labels des issues
+
+**Fallback sans milestone** :
+- Issues fermees recentes → colonne "Livre"
+- Issues ouvertes avec label `roadmap` ou `enhancement` → colonne "A venir"
+- Issues ouvertes avec label `in progress` → colonne "En cours"
+
+Format :
+```
+[ Livre ✓ ]                    [ En cours ⚙ ]           [ A venir ○ ]
+- #42 Auth OAuth2 (v1.2.0)    - #51 Export PDF (#v1.3)  - #60 API v2 (#v2.0)
+- #38 Fix crash iOS (v1.2.0)  - #47 Perf dashboard      - #61 Mode offline
+```
+
+Si aucune issue ni milestone disponible : afficher les elements du `CHANGELOG.md` comme historique.
+
+## Commutateur de langue
+
+Integrer dans le `<header>` un toggle visible sur toutes les sections :
+
+```html
+<div class="lang-switcher">
+  <button class="lang-btn active" data-lang="fr">FR</button>
+  <span>|</span>
+  <button class="lang-btn" data-lang="en">EN</button>
+</div>
+```
+
+Tous les textes du site portent l'attribut `data-i18n="cle"`.
+Le fichier `lang.js` charge `locales/fr.json` ou `locales/en.json` et remplace
+dynamiquement les valeurs au changement de langue. La preference est sauvegardee
+en `localStorage`.
+
+## Mise a jour du site existant
+
+Si le site existe deja sur `gh-pages` :
+1. Mettre a jour la version dans le Hero
+2. Ajouter les nouvelles fonctionnalites dans la section Features (badge "Nouveau")
+3. Mettre a jour la section Solutions avec les apports de la version
+4. Regenerer la Roadmap depuis les issues courantes
+5. Verifier que les commandes d'installation sont toujours valides
+
+## Rapport final
+
+```
+Site marketing mis a jour — vX.Y.Z
+
+Sections mises a jour :
+- [x] Hero (version dynamique : vX.Y.Z)
+- [x] Problematiques
+- [x] Solutions (N nouvelles fonctionnalites)
+- [x] Fonctionnalites (N badges "Nouveau")
+- [x] Installation
+- [x] Roadmap (N issues ouvertes, N livrees)
+
+Traductions :
+- [x] locales/fr.json
+- [x] locales/en.json
+
+Commit pousse sur gh-pages.
+URL : https://CCoupel.github.io/Ansible-SecAgent/
+
+Voulez-vous :
+a) Valider — le site est en ligne
+b) Modifier une section specifique
+c) Regenerer la roadmap uniquement
+```
+
+## Agent
+
+Agent ponctuel — non spawné au `/start-session`, spawné à la demande. Orchestré par le CDP
+en deux dispatches distincts (`PREPARE` puis `PUBLISH`), en parallèle du déploiement PROD —
+voir `agents/cdp.template.md` Phase 6 et `agents/marketing-release.template.md` pour le détail du protocole :
+
+```
+Task({
+  name: "marketing-release",
+  prompt: "Lis .claude/agents/context/TEAMMATES_PROTOCOL.md puis .claude/agents/marketing-release.template.md (et .claude/agents/marketing-release.md s'il existe — adaptations projet). Tu fais partie de ansible-secagent-team sur Ansible-SecAgent. Mets-toi en IDLE après avoir envoyé ACTIF — le teamleader t'enverra ta tâche."
+})
+```
+
+Attendre ACTIF, puis envoyer la tâche de préparation :
+`SendMessage({to: "marketing-release", content: "PREPARE vX.Y.Z"})`
+
+À réception de `MARKETING RIEN A PUBLIER` → `TaskStop("marketing-release")`, terminé.
+
+À réception de `MARKETING PRET` → relayer le rapport à l'utilisateur (GATE 4d). Une fois la
+maquette validée **et** le déploiement PROD confirmé réussi, envoyer la publication :
+`SendMessage({to: "marketing-release", content: "PUBLISH"})`
+
+À réception du `MARKETING TERMINE`, fermer l'agent :
+`TaskStop("marketing-release")`
+
+Spec : `.claude/agents/marketing-release.template.md` (+ `.claude/agents/marketing-release.md` si présent)
