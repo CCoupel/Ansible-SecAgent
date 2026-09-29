@@ -75,6 +75,9 @@ La version recuperee est utilisee dans toutes les sections du site (Hero, Featur
 [COLLECTE] --> Lire CHANGELOG, README, releases GitHub, issues GitHub, milestone GitHub
     |
     v
+[DETECTION] --> Site existant (gh-pages / MARKETING/) ? Sinon : INITIALISATION (questions de cadrage
+    |           a l'utilisateur + maquette avant toute generation — voir agents/marketing-release.md)
+    v
 [GENERATION] --> Generer ou mettre a jour les sections du site
     |
     v
@@ -118,6 +121,7 @@ Si aucun milestone n'existe pour la version → fallback sur CHANGELOG.md et iss
 
 ```
 gh-pages/
+├── CADRAGE.md              # Cadrage valide a l'initialisation (public, valeur, identite, sections, liens)
 ├── index.html              # Page principale (FR par defaut)
 ├── assets/
 │   ├── style.css           # Styles communs
@@ -225,7 +229,8 @@ en `localStorage`.
 
 ## Mise a jour du site existant
 
-Si le site existe deja sur `gh-pages` :
+Si le site existe deja sur `gh-pages` (lire d'abord `CADRAGE.md` : identite, public et sections deja
+arbitres — ne pas les re-questionner) :
 1. Mettre a jour la version dans le Hero
 2. Ajouter les nouvelles fonctionnalites dans la section Features (badge "Nouveau")
 3. Mettre a jour la section Solutions avec les apports de la version

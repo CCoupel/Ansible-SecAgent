@@ -161,4 +161,4 @@ _(Si aucune issue ouverte : "Aucune issue ouverte.")_
 - Le nom de la TEAM est **toujours** `ansible-secagent-team` (defini dans CLAUDE.md)
 - Tous les teammates sont spawned au démarrage et passent en IDLE
 - Pendant la session : **uniquement SendMessage** — aucun nouveau spawn
-- Les teammates attendent un ordre explicite de `main` via SendMessage
+- Les teammates attendent un ordre explicite du teamleader via SendMessage
