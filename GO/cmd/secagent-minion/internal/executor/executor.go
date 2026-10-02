@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"log"
 	"os/exec"
 	"time"
@@ -106,6 +107,16 @@ func (e *Executor) Run(ctx context.Context, req ExecRequest) ExecResult {
 	// Note : la commande provient du relay server authentifié (JWT + WSS).
 	// Migration vers exec.CommandContext direct recommandée en v2 (CRITIQUE #3 roadmap).
 	cmd := exec.CommandContext(runCtx, "/bin/sh", "-c", req.Cmd)
+	// Placer le subprocess dans son propre groupe de processus (Unix) afin de pouvoir
+	// tuer l'arbre entier (grandchildren, e.g. `sh -c 'sleep 60; echo x'`) lors du
+	// timeout ou de l'annulation de contexte. Noop sur Windows.
+	setupCmdSysProcAttr(cmd)
+	// Remplacer le comportement par défaut (Kill /bin/sh uniquement) par un SIGTERM
+	// sur le groupe de processus suivi d'un SIGKILL différé. Noop sur Windows.
+	setCmdCancel(cmd)
+	// WaitDelay : dernier filet de sécurité — après annulation, si les goroutines I/O
+	// n'ont pas terminé dans ce délai, Go envoie SIGKILL au processus.
+	cmd.WaitDelay = 5 * time.Second
 
 	if stdinBytes != nil {
 		cmd.Stdin = newBytesReader(stdinBytes)
@@ -192,7 +203,10 @@ func newBytesReader(data []byte) *bytesReader {
 
 func (r *bytesReader) Read(p []byte) (int, error) {
 	if r.pos >= len(r.data) {
-		return 0, fmt.Errorf("EOF")
+		// Retourner io.EOF (sentinel standard de fin de stream), jamais fmt.Errorf("EOF").
+		// io.Copy interprète toute erreur autre que io.EOF comme une erreur fatale et la
+		// propage dans cmd.Wait(), ce qui renverrait un rc erroné même si la commande a réussi.
+		return 0, io.EOF
 	}
 	n := copy(p, r.data[r.pos:])
 	r.pos += n

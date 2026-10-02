@@ -1,8 +1,12 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"io"
+	"log"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -184,6 +188,56 @@ func TestRunContextCancelled(t *testing.T) {
 }
 
 // ========================================================================
+// Run — timeout avec commande composée (grandchild pipe regression #100)
+// ========================================================================
+
+// TestRunTimeoutCompoundCmd vérifie que le timeout tue correctement les processus
+// imbriqués (grandchildren). `sh -c 'sleep 60; echo x'` ne peut PAS être optimisé
+// par exec (deux commandes), donc /bin/sh reste vivant et sleep 60 est son fils.
+// Sans Setpgid+Kill(-pgid), cmd.Wait() bloquerait 60 s.
+func TestRunTimeoutCompoundCmd(t *testing.T) {
+	skipIfWindows(t)
+	e := New()
+	start := time.Now()
+	res := e.Run(context.Background(), ExecRequest{
+		TaskID:  "task-timeout-compound",
+		Cmd:     "sh -c 'sleep 60; echo x'",
+		Timeout: 1,
+	})
+	elapsed := time.Since(start)
+	if res.RC != -15 {
+		t.Errorf("rc: got %d, want -15 (timeout with compound cmd)", res.RC)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("compound timeout took too long: %s (want <5s) — grandchild likely not killed", elapsed)
+	}
+}
+
+// TestRunContextCancelledCompoundCmd : même vérification sur annulation de contexte.
+func TestRunContextCancelledCompoundCmd(t *testing.T) {
+	skipIfWindows(t)
+	e := New()
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	res := e.Run(ctx, ExecRequest{
+		TaskID:  "task-cancel-compound",
+		Cmd:     "sh -c 'sleep 60; echo x'",
+		Timeout: 30,
+	})
+	elapsed := time.Since(start)
+	if res.RC != -15 {
+		t.Errorf("rc: got %d, want -15 on context cancel + compound cmd", res.RC)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("compound context cancel took too long: %s (want <3s)", elapsed)
+	}
+}
+
+// ========================================================================
 // Run — stdin (become masking)
 // ========================================================================
 
@@ -235,6 +289,34 @@ func TestRunInvalidBase64Stdin(t *testing.T) {
 	// Command should still run (stdin just not provided)
 	if res.RC != 0 {
 		t.Errorf("rc: got %d, want 0", res.RC)
+	}
+}
+
+// TestRunBecomePassNotInLogs vérifie que become_pass (stdin avec Become=true)
+// n'apparaît jamais dans les logs. RÈGLE CRITIQUE sécurité (CLAUDE.md, ARCHITECTURE.md).
+func TestRunBecomePassNotInLogs(t *testing.T) {
+	skipIfWindows(t)
+	// Capture les logs produits par l'executor pendant ce test.
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr)
+
+	secretPass := "MyS3cr3tP@ssw0rd_DO_NOT_LOG"
+	e := New()
+	res := e.Run(context.Background(), ExecRequest{
+		TaskID:   "task-become-masked",
+		Cmd:      "echo become-ok",
+		StdinB64: base64.StdEncoding.EncodeToString([]byte(secretPass)),
+		Become:   true,
+		Timeout:  5,
+	})
+	if res.RC != 0 {
+		t.Errorf("rc: got %d, want 0", res.RC)
+	}
+	// CRITICAL : le mot de passe ne doit jamais apparaître dans les logs.
+	logOutput := logBuf.String()
+	if strings.Contains(logOutput, secretPass) {
+		t.Errorf("SECURITY VIOLATION: become_pass found in log output: %q", logOutput)
 	}
 }
 
@@ -342,6 +424,12 @@ func TestBytesReaderEOF(t *testing.T) {
 	}
 	if err == nil {
 		t.Error("expected EOF error")
+	}
+	// Régression #100 : bytesReader doit retourner io.EOF (sentinel standard),
+	// pas fmt.Errorf("EOF"). io.Copy traite toute autre erreur comme une vraie erreur,
+	// ce qui propage un rc=1 même si la commande a réussi.
+	if err != io.EOF {
+		t.Errorf("expected io.EOF, got %v (type %T)", err, err)
 	}
 }
 
