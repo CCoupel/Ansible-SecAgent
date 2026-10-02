@@ -36,19 +36,39 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **PushManager HTTP 401** (`e9672dc`) — AdminCreateRelay was SHA-256 hashing tokens before storing for push-mode relays, while PushManager sent token_hash directly as Bearer token. Now stores plain token, fixing 401 errors on relay polls.
-- **Relay admin port in PROXY_RELAYS** (`be17cee`) — docker-compose.proxy.yml now points to admin port 7771 (not 7770) so GET `/api/inventory` is reachable from proxy.
+- **Relay SQLite path and proxy bootstrap** (`be17cee`) — Fixed `DATABASE_URL` handling in docker-compose.proxy.yml by using direct paths (`/data/relay.db`) instead of `sqlite:////path` prefix, and corrected relay node registration procedure.
 
 ### Known Limitations
 
-The following are **known issues deferred to v3.0**:
+The following are **known issues deferred to v3.0** or **operational constraints**:
 
-1. **Non-empty stdin + become/become_pass returns rc=1** (executor.go, issue #100) — When a task with `become` or `become_pass` receives non-empty stdin, bytesReader returns `fmt.Errorf("EOF")` instead of `io.EOF`, causing executor to fail. Workaround: use `no_log: true` or avoid stdin in become tasks. Fixed in v3.0 (improvements to become subprocess handling).
+1. **Non-empty stdin + become/become_pass returns rc=1** (executor.go, issue #100, L1) — When a task with `become` or `become_pass` receives non-empty stdin, `bytesReader` returns `fmt.Errorf("EOF")` instead of `io.EOF`, causing executor to fail with rc=1. Workaround: avoid stdin in become tasks. Fixed in v3.0 (improvements to become subprocess handling).
+   - **Qualification result**: Confirmed in E2E-4 test (cat with stdin non-empty → rc=1).
 
-2. **Child process timeout only kills /bin/sh** (executor.go) — Context timeout kills only the shell process, not descendant processes spawned by the playbook. Grandchild processes may continue running. Fixed in v3.0 (proper process group cleanup).
+2. **Child process timeout only kills /bin/sh** (executor.go, L2) — Context timeout kills only the shell process, not descendant processes spawned by the playbook. Grandchild processes may continue running. Fixed in v3.0 (proper process group cleanup).
 
-3. **Incorrect SQLite path with sqlite:// prefix** (store.go:165) — When DATABASE_URL uses `sqlite:////path`, the extra slash is mishandled. Workaround: use direct paths (`/var/lib/secagent/store.db`) or `file:///path` URIs. Corrected in v3.0 (URI parsing improvements).
+3. **SQLite path handling requires direct paths or `file:///` URIs** (store.go:165, A1) — The code does not parse `sqlite:////path` correctly (treated as relative path). **Workaround (not a code fix)**: In docker-compose or configuration, use absolute paths directly (`/data/relay.db`) or `file:///absolute/path` URIs instead of `sqlite:////path`. This is a configuration constraint, not a bug in the released code. Code fix deferred to v3.0.
+   - **Qualification**: Confirmed workaround applies in be17cee docker-compose.proxy.yml (use direct paths).
 
-4. **Enrollment token hostname pattern is anchored regex, not glob** — The hostname pattern in enrollment tokens is validated as an **anchored regex** (not a shell glob), which may surprise users expecting glob matching. Document your patterns as regex (e.g., `^prod-.*\.example\.com$`). Changed to glob matching in v3.0 for better UX.
+4. **Enrollment token bootstrap is manual** (A2) — Enrollment tokens must be created manually **after** each relay's database is initialized, before agents can enroll. This is a one-time operational procedure per deployment:
+   ```bash
+   docker exec relay-dmz1 /app/secagent-server tokens create \
+     --role enrollment --hostname-pattern '.*' --reusable --expires 24h
+   ```
+   Auto-seeding from environment variables planned for v3.0.
+   - **Reference**: See deployment procedure in qualification report (§9).
+
+5. **PROXY_RELAYS does not auto-seed relay_nodes** (A4) — The `PROXY_RELAYS` environment variable is parsed at startup but does not automatically create entries in the `relay_nodes` table. Relay nodes must be registered manually via CLI **after** deployment with fresh volumes:
+   ```bash
+   docker exec relay-proxy /app/secagent-server relays add \
+     --id dmz1 --mode push --url http://relay-dmz1:7770 \
+     --token <plugin_token> --description "Zone DMZ1"
+   ```
+   **Critical note**: Relay nodes **must use port 7770** (API endpoint for exec/inventory operations), not port 7771 (admin port). Port 7771 supports `GET /api/inventory` with ADMIN_TOKEN but not `POST /api/exec/` with plugin tokens.
+   - **Qualification**: Confirmed in be17cee qualif (manual relay node registration required, port 7770 used for PushManager).
+   - Auto-seeding planned for v3.0 (issue to create).
+
+6. **Enrollment token hostname pattern is anchored regex, not glob** — The hostname pattern in enrollment tokens is validated as an **anchored regex** (not a shell glob). Example: `.*` matches all hostnames, `^prod-.*\.example\.com$` matches pattern. Changed to glob matching in v3.0 for better UX.
 
 **Deprecation Notice**: v3.0 (issue #123) replaces `PushManager` and `PROXY_RELAYS` with a new WebSocket relay chain architecture with improved event propagation. Users on v2.0.0 with push-mode relays should plan migration to v3.0 architecture.
 
