@@ -15,6 +15,11 @@ d'inventaire externe Ansible (`--list` / `--host`).
 Il interroge `GET /api/inventory` sur le secagent-server et formate la réponse
 en JSON Ansible standard.
 
+**Construction de l'inventaire** : Le serveur construit l'inventaire complet à partir de :
+- **Synchronisation initiale** : Chaque relay enfant envoie `topology_snapshot` avec son sous-arbre complet (relays descendants + hôtes)
+- **Mises à jour** : Événements `event_forward` (host.up/down/new, relay.up/relay.down) propagés depuis les relays
+- **Résultat** : Groupes Ansible = noms exacts des relays (ex: `dmz1`), hôtes = toute la descendance avec `secagent_relay_chain` pour le routage
+
 ---
 
 ## 2. Usage

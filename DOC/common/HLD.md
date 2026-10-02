@@ -573,20 +573,65 @@ graph TB
 - **Enfant ouvre vers parent** : variables REPEATER_UPSTREAM_URL + TOKEN, `relay_nodes.mode=pull`
 - **Parent ouvre vers enfant** : API admin POST /api/admin/relays, `relay_nodes.mode=push`
 
-### Flux event_forward (arbre)
+### Handshake et synchronisation initiale (topology_snapshot)
 
-Host-X (connecté au relay-zone-a) génère `event.host.up` :
+**Règle unifiée** : Celui qui ouvre la connexion WebSocket présente un JWT (sub = son REPEATER_ID) et envoie `relay_hello` avec relay_id = son identifiant. Celui qui accepte valide et répond avec son propre `relay_ack` contenant SON relay_id. C'est TOUJOURS l'enfant (logiquement le relay le plus profond) qui envoie `topology_snapshot` après acquittement.
+
+**Mode pull (enfant ouvre vers parent)** :
+```mermaid
+sequenceDiagram
+    participant Child as Enfant (dmz1)
+    participant Parent as Parent (central)
+    
+    Child->>Parent: WSS /ws/relay + JWT(sub="dmz1")
+    Child->>Parent: relay_hello(relay_id="dmz1", ancestors=["central"])
+    Parent->>Child: relay_ack(relay_id="central")
+    Child->>Parent: topology_snapshot(descendants)
+    Parent->>Child: acquittement
+    Note over Child,Parent: Connexion établie
+```
+
+**Mode push (parent ouvre vers enfant)** :
+```mermaid
+sequenceDiagram
+    participant Parent as Parent (central)
+    participant Child as Enfant (dmz1)
+    
+    Parent->>Child: WSS /ws/relay + JWT(sub="central")
+    Parent->>Child: relay_hello(relay_id="central", ancestors=[])
+    Child->>Parent: relay_ack(relay_id="dmz1")
+    Child->>Parent: topology_snapshot(descendants)
+    Parent->>Child: acquittement
+    Note over Parent,Child: Connexion établie
+```
+
+Après établissement, chaque changement (host.up/down/new, relay.up/relay.down/relay.updated) remonte via `event_forward`.
+
+### Flux event_forward — Changements du sous-arbre
+
+Host-X (connecté au relay-zone-a) se reconnecte → génère `event.host.up` :
 - **Zone-a** reçoit → ajoute `relay_id="zone-a"` à `relay_chain=["zone-a"]` → envoie vers parent (DMZ1)
 - **DMZ1** reçoit `["zone-a"]` → ajoute `relay_id="dmz1"` → `relay_chain=["zone-a","dmz1"]` → envoie vers parent (Central)
 - **Central** reçoit `["zone-a","dmz1"]` → déclenche les hooks
-- **Pas de doublon** : topologie arbre = UN SEUL chemin par hôte → UN SEUL event (pas de déduplication)
+- **Pas de doublon** : topologie arbre = UN SEUL chemin par hôte → UN SEUL event
+
+Même logique pour `relay.up/relay.down` quand un relay enfant rejoint ou quitte la topologie.
 
 ### Sécurité — Rejet de cycle
 
-Si la configuration crée une erreur (A parent de B, B parent de A) :
-- B tente de se connecter à A avec `relay_chain=["B"]` (son propre ID)
-- A reçoit, détecte `"A"` ∈ chaîne → **refuse la connexion** (protection cycle)
-- Pas besoin de seen-set ou event_id dedup (pas de chemins multiples)
+**Règle** : un lien « C devient enfant de P » est refusé si et seulement si C ∈ {P} ∪ ancêtres(P).
+- **Mode pull** (C ouvre vers P, P accepte) : P teste `relay_hello.relay_id` (= C) contre {P} ∪ SES_PROPRES ancêtres (appris à son handshake amont ; vide pour la racine). `relay_hello.ancestors` n'est pas utilisé pour ce test.
+- **Mode push** (P ouvre vers C, C accepte) : C teste son propre id contre {`relay_hello.relay_id` (= P)} ∪ `relay_hello.ancestors` (= ancêtres de P).
+- **Refus** : close 4010.
+
+**Topologie de référence** : central > dmz1 > zone-a (ancestors(dmz1)=[central], ancestors(zone-a)=[dmz1, central]).
+
+1. **Valide, pull** : zone-a ouvre vers dmz1. dmz1 teste zone-a ∈ {dmz1, central} ? non → accepté ✓
+2. **Valide, push** : dmz1 ouvre vers zone-a (hello relay_id=dmz1, ancestors=[central]). zone-a teste zone-a ∈ {dmz1, central} ? non → accepté ✓
+3. **Refusé, pull** : dmz1 est configuré avec zone-a comme parent et ouvre vers zone-a. zone-a teste dmz1 ∈ {zone-a, dmz1, central} ? oui → refusé (boucle) ✗
+4. **Refusé, push** : zone-a ouvre vers dmz1 (hello relay_id=zone-a, ancestors=[dmz1, central]). dmz1 teste dmz1 ∈ {zone-a, dmz1, central} ? oui → refusé (boucle) ✗
+
+Topologie arbre = pas de chemins multiples, donc pas besoin de seen-set ou event_id dedup.
 
 ---
 

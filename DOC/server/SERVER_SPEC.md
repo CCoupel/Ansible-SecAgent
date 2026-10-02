@@ -302,6 +302,9 @@ secagent-server server stats
 | `RELAY_GROUP_VARS` | — | Variables Ansible JSON injectées pour ce relay (ex: `{"env":"prod"}`) |
 | `SERVER_ADDR` | — | Adresse d'écoute (défaut `:7770`) |
 | `TLS_CERT` / `TLS_KEY` | — | Certificats TLS directs (sinon Caddy) |
+| `MAX_SNAPSHOT_RELAYS` | — | Limite nombre relays dans topology_snapshot (défaut 1000) |
+| `MAX_SNAPSHOT_HOSTS` | — | Limite nombre hôtes dans topology_snapshot (défaut 10000) |
+| `MAX_WS_MESSAGE_SIZE_RELAY` | — | Taille maximale message WebSocket relay (défaut 10MB) |
 
 ---
 
@@ -336,7 +339,7 @@ secagent-server
 ```bash
 REPEATER_ID="dmz1"
 REPEATER_UPSTREAM_URL="wss://central:7772"
-REPEATER_UPSTREAM_TOKEN="secagent_relay_dmz1_xxx"
+REPEATER_UPSTREAM_TOKEN="${REPEATER_UPSTREAM_TOKEN_DMZ1}"
 RELAY_GROUP_VARS='{"region":"dmz"}'
 ```
 
@@ -348,47 +351,125 @@ RELAY_GROUP_VARS='{"region":"dmz"}'
 
 ```
 WSS /ws/relay
-Authorization: Bearer <JWT rôle="???" à confirmer, sub=REPEATER_ID>
+Authorization: Bearer <JWT rôle="relay-child ou relay-parent selon le sens d'ouverture", sub=REPEATER_ID>
 Port : 7772 (relay handler)
 ```
 
-#### Handshake et agent_list
+#### Handshake — Séquence d'établissement (symétrique pour pull et push)
 
-**Enfant → Parent :**
+Le client WebSocket (celui qui ouvre) et le serveur (celui qui accepte) établissent la connexion via un handshake bloquant.
+
+**Étape 1 — relay_hello (client → serveur)** :
+
+Le client envoie son identité avec JWT(sub = son REPEATER_ID) :
+
 ```json
-{"type":"relay_hello", "node_type":"relay", "relay_id":"dmz1", "version":"3.0"}
-
-{"type":"agent_list", "agents":[
-  {"hostname":"host-A", "status":"connected", "last_seen":"..."},
-  {"hostname":"host-B", "status":"connected", "last_seen":"..."}
-]}
+{"type":"relay_hello", "relay_id":"<client_id>", "ancestors":[...], "version":"3.0"}
 ```
 
-**Parent répond :**
+Serveur (récepteur) valide : relay_id == jwt.sub, et applique la détection de boucle (voir ARCHITECTURE.md §23.2) → sinon close(4010)
+
+**Étape 2 — relay_ack (serveur → client)** :
+
+Le serveur répond avec SON identité :
+
 ```json
-{"type":"relay_ack", "relay_id":"dmz1", "status":"ok", "timestamp":"..."}
+{"type":"relay_ack", "relay_id":"<server_id>", "status":"ok", "timestamp":"..."}
 ```
 
-**Note :** `agent_list` contient **uniquement les agents directs du relay** (pas les agents des relays enfants). Chaque relay reporte son propre sous-domaine.
+**Validation côté client (l'ouvreur)** :
+- ✅ Vérifier que `relay_ack.relay_id` correspond à l'identité attendue du serveur :
+  - Mode pull : vérifier contre le parent configuré (REPEATER_UPSTREAM_URL) ou journaliser si première connexion
+  - Mode push : vérifier contre `relay_nodes.relay_id` pour ce relay enfant
+- ❌ Fermer (close 4010) si l'identité ne correspond pas
 
-#### event_forward — Propagation upstream
+**Étape 3 — topology_snapshot (depuis l'enfant)** :
 
+C'est toujours l'enfant (le relay logiquement plus profond) qui envoie son sous-arbre complet :
+
+```json
+{
+  "type":"topology_snapshot",
+  "relays":[{"relay_id":"zone-a", "relay_chain":["dmz1","zone-a"]}],
+  "agents":[
+    {"hostname":"host-A", "relay_id":"dmz1", "relay_chain":["dmz1"]},
+    {"hostname":"host-B", "relay_id":"zone-a", "relay_chain":["dmz1","zone-a"]}
+  ]
+}
+```
+
+Validation du snapshot :
+- Pas de cycle (aucun relay_chain ne contient le REPEATER_ID du serveur)
+- Pas de doublons hostname
+- Nombre de relays ≤ `MAX_SNAPSHOT_RELAYS` (défaut 1000)
+- Nombre d'hôtes ≤ `MAX_SNAPSHOT_HOSTS` (défaut 10000)
+- Taille du message ≤ `MAX_WS_MESSAGE_SIZE_RELAY` (défaut 10MB)
+- Rejeter (close 4010 + log) si validation échoue
+
+**→ Après snapshot validé, la connexion est établie** (relay_nodes, relay_routing, inventaire initialisés)
+
+**Ensuite — agent_list (périodique, heartbeat)** :
+```json
+{"type":"agent_list", "agents":[{"hostname":"host-A", "status":"connected", "last_seen":"..."}]}
+```
+Contient **uniquement les agents directs** du relay.
+
+#### event_forward — Propagation des changements du sous-arbre
+
+Après handshake établi, tous les changements (hôtes, relays) sont notifiés via `event_forward` unifié.
+
+**Événements hôtes** :
 ```json
 {
   "type":"event_forward",
   "event":"host.up|host.down|host.new",
   "hostname":"host-A",
-  "status":"connected",
+  "relay_id":"dmz1",
+  "status":"connected|disconnected",
   "relay_chain":["dmz1"],
   "timestamp":"..."
 }
 ```
 
+**Événements relays** (changements de topologie) :
+```json
+{
+  "type":"event_forward",
+  "event":"relay.up|relay.down|relay.updated",
+  "relay_id":"zone-a",
+  "relay_chain":["dmz1","zone-a"],
+  "group_vars":{"region":"zone2"},
+  "timestamp":"..."
+}
+```
+
+**Design** : `event_forward` unifie tous les événements ascendants (hôtes et relays) avec des types distincts (`host.{up,down,new}`, `relay.{up,down,updated}`).
+
 **Logique (topologie arbre, un seul chemin)** :
-1. Ajouter son `REPEATER_ID` à `relay_chain` avant transmettre au parent
-2. Parent reçoit, ajoute son ID, continue jusqu'à la racine
-3. **Anti-boucle** : le relay refuse de transmettre si `REPEATER_ID ∈ relay_chain` (cycle de config)
-4. **Pas de déduplication** : un seul chemin par hôte → un seul event (pas de doublons)
+1. Événement local → relay ajoute son REPEATER_ID à relay_chain
+2. Transmet au parent, parent ajoute son ID, continue vers la racine
+3. **Anti-boucle** : refuse de transmettre si REPEATER_ID ∈ relay_chain
+4. **Pas de déduplication** : un seul chemin → un seul event
+5. **Rate limit par relay** : à dimensionner à l'implémentation selon la charge attendue (pour éviter une inondation d'events par un relay compromis)
+
+**Validation du relay_chain à la réception** : Voir ARCHITECTURE.md §23.2 (HAUT-1) pour la règle unifiée :
+- Mode pull : relay_chain[-1] == jwt.sub (JWT relay-child du WS client)
+- Mode push : relay_chain[-1] == relay_ack.relay_id du pair serveur
+
+**Événement host.conflict** (détection de détournement de route) :
+Quand un relay déclare un hôte dans `topology_snapshot` ou `agent_list` alors qu'il est déjà routé vers un autre relay :
+```json
+{
+  "type":"event_forward",
+  "event":"host.conflict",
+  "hostname":"host-A",
+  "old_relay":"relay-B",
+  "new_relay":"relay-A",
+  "relay_chain":["relay-A"],
+  "timestamp":"..."
+}
+```
+**Comportement** : le dernier arrivé gagne (reroute vers le nouveau relay). ⚠️ **Production** : Configurer un hook d'alerte sur `host.conflict` pour détcter les mouvements de route suspects.
 
 #### task_forward et dispatch vers enfant
 
@@ -424,7 +505,7 @@ POST /api/admin/relays
 {
   "relay_id": "dmz1",
   "url": "wss://dmz1.internal:7772",
-  "token": "secagent_relay_central_to_dmz1_xxx",
+  "token": "${REPEATER_UPSTREAM_TOKEN_DMZ1}",
   "mode": "push"
 }
 → 201
@@ -445,26 +526,48 @@ secagent-server relays add <relay_id> --url <url> --token <token> --mode <push|p
 
 ### 9.4 Authentification repeater-to-parent
 
-**Deux rôles JWT distincts** (à proposer dans SECURITY.md §2) :
+**Deux rôles JWT distincts** :
 
-**Rôle A (Enfant → Parent, dial=up)** :
+**Rôle `relay-child`** (présenté par l'enfant au handshake) :
 - Permissions : ouvrir `/ws/relay`, envoyer `relay_hello`, `agent_list`, `event_forward`
 - Restrictions : pas d'accès `/api/inventory`, `/api/exec`, `/ws/agent`, `/api/admin`
-- Noms proposés : `relay-child` ou `relay-upstream-client` — **à confirmer**
+- JWT créé sur : le relay parent (l'entité qui accueille l'enfant)
+- JWT signé par : JWT_SECRET_KEY du relay parent (vérification par le parent récepteur)
 
-**Rôle B (Parent → Enfant, dial=down)** :
-- Permissions : ouvrir `/ws/relay` (en tant que serveur)
-- Noms proposés : `relay-parent` ou `relay-downstream-server` — **à confirmer**
+**Rôle `relay-parent`** (présenté par le parent au handshake en mode push) :
+- Permissions : ouvrir `/ws/relay` (en tant que WS client vers l'enfant)
+- Restrictions : pas d'accès `/api/inventory`, `/api/exec`, `/ws/agent`, `/api/admin`
+- JWT créé sur : le relay enfant (l'entité qui accepte l'ouverture)
+- JWT signé par : JWT_SECRET_KEY du relay enfant (vérification par l'enfant récepteur)
 
-Les tokens relay sont créés via `POST /api/admin/tokens` :
+**Modèle de signature (HAUT-6)** : Chaque relay crée et signe ses tokens avec sa JWT_SECRET_KEY :
+- relay-child (créé par le parent) : parent signe, enfant ne peut pas valider (isolation clef)
+- relay-parent (créé par l'enfant) : enfant signe, parent ne peut pas valider (isolation clef)
+- Jamais de signature centralisée par la racine (évolution envisagée pour v3.1+)
+
+Les tokens relay sont créés via CLI avec le rôle approprié :
+
+**Relay-child** (créé sur le parent, présenté par l'enfant qui ouvre vers le parent) :
 ```bash
-secagent-server tokens create --role <role-A-ou-B> \
+# Sur central (parent) :
+secagent-server tokens create --role relay-child \
   --sub dmz1 \
-  --expires 90d \
-  --description "relay dmz1"
+  --expires 90d
 ```
 
-**Sécurité :** Tokens jamais loggés en clair ; chaque relay enfant a un token distinct.
+**Relay-parent** (créé sur l'enfant, présenté par le parent qui ouvre vers l'enfant) :
+```bash
+# Sur dmz1 (enfant) :
+secagent-server tokens create --role relay-parent \
+  --sub central \
+  --expires 90d
+```
+
+**Sécurité :** 
+- Tokens jamais loggés en clair
+- JWT_SECRET_KEY unique par relay (jamais partagé)
+- RELAY_PLUGIN_TOKEN unique par relay (jamais partagé)
+- Chaque relay valide les tokens reçus avec sa propre clé
 
 ---
 
@@ -523,14 +626,15 @@ GET /api/inventory  (sur relay central)
 
 ```sql
 CREATE TABLE IF NOT EXISTS relay_nodes (
-    id          TEXT PRIMARY KEY,
-    relay_id    TEXT NOT NULL UNIQUE,
-    description TEXT,
-    token_hash  TEXT,
-    mode        TEXT NOT NULL DEFAULT 'pull',  -- "pull" (entrante) | "push" (sortante vers enfant)
-    created_at  INTEGER NOT NULL,
-    last_seen   INTEGER,
-    status      TEXT NOT NULL DEFAULT 'pending'  -- "connected"|"disconnected"|"pending"
+    id              TEXT PRIMARY KEY,
+    relay_id        TEXT NOT NULL UNIQUE,
+    description     TEXT,
+    token_hash      TEXT,                   -- hash JWT JTI du token relay (validation blacklist, revocation 4010)
+    token_encrypted TEXT,                   -- token relay mode=push chiffré AES-256-GCM (HAUT-5)
+    mode            TEXT NOT NULL DEFAULT 'pull',  -- "pull" (entrante) | "push" (sortante vers enfant)
+    created_at      INTEGER NOT NULL,
+    last_seen       INTEGER,
+    status          TEXT NOT NULL DEFAULT 'pending'  -- "connected"|"disconnected"|"pending"
 );
 
 CREATE TABLE IF NOT EXISTS relay_routing (
@@ -559,27 +663,36 @@ services:
     environment:
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       ADMIN_TOKEN: ${ADMIN_TOKEN}
+      RSA_MASTER_KEY: ${RSA_MASTER_KEY}
+      RELAY_PLUGIN_TOKEN: ${RELAY_PLUGIN_TOKEN}
       NATS_URL: nats://nats:4222
       RELAY_GROUP_VARS: '{"env":"prod"}'
+      TLS_CERT: /etc/secagent/certs/server.crt
+      TLS_KEY: /etc/secagent/certs/server.key
+    expose:
+      - "7771"   # Admin CLI — container-interne uniquement
     ports:
-      - "7770:7770"   # API REST
-      - "7771:7771"   # Admin CLI
-      - "7772:7772"   # WebSocket
+      - "443:7770"    # HTTPS (API REST via Caddy)
+      - "7772:7772"   # WSS (WebSocket termination par Caddy)
 
   relay-dmz1:
     image: secagent-server:3.0
     environment:
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY_DMZ1}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
       REPEATER_ID: "dmz1"
       REPEATER_UPSTREAM_URL: "wss://central:7772"
-      REPEATER_UPSTREAM_TOKEN: "secagent_relay_dmz1_xxx"
+      REPEATER_UPSTREAM_TOKEN: ${REPEATER_UPSTREAM_TOKEN_DMZ1}
+      RSA_MASTER_KEY: ${RSA_MASTER_KEY_DMZ1}
       NATS_URL: nats://nats:4222
+      RELAY_PLUGIN_TOKEN: ${RELAY_PLUGIN_TOKEN_DMZ1}
       RELAY_GROUP_VARS: '{"region":"dmz"}'
-    depends_on:
-      - central
+      TLS_CERT: /etc/secagent/certs/server.crt
+      TLS_KEY: /etc/secagent/certs/server.key
+    expose:
+      - "7771"   # Admin CLI — container-interne uniquement
     ports:
-      - "7773:7770"
-      - "7774:7772"
+      - "7774:7772"   # WSS (WebSocket pour agents enfants)
 ```
 
 ---
@@ -595,5 +708,5 @@ services:
 | **Routage** | Lookup simple `hostname` (un seul chemin, pas de sélection multi-chemins) |
 | **Events** | Remontée parent-à-parent, pas de déduplication (un seul chemin) |
 | **Anti-cycle** | Rejet si `REPEATER_ID ∈ relay_chain` |
-| **Auth** | Deux rôles JWT (à proposer : enfant ouvre vers parent, parent ouvre vers enfant) |
+| **Auth** | Deux rôles JWT fixés : `relay-child` (enfant ouvre) + `relay-parent` (parent ouvre) ; chaque relay signe ses tokens avec sa JWT_SECRET_KEY |
 | **Suppression** | REPEATER_UPSTREAMS_FILE, seen-set, event_id dedup, priority, multi-upstream |

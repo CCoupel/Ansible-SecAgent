@@ -31,8 +31,8 @@ Défense en profondeur        : IP binding + hostname claim + token secret + TLS
 |---|---|---|---|
 | `agent` | secagent-minion (hôte cible) | `POST /api/register`, `WSS /ws/agent` | JWT HMAC-HS256 chiffré RSA-OAEP |
 | `plugin` | Ansible Control Node | `GET /api/inventory`, `POST /api/exec`, `/api/upload`, `/api/fetch` | Token statique hashé (SHA-256) |
-| `relay-child` **ou** `relay-upstream-client` | repeater-enfant qui ouvre vers parent | `WSS /ws/relay` (relay_hello, agent_list, event_forward, task_forward) | JWT HMAC-HS256 **— À CONFIRMER** |
-| `relay-parent` **ou** `relay-downstream-server` | repeater-parent qui accepte enfants | `WSS /ws/relay` (accepter relay_hello, recevoir agent_list, event_forward, task_forward) | JWT HMAC-HS256 **— À CONFIRMER** |
+| `relay-child` | repeater-enfant (présenté au handshake) | `WSS /ws/relay` (relay_hello, agent_list, event_forward, task_forward) | JWT HMAC-HS256 (créé et signé par le relay parent avec sa JWT_SECRET_KEY) |
+| `relay-parent` | repeater-parent en mode push (présenté au handshake) | `WSS /ws/relay` (ouvrir connexion vers enfant) | JWT HMAC-HS256 (créé et signé par le relay enfant avec sa JWT_SECRET_KEY) |
 | `admin` | CLI dans le container serveur | Port 7771 — tous les endpoints d'administration | `ADMIN_TOKEN` env var (container-interne) |
 
 ### Règles d'isolation des rôles
@@ -44,9 +44,6 @@ Défense en profondeur        : IP binding + hostname claim + token secret + TLS
 - Le port 7771 (admin) n'est **jamais** exposé hors du container (`expose:` uniquement, pas `ports:`)
 - L'admin CLI s'authentifie via `localhost:7771` en lisant `ADMIN_TOKEN` depuis l'environnement du container
 
-**À CONFIRMER** (v3.0) :
-- Noms exacts des deux rôles repeater (relay-child vs relay-upstream-client, relay-parent vs relay-downstream-server)
-- Permissions distinctes entre les deux rôles ou permissions identiques
 
 ---
 
@@ -262,6 +259,15 @@ Tous les secrets du serveur sont stockés en DB chiffrés (AES-256-GCM) :
 | RSA keypair serveur | `server_config` | idem |
 | `key_rotation_deadline` | `server_config` | idem |
 
+### Modèle per-relay (v3.0)
+
+**En mode repeater (topologie arbre)**, chaque relay a sa propre `JWT_SECRET_KEY` unique :
+- Rotation s'applique **indépendamment** par relay (pas de synchronisation globale)
+- Tokens relay-child et relay-parent signés par la clé du relay qui les crée
+- Chaque relay exécute sa propre rotation de clef sur son CLI (la grace period s'applique localement)
+- Les relays enfants gèrent la rotation des tokens relay-parent qu'ils ont émis pour leurs parents (dual-key via leur propre JWT_SECRET_KEY)
+- **Hors-scope v3.0** : synchronisation des rotations de clef entre relays (envisagée pour v3.1+ avec PKI hiérarchique)
+
 ---
 
 ## 6. Authentification du plugin Ansible
@@ -330,6 +336,23 @@ cryptographiquement prouvé. Il constitue une défense en profondeur contre un a
 interne au même réseau, pas une garantie cryptographique.
 
 Pour une preuve cryptographique du hostname : utiliser mTLS (PKI interne, hors scope MVP).
+
+### Authentification plugin par relay (HAUT-6, v3.0)
+
+**Modèle v3.0** : Chaque relay signe ses propres plugin tokens (RELAY_PLUGIN_TOKEN)
+- Plugin pointe vers **UN relay uniquement** (pas de multi-relays)
+- Plugin s'authentifie avec le `RELAY_PLUGIN_TOKEN` du relay
+- Relay valide le token avec son JWT_SECRET_KEY (signature HS256)
+- **Jamais de partage** de JWT_SECRET_KEY ou RELAY_PLUGIN_TOKEN entre relays
+
+**Isolation** : Un token plugin signé par relay-central ne marche pas sur relay-dmz1
+- Chaque relay valide les tokens indépendamment
+- Pas de colonne `allowed_relay_ids` — l'isolation se fait par la clé de signature
+
+**Évolution envisagée (v3.1+)** : Centraliser la signature des tokens à la racine
+- Permettre au plugin de parler à plusieurs relays avec un seul token
+- Nécessite une PKI hiérarchique (racine → intermédiaires → feuilles)
+- Hors scope MVP (v3.0)
 
 ---
 
@@ -413,16 +436,30 @@ secagent-server tokens purge --used             # one-shot déjà consommés (us
 secagent-server tokens purge --expired --used   # les deux
 ```
 
+### Tokens relay (HAUT-4, HAUT-5)
+
+**Révocation (HAUT-4)** : Les tokens relay entrent dans la blacklist JTI identique aux agents :
+- Révocation : `secagent-server tokens revoke <relay-token-id>`
+- Effet immédiat : INSERT dans `blacklist(jti)` + close(4010) de la WS `/ws/relay` active
+- Aucun reconnect possible tant que le token est en blacklist
+
+**Stockage sécurisé (HAUT-5)** : Le token relay utilisé en mode push (parent ouvre vers enfant) est stocké **chiffré AES-256-GCM** :
+- Colonne `relay_nodes.token_encrypted TEXT` (chiffré avec RSA_MASTER_KEY)
+- Jamais stocké en clair
+- Jamais loggé
+- Déchiffré uniquement au moment de l'établissement de la connexion WSS vers l'enfant
+
 ---
 
 ## 8. Isolation des ports
 
 | Port | Exposition | Accès | Contenu |
 |---|---|---|---|
-| `7770` | Publique (HTTPS via Caddy) | Agents + Plugins | `/api/register`, `/api/exec`, `/api/inventory`, `/ws/agent` |
+| `7770` | Publique (HTTPS) | Agents + Plugins | `/api/register`, `/api/exec`, `/api/inventory` |
 | `7771` | **Container-interne uniquement** (`expose:`, pas `ports:`) | CLI admin | Tous les endpoints `/api/admin/*` |
-| `7772` | Publique (WSS via Caddy) | Agents | `/ws/agent` |
+| `7772` | Publique (WSS) | Agents + Relays | `/ws/agent` (agents), `/ws/relay` (inter-relay) |
 
+**TLS** : Ports 7770 et 7772 utilisent TLS applicatif direct (via variables `TLS_CERT` et `TLS_KEY`).  
 Le port 7771 ne doit **jamais** figurer dans la section `ports:` du docker-compose.
 L'accès admin se fait exclusivement via `docker exec relay-api secagent-server <cmd>`.
 
@@ -436,7 +473,24 @@ L'accès admin se fait exclusivement via `docker exec relay-api secagent-server 
 | Token en clair | Jamais loggé — seul le hash SHA-256 ou l'UUID apparaît |
 | JWT en clair | Jamais loggé — seul le JTI apparaît |
 | Clef privée agent | Jamais transmise, jamais loggée |
-| `stdin` avec become | Masqué dans les logs de l'agent |
+| `stdin` avec become | Masqué dans les logs (agent + relays intermédiaires) — remplacé par `[REDACTED]` |
+
+### Détection de détournement de route (HAUT-3)
+
+L'événement `host.conflict` est généré quand un relay déclare un hôte déjà routé vers un autre relay.
+**Recommandation pour la production** : Configurer un hook d'alerte sur `host.conflict` pour détecter les mouvements de route suspects (potentiel hijack d'un relay compromis).
+Sans monitoring, le vol de route reste silencieux jusqu'à détection manuelle.
+
+### Authentification asymétrique relay en mode push (NEW-3)
+
+En mode push, le parent (WS client) ouvre vers l'enfant (WS serveur). L'authentification est asymétrique :
+- **Parent authentifie l'enfant** : certificat TLS du serveur (truststore) + vérification `relay_ack.relay_id` contre `relay_nodes.relay_id` enregistré
+  - Le JWT relay-parent ne prouve que l'identité du PARENT auprès de l'enfant (pas l'inverse)
+  - TLS/X.509 fournit la garantie d'authenticité du serveur enfant
+- **Enfant authentifie le parent** : JWT relay-parent (signé par l'enfant, jwt.sub=parent)
+  - L'enfant doit vérifier le JWT et que jwt.sub correspond à l'identité attendue du client
+
+**Risque résiduel** : Si l'enfant accepte les connexions sans TLS ou sans vérifier le certificat, un attaquant peut usurper l'identité du parent. Configuration sécurisée recommandée : TLS_CERT/TLS_KEY obligatoires, validation certificat client optionnelle mais recommandée.
 
 ---
 
