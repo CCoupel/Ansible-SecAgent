@@ -1,7 +1,7 @@
 # docker-compose.proxy.yml — Ansible-SecAgent Multi-Zone Proxy (Phase 12 / issue #120)
 #
 # Topologie simulée :
-#   relay-proxy (PROXY_MODE=true) ──┬── relay-dmz1 (zone DMZ1)
+#   relay-proxy ──┬── relay-dmz1 (zone DMZ1)
 #                                    └── relay-dmz2 (zone DMZ2)
 #
 # Réseaux :
@@ -101,19 +101,6 @@ services:
       JWT_SECRET_KEY: "${JWT_SECRET_KEY}"
       ADMIN_TOKEN: "${ADMIN_TOKEN}"
       LOG_LEVEL: "INFO"
-      # Mode proxy activé — agrège les agents des relays DMZ
-      PROXY_MODE: "true"
-      # PROXY_RELAYS : liste JSON des relays downstream
-      # relay_id : identifiant de zone
-      # url      : URL interne Docker (relay-proxy est sur dmz1-net ET dmz2-net)
-      # token    : ADMIN_TOKEN du relay DMZ (partagé ici pour simplicité qualif)
-      # PROXY_RELAYS : liste JSON des relays downstream
-      # url pointe sur le port API 7770 — GET /api/inventory y est authentifié par ADMIN_TOKEN
-      PROXY_RELAYS: >-
-        [
-          {"relay_id":"dmz1","url":"http://relay-dmz1:7771","token":"${ADMIN_TOKEN}","description":"Zone DMZ1"},
-          {"relay_id":"dmz2","url":"http://relay-dmz2:7771","token":"${ADMIN_TOKEN}","description":"Zone DMZ2"}
-        ]
     volumes:
       - relay_proxy_data:/data
     ports:
@@ -153,7 +140,6 @@ services:
       JWT_SECRET_KEY: "${JWT_SECRET_KEY}"
       ADMIN_TOKEN: "${ADMIN_TOKEN}"
       LOG_LEVEL: "INFO"
-      PROXY_MODE: "false"
     volumes:
       - relay_dmz1_data:/data
     ports:
@@ -189,7 +175,6 @@ services:
       JWT_SECRET_KEY: "${JWT_SECRET_KEY}"
       ADMIN_TOKEN: "${ADMIN_TOKEN}"
       LOG_LEVEL: "INFO"
-      PROXY_MODE: "false"
     volumes:
       - relay_dmz2_data:/data
     ports:

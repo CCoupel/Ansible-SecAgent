@@ -152,13 +152,13 @@ print(r[0]['status'] if r else 'unknown')
 " 2>/dev/null || echo "unknown")
 
 if [ "${DMZ1_STATUS}" = "connected" ]; then
-  ok "relay-dmz1 status=connected (vu par PushManager)"
+  ok "relay-dmz1 status=connected (routage WebSocket actif)"
 else
   fail "relay-dmz1 status=${DMZ1_STATUS} (attendu: connected)"
 fi
 
 if [ "${DMZ2_STATUS}" = "connected" ]; then
-  ok "relay-dmz2 status=connected (vu par PushManager)"
+  ok "relay-dmz2 status=connected (routage WebSocket actif)"
 else
   fail "relay-dmz2 status=${DMZ2_STATUS} (attendu: connected)"
 fi
