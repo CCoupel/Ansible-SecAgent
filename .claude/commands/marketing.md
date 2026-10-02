@@ -1,6 +1,8 @@
 # Commande /marketing
 
-Mettre a jour le site marketing Github Pages (branche `gh-pages`) apres une release.
+Mettre a jour le site marketing Github Pages apres une release. Le site est gere **uniquement sur la branche
+`gh-pages`** — jamais commite sur la branche de code. `MARKETING/` est le **worktree git de `gh-pages`**
+(pas un dossier de `main`, pas une publication de `main`).
 
 ## Usage
 
@@ -75,7 +77,7 @@ La version recuperee est utilisee dans toutes les sections du site (Hero, Featur
 [COLLECTE] --> Lire CHANGELOG, README, releases GitHub, issues GitHub, milestone GitHub
     |
     v
-[DETECTION] --> Site existant (gh-pages / MARKETING/) ? Sinon : INITIALISATION (questions de cadrage
+[DETECTION] --> Site existant sur gh-pages (worktree MARKETING/ cree si absent) ? Sinon : INITIALISATION (questions de cadrage
     |           a l'utilisateur + maquette avant toute generation — voir agents/marketing-release.md)
     v
 [GENERATION] --> Generer ou mettre a jour les sections du site
@@ -84,7 +86,7 @@ La version recuperee est utilisee dans toutes les sections du site (Hero, Featur
 [TRADUCTION] --> Produire les fichiers locales/fr.json et locales/en.json
     |
     v
-[COMMIT gh-pages] --> Commiter et pousser sur la branche gh-pages
+[COMMIT gh-pages] --> Commiter et pousser depuis le worktree MARKETING/ (= directement sur gh-pages)
     |
     v
 [RAPPORT] --> Confirmer les sections mises a jour
@@ -117,10 +119,20 @@ gh issue list --milestone "$NEXT_TITLE" --state open \
 
 Si aucun milestone n'existe pour la version → fallback sur CHANGELOG.md et issues GitHub classiques.
 
+## Emplacement du site — worktree `MARKETING/`
+
+Le site vit uniquement sur `gh-pages`. Si `MARKETING/` est absent, le creer avant toute generation :
+`git worktree add MARKETING gh-pages` (ou, si `gh-pages` n'existe pas encore, `git worktree add --orphan -b gh-pages MARKETING`).
+`MARKETING/` est ignore par la branche de code (`.gitignore`). **Ne jamais commiter `MARKETING/` sur la
+branche de code.** Release notes et posts restent sur la branche de code, dans `docs/releases/`.
+Detail du cycle de vie : `agents/marketing-release.md`, "Emplacement du site".
+
 ## Structure du site genere
 
+Racine de `gh-pages` (visible via `MARKETING/`) :
+
 ```
-gh-pages/
+MARKETING/                  # = racine de gh-pages
 ├── CADRAGE.md              # Cadrage valide a l'initialisation (public, valeur, identite, sections, liens)
 ├── index.html              # Page principale (FR par defaut)
 ├── assets/
@@ -229,7 +241,7 @@ en `localStorage`.
 
 ## Mise a jour du site existant
 
-Si le site existe deja sur `gh-pages` (lire d'abord `CADRAGE.md` : identite, public et sections deja
+Si le site existe deja sur `gh-pages` (worktree `MARKETING/` ; lire d'abord `CADRAGE.md` : identite, public et sections deja
 arbitres — ne pas les re-questionner) :
 1. Mettre a jour la version dans le Hero
 2. Ajouter les nouvelles fonctionnalites dans la section Features (badge "Nouveau")
@@ -254,7 +266,7 @@ Traductions :
 - [x] locales/fr.json
 - [x] locales/en.json
 
-Commit pousse sur gh-pages.
+Commit pousse sur gh-pages (depuis le worktree MARKETING/).
 URL : https://CCoupel.github.io/Ansible-SecAgent/
 
 Voulez-vous :
