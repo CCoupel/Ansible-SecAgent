@@ -108,7 +108,7 @@ services:
       # url      : URL interne Docker (relay-proxy est sur dmz1-net ET dmz2-net)
       # token    : ADMIN_TOKEN du relay DMZ (partagé ici pour simplicité qualif)
       # PROXY_RELAYS : liste JSON des relays downstream
-      # url pointe sur le port admin 7771 — GET /api/inventory y est authentifié par ADMIN_TOKEN
+      # url pointe sur le port API 7770 — GET /api/inventory y est authentifié par ADMIN_TOKEN
       PROXY_RELAYS: >-
         [
           {"relay_id":"dmz1","url":"http://relay-dmz1:7771","token":"${ADMIN_TOKEN}","description":"Zone DMZ1"},
