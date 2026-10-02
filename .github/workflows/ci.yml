@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build + tests Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: GO/go.work
+          cache-dependency-path: GO/go.sum
+
+      - name: Build
+        working-directory: GO
+        run: go build ./...
+
+      # Tests bloquants : aucun contournement. Echouent tant que l'issue #100
+      # (executor : bytesReader io.EOF, timeout) n'est pas corrigee.
+      - name: Tests
+        working-directory: GO
+        env:
+          JWT_SECRET_KEY: test
+          ADMIN_TOKEN: test
+        run: go test ./... -timeout 120s

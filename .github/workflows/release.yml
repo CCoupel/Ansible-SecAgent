@@ -1,0 +1,241 @@
+name: Release
+
+# Declenche par le tag officiel vX.Y.Z (rebuild deterministe depuis le commit fige du tag),
+# ou a la demande sur un TAG EXISTANT (publication a posteriori des images).
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag existant a publier (ex. v2.0.0)'
+        required: true
+        type: string
+      skip_tests:
+        description: 'Ne pas rejouer les tests (version deja qualifiee uniquement ; ignore sur push de tag)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name }}-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ghcr.io/ccoupel
+
+jobs:
+  prepare:
+    name: Resoudre et valider le tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      is_latest: ${{ steps.resolve.outputs.is_latest }}
+      run_tests: ${{ steps.resolve.outputs.run_tests }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resoudre le tag
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_TAG: ${{ github.ref_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          INPUT_SKIP_TESTS: ${{ github.event.inputs.skip_tests }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+            RUN_TESTS=true
+            [ "$INPUT_SKIP_TESTS" = "true" ] && RUN_TESTS=false
+          else
+            TAG="$PUSH_TAG"
+            RUN_TESTS=true
+          fi
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag invalide '$TAG' (attendu vX.Y.Z)"; exit 1
+          fi
+          if ! git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null; then
+            echo "::error::Le tag '$TAG' n'existe pas dans le depot"; exit 1
+          fi
+          # 'latest' uniquement si ce tag est la plus haute version SemVer du depot
+          HIGHEST=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | sed -n 1p)
+          IS_LATEST=false
+          [ "$HIGHEST" = "$TAG" ] && IS_LATEST=true
+          {
+            echo "tag=$TAG"
+            echo "version=${TAG#v}"
+            echo "is_latest=$IS_LATEST"
+            echo "run_tests=$RUN_TESTS"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$RUN_TESTS" = "false" ]; then
+            echo "::warning::Tests desactives (skip_tests) pour $TAG"
+          fi
+
+  test:
+    name: Build + tests Go
+    needs: prepare
+    if: needs.prepare.outputs.run_tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: GO/go.work
+          cache-dependency-path: GO/go.sum
+
+      - name: Build
+        working-directory: GO
+        run: go build ./...
+
+      # Bloquant, sans contournement (echoue tant que l'issue #100 n'est pas corrigee).
+      - name: Tests
+        working-directory: GO
+        env:
+          JWT_SECRET_KEY: test
+          ADMIN_TOKEN: test
+        run: go test ./... -timeout 120s
+
+  images:
+    name: Image GHCR ${{ matrix.image }}
+    needs: [prepare, test]
+    # test peut etre 'skipped' (skip_tests) mais jamais 'failure'
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: secagent-server
+            dockerfile: Dockerfile
+          - image: secagent-minion
+            dockerfile: Dockerfile.agent
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadonnees image
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.tag }}
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.is_latest == 'true' }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: GO
+          file: GO/${{ matrix.dockerfile }}
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  release:
+    name: Release GitHub
+    needs: [prepare, test, images]
+    if: ${{ !cancelled() && needs.images.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+
+      # Ne jamais recreer ni ecraser une release existante.
+      - name: Release deja existante ?
+        id: exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG deja publiee : rien a faire (images seules publiees)."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.exists.outputs.exists == 'false'
+        with:
+          go-version-file: GO/go.work
+          cache-dependency-path: GO/go.sum
+
+      - name: Notes depuis CHANGELOG.md
+        if: steps.exists.outputs.exists == 'false'
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          awk -v tag="$TAG" '
+            /^## \[/ { if (found) exit; if (index($0, "[" tag "]")) { found=1; next } }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::Aucune entree '## [$TAG]' dans CHANGELOG.md"; exit 1
+          fi
+
+      - name: Binaires linux/amd64 + sommes de controle
+        if: steps.exists.outputs.exists == 'false'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd GO
+          # server : CGO (go-sqlite3), comme GO/Dockerfile
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "../dist/secagent-server-${VERSION}-linux-amd64" ./cmd/secagent-server
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "../dist/secagent-minion-${VERSION}-linux-amd64" ./cmd/secagent-minion
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "../dist/secagent-inventory-${VERSION}-linux-amd64" ./cmd/secagent-inventory
+          cd ../dist
+          sha256sum ./* > "SHA256SUMS-${VERSION}.txt"
+
+      - name: Creer la release
+        if: steps.exists.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "$TAG" \
+            --notes-file release-notes.md

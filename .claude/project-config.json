@@ -24,7 +24,7 @@
     }
   },
   "infrastructure": {
-    "cicd": null,
+    "cicd": "github-actions",
     "environments": [
       {
         "name": "QUALIF",
