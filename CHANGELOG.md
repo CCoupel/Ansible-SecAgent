@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [v2.0.0] — 2026-05-22 — Phase 12 : Proxy/Gateway multi-zone
+## [v2.0.0] — 2026-10-02 — Phase 12 : Proxy/Gateway multi-zone
 
 ### Added
 - **Mode Proxy/Gateway** (`PROXY_MODE=true`) — `secagent-server` peut désormais fonctionner en tant que proxy/gateway agrégeant plusieurs zones réseau (DMZ, clusters distants…)
@@ -33,6 +33,24 @@ All notable changes to this project will be documented in this file.
 - `storage/store.go` — DDL étendue (tables `relay_nodes`, `relay_routing`)
 - `DOC/common/ARCHITECTURE.md` — §23 Mode Proxy/Gateway multi-zone ajouté
 - `DOC/server/SERVER_SPEC.md` — §9 Mode Proxy (endpoints, protocole WS, variables)
+
+### Fixed
+- **PushManager HTTP 401** (`e9672dc`) — AdminCreateRelay was SHA-256 hashing tokens before storing for push-mode relays, while PushManager sent token_hash directly as Bearer token. Now stores plain token, fixing 401 errors on relay polls.
+- **Relay admin port in PROXY_RELAYS** (`be17cee`) — docker-compose.proxy.yml now points to admin port 7771 (not 7770) so GET `/api/inventory` is reachable from proxy.
+
+### Known Limitations
+
+The following are **known issues deferred to v3.0**:
+
+1. **Non-empty stdin + become/become_pass returns rc=1** (executor.go, issue #100) — When a task with `become` or `become_pass` receives non-empty stdin, bytesReader returns `fmt.Errorf("EOF")` instead of `io.EOF`, causing executor to fail. Workaround: use `no_log: true` or avoid stdin in become tasks. Fixed in v3.0 (improvements to become subprocess handling).
+
+2. **Child process timeout only kills /bin/sh** (executor.go) — Context timeout kills only the shell process, not descendant processes spawned by the playbook. Grandchild processes may continue running. Fixed in v3.0 (proper process group cleanup).
+
+3. **Incorrect SQLite path with sqlite:// prefix** (store.go:165) — When DATABASE_URL uses `sqlite:////path`, the extra slash is mishandled. Workaround: use direct paths (`/var/lib/secagent/store.db`) or `file:///path` URIs. Corrected in v3.0 (URI parsing improvements).
+
+4. **Enrollment token hostname pattern is anchored regex, not glob** — The hostname pattern in enrollment tokens is validated as an **anchored regex** (not a shell glob), which may surprise users expecting glob matching. Document your patterns as regex (e.g., `^prod-.*\.example\.com$`). Changed to glob matching in v3.0 for better UX.
+
+**Deprecation Notice**: v3.0 (issue #123) replaces `PushManager` and `PROXY_RELAYS` with a new WebSocket relay chain architecture with improved event propagation. Users on v2.0.0 with push-mode relays should plan migration to v3.0 architecture.
 
 ### Tests
 - 917/920 tests unitaires et intégration passent (QA VALIDATED)
