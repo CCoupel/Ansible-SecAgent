@@ -48,7 +48,23 @@ RELAY_ONLY_CONNECTED=false                    # true = hôtes connectés uniquem
 ```json
 {
   "all": {
-    "hosts": ["host-A", "host-B", "host-C"]
+    "children": ["dmz1", "zone2"],
+    "hosts": ["host-C"]
+  },
+  "dmz1": {
+    "hosts": ["host-A", "host-B"],
+    "children": ["zone2-relay1"],
+    "vars": {"region": "dmz"}
+  },
+  "zone2-relay1": {
+    "hosts": ["host-D"],
+    "children": [],
+    "vars": {"region": "zone2"}
+  },
+  "zone2": {
+    "hosts": [],
+    "children": [],
+    "vars": {}
   },
   "_meta": {
     "hostvars": {
@@ -56,13 +72,15 @@ RELAY_ONLY_CONNECTED=false                    # true = hôtes connectés uniquem
         "ansible_connection": "relay",
         "ansible_host": "host-A",
         "secagent_status": "connected",
-        "secagent_last_seen": "2026-03-06T10:00:00Z"
+        "secagent_last_seen": "2026-03-06T10:00:00Z",
+        "secagent_relay_chain": ["dmz1"]
       },
-      "host-B": {
+      "host-D": {
         "ansible_connection": "relay",
-        "ansible_host": "host-B",
-        "secagent_status": "disconnected",
-        "secagent_last_seen": "2026-03-05T08:00:00Z"
+        "ansible_host": "host-D",
+        "secagent_status": "connected",
+        "secagent_last_seen": "2026-03-06T10:00:00Z",
+        "secagent_relay_chain": ["dmz1", "zone2-relay1"]
       }
     }
   }

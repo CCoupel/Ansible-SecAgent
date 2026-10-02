@@ -31,14 +31,22 @@ Défense en profondeur        : IP binding + hostname claim + token secret + TLS
 |---|---|---|---|
 | `agent` | secagent-minion (hôte cible) | `POST /api/register`, `WSS /ws/agent` | JWT HMAC-HS256 chiffré RSA-OAEP |
 | `plugin` | Ansible Control Node | `GET /api/inventory`, `POST /api/exec`, `/api/upload`, `/api/fetch` | Token statique hashé (SHA-256) |
+| `relay-child` **ou** `relay-upstream-client` | repeater-enfant qui ouvre vers parent | `WSS /ws/relay` (relay_hello, agent_list, event_forward, task_forward) | JWT HMAC-HS256 **— À CONFIRMER** |
+| `relay-parent` **ou** `relay-downstream-server` | repeater-parent qui accepte enfants | `WSS /ws/relay` (accepter relay_hello, recevoir agent_list, event_forward, task_forward) | JWT HMAC-HS256 **— À CONFIRMER** |
 | `admin` | CLI dans le container serveur | Port 7771 — tous les endpoints d'administration | `ADMIN_TOKEN` env var (container-interne) |
 
 ### Règles d'isolation des rôles
 
-- Un token `role: agent` ne peut **pas** appeler `/api/exec` ni `/api/inventory`
-- Un token `role: plugin` ne peut **pas** ouvrir une connexion WebSocket agent
+- Un token `role: agent` ne peut **pas** appeler `/api/exec` ni `/api/inventory` ni ouvrir `/ws/relay`
+- Un token `role: plugin` ne peut **pas** ouvrir `/ws/agent` ni `/ws/relay`
+- Un token `role: relay-child` ne peut **pas** accéder `/api/inventory`, `/api/exec`, `/api/upload`, `/api/fetch`, ni `/ws/agent` (repeater-to-repeater uniquement)
+- Un token `role: relay-parent` ne peut **pas** accéder `/api/inventory`, `/api/exec`, `/api/upload`, `/api/fetch`, ni `/ws/agent` (repeater-to-repeater uniquement)
 - Le port 7771 (admin) n'est **jamais** exposé hors du container (`expose:` uniquement, pas `ports:`)
 - L'admin CLI s'authentifie via `localhost:7771` en lisant `ADMIN_TOKEN` depuis l'environnement du container
+
+**À CONFIRMER** (v3.0) :
+- Noms exacts des deux rôles repeater (relay-child vs relay-upstream-client, relay-parent vs relay-downstream-server)
+- Permissions distinctes entre les deux rôles ou permissions identiques
 
 ---
 

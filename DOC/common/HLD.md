@@ -538,7 +538,59 @@ Serveur → Agent                        Agent → Serveur
 
 ---
 
-## 6. Décisions architecturales clés
+## 6. Topologies repeater v3.0 — Arbre Hiérarchique
+
+### Arbre simple (topologie obligatoire v3.0)
+
+```mermaid
+graph TB
+    Central["relay-central<br/>(racine)"]
+    DMZ["relay-dmz1"]
+    Zone["relay-zone-a"]
+    
+    Central -->|WSS /ws/relay| DMZ
+    DMZ -->|WSS /ws/relay| Zone
+    
+    DMZ -->|WSS /ws/agent| H1["host-A"]
+    DMZ -->|WSS /ws/agent| H2["host-B"]
+    Zone -->|WSS /ws/agent| H3["host-X"]
+    Zone -->|WSS /ws/agent| H4["host-Y"]
+    Central -->|WSS /ws/agent| H5["host-C"]
+    
+    style Central fill:#0ea5e9
+    style DMZ fill:#f97316
+    style Zone fill:#f97316
+    style H1 fill:#22c55e
+    style H2 fill:#22c55e
+    style H3 fill:#22c55e
+    style H4 fill:#22c55e
+    style H5 fill:#22c55e
+```
+
+**Topologie** : Chaque relay a UN SEUL parent (ou aucun s'il est racine). Chaque agent se connecte à UN SEUL relay. Chaque hôte a donc exactement UN SEUL chemin vers la racine.
+
+**Connexion enfant-parent** : L'une OU l'autre extrémité ouvre la connexion WSS :
+- **Enfant ouvre vers parent** : variables REPEATER_UPSTREAM_URL + TOKEN, `relay_nodes.mode=pull`
+- **Parent ouvre vers enfant** : API admin POST /api/admin/relays, `relay_nodes.mode=push`
+
+### Flux event_forward (arbre)
+
+Host-X (connecté au relay-zone-a) génère `event.host.up` :
+- **Zone-a** reçoit → ajoute `relay_id="zone-a"` à `relay_chain=["zone-a"]` → envoie vers parent (DMZ1)
+- **DMZ1** reçoit `["zone-a"]` → ajoute `relay_id="dmz1"` → `relay_chain=["zone-a","dmz1"]` → envoie vers parent (Central)
+- **Central** reçoit `["zone-a","dmz1"]` → déclenche les hooks
+- **Pas de doublon** : topologie arbre = UN SEUL chemin par hôte → UN SEUL event (pas de déduplication)
+
+### Sécurité — Rejet de cycle
+
+Si la configuration crée une erreur (A parent de B, B parent de A) :
+- B tente de se connecter à A avec `relay_chain=["B"]` (son propre ID)
+- A reçoit, détecte `"A"` ∈ chaîne → **refuse la connexion** (protection cycle)
+- Pas besoin de seen-set ou event_id dedup (pas de chemins multiples)
+
+---
+
+## 6.1. Décisions architecturales clés
 
 | # | Décision | Alternatives écartées | Raison |
 |---|---|---|---|

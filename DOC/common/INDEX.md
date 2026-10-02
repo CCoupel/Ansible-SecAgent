@@ -66,7 +66,7 @@ Ansible_Agent/
 **Location**: `PYTHON/`
 - **Server**: `PYTHON/server/` — FastAPI + NATS + SQLite
 - **Agent**: `PYTHON/agent/` — Systemd daemon with WSS
-- **Plugins**: `PYTHON/ansible_plugins/` — Ansible integration
+- **Plugins**: `SECAGENT-PYTHON/ansible_plugins/` — Ansible integration
 - **Tests**: `PYTHON/tests/` — Comprehensive test suite
 - **Docs**: `PYTHON/README.md`
 

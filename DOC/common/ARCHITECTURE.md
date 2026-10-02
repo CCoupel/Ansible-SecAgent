@@ -1713,111 +1713,192 @@ Si le serveur rejette la connexion WS avec HTTP 401 (JWT expiré ou révoqué ap
 
 ---
 
-## 23. Mode Proxy/Gateway multi-zone
+## 23. Mode Repeater — Arbre Hiérarchique (v3.0)
+
+> Voir aussi : `DOC/common/HLD.md` §6 pour schémas + `DOC/server/SERVER_SPEC.md` §9
 
 ### Vue d'ensemble
 
-Le mode proxy/gateway permet d'agréger plusieurs zones réseau (DMZ, clusters…) derrière un point d'entrée unique tout en conservant les agents dans chaque zone isolée.
+Le mode repeater permet de construire une topologie arbre stricte de relays, chacun gérant sa propre zone réseau (DMZ, clusters, régions…), tout en conservant les agents isolés par zone.
+
+**Changements v3.0 (par rapport à v2.0)** :
+- Suppression du mode push REST — seul WebSocket persiste (WSS)
+- Suppression de `PROXY_MODE` et `PushManager`
+- Topologie : arbre strict (un parent max par relay enfant), pas de graphe, pas de losange, pas de cycles
+- Un seul upstream par relay enfant (pas de multi-upstream)
+- Deux modes d'ouverture de connexion : enfant-push (enfant ouvre vers parent) ou parent-push (parent ouvre vers enfant via API)
+- Inventaire : chaque relay expose TOUTE LA DESCENDANCE (agents + sous-relays comme groupes récursifs), cloisonnement via authentification JWT
+- Authentification : deux rôles JWT distincts pour les deux sens de connexion (à proposer)
+
+### Topologie de référence — Arbre
+
+Une topologie arbre simple (exemple) :
 
 ```
-[Ansible Control Node]
-        │
-[Plugin connexion/inventaire]  — REST HTTPS
-        │
- ┌──────▼──────────────────────────────────────┐
- │       PROXY / GATEWAY                        │
- │  (secagent-server --proxy ou PROXY_MODE=true)│
- │  Ports : 7770 (API) · 7771 (admin) · 7772 (WS)│
- └───────┬──────────────────────┬───────────────┘
-         │ WSS /ws/relay        │ REST (mode push)
-  ┌──────▼──────┐        ┌──────▼──────┐
-  │ Relay DMZ1  │        │ Relay DMZ2  │
-  │ (mode pull) │        │ (mode push) │
-  └──────┬──────┘        └──────┬──────┘
-         │ WSS /ws/agent        │ WSS /ws/agent
-   [host-A] [host-B]      [host-C] [host-D]
+┌──────────────────────────────┐
+│   secagent-server (racine)   │
+│   REPEATER_ID=central        │
+└──┬──────────┬────────────────┘
+   │ WSS      │ WSS
+   ▼          ▼
+ relay-dmz1  relay-zone2  (enfants de central)
+   │ WSS      │ WSS
+   ├─── relay-zone-a (enfant de dmz1)
+   │    │ WSS
+   │    ├─── host-X, host-Y
+   │    └─── (agents du relay)
+   │
+   └─── host-A, host-B (agents directs de dmz1)
+
+relay-zone2
+   │ WSS
+   └─── host-C  (agent de zone2)
 ```
 
-**Principe :** le même binaire `secagent-server` fonctionne en mode proxy via la variable d'environnement `PROXY_MODE=true`. Le proxy est transparent pour les plugins Ansible — les endpoints REST existants (`/api/inventory`, `/api/exec/{host}`, etc.) fonctionnent identiquement.
+**Chaque lien parent-enfant a une seule connexion WSS**, ouverte par l'un OU l'autre côté selon la configuration.
+
+**Principe fondamental** :
+- Chaque relay adopte le rôle **repeater-server** : accepte les connexions WSS entrantes des agents (`/ws/agent`) ET des relays enfants (`/ws/relay`)
+- Chaque relay enfant est **repeater-client** optionnel : ouvre une connexion WSS sortante vers son parent OU attend que le parent se connecte
+- Transport **WebSocket uniquement** (WSS obligatoire)
 
 ---
 
-### 23.1 Modes de connexion proxy↔relay
+### 23.1 Connexions enfant-parent
 
-#### Mode pull (relays → proxy)
+Pour chaque lien entre un relay enfant et son parent, **une seule connexion WSS** établie. L'une OU l'autre extrémité l'ouvre.
 
-Les relays initient la connexion vers le proxy, symétrique au modèle agent→relay.
+#### Enfant ouvre vers son parent
 
-```
-[Relay DMZ1]
-  → WSS /ws/relay (port 7772 du proxy)
-  → Authorization: Bearer <JWT rôle="relay">
-  → relay_hello { relay_id: "dmz1", version: "1.0", is_proxy: false }
-  → agent_list  { agents: [{ hostname: "host-A", status: "connected" }, ...] }
-  ← relay_ack   { status: "ok" }
-  ← agent_list_ack { count: 2 }
+Configuration sur l'enfant (variables d'environnement) :
+```bash
+REPEATER_ID="dmz1"
+REPEATER_UPSTREAM_URL="wss://central.example.com:7772"
+REPEATER_UPSTREAM_TOKEN="secagent_relay_dmz1_xxx"
 ```
 
-#### Mode push (proxy → relays)
-
-Le proxy initie des connexions HTTP REST vers des relays configurés en base de données.
-Le proxy appelle les endpoints REST existants du relay (`GET /api/inventory`, `POST /api/exec/{host}`, etc.) directement.
+L'enfant établit **UNE SEULE** connexion WSS persistante vers son parent et envoie régulièrement `agent_list`.
 
 ```
-[Proxy]
-  → GET  https://dmz2.example.com:7770/api/inventory   (toutes les 30s)
-  → POST https://dmz2.example.com:7770/api/exec/{host}  (à la demande)
-  Authorization: Bearer <token relay configuré en DB>
+[Enfant (dmz1)]
+  → WSS /ws/relay (port 7772 du parent central)
+  → Authorization: Bearer <JWT rôle="???" (à confirmer), sub="dmz1">
+  → {type:"relay_hello", node_type:"relay", relay_id:"dmz1"}
+  → agent_list { agents: [{ hostname: "host-A", status: "connected" }, ...] }
+       (uniquement agents DIRECTS du relay, pas récursifs)
+  ← relay_ack { relay_id: "dmz1", status: "ok" }
 ```
+
+**Colonne `relay_nodes.mode` correspondante** : `pull` (ce relay ouvre la connexion vers ce serveur).
+
+#### Parent ouvre vers son enfant
+
+Configuration sur le parent (via API admin) :
+```bash
+# Sur le parent (central) :
+POST /api/admin/relays
+{
+  "relay_id": "dmz1",
+  "url": "wss://dmz1.internal:7772",
+  "token": "secagent_relay_central_to_dmz1_xxx",
+  "mode": "push"
+}
+```
+
+Le parent ouvre la connexion (une goroutine par enfant enregistré ainsi). L'enfant accepte et envoie `relay_hello`, `agent_list`.
+
+**Colonne `relay_nodes.mode` correspondante** : `push` (ce serveur ouvre la connexion vers ce relay).
 
 ---
 
-### 23.2 Protocole WebSocket /ws/relay
+### 23.2 Protocole WebSocket `/ws/relay` — Parent-Enfant
 
 #### Endpoint
 
 ```
 WSS /ws/relay
-Authorization: Bearer <JWT rôle="relay">
-Port : 7772 (et 7770 pour compatibilité)
+Authorization: Bearer <JWT rôle="???" à confirmer, sub=REPEATER_ID>
+Port : 7772 (relay handler)
 ```
 
-#### Types de messages
-
-**Relay → Proxy :**
-
-| Type | Description | Champs clés |
-|---|---|---|
-| `relay_hello` | Handshake initial | `relay_id`, `version`, `is_proxy`/`node_type` |
-| `agent_list` | Snapshot des agents du relay | `agents[]` (`hostname`, `status`, `last_seen`) |
-| `task_result` | Résultat d'un exec | `task_id`, `rc`, `stdout`, `stderr`, `truncated` |
-| `upload_result` | Résultat d'un upload | `task_id`, `rc` |
-| `fetch_result` | Résultat d'un fetch | `task_id`, `rc`, `data` (base64) |
-
-**Proxy → Relay :**
-
-| Type | Description | Champs clés |
-|---|---|---|
-| `relay_ack` | Ack du handshake | `relay_id`, `status`, `timestamp` |
-| `agent_list_ack` | Ack de l'agent_list | `relay_id`, `count` |
-| `task_dispatch` | Dispatch d'un exec | `task_id`, `hostname`, `cmd`, `stdin`, `timeout`, `become` |
-| `file_upload` | Upload fichier vers relay | `task_id`, `hostname`, `dest`, `data`, `mode` |
-| `file_fetch` | Fetch fichier depuis relay | `task_id`, `hostname`, `src` |
-| `task_cancel` | Annulation d'une tâche | `task_id`, `hostname` |
-
-#### Codes de fermeture WebSocket (relay-spécifiques)
-
-| Code | Signification |
-|---|---|
-| `4010` | Token relay révoqué — ne pas reconnecter |
-| `4011` | Token relay expiré — rafraîchir et reconnecter |
-| `4000` | Fermeture normale |
-
-#### Format d'enveloppe (JSON unifié)
+#### Handshake — relay_hello
 
 ```json
 {
-  "type": "task_dispatch",
+  "type": "relay_hello",
+  "node_type": "relay",
+  "relay_id": "dmz1",
+  "version": "3.0"
+}
+```
+
+**Réponse serveur** :
+```json
+{
+  "type": "relay_ack",
+  "relay_id": "dmz1",
+  "status": "ok",
+  "timestamp": "2026-05-31T10:00:00Z"
+}
+```
+
+**Effets côté parent** :
+- Auto-enregistrement dans `relay_nodes` : `(relay_id="dmz1", mode="pull", status="connected")` si en mode pull
+- Activation de l'agent_list listener
+- Démarrage du event_forward listener
+
+**Rejet cycle** : le parent refuse la connexion si `REPEATER_ID ∈ relay_chain` de l'appelant (protection contre les boucles de configuration).
+
+#### agent_list — Snapshot des agents directs du relay
+
+```json
+{
+  "type": "agent_list",
+  "agents": [
+    {"hostname": "host-A", "status": "connected", "last_seen": "2026-05-31T10:00:00Z"},
+    {"hostname": "host-B", "status": "connected", "last_seen": "2026-05-31T09:59:00Z"}
+  ]
+}
+```
+
+**Important** : `agent_list` contient **UNIQUEMENT les agents directs du relay**. Les agents des relays enfants ne sont pas inclus (chaque relay reporte son propre sous-domaine).
+
+#### event_forward — Propagation d'événements upstream
+
+```json
+{
+  "type": "event_forward",
+  "event": "host.up|host.down|host.new",
+  "hostname": "host-A",
+  "status": "connected|disconnected",
+  "relay_chain": ["dmz1"],
+  "timestamp": "2026-05-31T10:00:00Z"
+}
+```
+
+**Mécanisme** (topologie arbre, un seul chemin) :
+1. Événement local sur un agent → relay génère le message avec `relay_chain=[]` ou s'initialise
+2. Ajouter son `REPEATER_ID` à `relay_chain` avant transmettre au parent
+3. Parent reçoit, ajoute son ID, continue le chaînage jusqu'à la racine
+4. **Anti-boucle** : le relay refuse de transmettre si `REPEATER_ID ∈ relay_chain` (détection de cycle de configuration)
+5. **Pas de déduplication** : topologie arbre = un seul chemin par hôte, donc un seul event (pas de doublons)
+
+Exemple :
+```
+host-A de relay-dmz1 se reconnecte :
+  relay-dmz1 crée {event:"host.up", hostname:"host-A", relay_chain:["dmz1"]}
+  
+  → relay-central reçoit, ajoute son ID : relay_chain=["dmz1","central"]
+  → central déclenche hooks avec relay_chain_contains filter
+```
+
+#### task_forward — Dispatch d'un exec vers un relay enfant
+
+Quand `relay_routing` indique que le hostname est géré par un relay enfant :
+
+```json
+{
+  "type": "task_forward",
   "task_id": "uuid-v4",
   "hostname": "host-A",
   "cmd": "python3 /tmp/module.py",
@@ -1828,170 +1909,294 @@ Port : 7772 (et 7770 pour compatibilité)
 }
 ```
 
+Le relay enfant reçoit et le traite comme un exec direct (ou le forward encore si l'hôte est downstream de lui).
+
+#### Codes de fermeture WebSocket
+
+| Code | Signification |
+|---|---|
+| `4010` | Token relay révoqué ou non autorisé pour ce relay_id → ne pas reconnecter |
+| `4011` | Token relay expiré (TTL dépassé) → rafraîchir et reconnecter |
+| `4000` | Fermeture normale ou initiée par le client |
+| `1000` | Fermeture WebSocket standard |
+
 ---
 
-### 23.3 Inventaire unifié
+### 23.3 Inventaire Ansible hiérarchique (toute la descendance)
 
-En mode proxy, `GET /api/inventory` agrège :
-1. Les agents directement connectés au proxy (`/ws/agent`)
-2. Les agents rapportés via `agent_list` des relays en mode pull
-3. Les agents découverts via `GET /api/inventory` des relays en mode push (poll toutes les 30s)
+**Principe** : Chaque relay expose **TOUTE LA DESCENDANCE** via `GET /api/inventory` :
+- Agents directs du relay (connectés via `/ws/agent`)
+- Agents des sous-relays (directs et indirects), organisés en groupes enfants par relay
+- Hiérarchie complète de profondeur arbitraire
 
-La réponse est enrichie avec `secagent_relay_id` dans les hostvars :
+**Cloisonnement** : obtenu via l'authentification JWT (rôles, tokens) sur chaque endpoint `/api/inventory` du relay visé. Pas de limitation par profondeur.
 
+Quand le plugin Ansible interroge le relay central :
+```
+GET /api/inventory?only_connected=false
+Authorization: Bearer <PLUGIN_TOKEN>
+```
+
+Réponse (toute la descendance) :
 ```json
 {
-  "all": { "hosts": ["host-A", "host-B", "host-C"] },
+  "all": {
+    "children": ["dmz1", "zone2"],
+    "hosts": ["host-C"]
+  },
+  "dmz1": {
+    "hosts": ["host-A", "host-B"],
+    "children": ["zone-a"],
+    "vars": {"region": "dmz"}
+  },
+  "zone-a": {
+    "hosts": ["host-D", "host-E"],
+    "children": [],
+    "vars": {"zone": "a"}
+  },
+  "zone2": {
+    "hosts": ["host-C"],
+    "children": [],
+    "vars": {"region": "zone2"}
+  },
   "_meta": {
     "hostvars": {
       "host-A": {
         "ansible_connection": "relay",
         "ansible_host": "host-A",
         "secagent_status": "connected",
-        "secagent_last_seen": "2026-05-22T15:00:00Z",
-        "secagent_relay_id": "dmz1"
+        "secagent_next_hop": "dmz1",
+        "secagent_relay_chain": ["dmz1"]
+      },
+      "host-D": {
+        "ansible_connection": "relay",
+        "ansible_host": "host-D",
+        "secagent_status": "connected",
+        "secagent_next_hop": "zone-a",
+        "secagent_relay_chain": ["dmz1", "zone-a"]
       }
     }
   }
 }
 ```
 
+**Group vars** : Chaque groupe (relay) a des variables injectées via env var `RELAY_GROUP_VARS` (JSON) :
+```bash
+RELAY_GROUP_VARS='{"region":"dmz"}'   # sur relay dmz1
+```
+
+**Collision REPEATER_ID/hostname** :
+- Groupes Ansible nommés exactement du relay (ex: `dmz1`, `zone-a`) — **pas de préfixe**
+- Risque de collision : si relay `web-01` et hostname `web-01` existent dans le même scope
+- **Pas de contrôle automatique** : collision documentée ; mitigation recommandée = naming convention (relays = zones/lettres, hôtes = FQDN)
+
 ---
 
-### 23.4 Routage des tâches
+### 23.4 Table de routage et dispatch
+
+**Schéma relay_routing** :
+```sql
+CREATE TABLE IF NOT EXISTS relay_routing (
+    hostname    TEXT PRIMARY KEY,      -- clé sur hostname seul (un seul chemin par hôte)
+    relay_id    TEXT NOT NULL,         -- relay auquel l'agent se connecte directement
+    hop_type    TEXT CHECK(hop_type IN ('agent', 'relay')),
+    relay_chain TEXT,                  -- JSON sérialisé, ex: '["dmz1","zone-a"]'
+    updated_at  INTEGER NOT NULL
+)
+```
+
+**Clé sur hostname seul** (pas de composite) : topologie arbre = un seul chemin par hôte. Si l'agent se reconnecte via un autre relay, la ligne se met à jour.
+
+**Logique de dispatch** :
 
 ```
-POST /api/exec/host-A  (reçu par le proxy)
+POST /api/exec/host-A reçu par le relay "central"
   │
-  ├─ Lookup relay_routing : hostname="host-A" → relay_id="dmz1"
+  ├─ Lookup relay_routing : WHERE hostname="host-A"
   │
-  ├─ Relay DMZ1 connecté en mode pull ?
-  │    └─ Oui → DispatchToRelay("dmz1", {type:"task_dispatch", ...})
-  │               └─ Attend le task_result via canal bloquant
+  ├─ Si hop_type="agent" → cet agent est direct de ce relay
+  │    └─ ws.SendToAgent("host-A", {type:"exec", ...})
   │
-  └─ Relay DMZ1 en mode push ?
-       └─ Oui → RelayClient.Exec("https://dmz1.example.com:7770", hostname, req)
-                  └─ Appel REST bloquant, retourne ExecResponse
+  └─ Si hop_type="relay" → l'agent est downstream du relay_id trouvé
+       └─ ws.DispatchToRelay(relay_id, {type:"task_forward", hostname:"host-A", ...})
 ```
 
-Si le hostname est inconnu de tous les relays :
-- HTTP 503 `{ "error": "host_not_found" }`
-
-**Protection anti-boucle** : l'en-tête `X-Relay-Hops` (initial : 8) est décrémenté à chaque nœud proxy. Un proxy qui reçoit `X-Relay-Hops: 0` retourne HTTP 508.
+Si le hostname est inconnu → HTTP 503 `{ "error": "host_not_found" }`.
 
 ---
 
-### 23.5 Chaînage proxy→proxy
+### 23.5 Chaînage repeater-to-repeater
 
-Un relay peut lui-même être un proxy. Le champ `is_proxy: true` (ou `node_type: "proxy"`) dans le message `relay_hello` indique ce fait au proxy parent.
+Tous les relays acceptent les mêmes interfaces (`/api/inventory`, `/api/exec`). Le chaînage est **transparent** :
 
 ```
-Proxy-A (expose /api/inventory, /api/exec)
-  └── (pull) Proxy-B
-        └── (pull) Relay-DMZ3
-              └── host-X
+Central expose /api/inventory, /api/exec
+  ├─ (WSS /ws/relay) relay-dmz1
+  │    ├─ (WSS /ws/relay) relay-zone-a
+  │    │   └─ [hosts: host-X, host-Y]
+  │    └─ [agents: host-A, host-B]
+  │
+  └─ (WSS /ws/relay) relay-zone2
+     └─ [agents: host-C]
 ```
 
-Le routage est transparent : `POST /api/exec/host-X` sur Proxy-A →
-routé vers Proxy-B → routé vers Relay-DMZ3 → exécuté sur host-X.
+Quand `POST /api/exec/host-X` arrive au central :
+1. Lookup relay_routing → `hop_type="relay", relay_id="dmz1"`
+2. Dispatch vers relay-dmz1 via WS
+3. relay-dmz1 reçoit task_forward, lookup son relay_routing → `hop_type="relay", relay_id="zone-a"`
+4. relay-dmz1 dispatch vers relay-zone-a
+5. relay-zone-a reçoit task_forward, lookup son relay_routing → `hop_type="agent", hostname="host-X"`
+6. relay-zone-a exécute sur host-X
 
-Le chaînage repose sur le fait que l'interface REST est identique entre un relay et un proxy.
+Chaque relay maintient sa propre table `relay_routing` avec ses enfants directs.
 
 ---
 
-### 23.6 Authentification inter-nœuds
+### 23.6 Authentification repeater-to-parent
 
-#### Rôle JWT `relay`
+**Deux rôles JWT distincts** (à proposer dans SECURITY.md §2) :
 
-Nouveau rôle JWT utilisé pour les connexions relay↔proxy :
+**Rôle A (Enfant ouvre vers Parent)** :
+- Permissions : ouvrir `/ws/relay`, envoyer `relay_hello`, `agent_list`, `event_forward`
+- Restrictions : pas d'accès `/api/inventory`, `/api/exec`, `/ws/agent`, `/api/admin`
+- Noms proposés : `relay-child` ou `relay-upstream-client` — **à confirmer**
 
-```json
-{
-  "sub": "dmz1",
-  "role": "relay",
-  "jti": "uuid",
-  "iat": 1234567890,
-  "exp": 1234571490
-}
+**Rôle B (Parent ouvre vers Enfant)** :
+- Permissions : ouvrir `/ws/relay` (en tant que serveur pour recevoir relay_hello)
+- Restrictions : même que Rôle A
+- Noms proposés : `relay-parent` ou `relay-downstream-server` — **à confirmer**
+
+Les tokens relay sont créés via `POST /api/admin/tokens` avec le rôle approprié :
+```bash
+secagent-server tokens create --role <rôle-A> \
+  --sub dmz1 \
+  --expires 90d \
+  --description "relay dmz1 towards central (push)"
 ```
 
-Permissions :
-- `open_relay_ws` : autorisation d'ouvrir `WSS /ws/relay`
-- Un JWT `role: relay` ne peut **pas** ouvrir `/ws/agent`
-- Un JWT `role: agent` ne peut **pas** ouvrir `/ws/relay`
-
-Les tokens relay sont créés via `POST /api/admin/tokens` avec `"role": "relay"` (même mécanisme que les tokens plugin).
+**Isolation des tokens** :
+- Chaque relay enfant a un token distinct
+- Tokens jamais loggés en clair (risque sécurité)
 
 ---
 
-### 23.7 Schéma de persistance (tables proxy)
+### 23.7 Schéma de persistance (tables repeater)
 
 ```sql
--- Relays enregistrés (mode pull auto-découverts ou mode push configurés)
+-- Relays enregistrés (auto-découverts via relay_hello pull ou déclarés via API)
 CREATE TABLE IF NOT EXISTS relay_nodes (
     id          TEXT PRIMARY KEY,       -- UUID interne
     relay_id    TEXT NOT NULL UNIQUE,   -- identifiant lisible, ex: "dmz1"
-    url         TEXT,                   -- URL base HTTP — mode push uniquement
     description TEXT,
-    token_hash  TEXT,                   -- hash token auth (mode push) ou JTI (mode pull)
-    mode        TEXT NOT NULL DEFAULT 'pull',   -- "pull" | "push"
-    is_proxy    INTEGER NOT NULL DEFAULT 0,     -- 1 si ce relay est lui-même un proxy
+    token_hash  TEXT,                   -- hash JWT JTI du token relay (validation blacklist futur)
+    mode        TEXT NOT NULL DEFAULT 'pull',   -- "pull" (WSS entrante) | "push" (WSS sortante)
     created_at  INTEGER NOT NULL,
-    last_seen   INTEGER,               -- Unix timestamp, NULL si jamais connecté
-    status      TEXT NOT NULL DEFAULT 'pending'  -- "connected" | "disconnected" | "pending"
+    last_seen   INTEGER,               -- Unix timestamp, NULL si jamais connecté (pull)
+    status      TEXT NOT NULL DEFAULT 'pending'  -- "connected" | "disconnected" | "pending" (pull)
 );
 
--- Table de routage hostname → relay_id (mise à jour par agent_list / poll push)
+-- Table de routage hostname → relay_id (un seul chemin par hôte)
 CREATE TABLE IF NOT EXISTS relay_routing (
-    hostname    TEXT PRIMARY KEY,
-    relay_id    TEXT NOT NULL,
-    updated_at  INTEGER NOT NULL,
-    FOREIGN KEY (relay_id) REFERENCES relay_nodes(relay_id)
+    hostname    TEXT PRIMARY KEY,       -- clé simple (un chemin par hôte)
+    relay_id    TEXT NOT NULL,         -- relay auquel l'agent se connecte directement
+    hop_type    TEXT CHECK(hop_type IN ('agent', 'relay')),
+    relay_chain TEXT,                  -- JSON sérialisé, ex: '["dmz1","zone-a"]'
+    updated_at  INTEGER NOT NULL
 );
+
+-- Tokens relay (association relay_id → JTI pour blacklist)
+-- (standard table du système, voir §7 auth)
+
+-- Group vars par relay (futur DB v3.1, pour v3.0 → env var RELAY_GROUP_VARS)
+-- À définir en #128
 ```
+
+**Changement clé** : clé composite `(hostname, relay_id)` supprimée. Clé simple `hostname` car un seul chemin par hôte en topologie arbre.
 
 ---
 
-### 23.8 Configuration
+### 23.8 Configuration repeater-enfant
 
-#### Variables d'environnement du proxy
+#### Variables d'environnement (mode enfant-push)
+
+Pour déploiement simple où l'enfant ouvre vers son parent :
 
 | Variable | Description |
 |---|---|
-| `PROXY_MODE` | `true` pour activer le mode proxy |
-| `PROXY_INVENTORY_POLL_INTERVAL` | Intervalle de poll mode push (défaut : `30s`) |
+| `REPEATER_ID` | Identifiant unique du relay (`dmz1`) |
+| `REPEATER_UPSTREAM_URL` | URL WSS du parent (`wss://central:7772`) |
+| `REPEATER_UPSTREAM_TOKEN` | Token d'authentification du relay enfant |
+| `RELAY_GROUP_VARS` | Variables Ansible JSON injectées pour ce relay : `{"region":"dmz"}` |
 
-#### Docker Compose multi-zones (qualif)
+Configuration sur l'enfant :
+```bash
+REPEATER_ID="dmz1"
+REPEATER_UPSTREAM_URL="wss://central.example.com:7772"
+REPEATER_UPSTREAM_TOKEN="secagent_relay_dmz1_xxx"
+RELAY_GROUP_VARS='{"region":"dmz"}'
+```
+
+#### Configuration parent (mode parent-push)
+
+Configuration sur le parent via API admin (voir §23.6 pour l'authentification) :
+```bash
+POST /api/admin/relays
+{
+  "relay_id": "dmz1",
+  "url": "wss://dmz1.internal:7772",
+  "token": "secagent_relay_central_to_dmz1_xxx",
+  "mode": "push"
+}
+```
+
+#### Docker Compose qualification v3.0
 
 ```yaml
-# docker-compose-proxy.yml (extrait)
 services:
-  proxy:
+  central:
+    image: secagent-server:3.0
     environment:
-      PROXY_MODE: "true"
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       ADMIN_TOKEN: ${ADMIN_TOKEN}
+      # REPEATER_ID absent → c'est la racine
+      RELAY_GROUP_VARS: '{"env":"prod"}'
     ports:
-      - "7773:7770"   # port distinct pour ne pas conflicton avec qualif standard
+      - "7770:7770"   # API REST
+      - "7771:7771"   # Admin CLI
+      - "7772:7772"   # WebSocket
 
   relay-dmz1:
+    image: secagent-server:3.0
     environment:
-      PROXY_MODE: "false"
-      RELAY_SERVER_URL: "wss://proxy:7772/ws/relay"
-      RELAY_JWT: ${RELAY_DMZ1_JWT}    # JWT rôle=relay pour s'authentifier au proxy
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      REPEATER_ID: "dmz1"
+      REPEATER_UPSTREAM_URL: "wss://central:7772"
+      REPEATER_UPSTREAM_TOKEN: "secagent_relay_dmz1_xxx"
+      RELAY_GROUP_VARS: '{"region":"dmz"}'
+    depends_on:
+      - central
+    ports:
+      - "7773:7770"
+      - "7774:7772"
 ```
 
 ---
 
-### 23.9 Récapitulatif modifications par composant
+### 23.9 Récapitulatif modifications par composant (v3.0)
 
 | Composant | Modification |
 |---|---|
-| **DB** | Tables `relay_nodes` + `relay_routing` |
-| **Server (WS)** | Nouveau handler `/ws/relay` (`ws/relay_handler.go`) |
-| **Server (proxy)** | Nouveau package `internal/proxy/` (router, client push, push_manager) |
-| **Server (handlers)** | `exec.go` + `inventory.go` : routage proxy si `PROXY_MODE=true` |
-| **Server (admin)** | Endpoints `POST/GET/DELETE /api/admin/relays`, `GET /api/admin/relays/status` |
-| **Server (auth)** | Rôle JWT `relay` dans `auth/jwt.go` |
-| **CLI** | `secagent-server relays list|get|status|add|remove` |
-| **Infra** | `DEPLOYMENT/qualif/docker-compose-proxy.yml` |
+| **DB schema** | Schéma : `relay_nodes` (colonne `mode` : pull/push), `relay_routing` (clé simple hostname seul, plus de composite) |
+| **Server (WS)** | Handler `/ws/relay` au port 7772 ; auto-enregistrement relay_hello pour mode='pull' ; rejet si relay_id ∈ relay_chain |
+| **Server (repeater-client)** | Une seule connexion vers le parent (pas de N upstreams) ; variables REPEATER_UPSTREAM_URL + TOKEN ; pas de YAML |
+| **Server (handlers)** | `exec.go` + `inventory.go` : routage selon relay_routing simple ; inventaire = toute la descendance |
+| **Server (routing)** | Lookup clé simple `hostname` (un seul chemin par hôte, pas de sélection multi-chemins) |
+| **Server (events)** | Remontée parent à parent ; relay_chain accumule ; pas de déduplication (un seul chemin) |
+| **Server (hooks)** | Filter `relay_chain_contains` ; signature `Dispatcher.Dispatch()` + relayChain param |
+| **Server (admin)** | Endpoints `/api/admin/relays` (list, get, status, add, remove) ; enregistrement API pour mode=push |
+| **Server (auth)** | Deux rôles JWT (à proposer) : enfant ouvre vers parent, parent ouvre vers enfant ; `relay` role N'a PAS droit `read_inventory` |
+| **Server (startup)** | Validation : si `REPEATER_UPSTREAM_URL` et `REPEATER_UPSTREAM_TOKEN` définis → mode enfant-push, vérifier parent |
+| **Suppression** | Fichiers proxy (push_manager.go, client.go) ; variables REPEATER_UPSTREAMS_FILE, REPEATER_UPSTREAMS ; plus de multi-upstream |
+| **CLI** | `secagent-server relays list|get|status|add` |
+| **Infra** | `DEPLOYMENT/qualif/docker-compose.yml` : multi-relay avec variables simples (pas de YAML) |
+
