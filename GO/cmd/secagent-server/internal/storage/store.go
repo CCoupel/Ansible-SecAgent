@@ -157,16 +157,31 @@ CREATE TABLE IF NOT EXISTS relay_routing (
 CREATE INDEX IF NOT EXISTS idx_relay_routing_relay_id ON relay_routing (relay_id);
 `
 
+// parseDatabaseURL converts a DATABASE_URL string to a SQLite file path.
+//
+// Supported forms:
+//
+//	sqlite:////abs/path.db  →  /abs/path.db   (absolute path, 4 slashes)
+//	sqlite:///rel/path.db   →  rel/path.db    (relative path, 3 slashes)
+//	:memory:                →  :memory:       (in-memory, unchanged)
+//	/raw/path.db            →  /raw/path.db   (raw path, unchanged)
+//
+// The rule is simple: strip the literal prefix "sqlite:///" (9 chars) when
+// present, then return the remainder as-is.  The 4-slash absolute form
+// becomes "/abs/path" naturally (the 4th slash is part of the path); the
+// 3-slash relative form becomes "rel/path" (no leading slash).
+func parseDatabaseURL(dbURL string) string {
+	const prefix = "sqlite:///"
+	if strings.HasPrefix(dbURL, prefix) {
+		return dbURL[len(prefix):]
+	}
+	return dbURL
+}
+
 // NewStore creates a new SQLite store and opens the connection
 func NewStore(dbURL string) (*Store, error) {
-	// dbURL format: "sqlite:////data/relay.db" or "sqlite:///./relay.db"
-	// Convert to file path for sql.Open
-	filePath := dbURL
-	if strings.HasPrefix(filePath, "sqlite:////") {
-		filePath = filePath[len("sqlite:////"):]
-	} else if strings.HasPrefix(filePath, "sqlite:///") {
-		filePath = "/" + filePath[len("sqlite:///"):]
-	}
+	// Convert DATABASE_URL to a file path understood by sql.Open.
+	filePath := parseDatabaseURL(dbURL)
 
 	// Ensure parent directory exists
 	if dir := filepath.Dir(filePath); dir != "" && dir != "." {

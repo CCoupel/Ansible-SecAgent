@@ -521,6 +521,72 @@ func TestCleanupExpiredBlacklistAlias(t *testing.T) {
 }
 
 // ========================================================================
+// parseDatabaseURL — #131 fix: off-by-one in sqlite://// absolute path
+// ========================================================================
+
+func TestParseDatabaseURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		// Core cases covered by issue #131
+		{
+			name:  "four-slash absolute path",
+			input: "sqlite:////abs/path.db",
+			want:  "/abs/path.db",
+		},
+		{
+			name:  "three-slash relative path",
+			input: "sqlite:///rel/path.db",
+			want:  "rel/path.db",
+		},
+		{
+			name:  "three-slash dot-relative path",
+			input: "sqlite:///./data/relay.db",
+			want:  "./data/relay.db",
+		},
+		// Edge: deeply nested absolute path
+		{
+			name:  "four-slash nested absolute",
+			input: "sqlite:////var/lib/relay/relay.db",
+			want:  "/var/lib/relay/relay.db",
+		},
+		// Pass-through cases (no sqlite:// prefix)
+		{
+			name:  "in-memory special value",
+			input: ":memory:",
+			want:  ":memory:",
+		},
+		{
+			name:  "raw absolute path",
+			input: "/raw/path.db",
+			want:  "/raw/path.db",
+		},
+		{
+			name:  "raw relative path",
+			input: "relay.db",
+			want:  "relay.db",
+		},
+		// Empty string — pass through, sql.Open will error
+		{
+			name:  "empty string",
+			input: "",
+			want:  "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseDatabaseURL(tc.input)
+			if got != tc.want {
+				t.Errorf("parseDatabaseURL(%q) = %q; want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// ========================================================================
 // DDL idempotency
 // ========================================================================
 
