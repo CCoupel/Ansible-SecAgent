@@ -2,18 +2,16 @@
 //
 // Implements PLAN_PHASE12.md §12.10 — Issue #119
 //
-// Six scenarios covering the full proxy/relay topology:
+// Five scenarios covering the full proxy/relay topology (v3.0 — push mode removed #123):
 //
 //   1. TestProxyModeExecRouting      — pull mode: real WS relay goroutine, real ws.DispatchToRelay
 //   2. TestProxyInventoryAggregation — two WS relays × 3 agents = 6 in aggregated inventory
 //   3. TestProxyHostNotFound         — unknown hostname → ErrHostNotFound sentinel
 //   4. TestProxyRelayDisconnect      — WS relay disconnect clears routing table
 //   5. TestProxyChaining             — pull mode + is_proxy flag stored in DB, exec successful
-//   6. TestProxyPushMode             — push mode: inventory sync → routing table → exec succeeds
 //
 // All tests run in-memory (no external infrastructure required):
 //   - Pull-mode tests: httptest.Server + gorilla/websocket relay goroutines
-//   - Push-mode tests: httptest.Server for relay REST API
 //   - Storage: storage.NewStore(":memory:")
 //
 // Non-regression: additive tests only — no modifications to existing *_test.go files.
@@ -21,7 +19,6 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -180,7 +177,6 @@ func intRelayEchoWorker(conn *websocket.Conn, replyStdout string) <-chan struct{
 func intNewPullRouter(s *storage.Store) *ProxyRouter {
 	return &ProxyRouter{
 		store:                 s,
-		pushClients:           make(map[string]*RelayClient),
 		isRelayConnected:      ws.IsRelayConnected,
 		dispatchToRelay:       ws.DispatchToRelay,
 		unregisterRelayFuture: ws.UnregisterRelayTaskFuture,
@@ -564,155 +560,7 @@ func TestProxyChaining(t *testing.T) {
 	}
 }
 
-// ── Scenario 6: Push mode — routing table populated, exec succeeds ─────────────
-
-// TestProxyPushMode verifies the full push-mode flow:
-//  1. A real httptest relay server exposes GET /api/inventory (2 agents)
-//     and POST /api/exec/{hostname} (rc=0).
-//  2. RelayClient.GetInventory() fetches the 2 agents.
-//  3. BulkUpsertRelayRouting populates the routing table.
-//  4. AggregateRelayInventory returns the 2 agents from the push relay.
-//  5. ProxyRouter.RouteExec routes the exec to the relay via REST push client.
-//
-// This tests the combined inventory-sync → routing-table → exec-routing flow
-// that the PushManager drives in production.
-func TestProxyPushMode(t *testing.T) {
-	const (
-		relayID = "int-push-relay"
-		hostX   = "int-push-hx"
-		hostY   = "int-push-hy"
-	)
-
-	wantExecStdout := "push-exec-ok"
-	var execCalled bool
-	var execCalledMu sync.Mutex
-
-	// Real httptest relay server
-	relaySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == "/api/inventory":
-			json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-				"all": map[string]interface{}{
-					"hosts": []string{hostX, hostY},
-				},
-				"_meta": map[string]interface{}{
-					"hostvars": map[string]interface{}{
-						hostX: map[string]interface{}{
-							"secagent_status":    "connected",
-							"secagent_last_seen": "2026-05-22T10:00:00Z",
-						},
-						hostY: map[string]interface{}{
-							"secagent_status": "connected",
-						},
-					},
-				},
-			})
-		case strings.HasPrefix(r.URL.Path, "/api/exec/"):
-			execCalledMu.Lock()
-			execCalled = true
-			execCalledMu.Unlock()
-			json.NewEncoder(w).Encode(ExecResponse{ //nolint:errcheck
-				RC:     0,
-				Stdout: wantExecStdout,
-			})
-		default:
-			http.Error(w, "not found", http.StatusNotFound)
-		}
-	}))
-	t.Cleanup(relaySrv.Close)
-
-	s := newRouterTestStore(t)
-
-	// Register the relay node in push mode
-	node := storage.RelayNode{
-		ID:        "uuid-int-push",
-		RelayID:   relayID,
-		URL:       relaySrv.URL,
-		TokenHash: "int-push-token",
-		Mode:      "push",
-		Status:    "connected",
-		CreatedAt: time.Now().Unix(),
-	}
-	if err := s.UpsertRelayNode(node); err != nil {
-		t.Fatalf("UpsertRelayNode: %v", err)
-	}
-
-	// Simulate inventory sync: RelayClient fetches agents and stores routing
-	client := NewRelayClient(relayID, relaySrv.URL, "int-push-token")
-	agents, err := client.GetInventory(context.Background())
-	if err != nil {
-		t.Fatalf("GetInventory: %v", err)
-	}
-	if len(agents) != 2 {
-		t.Fatalf("expected 2 agents, got %d", len(agents))
-	}
-
-	hostnames := make([]string, len(agents))
-	for i, a := range agents {
-		hostnames[i] = a.Hostname
-	}
-	if bulkErr := s.BulkUpsertRelayRouting(relayID, hostnames); bulkErr != nil {
-		t.Fatalf("BulkUpsertRelayRouting: %v", bulkErr)
-	}
-
-	// AggregateRelayInventory returns 2 push-mode relay agents
-	router := &ProxyRouter{
-		store:                 s,
-		pushClients:           make(map[string]*RelayClient),
-		isRelayConnected:      func(string) bool { return false }, // push mode: no WS
-		dispatchToRelay:       nil,
-		unregisterRelayFuture: nil,
-	}
-
-	entries, invErr := router.AggregateRelayInventory()
-	if invErr != nil {
-		t.Fatalf("AggregateRelayInventory: %v", invErr)
-	}
-	if len(entries) != 2 {
-		t.Errorf("expected 2 aggregated entries, got %d", len(entries))
-	}
-	for _, e := range entries {
-		if e.RelayID != relayID {
-			t.Errorf("expected relay_id=%s, got %q", relayID, e.RelayID)
-		}
-	}
-
-	// RouteExec to hostX routes via push client to relay REST API
-	resp, routeErr := router.RouteExec(
-		context.Background(),
-		hostX,
-		"int-push-task-1",
-		ExecRequest{Cmd: "echo push-mode", Timeout: 5},
-	)
-	if routeErr != nil {
-		t.Fatalf("RouteExec push mode: %v", routeErr)
-	}
-	if resp.RC != 0 {
-		t.Errorf("expected RC=0, got %d", resp.RC)
-	}
-	if resp.Stdout != wantExecStdout {
-		t.Errorf("expected stdout=%q, got %q", wantExecStdout, resp.Stdout)
-	}
-
-	execCalledMu.Lock()
-	called := execCalled
-	execCalledMu.Unlock()
-	if !called {
-		t.Error("relay /api/exec was not called by push mode router")
-	}
-
-	// RouteExec to hostY (not found in routing? — already in table, verify)
-	resp2, routeErr2 := router.RouteExec(
-		context.Background(),
-		hostY,
-		"int-push-task-2",
-		ExecRequest{Cmd: "echo push-y", Timeout: 5},
-	)
-	if routeErr2 != nil {
-		t.Fatalf("RouteExec push hostY: %v", routeErr2)
-	}
-	if resp2.RC != 0 {
-		t.Errorf("expected RC=0 for hostY, got %d", resp2.RC)
-	}
-}
+// Push-mode integration tests were removed in v3.0 (#123) when PushManager
+// and RelayClient were deleted.  The offline behaviour for push relays without
+// a WS connection is covered by TestProxyRouter_RouteExec_PushModeOffline
+// in router_test.go.  Push routing will be re-enabled by #140.

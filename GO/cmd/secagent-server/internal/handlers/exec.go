@@ -17,12 +17,12 @@ import (
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
-// proxyRouter is injected from main.go when PROXY_MODE is enabled.
+// proxyRouter is always initialized by main.go (v3.0+).
 // When non-nil, exec/upload/fetch operations check relay_routing before local agents.
 var proxyRouter *proxy.ProxyRouter
 
 // SetProxyRouter injects a ProxyRouter for relay task routing.
-// Called from main.go when PROXY_MODE=true.
+// Called unconditionally from main.go at startup.
 func SetProxyRouter(r *proxy.ProxyRouter) { proxyRouter = r }
 
 // ExecRequest represents a command execution request

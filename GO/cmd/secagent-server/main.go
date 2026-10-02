@@ -13,7 +13,6 @@ import (
 
 	"secagent-server/cmd/secagent-server/internal/broker"
 	"secagent-server/cmd/secagent-server/internal/cli"
-	"secagent-server/cmd/secagent-server/internal/config"
 	"secagent-server/cmd/secagent-server/internal/handlers"
 	"secagent-server/cmd/secagent-server/internal/hooks"
 	"secagent-server/cmd/secagent-server/internal/proxy"
@@ -40,7 +39,6 @@ func isCLIMode() bool {
 	case "minions", "security", "inventory", "server", "tokens", "hooks", "relays", "help", "completion":
 		return true
 	}
-	// --proxy / --proxy-mode are server flags, not CLI subcommands
 	return false
 }
 
@@ -67,17 +65,9 @@ func main() {
 		logLevel = "INFO"
 	}
 
-	// Support --proxy / --proxy-mode flag as an alternative to the PROXY_MODE env var.
-	// When the flag is present, override the env var so LoadProxyConfig picks it up.
-	for _, arg := range os.Args[1:] {
-		if arg == "--proxy" || arg == "--proxy-mode" {
-			os.Setenv("PROXY_MODE", "true")
-			break
-		}
-	}
-
-	// Load proxy configuration (reads PROXY_MODE + PROXY_RELAYS env vars).
-	proxyCfg := config.LoadProxyConfig()
+	// PROXY_MODE and PROXY_RELAYS env vars are silently ignored (removed in v3.0 #123).
+	// Relay topology is always active: relays connect via /ws/relay (pull mode).
+	// Push-mode relay entries in the DB are preserved for future use (#140).
 
 	// Validate required environment variables
 	if jwtSecret == "" {
@@ -92,12 +82,6 @@ func main() {
 	log.Printf("[INIT] DATABASE_URL: %s", dbURL)
 	log.Printf("[INIT] LOG_LEVEL: %s", logLevel)
 
-	// Log active operating mode
-	if proxyCfg.Enabled {
-		log.Printf("[PROXY] Mode proxy activé — %d relay(s) push configuré(s)", len(proxyCfg.PushRelays))
-	} else {
-		log.Printf("[INFO] mode=standalone — relay standard")
-	}
 	// Initialize storage (SQLite)
 	log.Println("[INIT] Initializing SQLite database...")
 	var err error
@@ -114,18 +98,20 @@ func main() {
 	// Inject store into register/token handlers
 	handlers.SetRegisterStore(store)
 
-	// Proxy mode: initialize ProxyRouter (task routing) and PushManager (inventory sync)
-	if proxyCfg.Enabled {
-		proxyRouter := proxy.NewProxyRouter(store)
-		handlers.SetProxyRouter(proxyRouter)
+	// Always initialize ProxyRouter — relay WS topology is a core feature (v3.0+).
+	// Push-mode relay entries are preserved in the DB but are inert until #140.
+	proxyRouter := proxy.NewProxyRouter(store)
+	handlers.SetProxyRouter(proxyRouter)
 
-		pushMgr := proxy.NewPushManager(store, 0) // 0 → DefaultPollInterval (30s)
-		pushCtx, pushCancel := context.WithCancel(context.Background())
-		defer pushCancel()
-		go pushMgr.Start(pushCtx)
-
-		log.Printf("[PROXY] ProxyRouter initialized, PushManager started (poll=%s)", proxy.DefaultPollInterval)
+	// Log push-mode relay nodes from DB so operators know they are inert.
+	if nodes, listErr := store.ListRelayNodes(); listErr == nil {
+		for _, n := range nodes {
+			if n.Mode == "push" {
+				log.Printf("[RELAY] relay_id=%s mode=push → inert (REST polling removed in v3.0, see #140)", n.RelayID)
+			}
+		}
 	}
+	log.Println("[OK] ProxyRouter initialized (pull-mode WS topology)")
 
 	// Load/generate RSA keypair and JWT secrets from DB (idempotent)
 	log.Println("[INIT] Loading server keys from DB...")
@@ -261,12 +247,10 @@ func main() {
 
 	// === PORT 7772: WEBSOCKET ===
 	wsRouter.HandleFunc("/ws/agent", ws.AgentHandler)
-	// /ws/relay: only active in proxy mode (relays connect to the proxy here)
-	if proxyCfg.Enabled {
-		wsRouter.HandleFunc("/ws/relay", ws.RelayHandler)
-		apiRouter.HandleFunc("/ws/relay", ws.RelayHandler) // also on 7770 for compat
-		log.Println("[PROXY] /ws/relay endpoint enabled")
-	}
+	// /ws/relay: always active — relays connect to this server via pull mode
+	wsRouter.HandleFunc("/ws/relay", ws.RelayHandler)
+	apiRouter.HandleFunc("/ws/relay", ws.RelayHandler) // also on 7770 for compat
+	log.Println("[RELAY] /ws/relay endpoint enabled")
 
 	// Create HTTP servers
 	apiServer := &http.Server{

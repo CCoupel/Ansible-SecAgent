@@ -104,10 +104,13 @@ func mockRelayHTTPServer(t *testing.T) *httptest.Server {
 
 // ── ExecCommand proxy routing ─────────────────────────────────────────────────
 
+// TestExecCommand_ProxyRouting_PushMode verifies that a push-mode relay without
+// a WS connection returns relay_offline (503).  REST push routing was removed in
+// v3.0 (#123); push entries are preserved in DB but are inert until #140.
 func TestExecCommand_ProxyRouting_PushMode(t *testing.T) {
-	relaySrv := mockRelayHTTPServer(t)
 	s, withAuth := setupProxyTest(t)
-	seedProxyRelay(t, s, "dmz-exec", relaySrv.URL, []string{"relay-host-exec"})
+	// Push relay: stored in DB but not WS-connected → relay_offline
+	seedProxyRelay(t, s, "dmz-exec", "http://dmz-exec:7770", []string{"relay-host-exec"})
 
 	body, _ := json.Marshal(map[string]interface{}{"cmd": "echo hi", "timeout": 10})
 	req := withAuth(httptest.NewRequest("POST", "/api/exec/relay-host-exec", bytes.NewReader(body)))
@@ -117,13 +120,14 @@ func TestExecCommand_ProxyRouting_PushMode(t *testing.T) {
 
 	ExecCommand(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d — %s", w.Code, w.Body.String())
+	// Push relay without WS → relay_offline (503)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 (relay_offline for push relay without WS), got %d — %s", w.Code, w.Body.String())
 	}
-	var resp map[string]interface{}
+	var resp map[string]string
 	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
-	if resp["stdout"] != "relay-exec-ok" {
-		t.Errorf("expected stdout=relay-exec-ok, got %v", resp["stdout"])
+	if !strings.Contains(resp["error"], "relay_offline") {
+		t.Errorf("expected relay_offline error, got %q", resp["error"])
 	}
 }
 
@@ -178,10 +182,12 @@ func TestExecCommand_ProxyRouting_RelayOffline(t *testing.T) {
 
 // ── UploadFile proxy routing ──────────────────────────────────────────────────
 
+// TestUploadFile_ProxyRouting_PushMode verifies that upload to a push-mode relay
+// without WS connection returns relay_offline (503) in v3.0 (#123).
 func TestUploadFile_ProxyRouting_PushMode(t *testing.T) {
-	relaySrv := mockRelayHTTPServer(t)
 	s, withAuth := setupProxyTest(t)
-	seedProxyRelay(t, s, "dmz-upload", relaySrv.URL, []string{"upload-relay-host"})
+	// Push relay: stored in DB but not WS-connected → relay_offline
+	seedProxyRelay(t, s, "dmz-upload", "http://dmz-upload:7770", []string{"upload-relay-host"})
 
 	body, _ := json.Marshal(map[string]interface{}{
 		"dest": "/tmp/f.txt", "data": "aGVsbG8=", "mode": "0644",
@@ -193,17 +199,25 @@ func TestUploadFile_ProxyRouting_PushMode(t *testing.T) {
 
 	UploadFile(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d — %s", w.Code, w.Body.String())
+	// Push relay without WS → relay_offline (503)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 (relay_offline for push relay), got %d — %s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	if !strings.Contains(resp["error"], "relay_offline") {
+		t.Errorf("expected relay_offline error, got %q", resp["error"])
 	}
 }
 
 // ── FetchFile proxy routing ───────────────────────────────────────────────────
 
+// TestFetchFile_ProxyRouting_PushMode verifies that fetch from a push-mode relay
+// without WS connection returns relay_offline (503) in v3.0 (#123).
 func TestFetchFile_ProxyRouting_PushMode(t *testing.T) {
-	relaySrv := mockRelayHTTPServer(t)
 	s, withAuth := setupProxyTest(t)
-	seedProxyRelay(t, s, "dmz-fetch", relaySrv.URL, []string{"fetch-relay-host"})
+	// Push relay: stored in DB but not WS-connected → relay_offline
+	seedProxyRelay(t, s, "dmz-fetch", "http://dmz-fetch:7770", []string{"fetch-relay-host"})
 
 	body, _ := json.Marshal(map[string]interface{}{"src": "/etc/hosts"})
 	req := withAuth(httptest.NewRequest("POST", "/api/fetch/fetch-relay-host", bytes.NewReader(body)))
@@ -213,13 +227,14 @@ func TestFetchFile_ProxyRouting_PushMode(t *testing.T) {
 
 	FetchFile(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d — %s", w.Code, w.Body.String())
+	// Push relay without WS → relay_offline (503)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 (relay_offline for push relay), got %d — %s", w.Code, w.Body.String())
 	}
-	var resp map[string]interface{}
+	var resp map[string]string
 	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
-	if resp["data"] == "" || resp["data"] == nil {
-		t.Error("expected non-empty data in fetch response")
+	if !strings.Contains(resp["error"], "relay_offline") {
+		t.Errorf("expected relay_offline error, got %q", resp["error"])
 	}
 }
 

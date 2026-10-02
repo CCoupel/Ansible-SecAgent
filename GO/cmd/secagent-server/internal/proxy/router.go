@@ -1,11 +1,17 @@
-// Phase 12 — router.go
-// ProxyRouter routes exec/upload/fetch operations to the appropriate downstream relay.
+// Package proxy implements the relay router for secagent-server.
+//
+// ProxyRouter routes exec/upload/fetch operations to downstream relays.
+// All routing uses the WebSocket pull path: relays connect to this server
+// via /ws/relay and the router dispatches tasks over those connections.
+//
+// Push-mode relay entries (relay_nodes.mode = "push") are preserved in the
+// DB for future use (#140) but are currently inert: a relay registered as
+// push that is not connected via /ws/relay is treated as offline.
 //
 // Routing decision:
 //  1. Look up hostname in relay_routing table → find relay_id.
-//  2. If relay is connected via /ws/relay (pull mode) → dispatch via WebSocket.
-//  3. If relay has a URL in DB (push mode)           → call REST API directly.
-//  4. If neither                                      → return ErrHostNotFound.
+//  2. If relay is connected via /ws/relay (ws.IsRelayConnected) → dispatch WS.
+//  3. Otherwise → return relay_offline error.
 //
 // The WS dispatch functions are injectable for unit-test isolation.
 package proxy
@@ -15,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/storage"
@@ -35,21 +40,18 @@ type RelayAgentEntry struct {
 
 // ProxyRouter routes exec/upload/fetch operations to the appropriate relay.
 type ProxyRouter struct {
-	store       *storage.Store
-	pushClients map[string]*RelayClient // relay_id → cached push client
-	mu          sync.Mutex
+	store *storage.Store
 
 	// Injectable WS functions — overridden in unit tests to avoid WS global state.
-	isRelayConnected       func(relayID string) bool
-	dispatchToRelay        func(relayID string, msg ws.RelayMessage) (chan ws.RelayTaskResult, error)
-	unregisterRelayFuture  func(taskID string)
+	isRelayConnected      func(relayID string) bool
+	dispatchToRelay       func(relayID string, msg ws.RelayMessage) (chan ws.RelayTaskResult, error)
+	unregisterRelayFuture func(taskID string)
 }
 
 // NewProxyRouter creates a ProxyRouter backed by the given store.
 func NewProxyRouter(store *storage.Store) *ProxyRouter {
 	return &ProxyRouter{
 		store:                 store,
-		pushClients:           make(map[string]*RelayClient),
 		isRelayConnected:      ws.IsRelayConnected,
 		dispatchToRelay:       ws.DispatchToRelay,
 		unregisterRelayFuture: ws.UnregisterRelayTaskFuture,
@@ -70,26 +72,18 @@ func (r *ProxyRouter) GetRelayForHostname(hostname string) (string, error) {
 }
 
 // RouteExec routes an exec request to the relay responsible for hostname.
-// Returns ErrHostNotFound if no relay owns the hostname.
+// Returns ErrHostNotFound if no relay owns the hostname, or relay_offline if
+// the relay is not connected via /ws/relay.
 func (r *ProxyRouter) RouteExec(ctx context.Context, hostname, taskID string, req ExecRequest) (*ExecResponse, error) {
 	relayID, err := r.GetRelayForHostname(hostname)
 	if err != nil {
 		return nil, err
 	}
-
-	// Pull mode: relay connected via /ws/relay
-	if r.isRelayConnected(relayID) {
-		log.Printf("[PROXY] RouteExec pull: hostname=%s relay_id=%s task_id=%s", hostname, relayID, taskID)
-		return r.pullExec(ctx, relayID, hostname, taskID, req)
-	}
-
-	// Push mode: proxy calls relay REST API
-	log.Printf("[PROXY] RouteExec push: hostname=%s relay_id=%s task_id=%s", hostname, relayID, taskID)
-	client, err := r.getPushClient(relayID)
-	if err != nil {
+	if !r.isRelayConnected(relayID) {
 		return nil, fmt.Errorf("relay_offline: %s", relayID)
 	}
-	return client.Exec(ctx, hostname, req)
+	log.Printf("[PROXY] RouteExec: hostname=%s relay_id=%s task_id=%s", hostname, relayID, taskID)
+	return r.pullExec(ctx, relayID, hostname, taskID, req)
 }
 
 // RouteUpload routes a file upload to the relay responsible for hostname.
@@ -98,18 +92,11 @@ func (r *ProxyRouter) RouteUpload(ctx context.Context, hostname, taskID string, 
 	if err != nil {
 		return err
 	}
-
-	if r.isRelayConnected(relayID) {
-		log.Printf("[PROXY] RouteUpload pull: hostname=%s relay_id=%s", hostname, relayID)
-		return r.pullUpload(ctx, relayID, hostname, taskID, req)
-	}
-
-	log.Printf("[PROXY] RouteUpload push: hostname=%s relay_id=%s", hostname, relayID)
-	client, err := r.getPushClient(relayID)
-	if err != nil {
+	if !r.isRelayConnected(relayID) {
 		return fmt.Errorf("relay_offline: %s", relayID)
 	}
-	return client.Upload(ctx, hostname, req)
+	log.Printf("[PROXY] RouteUpload: hostname=%s relay_id=%s", hostname, relayID)
+	return r.pullUpload(ctx, relayID, hostname, taskID, req)
 }
 
 // RouteFetch routes a file fetch to the relay responsible for hostname.
@@ -118,18 +105,11 @@ func (r *ProxyRouter) RouteFetch(ctx context.Context, hostname, taskID string, r
 	if err != nil {
 		return nil, err
 	}
-
-	if r.isRelayConnected(relayID) {
-		log.Printf("[PROXY] RouteFetch pull: hostname=%s relay_id=%s", hostname, relayID)
-		return r.pullFetch(ctx, relayID, hostname, taskID, req)
-	}
-
-	log.Printf("[PROXY] RouteFetch push: hostname=%s relay_id=%s", hostname, relayID)
-	client, err := r.getPushClient(relayID)
-	if err != nil {
+	if !r.isRelayConnected(relayID) {
 		return nil, fmt.Errorf("relay_offline: %s", relayID)
 	}
-	return client.Fetch(ctx, hostname, req)
+	log.Printf("[PROXY] RouteFetch: hostname=%s relay_id=%s", hostname, relayID)
+	return r.pullFetch(ctx, relayID, hostname, taskID, req)
 }
 
 // AggregateRelayInventory returns all agent entries from relay_routing
@@ -149,7 +129,7 @@ func (r *ProxyRouter) AggregateRelayInventory() ([]RelayAgentEntry, error) {
 		if n.LastSeen != nil {
 			nodeLastSeen[n.RelayID] = *n.LastSeen
 		}
-		// Live WS connection overrides DB status for pull-mode relays
+		// Live WS connection overrides DB status
 		if r.isRelayConnected(n.RelayID) {
 			nodeStatus[n.RelayID] = "connected"
 		}
@@ -178,11 +158,11 @@ func (r *ProxyRouter) AggregateRelayInventory() ([]RelayAgentEntry, error) {
 	return entries, nil
 }
 
-// ── Pull mode ─────────────────────────────────────────────────────────────────
+// ── Pull mode (WS dispatch) ───────────────────────────────────────────────────
 
 const (
-	pullRouteMarginSec  = 5
-	pullFileTimeoutSec  = 60
+	pullRouteMarginSec = 5
+	pullFileTimeoutSec = 60
 )
 
 func (r *ProxyRouter) pullExec(ctx context.Context, relayID, hostname, taskID string, req ExecRequest) (*ExecResponse, error) {
@@ -285,33 +265,4 @@ func (r *ProxyRouter) pullFetch(ctx context.Context, relayID, hostname, taskID s
 		r.unregisterRelayFuture(taskID)
 		return nil, fmt.Errorf("context_cancelled")
 	}
-}
-
-// ── Push mode helpers ─────────────────────────────────────────────────────────
-
-// getPushClient returns (or creates) a cached RelayClient for relayID.
-// Looks up the relay's URL and token from the DB.
-func (r *ProxyRouter) getPushClient(relayID string) (*RelayClient, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if c, ok := r.pushClients[relayID]; ok {
-		return c, nil
-	}
-
-	node, err := r.store.GetRelayNode(relayID)
-	if err != nil {
-		return nil, fmt.Errorf("relay_db_error: %w", err)
-	}
-	if node == nil {
-		return nil, fmt.Errorf("relay_not_found: %s", relayID)
-	}
-	if node.URL == "" {
-		return nil, fmt.Errorf("relay_no_url: %s (push mode requires URL)", relayID)
-	}
-
-	client := NewRelayClient(relayID, node.URL, node.TokenHash)
-	r.pushClients[relayID] = client
-	log.Printf("[PROXY] ProxyRouter: push client created relay_id=%s url=%s", relayID, node.URL)
-	return client, nil
 }

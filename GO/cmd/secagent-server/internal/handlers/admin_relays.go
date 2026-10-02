@@ -154,8 +154,9 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 
 	case "push":
 		node.URL = req.URL
-		// Store plain token for push mode — PushManager sends it as Bearer token
-		// to authenticate to the downstream relay's admin API (Sprint 2 design).
+		// Store plain token for push mode — reserved for future use (#140).
+		// Push-mode relay entries are stored but REST polling is currently inert
+		// (PushManager was removed in v3.0 #123).
 		// Pull mode stores SHA-256 only (JWT not needed after registration).
 		node.TokenHash = req.Token
 	}
