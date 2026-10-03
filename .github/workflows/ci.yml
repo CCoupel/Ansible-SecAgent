@@ -105,5 +105,8 @@ jobs:
           version: v2.14.0
           working-directory: GO
           # Sans --new-from-rev : analyse tout le code.
-          # --show-stats : affiche en fin de run le nombre d'issues par linter.
-          args: --timeout=10m --show-stats
+          # --show-stats : affiche le nombre d'issues par linter.
+          # --max-issues-per-linter=0 et --max-same-issues=0 : illimite (mesure sans plafond).
+          # Ces flags CLI overrident max-issues-per-linter/max-same-issues de .golangci.yml,
+          # qui restent en place pour le job lint (nouveaux problemes) inchange.
+          args: --timeout=10m --show-stats --max-issues-per-linter=0 --max-same-issues=0
