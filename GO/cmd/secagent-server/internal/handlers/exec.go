@@ -135,14 +135,27 @@ func checkAgentOnline(hostname string) error {
 	return nil
 }
 
-// logExecSafe logs exec request, masking stdin if become=True
+// logExecSafe logs an exec request with explicit stdin markers.
+//
+// SECURITY (CRITICAL): become_pass must never appear in any log.
+//   - become=true  + stdin non-nil  → "stdin=<redacted>"
+//   - become=false + stdin non-nil  → "stdin=<set>"
+//   - stdin nil (any)               → "stdin=none"
+//
+// Using explicit string markers (not %v on a *string) ensures the behaviour
+// is intentional and not accidentally safe via pointer-address printing.
 func logExecSafe(hostname string, taskID string, req *ExecRequest) {
-	stdinLog := req.Stdin
-	if req.Become && req.Stdin != nil {
-		stdinLog = pointerString("***REDACTED***")
+	var stdinMarker string
+	switch {
+	case req.Stdin == nil:
+		stdinMarker = "none"
+	case req.Become:
+		stdinMarker = "<redacted>"
+	default:
+		stdinMarker = "<set>"
 	}
-	log.Printf("Exec request: hostname=%s task_id=%s cmd=%s become=%v stdin=%v timeout=%d",
-		hostname, taskID, req.Cmd, req.Become, stdinLog, req.Timeout)
+	log.Printf("Exec request: hostname=%s task_id=%s cmd=%s become=%v stdin=%s timeout=%d",
+		hostname, taskID, req.Cmd, req.Become, stdinMarker, req.Timeout)
 }
 
 // pointerString returns a pointer to a string

@@ -1,13 +1,8 @@
-// become_pass_test.go — Tests that become_pass (stdin when become=true) is never logged.
+// become_pass_test.go — Regression tests for logExecSafe stdin masking.
 //
-// SECURITY (CRITICAL): logExecSafe must redact stdin when become=true.
-// A leaked become_pass would expose privilege-escalation credentials.
-//
-// Implementation note: logExecSafe logs stdin as a *string with %v, which emits
-// the pointer address — the actual string value is never emitted.  When become=true,
-// the pointer is replaced with one pointing to "***REDACTED***", so any future
-// refactor that switches to %s or *stdinLog will still emit "***REDACTED***" rather
-// than the real password.
+// SECURITY (CRITICAL): become_pass (stdin when become=true) must NEVER appear
+// in any log line.  These tests act as mutation guards: they FAIL if the masking
+// is removed, bypassed, or the real value is logged in any form.
 package handlers
 
 import (
@@ -18,9 +13,11 @@ import (
 	"testing"
 )
 
-// TestLogExecSafe_BecomePassMasked verifies that the actual stdin value is NEVER
-// present in the log when become=true.
-// This is the primary SECURITY guard against become_pass leaking to logs.
+// TestLogExecSafe_BecomePassMasked verifies two properties simultaneously:
+//  1. The actual secret is ABSENT from the log (security invariant).
+//  2. The "<redacted>" marker IS present (intentional masking, not accidental).
+//
+// Removing the masking code or logging the real value causes this test to FAIL.
 func TestLogExecSafe_BecomePassMasked(t *testing.T) {
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
@@ -36,15 +33,27 @@ func TestLogExecSafe_BecomePassMasked(t *testing.T) {
 	logExecSafe("test-host", "task-become-sec", req)
 
 	logged := buf.String()
-	// CRITICAL: the actual password must NEVER appear in any log line
+
+	// Property 1 — SECURITY: actual secret must never appear
 	if strings.Contains(logged, secretPass) {
-		t.Errorf("SECURITY: become_pass leaked in log output: %q", logged)
+		t.Errorf("SECURITY: become_pass leaked in log: %q", logged)
+	}
+
+	// Property 2 — MASKING: explicit marker must be present
+	// This fails if someone removes the masking or changes it to %v on pointer.
+	if !strings.Contains(logged, "<redacted>") {
+		t.Errorf("expected explicit '<redacted>' marker in log when become=true, got: %q", logged)
+	}
+
+	// Property 3 — no pointer address must appear (no accidental %v on *string)
+	if strings.Contains(logged, "0x") {
+		t.Errorf("pointer address leaked in log (use explicit marker, not %%v on *string): %q", logged)
 	}
 }
 
-// TestLogExecSafe_NoBecomeNoMask verifies that when become=false, the function
-// proceeds normally (no suppression / no REDACTED substitution applied).
-func TestLogExecSafe_NoBecomeNoMask(t *testing.T) {
+// TestLogExecSafe_NoBecomeStdinSet verifies that a non-nil stdin with become=false
+// logs "<set>" (not the actual value, not "<redacted>", not a pointer address).
+func TestLogExecSafe_NoBecomeStdinSet(t *testing.T) {
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
@@ -58,13 +67,19 @@ func TestLogExecSafe_NoBecomeNoMask(t *testing.T) {
 	logExecSafe("test-host", "task-nobec", req)
 
 	logged := buf.String()
-	// Log line must be present and must contain become=false marker
-	if !strings.Contains(logged, "become=false") {
-		t.Errorf("expected become=false in log, got: %q", logged)
+
+	if !strings.Contains(logged, "stdin=<set>") {
+		t.Errorf("expected 'stdin=<set>' in log for non-become with stdin, got: %q", logged)
+	}
+	if strings.Contains(logged, plainStdin) {
+		t.Errorf("stdin value must not appear in log even when become=false, got: %q", logged)
+	}
+	if strings.Contains(logged, "0x") {
+		t.Errorf("pointer address in log: %q", logged)
 	}
 }
 
-// TestLogExecSafe_NilStdin verifies that nil stdin is handled without panic.
+// TestLogExecSafe_NilStdin verifies that nil stdin logs "stdin=none" without panic.
 func TestLogExecSafe_NilStdin(t *testing.T) {
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
@@ -75,6 +90,38 @@ func TestLogExecSafe_NilStdin(t *testing.T) {
 		Stdin:  nil,
 		Become: true,
 	}
-	// Must not panic
 	logExecSafe("test-host", "task-nilstdin", req)
+
+	logged := buf.String()
+	if !strings.Contains(logged, "stdin=none") {
+		t.Errorf("expected 'stdin=none' for nil stdin, got: %q", logged)
+	}
+}
+
+// TestLogExecSafe_MutationGuard_WouldFailIfMaskingRemoved demonstrates (without
+// modifying the repo) that removing the masking would cause the test to fail.
+// We do this by calling logExecSafe directly and checking the output; if someone
+// inlined the secret with %s/*req.Stdin, this test catches it.
+func TestLogExecSafe_MutationGuard_SecretNeverSet(t *testing.T) {
+	// This test uses a unique sentinel that would appear verbatim if the
+	// masking were bypassed (e.g. logged as *req.Stdin or fmt.Sprintf("%s", *stdinLog)).
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	sentinel := "MUTATION_GUARD_SECRET_XYZ789"
+	req := &ExecRequest{
+		Cmd:    "id",
+		Stdin:  &sentinel,
+		Become: true,
+	}
+	logExecSafe("host-mut", "task-mut", req)
+
+	logged := buf.String()
+	if strings.Contains(logged, sentinel) {
+		t.Errorf("MUTATION GUARD TRIGGERED: secret appeared in log — masking is broken: %q", logged)
+	}
+	if !strings.Contains(logged, "<redacted>") {
+		t.Errorf("MUTATION GUARD: '<redacted>' marker absent — masking was removed: %q", logged)
+	}
 }
