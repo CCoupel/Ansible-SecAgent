@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -478,3 +479,49 @@ func TestGetenvFallback(t *testing.T) {
 		t.Errorf("expected fallback, got %q", v)
 	}
 }
+
+// ========================================================================
+// closeBody
+// ========================================================================
+
+// errCloser est un io.Closer dont Close() retourne toujours une erreur.
+type errCloser struct{ err error }
+
+func (e *errCloser) Close() error { return e.err }
+
+func TestCloseBodyNoError(t *testing.T) {
+	// closeBody ne doit pas paniquer quand Close() réussit
+	var closed bool
+	rc := &mockCloser{closeFn: func() error { closed = true; return nil }}
+	closeBody(rc)
+	if !closed {
+		t.Error("expected Close() to be called")
+	}
+}
+
+func TestCloseBodyLogsErrorOnStderr(t *testing.T) {
+	// closeBody doit journaliser l'erreur sur stderr sans toucher stdout
+	oldErr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	closeBody(&errCloser{err: errors.New("disk full")})
+
+	w.Close()
+	os.Stderr = oldErr
+
+	buf := make([]byte, 256)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	if !strings.Contains(output, "disk full") {
+		t.Errorf("expected error message on stderr, got %q", output)
+	}
+}
+
+// mockCloser permet de contrôler le comportement de Close dans les tests.
+type mockCloser struct {
+	closeFn func() error
+}
+
+func (m *mockCloser) Close() error { return m.closeFn() }

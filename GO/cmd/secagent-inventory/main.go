@@ -172,7 +172,7 @@ func fetchInventory(cfg config) (*InventoryResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer closeBody(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -220,6 +220,15 @@ func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+// closeBody ferme body et journalise toute erreur sur stderr.
+// Utilisé en defer pour satisfaire errcheck tout en respectant le contrat Ansible :
+// stdout = JSON uniquement, les diagnostics vont sur stderr.
+func closeBody(body io.Closer) {
+	if err := body.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: close response body: %v\n", err)
+	}
 }
 
 // loadConfig charge la configuration depuis les variables d'environnement
