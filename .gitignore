@@ -58,6 +58,7 @@ GO/test_results.txt
 
 # Secrets / env files
 qualif/*.env
+DEPLOYMENT/qualif/.env.bootstrap
 
 # Claude local settings
 .claude/settings.local.json

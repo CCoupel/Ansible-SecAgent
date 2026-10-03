@@ -113,6 +113,70 @@ docker logs secagent-minion-03 | grep "WebSocket connecté"
 
 ---
 
+## Déploiement Qualif Multi-Zones (192.168.1.218)
+
+> ⚠️ **LIMITATION — topologie multi-zones non fonctionnelle en v3.0**
+>
+> La connexion relay→proxy (mode pull, repeater-client) n'est pas encore implémentée
+> (issues #124, #125, #140). En conséquence :
+> - Les relay nodes relay-dmz1 et relay-dmz2 s'enregistrent dans la DB de relay-proxy
+>   mais restent en état **`disconnected`** (attendu).
+> - Les tâches envoyées via le plugin Ansible **ne sont pas routées** vers les agents DMZ.
+> - Des checks de `smoke-proxy.sh` sont attendus en échec jusqu'à la résolution de #124/#125.
+>
+> Pour le détail complet de la topologie et les contournements actuels,
+> voir **`DEPLOYMENT/qualif/README.md`**.
+
+Pour la topologie multi-zones (relay-proxy + relay-dmz1 + relay-dmz2) :
+
+### 1. Lancer les services
+
+```bash
+DOCKER_HOST=tcp://192.168.1.218:2375 \
+  docker compose -f DEPLOYMENT/qualif/docker-compose.proxy.yml up --build -d
+```
+
+> **Note** : les variables `RELAY_ENROLLMENT_TOKEN_*` sont **vides** au premier `up` — c'est
+> attendu. Les agents ne pourront pas s'enroller avant l'étape 2 (bootstrap).
+
+### 2. Bootstrap (tokens + relay nodes)
+
+Après que tous les services soient `healthy`, exécuter (idempotent — relançable sans doublon) :
+
+```bash
+DOCKER_HOST=tcp://192.168.1.218:2375 \
+  ADMIN_TOKEN=<votre-admin-token> \
+  bash scripts/bootstrap-qualif.sh
+```
+
+Le script crée automatiquement et dans le bon ordre :
+1. Les tokens d'enrollment pour chaque zone (relay-dmz1, relay-dmz2)
+2. Le token plugin Ansible sur relay-proxy
+3. L'enregistrement des relay nodes sur relay-proxy
+
+Les tokens générés sont écrits dans `DEPLOYMENT/qualif/.env.bootstrap` (permissions 600, non versionné).
+
+### 3. Mettre à jour `.env` et recréer les agents
+
+```bash
+# Copier les RELAY_ENROLLMENT_TOKEN_* depuis .env.bootstrap dans .env
+# puis recréer les containers (--force-recreate relit .env ; restart ne le fait pas) :
+DOCKER_HOST=tcp://192.168.1.218:2375 \
+  docker compose -f DEPLOYMENT/qualif/docker-compose.proxy.yml \
+  up -d --force-recreate agent-dmz1 agent-dmz2
+```
+
+### 4. Vérifier
+
+```bash
+ADMIN_TOKEN=<token> bash DEPLOYMENT/qualif/smoke-proxy.sh
+```
+
+Voir **`DEPLOYMENT/qualif/README.md`** pour le guide complet, les variables d'environnement
+et les limitations détaillées.
+
+---
+
 ## Structure
 
 ```
