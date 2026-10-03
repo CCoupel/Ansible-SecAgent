@@ -21,6 +21,8 @@ package hooks
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -606,5 +608,64 @@ func TestAPIExecutor_body_template(t *testing.T) {
 	// Le placeholder brut ne doit plus être présent
 	if strings.Contains(body, "{{hostname}}") {
 		t.Errorf("body still contains unrendered placeholder {{hostname}}: %s", body)
+	}
+}
+
+// ── FileExecutor Close-error propagation ─────────────────────────────────────
+
+// fakeWriteCloser is an io.WriteCloser whose Close() returns a controlled error.
+type fakeWriteCloser struct {
+	buf      strings.Builder
+	closeErr error
+}
+
+func (f *fakeWriteCloser) Write(p []byte) (int, error) { return f.buf.Write(p) }
+func (f *fakeWriteCloser) Close() error                { return f.closeErr }
+
+// TestFileExecutor_CloseErrorReturnsFailure verifies that an error returned by
+// f.Close() on a write-open file is propagated as ok=false. The test uses an
+// injectable openFileFn so the failure is deterministic without OS tricks.
+// Discriminant: reverting to `_ = f.Close()` makes this test fail (ok stays true).
+func TestFileExecutor_CloseErrorReturnsFailure(t *testing.T) {
+	dir := t.TempDir()
+	fake := &fakeWriteCloser{closeErr: errors.New("disk full on close")}
+	exec := &FileExecutor{
+		openFileFn: func(_ string, _ int, _ os.FileMode) (io.WriteCloser, error) {
+			return fake, nil
+		},
+	}
+	ok, msg, _ := exec.Execute(context.Background(), ActionDef{
+		Type:   "file",
+		Path:   filepath.Join(dir, "out.txt"),
+		Append: "hello",
+	}, nil)
+	if ok {
+		t.Error("expected ok=false when f.Close() fails, got true")
+	}
+	if !strings.Contains(msg, "disk full on close") {
+		t.Errorf("expected error message to contain 'disk full on close', got %q", msg)
+	}
+}
+
+// TestFileExecutor_CloseSuccessIsOk verifies that a successful write+close
+// is still reported as ok=true (non-regression).
+func TestFileExecutor_CloseSuccessIsOk(t *testing.T) {
+	dir := t.TempDir()
+	fake := &fakeWriteCloser{closeErr: nil}
+	exec := &FileExecutor{
+		openFileFn: func(_ string, _ int, _ os.FileMode) (io.WriteCloser, error) {
+			return fake, nil
+		},
+	}
+	ok, msg, _ := exec.Execute(context.Background(), ActionDef{
+		Type:   "file",
+		Path:   filepath.Join(dir, "out.txt"),
+		Append: "world",
+	}, nil)
+	if !ok {
+		t.Errorf("expected ok=true on success, got false (msg=%q)", msg)
+	}
+	if msg != "" {
+		t.Errorf("expected empty msg on success, got %q", msg)
 	}
 }

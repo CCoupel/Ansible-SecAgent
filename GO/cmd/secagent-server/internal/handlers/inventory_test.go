@@ -147,7 +147,7 @@ func TestGetInventoryFormat(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &resp)
 
 	// Check that structure matches Ansible format
-	if resp.All.Hosts == nil || len(resp.All.Hosts) < 1 {
+	if len(resp.All.Hosts) < 1 {
 		t.Skip("no hosts in inventory")
 	}
 

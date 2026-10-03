@@ -47,16 +47,16 @@ var minionsListCmd = &cobra.Command{
 			return fmt.Errorf("parse response: %w", err)
 		}
 
-		return printOutput(globalFormat, agents, func(v interface{}) {
+		return printOutput(globalFormat, agents, func(v interface{}) error {
 			list := v.([]map[string]interface{})
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "HOSTNAME\tSTATUS\tSUSPENDED\tLAST_SEEN\tENROLLED_AT")
+			tp := newTabPrinter()
+			tp.println("HOSTNAME\tSTATUS\tSUSPENDED\tLAST_SEEN\tENROLLED_AT")
 			for _, a := range list {
-				fmt.Fprintf(tw, "%s\t%s\t%v\t%s\t%s\n",
+				tp.printf("%s\t%s\t%v\t%s\t%s\n",
 					a["hostname"], a["status"], a["suspended"],
 					a["last_seen"], a["enrolled_at"])
 			}
-			tw.Flush()
+			return tp.flush()
 		})
 	},
 }
@@ -81,13 +81,13 @@ var minionsGetCmd = &cobra.Command{
 			return fmt.Errorf("parse response: %w", err)
 		}
 
-		return printOutput(globalFormat, agent, func(v interface{}) {
+		return printOutput(globalFormat, agent, func(v interface{}) error {
 			a := v.(map[string]interface{})
-			tw := newTabWriter()
+			tp := newTabPrinter()
 			for _, k := range []string{"hostname", "status", "suspended", "last_seen", "enrolled_at", "key_fingerprint"} {
-				fmt.Fprintf(tw, "%s\t%v\n", k, a[k])
+				tp.printf("%s\t%v\n", k, a[k])
 			}
-			tw.Flush()
+			return tp.flush()
 		})
 	},
 }
@@ -245,14 +245,14 @@ var minionsVarsGetCmd = &cobra.Command{
 			return fmt.Errorf("parse response: %w", err)
 		}
 
-		return printOutput(globalFormat, vars, func(v interface{}) {
+		return printOutput(globalFormat, vars, func(v interface{}) error {
 			m := v.(map[string]interface{})
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "KEY\tVALUE")
+			tp := newTabPrinter()
+			tp.println("KEY\tVALUE")
 			for k, val := range m {
-				fmt.Fprintf(tw, "%s\t%v\n", k, val)
+				tp.printf("%s\t%v\n", k, val)
 			}
-			tw.Flush()
+			return tp.flush()
 		})
 	},
 }

@@ -336,7 +336,9 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		}
 		conn.mu.Lock()
-		conn.Conn.WriteJSON(ack) //nolint:errcheck
+		if err := conn.Conn.WriteJSON(ack); err != nil {
+			log.Printf("relay_hello ack write error: relay_id=%s err=%v", conn.RelayID, err)
+		}
 		conn.mu.Unlock()
 		log.Printf("relay_hello ack: relay_id=%s version=%s is_proxy=%v node_type=%q",
 			conn.RelayID, msg.Version, conn.IsProxy, msg.NodeType)
@@ -361,7 +363,9 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 			Status:  "ok",
 		}
 		conn.mu.Lock()
-		conn.Conn.WriteJSON(ack) //nolint:errcheck
+		if err := conn.Conn.WriteJSON(ack); err != nil {
+			log.Printf("agent_list ack write error: relay_id=%s err=%v", conn.RelayID, err)
+		}
 		conn.mu.Unlock()
 		log.Printf("agent_list: relay_id=%s count=%d", conn.RelayID, len(hostnames))
 
@@ -400,7 +404,9 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		}
 		conn.mu.Lock()
-		conn.Conn.WriteJSON(ack) //nolint:errcheck
+		if err := conn.Conn.WriteJSON(ack); err != nil {
+			log.Printf("heartbeat_ack write error: relay_id=%s err=%v", conn.RelayID, err)
+		}
 		conn.mu.Unlock()
 
 	default:
@@ -442,14 +448,15 @@ func RelayHandler(w http.ResponseWriter, r *http.Request) {
 
 	defer func() {
 		unregisterRelayConnection(relayID)
-		conn.Close()
+		_ = conn.Close()
 	}()
 
 	// Set read deadline for heartbeat monitoring
-	conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(120 * time.Second)); err != nil {
+		log.Printf("Relay WS SetReadDeadline: relay_id=%s err=%v", relayID, err)
+	}
 	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(120 * time.Second))
-		return nil
+		return conn.SetReadDeadline(time.Now().Add(120 * time.Second))
 	})
 
 	for {
@@ -463,7 +470,9 @@ func RelayHandler(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		// Reset deadline on any message
-		conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+		if err := conn.SetReadDeadline(time.Now().Add(120 * time.Second)); err != nil {
+			log.Printf("Relay WS SetReadDeadline loop: relay_id=%s err=%v", relayID, err)
+		}
 		handleRelayMessage(relayConn, msg)
 	}
 }

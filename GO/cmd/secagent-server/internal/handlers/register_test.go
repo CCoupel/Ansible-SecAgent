@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -438,4 +439,112 @@ func TestTokenRefreshMethodNotAllowed(t *testing.T) {
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", w.Code)
 	}
+}
+
+// ── writeJSON content-type regression tests ───────────────────────────────────
+// These tests guard against accidental removal of Content-Type: application/json
+// on error paths after the errcheck fix (all fmt.Fprintf → writeJSON migration).
+
+// TestRegisterAgent_ContentTypeOnError verifies that error responses from
+// RegisterAgent carry Content-Type: application/json.
+func TestRegisterAgent_ContentTypeOnError(t *testing.T) {
+	// Missing body → 400 from RegisterAgent
+	httpReq := httptest.NewRequest("POST", "/api/enroll", bytes.NewBufferString(""))
+	w := httptest.NewRecorder()
+	RegisterAgent(w, httpReq)
+
+	ct := w.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("RegisterAgent error response: expected Content-Type application/json, got %q", ct)
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 on empty body, got %d", w.Code)
+	}
+	// Body must be valid JSON with "error" key
+	var body map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Errorf("error response body is not valid JSON: %v", err)
+	}
+	if body["error"] == "" {
+		t.Errorf("expected non-empty 'error' field in response JSON, got %v", body)
+	}
+}
+
+// TestAdminAuthorize_ContentTypeOnError verifies Content-Type on AdminAuthorize errors.
+func TestAdminAuthorize_ContentTypeOnError(t *testing.T) {
+	httpReq := httptest.NewRequest("POST", "/api/admin/authorize", bytes.NewBufferString(""))
+	w := httptest.NewRecorder()
+	AdminAuthorize(w, httpReq)
+
+	ct := w.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("AdminAuthorize error response: expected Content-Type application/json, got %q", ct)
+	}
+}
+
+// TestTokenRefresh_ContentTypeOnError verifies Content-Type on TokenRefresh errors.
+func TestTokenRefresh_ContentTypeOnError(t *testing.T) {
+	httpReq := httptest.NewRequest("POST", "/api/token/refresh", bytes.NewBufferString("not-json"))
+	w := httptest.NewRecorder()
+	TokenRefresh(w, httpReq)
+
+	ct := w.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("TokenRefresh error response: expected Content-Type application/json, got %q", ct)
+	}
+}
+
+// spyReadCloser wraps an io.Reader and records how many times Close() was called.
+// Used to verify that handlers always close the request body.
+type spyReadCloser struct {
+	io.Reader
+	closeCalled int
+}
+
+func (s *spyReadCloser) Close() error {
+	s.closeCalled++
+	return nil
+}
+
+// TestRegisterAgent_BodyClosedOnDecodeError verifies that the request body is
+// closed on the decode-error path (defer placed before decode).
+// Discriminant: removing the defer makes closeCalled==0, failing the assertion.
+func TestRegisterAgent_BodyClosedOnDecodeError(t *testing.T) {
+	t.Run("decode_error_path", func(t *testing.T) {
+		spy := &spyReadCloser{Reader: bytes.NewBufferString("invalid-json{")}
+		httpReq := httptest.NewRequest("POST", "/api/enroll", nil)
+		httpReq.Body = spy
+		w := httptest.NewRecorder()
+		RegisterAgent(w, httpReq)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 on invalid JSON, got %d", w.Code)
+		}
+		if spy.closeCalled == 0 {
+			t.Error("Body.Close() was NOT called on decode error — defer may be misplaced")
+		}
+	})
+
+	t.Run("success_path", func(t *testing.T) {
+		privKey, pubKeyPEM := genRSAPubPEM(t, 4096)
+		_ = privKey
+		hostname := "spy-test-agent-01"
+		preAuthorize(t, hostname, pubKeyPEM)
+
+		req := RegisterRequest{
+			Hostname:     hostname,
+			PublicKeyPEM: pubKeyPEM,
+		}
+		body, _ := json.Marshal(req)
+		spy := &spyReadCloser{Reader: bytes.NewReader(body)}
+		httpReq := httptest.NewRequest("POST", "/api/enroll", nil)
+		httpReq.Body = spy
+		w := httptest.NewRecorder()
+		RegisterAgent(w, httpReq)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200 on valid enroll, got %d — body: %s", w.Code, w.Body.String())
+		}
+		if spy.closeCalled == 0 {
+			t.Error("Body.Close() was NOT called on success path — defer may be misplaced")
+		}
+	})
 }

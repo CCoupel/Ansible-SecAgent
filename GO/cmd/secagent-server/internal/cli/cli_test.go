@@ -3,12 +3,13 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"text/tabwriter"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -36,11 +37,15 @@ func captureStdout(t *testing.T, f func()) string {
 
 	f()
 
-	w.Close()
+	if err := w.Close(); err != nil {
+		t.Logf("captureStdout w.Close: %v", err)
+	}
 	os.Stdout = old
 
 	var buf bytes.Buffer
-	buf.ReadFrom(r)
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Logf("captureStdout ReadFrom: %v", err)
+	}
 	return buf.String()
 }
 
@@ -112,7 +117,7 @@ func TestAPIRequest_GET(t *testing.T) {
 			t.Errorf("missing or wrong Authorization header")
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`[]`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`[]`))
 	})
 
 	data, status, err := apiRequest("GET", "/api/admin/minions", nil)
@@ -136,12 +141,12 @@ func TestAPIRequest_POST_WithBody(t *testing.T) {
 			t.Errorf("expected Content-Type application/json, got %q", ct)
 		}
 		var body map[string]string
-		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		if body["key"] != "value" {
 			t.Errorf("unexpected body: %v", body)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"ok":true}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
 
 	data, status, err := apiRequest("POST", "/test", map[string]string{"key": "value"})
@@ -157,7 +162,7 @@ func TestAPIRequest_POST_WithBody(t *testing.T) {
 func TestAPIRequest_ServerError(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
-		w.Write([]byte(`{"error":"db_error"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"error":"db_error"}`))
 	})
 
 	data, status, err := apiRequest("GET", "/api/fail", nil)
@@ -222,7 +227,7 @@ func TestCheckError_500_Returns1(t *testing.T) {
 
 func TestPrintOutput_JSON(t *testing.T) {
 	out := captureStdout(t, func() {
-		printOutput("json", map[string]string{"hello": "world"}, nil) //nolint:errcheck
+		_ = printOutput("json", map[string]string{"hello": "world"}, nil)
 	})
 	if !strings.Contains(out, `"hello"`) || !strings.Contains(out, `"world"`) {
 		t.Errorf("expected JSON output, got %q", out)
@@ -236,7 +241,7 @@ func TestPrintOutput_JSON(t *testing.T) {
 
 func TestPrintOutput_YAML(t *testing.T) {
 	out := captureStdout(t, func() {
-		printOutput("yaml", map[string]string{"hello": "world"}, nil) //nolint:errcheck
+		_ = printOutput("yaml", map[string]string{"hello": "world"}, nil)
 	})
 	if !strings.Contains(out, "hello") || !strings.Contains(out, "world") {
 		t.Errorf("expected YAML output, got %q", out)
@@ -246,8 +251,9 @@ func TestPrintOutput_YAML(t *testing.T) {
 func TestPrintOutput_Table_WithFunc(t *testing.T) {
 	called := false
 	out := captureStdout(t, func() {
-		printOutput("table", "data", func(v interface{}) { //nolint:errcheck
+		_ = printOutput("table", "data", func(v interface{}) error {
 			called = true
+			return nil
 		})
 	})
 	if !called {
@@ -258,12 +264,69 @@ func TestPrintOutput_Table_WithFunc(t *testing.T) {
 
 func TestPrintOutput_Table_NoFunc_FallsBackToJSON(t *testing.T) {
 	out := captureStdout(t, func() {
-		printOutput("table", map[string]string{"k": "v"}, nil) //nolint:errcheck
+		_ = printOutput("table", map[string]string{"k": "v"}, nil)
 	})
 	// Falls back to JSON
 	var v interface{}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &v); err != nil {
 		t.Errorf("fallback output is not JSON: %v", err)
+	}
+}
+
+// ── tabPrinter error capture ──────────────────────────────────────────────────
+
+// failWriter is an io.Writer that always returns an error.
+type failWriter struct{}
+
+func (failWriter) Write(_ []byte) (int, error) {
+	return 0, errors.New("write: broken pipe")
+}
+
+// TestTabPrinter_ErrorCapture verifies that the tabPrinter errWriter pattern:
+//   - captures the first write error silently across subsequent println/printf calls
+//   - returns the captured error on flush()
+func TestTabPrinter_ErrorCapture(t *testing.T) {
+	// Build a tabPrinter backed by a writer that always fails.
+	tp := &tabPrinter{tw: tabwriter.NewWriter(failWriter{}, 0, 0, 2, ' ', 0)}
+
+	tp.println("HEADER\tVALUE")
+	tp.printf("%s\t%s\n", "key", "value")
+
+	// flush() should return the underlying write error
+	err := tp.flush()
+	if err == nil {
+		t.Error("expected error from failing writer, got nil")
+	}
+}
+
+// TestTabPrinter_ErrorPropagatesViaRunE verifies that a tabwriter flush error
+// propagates through printOutput and would be returned by a cobra RunE function.
+func TestTabPrinter_ErrorPropagatesViaRunE(t *testing.T) {
+	tp := &tabPrinter{tw: tabwriter.NewWriter(failWriter{}, 0, 0, 2, ' ', 0)}
+	tp.println("COL1\tCOL2")
+	tp.printf("%s\t%s\n", "a", "b")
+
+	err := printOutput("table", "data", func(_ interface{}) error {
+		return tp.flush()
+	})
+	if err == nil {
+		t.Error("expected printOutput to return the tabPrinter error, got nil")
+	}
+}
+
+// TestTabPrinter_NilErrorOnSuccess verifies that a working tabPrinter
+// returns nil from flush() when writes succeed.
+func TestTabPrinter_NilErrorOnSuccess(t *testing.T) {
+	out := captureStdout(t, func() {
+		tp := newTabPrinter()
+		tp.println("FIELD\tVALUE")
+		tp.printf("%s\t%s\n", "k", "v")
+		if err := tp.flush(); err != nil {
+			t.Errorf("unexpected error from flush(): %v", err)
+		}
+	})
+	if !strings.Contains(out, "FIELD") || !strings.Contains(out, "VALUE") {
+		t.Errorf("expected tabPrinter output, got: %q", out)
 	}
 }
 
@@ -370,7 +433,7 @@ func TestMinionsList(t *testing.T) {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`[{"hostname":"host-01","status":"active","suspended":false,"last_seen":"2026-03-06T10:00:00Z","enrolled_at":"2026-01-01T00:00:00Z"}]`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`[{"hostname":"host-01","status":"active","suspended":false,"last_seen":"2026-03-06T10:00:00Z","enrolled_at":"2026-01-01T00:00:00Z"}]`))
 	})
 
 	data, status, err := apiRequest("GET", "/api/admin/minions", nil)
@@ -397,16 +460,16 @@ func TestMinionsList(t *testing.T) {
 
 	// Verify table output contains expected columns
 	out := captureStdout(t, func() {
-		printOutput("table", agents, func(v interface{}) { //nolint:errcheck
+		_ = printOutput("table", agents, func(v interface{}) error {
 			list := v.([]map[string]interface{})
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "HOSTNAME\tSTATUS\tSUSPENDED\tLAST_SEEN\tENROLLED_AT")
+			tp := newTabPrinter()
+			tp.println("HOSTNAME\tSTATUS\tSUSPENDED\tLAST_SEEN\tENROLLED_AT")
 			for _, a := range list {
-				fmt.Fprintf(tw, "%s\t%s\t%v\t%s\t%s\n",
+				tp.printf("%s\t%s\t%v\t%s\t%s\n",
 					a["hostname"], a["status"], a["suspended"],
 					a["last_seen"], a["enrolled_at"])
 			}
-			tw.Flush()
+			return tp.flush()
 		})
 	})
 	if !strings.Contains(out, "HOSTNAME") || !strings.Contains(out, "host-01") {
@@ -421,7 +484,7 @@ func TestMinionsGetNotFound(t *testing.T) {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		w.WriteHeader(404)
-		w.Write([]byte(`{"error":"agent_not_found"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"error":"agent_not_found"}`))
 	})
 
 	data, status, err := apiRequest("GET", "/api/admin/minions/unknown-host", nil)
@@ -446,7 +509,7 @@ func TestMinionsSuspend(t *testing.T) {
 			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"message":"suspended"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"message":"suspended"}`))
 	})
 
 	data, status, err := apiRequest("POST", "/api/admin/minions/host-01/suspend", nil)
@@ -465,7 +528,7 @@ func TestMinionsRevoke(t *testing.T) {
 			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"message":"revoked"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"message":"revoked"}`))
 	})
 
 	data, status, err := apiRequest("POST", "/api/admin/revoke/host-01", nil)
@@ -485,17 +548,17 @@ func TestMinionsVarsSetGet(t *testing.T) {
 		switch {
 		case r.Method == "POST" && r.URL.Path == "/api/admin/minions/host-01/vars":
 			var body map[string]interface{}
-			json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+			_ = json.NewDecoder(r.Body).Decode(&body)
 			for k, v := range body {
 				storedVars[k] = v
 			}
 			w.WriteHeader(200)
-			w.Write([]byte(`{"message":"vars updated"}`)) //nolint:errcheck
+			_, _ = w.Write([]byte(`{"message":"vars updated"}`))
 
 		case r.Method == "GET" && r.URL.Path == "/api/admin/minions/host-01/vars":
 			w.WriteHeader(200)
 			out, _ := json.Marshal(storedVars)
-			w.Write(out) //nolint:errcheck
+			_, _ = w.Write(out)
 
 		default:
 			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
@@ -538,13 +601,13 @@ func TestSecurityKeysRotate(t *testing.T) {
 			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{
+		_, _ = w.Write([]byte(`{
 			"current_key_sha256":"abc123",
 			"previous_key_sha256":"def456",
 			"deadline":"2026-03-07T10:00:00Z",
 			"agents_migrated":3,
 			"agents_total":3
-		}`)) //nolint:errcheck
+		}`))
 	})
 
 	data, status, err := apiRequest("POST", "/api/admin/keys/rotate", map[string]string{"grace": "24h"})
@@ -572,14 +635,14 @@ func TestSecurityKeysRotate(t *testing.T) {
 
 	// Verify table output contains deadline
 	out := captureStdout(t, func() {
-		printOutput("table", result, func(v interface{}) { //nolint:errcheck
+		_ = printOutput("table", result, func(v interface{}) error {
 			m := v.(map[string]interface{})
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "FIELD\tVALUE")
+			tp := newTabPrinter()
+			tp.println("FIELD\tVALUE")
 			for _, k := range []string{"current_key_sha256", "previous_key_sha256", "deadline", "agents_migrated", "agents_total"} {
-				fmt.Fprintf(tw, "%s\t%v\n", k, m[k])
+				tp.printf("%s\t%v\n", k, m[k])
 			}
-			tw.Flush()
+			return tp.flush()
 		})
 	})
 	if !strings.Contains(out, "deadline") || !strings.Contains(out, "2026-03-07") {
@@ -594,12 +657,12 @@ func TestServerStatus(t *testing.T) {
 			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{
+		_, _ = w.Write([]byte(`{
 			"nats":"connected",
 			"db":"ok",
 			"ws_connections":3,
 			"uptime":"2h30m"
-		}`)) //nolint:errcheck
+		}`))
 	})
 
 	data, status, err := apiRequest("GET", "/api/admin/status", nil)
@@ -623,15 +686,15 @@ func TestServerStatus(t *testing.T) {
 
 	// Verify table output is coherent
 	out := captureStdout(t, func() {
-		printOutput("table", result, func(v interface{}) { //nolint:errcheck
+		_ = printOutput("table", result, func(v interface{}) error {
 			m := v.(map[string]interface{})
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "COMPONENT\tSTATUS")
-			fmt.Fprintf(tw, "nats\t%v\n", m["nats"])
-			fmt.Fprintf(tw, "db\t%v\n", m["db"])
-			fmt.Fprintf(tw, "ws_connections\t%v\n", m["ws_connections"])
-			fmt.Fprintf(tw, "uptime\t%v\n", m["uptime"])
-			tw.Flush()
+			tp := newTabPrinter()
+			tp.println("COMPONENT\tSTATUS")
+			tp.printf("nats\t%v\n", m["nats"])
+			tp.printf("db\t%v\n", m["db"])
+			tp.printf("ws_connections\t%v\n", m["ws_connections"])
+			tp.printf("uptime\t%v\n", m["uptime"])
+			return tp.flush()
 		})
 	})
 	if !strings.Contains(out, "nats") || !strings.Contains(out, "connected") {
@@ -646,7 +709,7 @@ func TestServerStatus(t *testing.T) {
 func TestFormatJson(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`[{"hostname":"host-01","status":"active"}]`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`[{"hostname":"host-01","status":"active"}]`))
 	})
 
 	data, _, err := apiRequest("GET", "/api/admin/minions", nil)
@@ -655,10 +718,10 @@ func TestFormatJson(t *testing.T) {
 	}
 
 	var agents []map[string]interface{}
-	json.Unmarshal(data, &agents) //nolint:errcheck
+	_ = json.Unmarshal(data, &agents)
 
 	out := captureStdout(t, func() {
-		printOutput("json", agents, nil) //nolint:errcheck
+		_ = printOutput("json", agents, nil)
 	})
 
 	// Must be valid JSON
@@ -675,7 +738,7 @@ func TestFormatJson(t *testing.T) {
 func TestFormatYaml(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`{"current_key_sha256":"abc123","deadline":"2026-03-07T00:00:00Z","rotation_active":true}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"current_key_sha256":"abc123","deadline":"2026-03-07T00:00:00Z","rotation_active":true}`))
 	})
 
 	data, _, err := apiRequest("GET", "/api/admin/security/keys/status", nil)
@@ -684,10 +747,10 @@ func TestFormatYaml(t *testing.T) {
 	}
 
 	var result map[string]interface{}
-	json.Unmarshal(data, &result) //nolint:errcheck
+	_ = json.Unmarshal(data, &result)
 
 	out := captureStdout(t, func() {
-		printOutput("yaml", result, nil) //nolint:errcheck
+		_ = printOutput("yaml", result, nil)
 	})
 
 	// Must contain YAML key-value pairs
@@ -747,7 +810,7 @@ func TestMinionsResume(t *testing.T) {
 			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"message":"resumed"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"message":"resumed"}`))
 	})
 
 	data, status, err := apiRequest("POST", "/api/admin/minions/host-01/resume", nil)
@@ -766,12 +829,12 @@ func TestMinionsSetState(t *testing.T) {
 			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
 		}
 		var body map[string]string
-		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		if body["status"] != "disconnected" {
 			t.Errorf("expected status=disconnected, got %q", body["status"])
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"message":"state updated"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"message":"state updated"}`))
 	})
 
 	data, status, err := apiRequest("POST", "/api/admin/minions/host-01/set-state",
@@ -795,7 +858,7 @@ func TestInventoryList(t *testing.T) {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"all":{"hosts":["host-01","host-02"]},"_meta":{"hostvars":{"host-01":{"ansible_user":"root"}}}}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"all":{"hosts":["host-01","host-02"]},"_meta":{"hostvars":{"host-01":{"ansible_user":"root"}}}}`))
 	})
 
 	data, status, err := apiRequest("GET", "/api/inventory", nil)
@@ -825,7 +888,7 @@ func TestInventoryListOnlyConnected(t *testing.T) {
 			t.Errorf("expected only_connected=true query param, got %q", r.URL.RawQuery)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"all":{"hosts":[]},"_meta":{"hostvars":{}}}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"all":{"hosts":[]},"_meta":{"hostvars":{}}}`))
 	})
 
 	data, status, err := apiRequest("GET", "/api/inventory?only_connected=true", nil)
@@ -845,7 +908,7 @@ func TestServerStats(t *testing.T) {
 			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"agents_connected":3,"agents_total":5,"tasks_active":2}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"agents_connected":3,"agents_total":5,"tasks_active":2}`))
 	})
 
 	data, status, err := apiRequest("GET", "/api/admin/stats", nil)
@@ -872,14 +935,14 @@ func TestServerStats(t *testing.T) {
 
 	// Verify table output
 	out := captureStdout(t, func() {
-		printOutput("table", result, func(v interface{}) { //nolint:errcheck
+		_ = printOutput("table", result, func(v interface{}) error {
 			m := v.(map[string]interface{})
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "METRIC\tVALUE")
-			fmt.Fprintf(tw, "agents_connected\t%v\n", m["agents_connected"])
-			fmt.Fprintf(tw, "agents_total\t%v\n", m["agents_total"])
-			fmt.Fprintf(tw, "tasks_active\t%v\n", m["tasks_active"])
-			tw.Flush()
+			tp := newTabPrinter()
+			tp.println("METRIC\tVALUE")
+			tp.printf("agents_connected\t%v\n", m["agents_connected"])
+			tp.printf("agents_total\t%v\n", m["agents_total"])
+			tp.printf("tasks_active\t%v\n", m["tasks_active"])
+			return tp.flush()
 		})
 	})
 	if !strings.Contains(out, "agents_connected") {
@@ -894,7 +957,7 @@ func TestSecurityTokensList(t *testing.T) {
 			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`[{"hostname":"host-01","jti":"jti-abc","status":"active","last_seen":"2026-03-06T10:00:00Z"}]`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`[{"hostname":"host-01","jti":"jti-abc","status":"active","last_seen":"2026-03-06T10:00:00Z"}]`))
 	})
 
 	data, status, err := apiRequest("GET", "/api/admin/security/tokens", nil)
@@ -924,7 +987,7 @@ func TestSecurityBlacklistList(t *testing.T) {
 			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`[{"jti":"jti-xyz","hostname":"host-01","reason":"revoked","revoked_at":"2026-03-06T10:00:00Z","expires_at":"2026-03-07T10:00:00Z"}]`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`[{"jti":"jti-xyz","hostname":"host-01","reason":"revoked","revoked_at":"2026-03-06T10:00:00Z","expires_at":"2026-03-07T10:00:00Z"}]`))
 	})
 
 	data, status, err := apiRequest("GET", "/api/admin/security/blacklist", nil)
@@ -951,7 +1014,7 @@ func TestSecurityBlacklistPurge(t *testing.T) {
 			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"deleted":3}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"deleted":3}`))
 	})
 
 	data, status, err := apiRequest("POST", "/api/admin/security/blacklist/purge", nil)
@@ -978,7 +1041,7 @@ func TestMinionsGet_ValidHost(t *testing.T) {
 			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"hostname":"host-01","status":"active","suspended":false,"last_seen":"2026-03-06T10:00:00Z","enrolled_at":"2026-01-01T00:00:00Z","key_fingerprint":"abc123"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"hostname":"host-01","status":"active","suspended":false,"last_seen":"2026-03-06T10:00:00Z","enrolled_at":"2026-01-01T00:00:00Z","key_fingerprint":"abc123"}`))
 	})
 
 	data, status, err := apiRequest("GET", "/api/admin/minions/host-01", nil)
@@ -1010,7 +1073,7 @@ func TestMinionsGet_ValidHost(t *testing.T) {
 func TestMinionsListRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`[{"hostname":"host-01","status":"active","suspended":false,"last_seen":"2026-03-06T10:00:00Z","enrolled_at":"2026-01-01T00:00:00Z"}]`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`[{"hostname":"host-01","status":"active","suspended":false,"last_seen":"2026-03-06T10:00:00Z","enrolled_at":"2026-01-01T00:00:00Z"}]`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1028,7 +1091,7 @@ func TestMinionsListRunE(t *testing.T) {
 func TestMinionsGetRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`{"hostname":"host-01","status":"active","suspended":false,"last_seen":"2026-03-06T10:00:00Z","enrolled_at":"2026-01-01T00:00:00Z","key_fingerprint":"abc"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"hostname":"host-01","status":"active","suspended":false,"last_seen":"2026-03-06T10:00:00Z","enrolled_at":"2026-01-01T00:00:00Z","key_fingerprint":"abc"}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1046,7 +1109,7 @@ func TestMinionsGetRunE(t *testing.T) {
 func TestMinionsSuspendRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`{"message":"suspended"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"message":"suspended"}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1064,7 +1127,7 @@ func TestMinionsSuspendRunE(t *testing.T) {
 func TestMinionsResumeRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`{"message":"resumed"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"message":"resumed"}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1082,7 +1145,7 @@ func TestMinionsResumeRunE(t *testing.T) {
 func TestMinionsRevokeRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`{"message":"revoked"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"message":"revoked"}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1100,7 +1163,7 @@ func TestMinionsRevokeRunE(t *testing.T) {
 func TestMinionsSetStateRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`{"message":"state updated"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"message":"state updated"}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1118,7 +1181,7 @@ func TestMinionsSetStateRunE(t *testing.T) {
 func TestMinionsVarsGetRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`{"ansible_user":"deploy","env":"prod"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"ansible_user":"deploy","env":"prod"}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1136,7 +1199,7 @@ func TestMinionsVarsGetRunE(t *testing.T) {
 func TestMinionsVarsSetRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`{"message":"vars updated"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"message":"vars updated"}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1154,7 +1217,7 @@ func TestMinionsVarsSetRunE(t *testing.T) {
 func TestMinionsVarsDeleteRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`{"message":"deleted"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"message":"deleted"}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1172,7 +1235,7 @@ func TestMinionsVarsDeleteRunE(t *testing.T) {
 func TestSecurityKeysStatusRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`{"current_key_sha256":"sha256abc","previous_key_sha256":"","deadline":"","rotation_active":false,"agents_total":3}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"current_key_sha256":"sha256abc","previous_key_sha256":"","deadline":"","rotation_active":false,"agents_total":3}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1190,7 +1253,7 @@ func TestSecurityKeysStatusRunE(t *testing.T) {
 func TestSecurityKeysRotateRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`{"current_key_sha256":"new","previous_key_sha256":"old","deadline":"2026-03-07T10:00:00Z","agents_migrated":2,"agents_total":3}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"current_key_sha256":"new","previous_key_sha256":"old","deadline":"2026-03-07T10:00:00Z","agents_migrated":2,"agents_total":3}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1208,7 +1271,7 @@ func TestSecurityKeysRotateRunE(t *testing.T) {
 func TestSecurityTokensListRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`[{"hostname":"host-01","jti":"jti-abc","status":"active","last_seen":"2026-03-06T10:00:00Z"}]`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`[{"hostname":"host-01","jti":"jti-abc","status":"active","last_seen":"2026-03-06T10:00:00Z"}]`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1226,7 +1289,7 @@ func TestSecurityTokensListRunE(t *testing.T) {
 func TestSecurityBlacklistListRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`[{"jti":"jti-xyz","hostname":"host-01","reason":"revoked","revoked_at":"2026-03-06T10:00:00Z","expires_at":"2026-03-07T10:00:00Z"}]`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`[{"jti":"jti-xyz","hostname":"host-01","reason":"revoked","revoked_at":"2026-03-06T10:00:00Z","expires_at":"2026-03-07T10:00:00Z"}]`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1244,7 +1307,7 @@ func TestSecurityBlacklistListRunE(t *testing.T) {
 func TestSecurityBlacklistPurgeRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`{"deleted":5}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"deleted":5}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1262,7 +1325,7 @@ func TestSecurityBlacklistPurgeRunE(t *testing.T) {
 func TestInventoryListRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`{"all":{"hosts":["host-01"]},"_meta":{"hostvars":{"host-01":{"ansible_user":"root"}}}}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"all":{"hosts":["host-01"]},"_meta":{"hostvars":{"host-01":{"ansible_user":"root"}}}}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1280,7 +1343,7 @@ func TestInventoryListRunE(t *testing.T) {
 func TestServerStatusRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`{"nats":"connected","db":"ok","ws_connections":3,"uptime":"2h"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"nats":"connected","db":"ok","ws_connections":3,"uptime":"2h"}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1298,7 +1361,7 @@ func TestServerStatusRunE(t *testing.T) {
 func TestServerStatsRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte(`{"agents_connected":3,"agents_total":5,"tasks_active":1}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"agents_connected":3,"agents_total":5,"tasks_active":1}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1342,7 +1405,7 @@ func TestMinionsAuthorizeRunE_WithKeyFile(t *testing.T) {
 			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
 		}
 		var body map[string]string
-		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		if body["hostname"] != "host-01" {
 			t.Errorf("expected hostname=host-01, got %q", body["hostname"])
 		}
@@ -1350,7 +1413,7 @@ func TestMinionsAuthorizeRunE_WithKeyFile(t *testing.T) {
 			t.Error("expected public_key_pem in request body")
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"message":"authorized"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"message":"authorized"}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1393,7 +1456,7 @@ func TestInventoryListRunE_OnlyConnected(t *testing.T) {
 			t.Errorf("expected only_connected=true query param, got %q", r.URL.RawQuery)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"all":{"hosts":[]},"_meta":{"hostvars":{}}}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"all":{"hosts":[]},"_meta":{"hostvars":{}}}`))
 	})
 
 	// Set flag and reset after
@@ -1416,7 +1479,7 @@ func TestAPIRequest_DELETE(t *testing.T) {
 			t.Errorf("expected DELETE, got %s", r.Method)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"message":"deleted"}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"message":"deleted"}`))
 	})
 
 	data, status, err := apiRequest("DELETE", "/api/admin/minions/host-01/vars/mykey", nil)
@@ -1436,7 +1499,7 @@ func TestSecurityKeysStatus(t *testing.T) {
 			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"current_key_sha256":"sha256abc","previous_key_sha256":"","deadline":"","rotation_active":false,"agents_total":3}`)) //nolint:errcheck
+		_, _ = w.Write([]byte(`{"current_key_sha256":"sha256abc","previous_key_sha256":"","deadline":"","rotation_active":false,"agents_total":3}`))
 	})
 
 	data, status, err := apiRequest("GET", "/api/admin/security/keys/status", nil)

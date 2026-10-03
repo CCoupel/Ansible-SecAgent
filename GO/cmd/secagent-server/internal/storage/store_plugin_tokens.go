@@ -106,7 +106,7 @@ func (s *Store) ListPluginTokens(ctx context.Context) ([]PluginToken, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ListPluginTokens: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tokens []PluginToken
 	for rows.Next() {

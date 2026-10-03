@@ -85,12 +85,13 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer func() { _ = r.Body.Close() }()
+
 	var req RelayCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
-	defer r.Body.Close()
 
 	req.RelayID = strings.TrimSpace(req.RelayID)
 	if req.RelayID == "" {

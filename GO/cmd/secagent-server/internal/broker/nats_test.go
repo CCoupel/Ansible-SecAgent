@@ -1,16 +1,148 @@
 package broker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"testing"
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natstest "github.com/nats-io/nats-server/v2/test"
 	nats "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
+
+// ── mockMsg — minimal jetstream.Msg implementation for unit tests ─────────────
+
+type mockMsg struct {
+	subject  string
+	ackErr   error
+	nakErr   error
+	ackCalls int
+	nakCalls int
+}
+
+func (m *mockMsg) Metadata() (*jetstream.MsgMetadata, error) { return nil, nil }
+func (m *mockMsg) Data() []byte                              { return nil }
+func (m *mockMsg) Headers() nats.Header                      { return nil }
+func (m *mockMsg) Subject() string                           { return m.subject }
+func (m *mockMsg) Reply() string                             { return "" }
+func (m *mockMsg) Ack() error                                { m.ackCalls++; return m.ackErr }
+func (m *mockMsg) DoubleAck(_ context.Context) error         { return nil }
+func (m *mockMsg) Nak() error                                { m.nakCalls++; return m.nakErr }
+func (m *mockMsg) NakWithDelay(_ time.Duration) error        { return nil }
+func (m *mockMsg) InProgress() error                         { return nil }
+func (m *mockMsg) Term() error                               { return nil }
+func (m *mockMsg) TermWithReason(_ string) error             { return nil }
+
+// captureLog redirects the default logger and returns captured output + restore func.
+func captureLog(t *testing.T) (*bytes.Buffer, func()) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	old := log.Writer()
+	log.SetOutput(buf)
+	return buf, func() { log.SetOutput(old) }
+}
+
+// ── natsAck / natsNak unit tests ──────────────────────────────────────────────
+
+// TestNatsAck_Success verifies natsAck calls Ack once and produces no log output.
+func TestNatsAck_Success(t *testing.T) {
+	logBuf, restore := captureLog(t)
+	defer restore()
+
+	msg := &mockMsg{subject: "tasks.host-1"}
+	natsAck(msg, "test-context")
+
+	if msg.ackCalls != 1 {
+		t.Errorf("expected Ack called once, got %d", msg.ackCalls)
+	}
+	if logBuf.Len() != 0 {
+		t.Errorf("expected no log output on success, got: %q", logBuf.String())
+	}
+}
+
+// TestNatsAck_Error verifies natsAck logs the error and does not panic.
+func TestNatsAck_Error(t *testing.T) {
+	logBuf, restore := captureLog(t)
+	defer restore()
+
+	ackErr := errors.New("ack_connection_lost")
+	msg := &mockMsg{subject: "tasks.host-2", ackErr: ackErr}
+	natsAck(msg, "retry-path")
+
+	if msg.ackCalls != 1 {
+		t.Errorf("expected Ack called once, got %d", msg.ackCalls)
+	}
+	logOutput := logBuf.String()
+	if logOutput == "" {
+		t.Error("expected error to be logged, got empty log output")
+	}
+	if !bytes.Contains(logBuf.Bytes(), []byte("ack_connection_lost")) {
+		t.Errorf("expected log to contain error message, got: %q", logOutput)
+	}
+	if !bytes.Contains(logBuf.Bytes(), []byte("tasks.host-2")) {
+		t.Errorf("expected log to contain subject, got: %q", logOutput)
+	}
+}
+
+// TestNatsNak_Success verifies natsNak calls Nak once and produces no log output.
+func TestNatsNak_Success(t *testing.T) {
+	logBuf, restore := captureLog(t)
+	defer restore()
+
+	msg := &mockMsg{subject: "tasks.host-3"}
+	natsNak(msg, "test-context")
+
+	if msg.nakCalls != 1 {
+		t.Errorf("expected Nak called once, got %d", msg.nakCalls)
+	}
+	if logBuf.Len() != 0 {
+		t.Errorf("expected no log output on success, got: %q", logBuf.String())
+	}
+}
+
+// TestNatsNak_Error verifies natsNak logs the error and does not panic.
+func TestNatsNak_Error(t *testing.T) {
+	logBuf, restore := captureLog(t)
+	defer restore()
+
+	nakErr := errors.New("nak_timeout")
+	msg := &mockMsg{subject: "tasks.host-4", nakErr: nakErr}
+	natsNak(msg, "dispatch-path")
+
+	if msg.nakCalls != 1 {
+		t.Errorf("expected Nak called once, got %d", msg.nakCalls)
+	}
+	logOutput := logBuf.String()
+	if logOutput == "" {
+		t.Error("expected error to be logged, got empty log output")
+	}
+	if !bytes.Contains(logBuf.Bytes(), []byte("nak_timeout")) {
+		t.Errorf("expected log to contain error message, got: %q", logOutput)
+	}
+}
+
+// TestNatsAck_NoPanicOnNilConnection verifies that natsAck never panics
+// even when the message's Ack returns a non-nil error (simulates disconnected state).
+func TestNatsAck_NoPanicOnNilConnection(t *testing.T) {
+	_, restore := captureLog(t)
+	defer restore()
+
+	// Should not panic regardless of error
+	msg := &mockMsg{subject: "tasks.x", ackErr: errors.New("connection closed")}
+	natsAck(msg, "safety")
+	natsNak(msg, "safety") // also validate natsNak doesn't panic with ack error on same msg
+
+	// Survival of the test itself is the assertion
+	if msg.ackCalls < 1 || msg.nakCalls < 1 {
+		t.Error("helpers did not call underlying Ack/Nak")
+	}
+}
 
 // startTestNATSServer starts an embedded NATS JetStream server
 func startTestNATSServer(t *testing.T) (*natsserver.Server, string) {

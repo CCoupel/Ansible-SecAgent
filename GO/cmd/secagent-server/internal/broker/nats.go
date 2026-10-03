@@ -105,7 +105,9 @@ func NewClient(natsURL string) (*Client, error) {
 
 	// Ensure streams exist
 	if err := client.ensureStreams(context.Background()); err != nil {
-		client.Close()
+		if cerr := client.Close(); cerr != nil {
+			log.Printf("NATS client.Close during init error: %v", cerr)
+		}
 		return nil, err
 	}
 
@@ -125,7 +127,9 @@ func (c *Client) Close() error {
 		cc.Stop()
 	}
 	if c.nc != nil && !c.nc.IsClosed() {
-		c.nc.Drain()
+		if err := c.nc.Drain(); err != nil {
+			log.Printf("NATS Drain: %v", err)
+		}
 		log.Printf("NATS connection closed")
 	}
 	return nil
@@ -237,12 +241,26 @@ func (c *Client) SubscribeTasks(ctx context.Context, wsSendFn func(hostname stri
 	return nil
 }
 
+// natsAck acknowledges a NATS message and logs any error.
+func natsAck(msg jetstream.Msg, ctxLabel string) {
+	if err := msg.Ack(); err != nil {
+		log.Printf("NATS Ack failed: subject=%s context=%s error=%v", msg.Subject(), ctxLabel, err)
+	}
+}
+
+// natsNak negative-acknowledges a NATS message and logs any error.
+func natsNak(msg jetstream.Msg, ctxLabel string) {
+	if err := msg.Nak(); err != nil {
+		log.Printf("NATS Nak failed: subject=%s context=%s error=%v", msg.Subject(), ctxLabel, err)
+	}
+}
+
 // onTaskMessage handles incoming task messages from NATS
 func (c *Client) onTaskMessage(msg jetstream.Msg) {
 	var payload map[string]interface{}
 	if err := json.Unmarshal(msg.Data(), &payload); err != nil {
 		log.Printf("Failed to decode NATS task message: %v", err)
-		msg.Ack()
+		natsAck(msg, "decode_error")
 		return
 	}
 
@@ -254,23 +272,23 @@ func (c *Client) onTaskMessage(msg jetstream.Msg) {
 
 	if hostname == "" {
 		log.Printf("Malformed task subject: subject=%s", msg.Subject())
-		msg.Ack()
+		natsAck(msg, "malformed_subject")
 		return
 	}
 
 	if c.wsSendFn == nil {
-		msg.Nak()
+		natsNak(msg, "no_ws_send_fn")
 		return
 	}
 
 	// Try to deliver via WebSocket
 	if err := c.wsSendFn(hostname, payload); err != nil {
 		log.Printf("Agent not on this node, NAK task: hostname=%s error=%v", hostname, err)
-		msg.Nak()
+		natsNak(msg, "agent_not_local")
 		return
 	}
 
-	msg.Ack()
+	natsAck(msg, "delivered")
 	log.Printf("Task delivered to agent: hostname=%s task_id=%v", hostname, payload["task_id"])
 }
 
@@ -311,7 +329,7 @@ func (c *Client) onResultMessage(msg jetstream.Msg) {
 	var payload map[string]interface{}
 	if err := json.Unmarshal(msg.Data(), &payload); err != nil {
 		log.Printf("Failed to decode NATS result message: %v", err)
-		msg.Ack()
+		natsAck(msg, "decode_error")
 		return
 	}
 
@@ -321,7 +339,7 @@ func (c *Client) onResultMessage(msg jetstream.Msg) {
 		taskID = msg.Subject()[8:] // Strip "results."
 	}
 
-	msg.Ack()
+	natsAck(msg, "result_received")
 
 	if c.resultFn != nil && taskID != "" {
 		if err := c.resultFn(taskID, payload); err != nil {

@@ -100,12 +100,13 @@ func AdminCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer func() { _ = r.Body.Close() }()
+
 	var req TokenCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
-	defer r.Body.Close()
 
 	req.Role = strings.TrimSpace(req.Role)
 	if req.Role != "enrollment" && req.Role != "plugin" {

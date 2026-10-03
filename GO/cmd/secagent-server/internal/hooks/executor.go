@@ -165,8 +165,8 @@ func (e *WebhookExecutor) doRequest(ctx context.Context, action ActionDef, bodyB
 	if doErr != nil {
 		return false, doErr.Error(), dur
 	}
-	io.Copy(io.Discard, resp.Body) //nolint:errcheck
-	resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 
 	sc := resp.StatusCode
 	if sc >= 200 && sc < 300 {
@@ -230,9 +230,22 @@ func (e *ShellExecutor) Execute(ctx context.Context, action ActionDef, vars map[
 // ── FileExecutor ──────────────────────────────────────────────────────────────
 
 // FileExecutor appends a rendered string to a file.
-type FileExecutor struct{}
+type FileExecutor struct {
+	// openFileFn overrides os.OpenFile; used only in tests to inject
+	// a WriteCloser whose Close() returns a controlled error.
+	openFileFn func(name string, flag int, perm os.FileMode) (io.WriteCloser, error)
+}
 
-func (e *FileExecutor) Execute(ctx context.Context, action ActionDef, vars map[string]string) (bool, string, int64) {
+// openFile returns an io.WriteCloser for the given path/flags, using
+// openFileFn when set (tests) or os.OpenFile otherwise.
+func (e *FileExecutor) openFile(name string, flag int, perm os.FileMode) (io.WriteCloser, error) {
+	if e.openFileFn != nil {
+		return e.openFileFn(name, flag, perm)
+	}
+	return os.OpenFile(name, flag, perm)
+}
+
+func (e *FileExecutor) Execute(ctx context.Context, action ActionDef, vars map[string]string) (ok bool, msg string, elapsed int64) {
 	if action.Path == "" {
 		return false, "missing path", 0
 	}
@@ -248,13 +261,20 @@ func (e *FileExecutor) Execute(ctx context.Context, action ActionDef, vars map[s
 	}
 
 	t0 := time.Now()
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := e.openFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return false, fmt.Sprintf("open: %v", err), time.Since(t0).Milliseconds()
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && ok {
+			// Write succeeded but Close failed (e.g. deferred flush on NFS).
+			// Report the action as failed so the caller is not misled.
+			ok = false
+			msg = fmt.Sprintf("close: %v", cerr)
+		}
+	}()
 
-	if _, err := f.WriteString(content); err != nil {
+	if _, err := f.Write([]byte(content)); err != nil {
 		return false, fmt.Sprintf("write: %v", err), time.Since(t0).Milliseconds()
 	}
 	return true, "", time.Since(t0).Milliseconds()
@@ -353,8 +373,8 @@ func (e *APIExecutor) doRequest(ctx context.Context, action ActionDef, method, u
 	if doErr != nil {
 		return false, doErr.Error(), dur
 	}
-	io.Copy(io.Discard, resp.Body) //nolint:errcheck
-	resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 
 	sc := resp.StatusCode
 	if sc >= 200 && sc < 300 {

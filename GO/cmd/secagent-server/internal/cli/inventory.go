@@ -44,20 +44,20 @@ var inventoryListCmd = &cobra.Command{
 			return fmt.Errorf("parse response: %w", err)
 		}
 
-		return printOutput(globalFormat, inv, func(v interface{}) {
+		return printOutput(globalFormat, inv, func(v interface{}) error {
 			inv := v.(map[string]interface{})
-			tw := newTabWriter()
+			tp := newTabPrinter()
 			// Print hostvars summary
 			if meta, ok := inv["_meta"].(map[string]interface{}); ok {
 				if hostvars, ok := meta["hostvars"].(map[string]interface{}); ok {
-					fmt.Fprintln(tw, "HOSTNAME\tVARS")
+					tp.println("HOSTNAME\tVARS")
 					for host, vars := range hostvars {
 						varsJSON, _ := json.Marshal(vars)
-						fmt.Fprintf(tw, "%s\t%s\n", host, string(varsJSON))
+						tp.printf("%s\t%s\n", host, string(varsJSON))
 					}
 				}
 			}
-			tw.Flush()
+			return tp.flush()
 		})
 	},
 }

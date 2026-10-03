@@ -32,17 +32,13 @@ func SetAdminStore(s *storage.Store) {
 func requireAdminAuth(w http.ResponseWriter, r *http.Request) bool {
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprintf(w, `{"error":"missing_authorization"}`)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing_authorization"})
 		return false
 	}
 
 	token := authHeader[7:]
 	if token != server.AdminToken {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprintf(w, `{"error":"invalid_admin_token"}`)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_admin_token"})
 		return false
 	}
 	return true
@@ -52,7 +48,9 @@ func requireAdminAuth(w http.ResponseWriter, r *http.Request) bool {
 func writeJSON(w http.ResponseWriter, code int, body interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(body)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		log.Printf("writeJSON encode error: %v", err)
+	}
 }
 
 // ========================================================================

@@ -424,30 +424,25 @@ func RegisterAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer func() { _ = r.Body.Close() }()
+
 	var req RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, `{"error":"invalid_request"}`)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
 		return
 	}
-	defer r.Body.Close()
 
 	// Validate base fields
 	req.Hostname = strings.TrimSpace(req.Hostname)
 	req.PublicKeyPEM = strings.TrimSpace(req.PublicKeyPEM)
 
 	if req.Hostname == "" || req.PublicKeyPEM == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, `{"error":"missing_fields"}`)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_fields"})
 		return
 	}
 
 	if registerStore == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"error":"store_not_initialized"}`)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "store_not_initialized"})
 		return
 	}
 
@@ -477,9 +472,7 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 		if errCode == "db_error" {
 			status = http.StatusInternalServerError
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		fmt.Fprintf(w, `{"error":%q}`, errCode)
+		writeJSON(w, status, map[string]string{"error": errCode})
 		return
 	}
 
@@ -491,9 +484,7 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 	server.mu.RUnlock()
 
 	if serverPrivKey == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"error":"server_key_not_initialized"}`)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_key_not_initialized"})
 		return
 	}
 
@@ -503,26 +494,20 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 	if req.ChallengeResponse != "" {
 		pendingNonce, pendingToken, ok := consumePendingNonce(req.Hostname)
 		if !ok {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			fmt.Fprintf(w, `{"error":"challenge_expired_or_not_issued"}`)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "challenge_expired_or_not_issued"})
 			return
 		}
 
 		// Decrypt response with server private key
 		responseBytes, err := base64.StdEncoding.DecodeString(req.ChallengeResponse)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			fmt.Fprintf(w, `{"error":"challenge_response_invalid_encoding"}`)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "challenge_response_invalid_encoding"})
 			return
 		}
 
 		decrypted, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, serverPrivKey, responseBytes, nil)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			fmt.Fprintf(w, `{"error":"challenge_response_decryption_failed"}`)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "challenge_response_decryption_failed"})
 			return
 		}
 
@@ -530,9 +515,7 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 		expected := append(pendingNonce, []byte(pendingToken)...)
 		if string(decrypted) != string(expected) {
 			log.Printf("RegisterAgent challenge mismatch: hostname=%s", req.Hostname)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			fmt.Fprintf(w, `{"error":"challenge_response_mismatch"}`)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "challenge_response_mismatch"})
 			return
 		}
 
@@ -549,26 +532,20 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 		jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 		rawJWT, err := jwtToken.SignedString([]byte(jwtSecret))
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, `{"error":"jwt_generation_failed"}`)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "jwt_generation_failed"})
 			return
 		}
 
 		tokenEncrypted, err := encryptWithPublicKey(rawJWT, req.PublicKeyPEM)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, `{"error":"invalid_public_key"}`)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_public_key"})
 			return
 		}
 
 		// Persist: consume token (increment use_count), store authorized_key, register agent
 		if err := registerStore.ConsumeEnrollmentToken(ctx, tok.ID); err != nil {
 			log.Printf("RegisterAgent ConsumeEnrollmentToken: %v", err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, `{"error":"db_error"}`)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 			return
 		}
 		if err := registerStore.AddAuthorizedKey(ctx, req.Hostname, req.PublicKeyPEM, "enrollment_token:"+tok.ID); err != nil {
@@ -577,9 +554,7 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 		}
 		if _, err := registerStore.RegisterAgent(ctx, req.Hostname, req.PublicKeyPEM, jti); err != nil {
 			log.Printf("RegisterAgent persist: %v", err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, `{"error":"db_error"}`)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 			return
 		}
 
@@ -591,9 +566,7 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 			hooks.GlobalDispatcher.Dispatch("host.new", req.Hostname, "disconnected", enrolledAt)
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(RegisterResponse{
+		writeJSON(w, http.StatusOK, RegisterResponse{
 			TokenEncrypted:     tokenEncrypted,
 			JWTEncrypted:       tokenEncrypted,
 			ServerPublicKeyPEM: pubPEM,
@@ -606,18 +579,14 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 	// -----------------------------------------------------------------------
 	nonce := make([]byte, 16)
 	if _, err := rand.Read(nonce); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"error":"nonce_generation_failed"}`)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "nonce_generation_failed"})
 		return
 	}
 
 	// Encrypt nonce with agent's public key
 	challengeEncrypted, err := encryptWithPublicKey(string(nonce), req.PublicKeyPEM)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, `{"error":"invalid_public_key"}`)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_public_key"})
 		return
 	}
 
@@ -626,9 +595,7 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 
 	log.Printf("RegisterAgent challenge issued: hostname=%s token_id=%s", req.Hostname, tok.ID)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(ChallengeResponse{
+	writeJSON(w, http.StatusOK, ChallengeResponse{
 		Challenge:       challengeEncrypted,
 		ServerPublicKey: pubPEM,
 	})
@@ -639,22 +606,16 @@ func registerAgentLegacy(w http.ResponseWriter, ctx context.Context, req Registe
 	authKey, err := registerStore.GetAuthorizedKey(ctx, req.Hostname)
 	if err != nil {
 		log.Printf("RegisterAgent GetAuthorizedKey: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"error":"db_error"}`)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 		return
 	}
 	if authKey == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		fmt.Fprintf(w, `{"error":"unauthorized_hostname"}`)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized_hostname"})
 		return
 	}
 
 	if strings.TrimSpace(authKey.PublicKeyPEM) != req.PublicKeyPEM {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		fmt.Fprintf(w, `{"error":"public_key_mismatch"}`)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "public_key_mismatch"})
 		return
 	}
 
@@ -677,31 +638,23 @@ func registerAgentLegacy(w http.ResponseWriter, ctx context.Context, req Registe
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	rawJWT, err := token.SignedString([]byte(jwtSecret))
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"error":"jwt_generation_failed"}`)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "jwt_generation_failed"})
 		return
 	}
 
 	tokenEncrypted, err := encryptWithPublicKey(rawJWT, req.PublicKeyPEM)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, `{"error":"invalid_public_key"}`)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_public_key"})
 		return
 	}
 
 	if _, err := registerStore.RegisterAgent(ctx, req.Hostname, req.PublicKeyPEM, jti); err != nil {
 		log.Printf("RegisterAgent persist: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"error":"db_error"}`)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(RegisterResponse{
+	writeJSON(w, http.StatusOK, RegisterResponse{
 		TokenEncrypted:     tokenEncrypted,
 		ServerPublicKeyPEM: pubPEM,
 	})
@@ -718,55 +671,42 @@ func AdminAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Check admin authorization header
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" || len(authHeader) < 7 || !strings.HasPrefix(authHeader, "Bearer ") {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprintf(w, `{"error":"missing_authorization"}`)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing_authorization"})
 		return
 	}
 
 	tok := authHeader[7:]
 	if tok != server.AdminToken {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprintf(w, `{"error":"invalid_admin_token"}`)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_admin_token"})
 		return
 	}
+
+	defer func() { _ = r.Body.Close() }()
 
 	var req AdminAuthorizeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, `{"error":"invalid_request"}`)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
 		return
 	}
-	defer r.Body.Close()
 
 	// Validate input
 	if strings.TrimSpace(req.Hostname) == "" || strings.TrimSpace(req.PublicKeyPEM) == "" || strings.TrimSpace(req.ApprovedBy) == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, `{"error":"missing_fields"}`)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_fields"})
 		return
 	}
 
 	if registerStore == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"error":"store_not_initialized"}`)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "store_not_initialized"})
 		return
 	}
 
 	if err := registerStore.AddAuthorizedKey(r.Context(), req.Hostname, req.PublicKeyPEM, req.ApprovedBy); err != nil {
 		log.Printf("AdminAuthorize AddAuthorizedKey: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"error":"db_error"}`)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{
+	writeJSON(w, http.StatusCreated, map[string]string{
 		"hostname": req.Hostname,
 		"status":   "authorized",
 	})
@@ -780,14 +720,13 @@ func TokenRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer func() { _ = r.Body.Close() }()
+
 	var req TokenRefreshRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, `{"error":"invalid_request"}`)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
 		return
 	}
-	defer r.Body.Close()
 
 	server.mu.RLock()
 	privKey := server.PrivateKey
@@ -797,26 +736,20 @@ func TokenRefresh(w http.ResponseWriter, r *http.Request) {
 	server.mu.RUnlock()
 
 	if privKey == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"error":"server_key_not_initialized"}`)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_key_not_initialized"})
 		return
 	}
 
 	// Step 1: Decrypt challenge with server private key
 	ciphertextBytes, err := base64.StdEncoding.DecodeString(req.ChallengeEncrypted)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		fmt.Fprintf(w, `{"error":"challenge_decryption_failed"}`)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "challenge_decryption_failed"})
 		return
 	}
 
 	_, err = rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, ciphertextBytes, nil)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		fmt.Fprintf(w, `{"error":"challenge_decryption_failed"}`)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "challenge_decryption_failed"})
 		return
 	}
 
@@ -834,32 +767,24 @@ func TokenRefresh(w http.ResponseWriter, r *http.Request) {
 	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	rawJWT, err := jwtToken.SignedString([]byte(jwtSecret))
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"error":"jwt_generation_failed"}`)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "jwt_generation_failed"})
 		return
 	}
 
 	// Step 3: Lookup agent public key from DB to encrypt the new JWT
 	if registerStore == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"error":"store_not_initialized"}`)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "store_not_initialized"})
 		return
 	}
 
 	agent, err := registerStore.GetAgent(r.Context(), req.Hostname)
 	if err != nil {
 		log.Printf("TokenRefresh GetAgent: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"error":"db_error"}`)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 		return
 	}
 	if agent == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		fmt.Fprintf(w, `{"error":"agent_not_found"}`)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "agent_not_found"})
 		return
 	}
 
@@ -867,9 +792,7 @@ func TokenRefresh(w http.ResponseWriter, r *http.Request) {
 	tokenEncrypted, err := encryptWithPublicKey(rawJWT, agent.PublicKeyPEM)
 	if err != nil {
 		log.Printf("TokenRefresh encrypt: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"error":"encryption_failed"}`)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "encryption_failed"})
 		return
 	}
 
@@ -879,9 +802,7 @@ func TokenRefresh(w http.ResponseWriter, r *http.Request) {
 		// Non-fatal: token was issued, log and continue
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
+	writeJSON(w, http.StatusOK, map[string]string{
 		"token_encrypted":       tokenEncrypted,
 		"server_public_key_pem": pubPEM,
 	})

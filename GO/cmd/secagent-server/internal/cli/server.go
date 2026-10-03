@@ -37,15 +37,15 @@ var serverStatusCmd = &cobra.Command{
 			return fmt.Errorf("parse response: %w", err)
 		}
 
-		return printOutput(globalFormat, result, func(v interface{}) {
+		return printOutput(globalFormat, result, func(v interface{}) error {
 			m := v.(map[string]interface{})
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "COMPONENT\tSTATUS")
-			fmt.Fprintf(tw, "nats\t%v\n", m["nats"])
-			fmt.Fprintf(tw, "db\t%v\n", m["db"])
-			fmt.Fprintf(tw, "ws_connections\t%v\n", m["ws_connections"])
-			fmt.Fprintf(tw, "uptime\t%v\n", m["uptime"])
-			tw.Flush()
+			tp := newTabPrinter()
+			tp.println("COMPONENT\tSTATUS")
+			tp.printf("nats\t%v\n", m["nats"])
+			tp.printf("db\t%v\n", m["db"])
+			tp.printf("ws_connections\t%v\n", m["ws_connections"])
+			tp.printf("uptime\t%v\n", m["uptime"])
+			return tp.flush()
 		})
 	},
 }
@@ -69,14 +69,14 @@ var serverStatsCmd = &cobra.Command{
 			return fmt.Errorf("parse response: %w", err)
 		}
 
-		return printOutput(globalFormat, result, func(v interface{}) {
+		return printOutput(globalFormat, result, func(v interface{}) error {
 			m := v.(map[string]interface{})
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "METRIC\tVALUE")
-			fmt.Fprintf(tw, "agents_connected\t%v\n", m["agents_connected"])
-			fmt.Fprintf(tw, "agents_total\t%v\n", m["agents_total"])
-			fmt.Fprintf(tw, "tasks_active\t%v\n", m["tasks_active"])
-			tw.Flush()
+			tp := newTabPrinter()
+			tp.println("METRIC\tVALUE")
+			tp.printf("agents_connected\t%v\n", m["agents_connected"])
+			tp.printf("agents_total\t%v\n", m["agents_total"])
+			tp.printf("tasks_active\t%v\n", m["tasks_active"])
+			return tp.flush()
 		})
 	},
 }

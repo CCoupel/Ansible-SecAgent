@@ -98,7 +98,7 @@ func (s *Store) ListEnrollmentTokens(ctx context.Context) ([]EnrollmentToken, er
 	if err != nil {
 		return nil, fmt.Errorf("ListEnrollmentTokens: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tokens []EnrollmentToken
 	for rows.Next() {

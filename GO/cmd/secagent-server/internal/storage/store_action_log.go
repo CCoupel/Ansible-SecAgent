@@ -90,7 +90,7 @@ func (s *Store) ListActionLogs(ctx context.Context, f ActionLogFilter) ([]Action
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []ActionLogEntry
 	for rows.Next() {

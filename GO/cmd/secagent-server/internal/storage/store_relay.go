@@ -120,7 +120,7 @@ func (s *Store) ListRelayNodes() ([]RelayNode, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ListRelayNodes: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var nodes []RelayNode
 	for rows.Next() {
@@ -250,7 +250,7 @@ func (s *Store) BulkUpsertRelayRouting(relayID string, hostnames []string) error
 	if err != nil {
 		return fmt.Errorf("BulkUpsertRelayRouting prepare: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for _, hostname := range hostnames {
 		if hostname == "" {
@@ -294,7 +294,7 @@ func (s *Store) ListRelayRouting(relayID string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ListRelayRouting: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var hostnames []string
 	for rows.Next() {

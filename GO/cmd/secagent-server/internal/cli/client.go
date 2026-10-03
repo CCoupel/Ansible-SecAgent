@@ -74,7 +74,7 @@ func apiRequest(method, path string, body interface{}) ([]byte, int, error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("http: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -92,20 +92,20 @@ func checkError(data []byte, status int) int {
 		return 0
 	case 404:
 		var e map[string]string
-		json.Unmarshal(data, &e) //nolint:errcheck
-		fmt.Fprintf(os.Stderr, "Error: not found — %s\n", e["error"])
+		_ = json.Unmarshal(data, &e) // best-effort; empty map handled below
+		_, _ = fmt.Fprintf(os.Stderr, "Error: not found — %s\n", e["error"])
 		return 2
 	case 401, 403:
-		fmt.Fprintln(os.Stderr, "Error: unauthorized — check ADMIN_TOKEN")
+		_, _ = fmt.Fprintln(os.Stderr, "Error: unauthorized — check ADMIN_TOKEN")
 		return 1
 	default:
 		var e map[string]string
-		json.Unmarshal(data, &e) //nolint:errcheck
+		_ = json.Unmarshal(data, &e) // best-effort; empty map handled below
 		msg := e["error"]
 		if msg == "" {
 			msg = string(data)
 		}
-		fmt.Fprintf(os.Stderr, "Error: %s (HTTP %d)\n", msg, status)
+		_, _ = fmt.Fprintf(os.Stderr, "Error: %s (HTTP %d)\n", msg, status)
 		return 1
 	}
 }
@@ -114,7 +114,7 @@ func checkError(data []byte, status int) int {
 
 // printOutput formats and prints v according to format ("json", "yaml", "table").
 // tableFunc is called for table format; if nil, falls back to JSON.
-func printOutput(format string, v interface{}, tableFunc func(interface{})) error {
+func printOutput(format string, v interface{}, tableFunc func(interface{}) error) error {
 	switch format {
 	case "json":
 		enc := json.NewEncoder(os.Stdout)
@@ -124,8 +124,7 @@ func printOutput(format string, v interface{}, tableFunc func(interface{})) erro
 		return yaml.NewEncoder(os.Stdout).Encode(v)
 	default: // "table"
 		if tableFunc != nil {
-			tableFunc(v)
-			return nil
+			return tableFunc(v)
 		}
 		// fallback to JSON if no table renderer provided
 		enc := json.NewEncoder(os.Stdout)
@@ -134,7 +133,36 @@ func printOutput(format string, v interface{}, tableFunc func(interface{})) erro
 	}
 }
 
-// newTabWriter returns a tabwriter for aligned table output.
-func newTabWriter() *tabwriter.Writer {
-	return tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+// tabPrinter is an errWriter for tabwriter output.
+// Individual write errors are captured; all are surfaced on flush().
+type tabPrinter struct {
+	tw  *tabwriter.Writer
+	err error
+}
+
+// newTabPrinter returns a tabPrinter backed by a tabwriter writing to os.Stdout.
+func newTabPrinter() *tabPrinter {
+	return &tabPrinter{tw: tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)}
+}
+
+// println writes a line to the underlying tabwriter.
+func (p *tabPrinter) println(s string) {
+	if p.err == nil {
+		_, p.err = fmt.Fprintln(p.tw, s)
+	}
+}
+
+// printf writes a formatted line to the underlying tabwriter.
+func (p *tabPrinter) printf(format string, args ...interface{}) {
+	if p.err == nil {
+		_, p.err = fmt.Fprintf(p.tw, format, args...)
+	}
+}
+
+// flush flushes the tabwriter and returns the first error encountered.
+func (p *tabPrinter) flush() error {
+	if p.err != nil {
+		return p.err
+	}
+	return p.tw.Flush()
 }

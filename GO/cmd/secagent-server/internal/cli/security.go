@@ -46,10 +46,10 @@ var securityKeysStatusCmd = &cobra.Command{
 			return fmt.Errorf("parse response: %w", err)
 		}
 
-		return printOutput(globalFormat, result, func(v interface{}) {
+		return printOutput(globalFormat, result, func(v interface{}) error {
 			m := v.(map[string]interface{})
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "FIELD\tVALUE")
+			tp := newTabPrinter()
+			tp.println("FIELD\tVALUE")
 			for _, k := range []string{
 				"current_key_sha256", "previous_key_sha256",
 				"rotation_active", "deadline", "agents_total",
@@ -58,9 +58,9 @@ var securityKeysStatusCmd = &cobra.Command{
 				if val == nil {
 					val = ""
 				}
-				fmt.Fprintf(tw, "%s\t%v\n", k, val)
+				tp.printf("%s\t%v\n", k, val)
 			}
-			tw.Flush()
+			return tp.flush()
 		})
 	},
 }
@@ -94,17 +94,17 @@ var securityKeysRotateCmd = &cobra.Command{
 			return fmt.Errorf("parse response: %w", err)
 		}
 
-		return printOutput(globalFormat, result, func(v interface{}) {
+		return printOutput(globalFormat, result, func(v interface{}) error {
 			m := v.(map[string]interface{})
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "FIELD\tVALUE")
+			tp := newTabPrinter()
+			tp.println("FIELD\tVALUE")
 			for _, k := range []string{
 				"current_key_sha256", "previous_key_sha256",
 				"deadline", "agents_migrated", "agents_total",
 			} {
-				fmt.Fprintf(tw, "%s\t%v\n", k, m[k])
+				tp.printf("%s\t%v\n", k, m[k])
 			}
-			tw.Flush()
+			return tp.flush()
 		})
 	},
 }
@@ -141,15 +141,15 @@ var securityTokensListCmd = &cobra.Command{
 			return fmt.Errorf("parse response: %w", err)
 		}
 
-		return printOutput(globalFormat, tokens, func(v interface{}) {
+		return printOutput(globalFormat, tokens, func(v interface{}) error {
 			list := v.([]map[string]interface{})
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "HOSTNAME\tJTI\tSTATUS\tLAST_SEEN")
+			tp := newTabPrinter()
+			tp.println("HOSTNAME\tJTI\tSTATUS\tLAST_SEEN")
 			for _, t := range list {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
+				tp.printf("%s\t%s\t%s\t%s\n",
 					t["hostname"], t["jti"], t["status"], t["last_seen"])
 			}
-			tw.Flush()
+			return tp.flush()
 		})
 	},
 }
@@ -182,16 +182,16 @@ var securityBlacklistListCmd = &cobra.Command{
 			return fmt.Errorf("parse response: %w", err)
 		}
 
-		return printOutput(globalFormat, entries, func(v interface{}) {
+		return printOutput(globalFormat, entries, func(v interface{}) error {
 			list := v.([]map[string]interface{})
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "JTI\tHOSTNAME\tREASON\tREVOKED_AT\tEXPIRES_AT")
+			tp := newTabPrinter()
+			tp.println("JTI\tHOSTNAME\tREASON\tREVOKED_AT\tEXPIRES_AT")
 			for _, e := range list {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+				tp.printf("%s\t%s\t%s\t%s\t%s\n",
 					e["jti"], e["hostname"], e["reason"],
 					e["revoked_at"], e["expires_at"])
 			}
-			tw.Flush()
+			return tp.flush()
 		})
 	},
 }

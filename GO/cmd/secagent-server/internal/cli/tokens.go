@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"regexp"
@@ -111,31 +112,32 @@ Examples:
 			return fmt.Errorf("parse response: %w", err)
 		}
 
-		return printOutput(globalFormat, resp, func(v interface{}) {
+		return printOutput(globalFormat, resp, func(v interface{}) error {
 			r := v.(map[string]interface{})
-			fmt.Println("Token created successfully.")
-			fmt.Println()
-			fmt.Printf("  Token (save now — shown only once): %s\n", r["token"])
-			fmt.Printf("  ID:         %s\n", r["id"])
-			fmt.Printf("  Role:       %s\n", r["role"])
+			_, _ = fmt.Println("Token created successfully.")
+			_, _ = fmt.Println()
+			_, _ = fmt.Printf("  Token (save now — shown only once): %s\n", r["token"])
+			_, _ = fmt.Printf("  ID:         %s\n", r["id"])
+			_, _ = fmt.Printf("  Role:       %s\n", r["role"])
 			if p, ok := r["hostname_pattern"].(string); ok && p != "" {
-				fmt.Printf("  Pattern:    %s\n", p)
+				_, _ = fmt.Printf("  Pattern:    %s\n", p)
 			}
 			if d, ok := r["description"].(string); ok && d != "" {
-				fmt.Printf("  Desc:       %s\n", d)
+				_, _ = fmt.Printf("  Desc:       %s\n", d)
 			}
 			if ips, ok := r["allowed_ips"].(string); ok && ips != "" {
-				fmt.Printf("  Allowed IPs: %s\n", ips)
+				_, _ = fmt.Printf("  Allowed IPs: %s\n", ips)
 			}
 			if hp, ok := r["allowed_hostname_pattern"].(string); ok && hp != "" {
-				fmt.Printf("  Hostname pattern: %s\n", hp)
+				_, _ = fmt.Printf("  Hostname pattern: %s\n", hp)
 			}
 			if exp, ok := r["expires_at"].(string); ok && exp != "" {
-				fmt.Printf("  Expires:    %s\n", exp)
+				_, _ = fmt.Printf("  Expires:    %s\n", exp)
 			} else {
-				fmt.Printf("  Expires:    never\n")
+				_, _ = fmt.Printf("  Expires:    never\n")
 			}
-			fmt.Printf("  Created:    %s\n", r["created_at"])
+			_, _ = fmt.Printf("  Created:    %s\n", r["created_at"])
+			return nil
 		})
 	},
 }
@@ -148,7 +150,12 @@ func init() {
 	tokensCreateCmd.Flags().StringVar(&createDescription, "description", "", "Human-readable description (plugin tokens)")
 	tokensCreateCmd.Flags().StringVar(&createAllowedIPs, "allowed-ips", "", "Comma-separated CIDRs (plugin tokens): \"10.0.0.0/8,192.168.1.0/24\"")
 	tokensCreateCmd.Flags().StringVar(&createAllowedHostname, "allowed-hostname-pattern", "", "Regexp for caller hostname (plugin tokens)")
-	tokensCreateCmd.MarkFlagRequired("role") //nolint:errcheck
+	if err := tokensCreateCmd.MarkFlagRequired("role"); err != nil {
+		// MarkFlagRequired only fails when the flag name is invalid (programmer error).
+		// Log the error and exit cleanly — no panic in production.
+		slog.Error("tokens create: MarkFlagRequired failed", "flag", "role", "err", err)
+		os.Exit(1)
+	}
 }
 
 // ── tokens list ───────────────────────────────────────────────────────────────
@@ -180,15 +187,15 @@ var tokensListCmd = &cobra.Command{
 			return fmt.Errorf("parse response: %w", err)
 		}
 
-		return printOutput(globalFormat, tokens, func(v interface{}) {
+		return printOutput(globalFormat, tokens, func(v interface{}) error {
 			list, _ := v.([]map[string]interface{})
 			if len(list) == 0 {
-				fmt.Println("No tokens found.")
-				return
+				_, _ = fmt.Println("No tokens found.")
+				return nil
 			}
 
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "ID\tROLE\tHASH (truncated)\tPATTERN/DESC\tEXPIRES\tUSED\tREVOKED")
+			tp := newTabPrinter()
+			tp.println("ID\tROLE\tHASH (truncated)\tPATTERN/DESC\tEXPIRES\tUSED\tREVOKED")
 			for _, t := range list {
 				hash := fmt.Sprintf("%v", t["token_hash"])
 				if len(hash) > 16 {
@@ -213,10 +220,10 @@ var tokensListCmd = &cobra.Command{
 				if v, ok := t["revoked"]; ok {
 					revoked = fmt.Sprintf("%v", v)
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				tp.printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 					t["id"], role, hash, label, expires, useCount, revoked)
 			}
-			tw.Flush()
+			return tp.flush()
 		})
 	},
 }
@@ -309,9 +316,10 @@ At least one flag must be specified.`,
 			return fmt.Errorf("parse response: %w", err)
 		}
 
-		return printOutput(globalFormat, resp, func(v interface{}) {
+		return printOutput(globalFormat, resp, func(v interface{}) error {
 			r := v.(map[string]interface{})
-			fmt.Printf("Purged %v token(s) at %s\n", r["deleted_count"], r["purged_at"])
+			_, _ = fmt.Printf("Purged %v token(s) at %s\n", r["deleted_count"], r["purged_at"])
+			return nil
 		})
 	},
 }

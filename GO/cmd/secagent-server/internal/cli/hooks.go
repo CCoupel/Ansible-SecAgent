@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -33,18 +32,18 @@ func runHooksStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("hooks config %s: %w", path, err)
 	}
 
-	fmt.Printf("Hooks config : %s\n", path)
+	_, _ = fmt.Printf("Hooks config : %s\n", path)
 
 	if cfg == nil {
-		fmt.Println("Status       : not found — 0 hooks active")
+		_, _ = fmt.Println("Status       : not found — 0 hooks active")
 		return nil
 	}
 
-	fmt.Printf("Hooks        : %d defined\n\n", len(cfg.Hooks))
+	_, _ = fmt.Printf("Hooks        : %d defined\n\n", len(cfg.Hooks))
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "EVENT\tACTIONS")
-	fmt.Fprintln(tw, "─────\t───────")
+	tp := newTabPrinter()
+	tp.println("EVENT\tACTIONS")
+	tp.println("─────\t───────")
 	for _, h := range cfg.Hooks {
 		actions := ""
 		for i, a := range h.Actions {
@@ -69,9 +68,9 @@ func runHooksStatus(cmd *cobra.Command, args []string) error {
 				actions += a.Type
 			}
 		}
-		fmt.Fprintf(tw, "%s\t%s\n", h.Event, actions)
+		tp.printf("%s\t%s\n", h.Event, actions)
 	}
-	return tw.Flush()
+	return tp.flush()
 }
 
 // ── hooks log ─────────────────────────────────────────────────────────────────
@@ -119,8 +118,8 @@ func runHooksLog(cmd *cobra.Command, args []string) error {
 	}
 
 	// Table format
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "EXECUTED_AT\tEVENT\tHOSTNAME\tTYPE\tSUCCESS\tDURATION\tERROR")
+	tp := newTabPrinter()
+	tp.println("EXECUTED_AT\tEVENT\tHOSTNAME\tTYPE\tSUCCESS\tDURATION\tERROR")
 	for _, e := range entries {
 		success := "✗"
 		if s, ok := e["success"].(bool); ok && s {
@@ -131,12 +130,12 @@ func runHooksLog(cmd *cobra.Command, args []string) error {
 			dur = fmt.Sprintf("%dms", int64(d))
 		}
 		errMsg, _ := e["error"].(string)
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		tp.printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			e["executed_at"], e["event"], e["hostname"],
 			e["action_type"], success, dur, errMsg,
 		)
 	}
-	return tw.Flush()
+	return tp.flush()
 }
 
 func init() {

@@ -89,7 +89,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
-	defer store.Close()
+	defer func() {
+		if cerr := store.Close(); cerr != nil {
+			log.Printf("store.Close: %v", cerr)
+		}
+	}()
 	log.Println("[OK] Database initialized")
 
 	// Inject store into admin handlers
@@ -133,7 +137,11 @@ func main() {
 		log.Printf("[WARN] NATS unavailable, running in degraded mode: %v", err)
 		natsClient = nil
 	} else {
-		defer natsClient.Close()
+		defer func() {
+			if cerr := natsClient.Close(); cerr != nil {
+				log.Printf("natsClient.Close: %v", cerr)
+			}
+		}()
 		log.Println("[OK] NATS connected")
 	}
 	_ = natsClient
@@ -350,7 +358,9 @@ func main() {
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"status":"ok","timestamp":%d}`, time.Now().Unix())
+	if _, err := fmt.Fprintf(w, `{"status":"ok","timestamp":%d}`, time.Now().Unix()); err != nil {
+		log.Printf("handleHealth write: %v", err)
+	}
 }
 
 // Helper to check if port is listening
@@ -359,14 +369,6 @@ func isListening(addr string) bool {
 	if err != nil {
 		return false
 	}
-	conn.Close()
+	_ = conn.Close()
 	return true
-}
-
-// min helper (built-in in Go 1.21+ but kept for clarity)
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

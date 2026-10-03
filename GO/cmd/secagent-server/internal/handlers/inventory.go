@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
@@ -156,9 +155,7 @@ func GetInventory(w http.ResponseWriter, r *http.Request) {
 	onlyConnected := parseOnlyConnected(r)
 	response := buildInventoryResponse(onlyConnected)
 	log.Printf("Inventory requested: only_connected=%v count=%d", onlyConnected, len(response.All.Hosts))
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // AdminGetInventory returns the same inventory but authenticated by admin token.
@@ -170,7 +167,5 @@ func AdminGetInventory(w http.ResponseWriter, r *http.Request) {
 	onlyConnected := parseOnlyConnected(r)
 	response := buildInventoryResponse(onlyConnected)
 	log.Printf("Admin inventory requested: only_connected=%v count=%d", onlyConnected, len(response.All.Hosts))
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusOK, response)
 }

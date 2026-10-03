@@ -52,10 +52,10 @@ var relaysListCmd = &cobra.Command{
 
 		relays, _ := result["relays"].([]interface{})
 
-		return printOutput(globalFormat, relays, func(v interface{}) {
+		return printOutput(globalFormat, relays, func(v interface{}) error {
 			list, _ := v.([]interface{})
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "RELAY_ID\tMODE\tIS_PROXY\tSTATUS\tLAST_SEEN\tDESCRIPTION")
+			tp := newTabPrinter()
+			tp.println("RELAY_ID\tMODE\tIS_PROXY\tSTATUS\tLAST_SEEN\tDESCRIPTION")
 			for _, item := range list {
 				m, _ := item.(map[string]interface{})
 				relayID, _ := m["relay_id"].(string)
@@ -71,10 +71,10 @@ var relaysListCmd = &cobra.Command{
 				if lastSeen == "" {
 					lastSeen = "-"
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				tp.printf("%s\t%s\t%s\t%s\t%s\t%s\n",
 					relayID, mode, isProxyStr, status, lastSeen, description)
 			}
-			tw.Flush()
+			return tp.flush()
 		})
 	},
 }
@@ -137,30 +137,32 @@ Examples:
 			return fmt.Errorf("parse response: %w", err)
 		}
 
-		return printOutput(globalFormat, resp, func(v interface{}) {
+		return printOutput(globalFormat, resp, func(v interface{}) error {
 			m := v.(map[string]interface{})
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "FIELD\tVALUE")
-			fmt.Fprintf(tw, "id\t%v\n", m["id"])
-			fmt.Fprintf(tw, "relay_id\t%v\n", m["relay_id"])
-			fmt.Fprintf(tw, "mode\t%v\n", m["mode"])
-			fmt.Fprintf(tw, "status\t%v\n", m["status"])
-			fmt.Fprintf(tw, "created_at\t%v\n", m["created_at"])
+			tp := newTabPrinter()
+			tp.println("FIELD\tVALUE")
+			tp.printf("id\t%v\n", m["id"])
+			tp.printf("relay_id\t%v\n", m["relay_id"])
+			tp.printf("mode\t%v\n", m["mode"])
+			tp.printf("status\t%v\n", m["status"])
+			tp.printf("created_at\t%v\n", m["created_at"])
 			if desc, ok := m["description"].(string); ok && desc != "" {
-				fmt.Fprintf(tw, "description\t%v\n", desc)
+				tp.printf("description\t%v\n", desc)
 			}
 			if url, ok := m["url"].(string); ok && url != "" {
-				fmt.Fprintf(tw, "url\t%v\n", url)
+				tp.printf("url\t%v\n", url)
 			}
 			// Pull mode: show JWT token (one-time)
 			if jwt, ok := m["jwt_token"].(string); ok && jwt != "" {
-				tw.Flush()
-				fmt.Println()
-				fmt.Println("JWT Token (shown once — store it securely on the relay):")
-				fmt.Println(jwt)
-				return
+				if err := tp.flush(); err != nil {
+					return err
+				}
+				_, _ = fmt.Println()
+				_, _ = fmt.Println("JWT Token (shown once — store it securely on the relay):")
+				_, _ = fmt.Println(jwt)
+				return nil
 			}
-			tw.Flush()
+			return tp.flush()
 		})
 	},
 }
@@ -225,10 +227,10 @@ var relaysStatusCmd = &cobra.Command{
 		relays, _ := result["relays"].([]interface{})
 		timestamp, _ := result["timestamp"].(string)
 
-		return printOutput(globalFormat, result, func(v interface{}) {
-			tw := newTabWriter()
-			fmt.Fprintf(tw, "Timestamp: %s\n\n", timestamp)
-			fmt.Fprintln(tw, "RELAY_ID\tMODE\tSTATUS\tLAST_SEEN")
+		return printOutput(globalFormat, result, func(v interface{}) error {
+			tp := newTabPrinter()
+			tp.printf("Timestamp: %s\n\n", timestamp)
+			tp.println("RELAY_ID\tMODE\tSTATUS\tLAST_SEEN")
 			for _, item := range relays {
 				m, _ := item.(map[string]interface{})
 				relayID, _ := m["relay_id"].(string)
@@ -238,9 +240,9 @@ var relaysStatusCmd = &cobra.Command{
 				if lastSeen == "" {
 					lastSeen = "-"
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", relayID, mode, relayStatus, lastSeen)
+				tp.printf("%s\t%s\t%s\t%s\n", relayID, mode, relayStatus, lastSeen)
 			}
-			tw.Flush()
+			return tp.flush()
 		})
 	},
 }

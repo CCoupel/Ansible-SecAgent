@@ -112,7 +112,7 @@ func RegisterConnection(hostname string, conn *AgentConnection) {
 	// Close any existing connection for this hostname
 	if oldConn, exists := wsConnections[hostname]; exists {
 		log.Printf("Replacing stale WS for hostname: %s", hostname)
-		oldConn.Conn.Close()
+		_ = oldConn.Conn.Close()
 	}
 
 	wsConnections[hostname] = conn
@@ -426,7 +426,9 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 		if !sent {
 			// Fallback: plain rekey signal (agent should re-enroll)
 			agentConn.mu.Lock()
-			conn.WriteJSON(map[string]interface{}{"type": "rekey"}) //nolint:errcheck
+			if err := conn.WriteJSON(map[string]interface{}{"type": "rekey"}); err != nil {
+				log.Printf("rekey WriteJSON: hostname=%s err=%v", hostname, err)
+			}
 			agentConn.mu.Unlock()
 		}
 		log.Printf("Rekey sent to agent: hostname=%s encrypted=%v", hostname, sent)
@@ -434,7 +436,7 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 
 	defer func() {
 		UnregisterConnection(hostname)
-		conn.Close()
+		_ = conn.Close()
 	}()
 
 	for {
@@ -464,8 +466,10 @@ func CloseAgent(hostname string, code int, reason string) bool {
 
 	conn.mu.Lock()
 	closeMsg := websocket.FormatCloseMessage(code, reason)
-	conn.Conn.WriteMessage(websocket.CloseMessage, closeMsg) //nolint:errcheck
-	conn.Conn.Close()
+	if err := conn.Conn.WriteMessage(websocket.CloseMessage, closeMsg); err != nil {
+		log.Printf("CloseAgent WriteMessage: hostname=%s code=%d err=%v", hostname, code, err)
+	}
+	_ = conn.Conn.Close()
 	conn.mu.Unlock()
 
 	// Resolve any pending futures for this hostname

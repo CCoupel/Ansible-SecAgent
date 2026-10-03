@@ -400,7 +400,7 @@ func (s *Store) ListAgents(ctx context.Context, onlyConnected bool) ([]AgentReco
 	if err != nil {
 		return nil, fmt.Errorf("failed to list agents: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var agents []AgentRecord
 	for rows.Next() {
@@ -784,7 +784,7 @@ func (s *Store) ListBlacklistEntries(ctx context.Context) ([]BlacklistEntry, err
 	if err != nil {
 		return nil, fmt.Errorf("failed to list blacklist: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []BlacklistEntry
 	for rows.Next() {
