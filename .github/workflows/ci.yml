@@ -82,3 +82,28 @@ jobs:
           version: v2.14.0
           working-directory: GO
           args: --new-from-rev=HEAD~1 --timeout=5m
+
+  lint-full:
+    name: Lint Go (complet — mesure)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Non-bloquant : mesure le volume total d'issues existantes pour aider a
+    # decider si le lint peut etre rendu bloquant. A retirer ou rendre bloquant
+    # apres arbitrage. Le job lint (nouveaux problemes) reste inchange.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: GO/go.work
+          cache-dependency-path: GO/go.sum
+
+      - name: golangci-lint (lint complet avec stats par linter)
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.14.0
+          working-directory: GO
+          # Sans --new-from-rev : analyse tout le code.
+          # --show-stats : affiche en fin de run le nombre d'issues par linter.
+          args: --timeout=10m --show-stats
