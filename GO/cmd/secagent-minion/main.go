@@ -5,9 +5,9 @@
 //  2. Génère la keypair RSA-4096 si la clef privée n'existe pas encore
 //  3. Enrollment (2 étapes) :
 //     3a. POST /api/register {hostname, pubkey_pem, enrollment_token}
-//         → server retourne {challenge: OAEP(nonce, agent_pubkey), server_public_key_pem}
+//     → server retourne {challenge: OAEP(nonce, agent_pubkey), server_public_key_pem}
 //     3b. Agent déchiffre nonce → POST /api/register {hostname, response: OAEP(nonce+token, server_pubkey)}
-//         → server retourne {jwt_encrypted: OAEP(jwt, agent_pubkey)}
+//     → server retourne {jwt_encrypted: OAEP(jwt, agent_pubkey)}
 //     3c. Agent déchiffre JWT → stocke à RELAY_JWT_PATH (mode 0600)
 //     Si JWT déjà présent sur disque → réutilise sans re-enrollment
 //  4. Collecte les facts système (hostname, OS, CPU, RAM, disk, network)

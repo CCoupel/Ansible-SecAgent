@@ -190,11 +190,11 @@ func TestBaseMsgJSON(t *testing.T) {
 
 func TestExecMsgJSON(t *testing.T) {
 	msg := ExecMsg{
-		BaseMsg:  BaseMsg{TaskID: "t1", Type: "exec"},
-		Cmd:      "echo hello",
-		Stdin:    "aGVsbG8=",
-		Timeout:  30,
-		Become:   true,
+		BaseMsg:   BaseMsg{TaskID: "t1", Type: "exec"},
+		Cmd:       "echo hello",
+		Stdin:     "aGVsbG8=",
+		Timeout:   30,
+		Become:    true,
 		ExpiresAt: 9999999999,
 	}
 	data, err := json.Marshal(msg)

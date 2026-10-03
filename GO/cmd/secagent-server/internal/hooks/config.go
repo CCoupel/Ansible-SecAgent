@@ -27,8 +27,8 @@ type HookDef struct {
 //	"file"    — append templated text to a local file
 //	"api"     — HTTP request with configurable method, headers, body
 type ActionDef struct {
-	Type           string            `json:"type"`            // webhook|shell|file|api
-	URL            string            `json:"url,omitempty"`   // webhook, api
+	Type           string            `json:"type"`          // webhook|shell|file|api
+	URL            string            `json:"url,omitempty"` // webhook, api
 	Secret         string            `json:"secret,omitempty"`
 	Method         string            `json:"method,omitempty"`          // api (default GET)
 	Headers        map[string]string `json:"headers,omitempty"`         // api

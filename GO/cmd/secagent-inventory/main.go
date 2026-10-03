@@ -43,8 +43,8 @@ type InventoryResponse struct {
 
 // AnsibleInventory est le format de sortie pour --list
 type AnsibleInventory struct {
-	All  AnsibleGroup                  `json:"all"`
-	Meta AnsibleMeta                   `json:"_meta"`
+	All  AnsibleGroup `json:"all"`
+	Meta AnsibleMeta  `json:"_meta"`
 }
 
 // AnsibleGroup représente un groupe Ansible avec ses hôtes

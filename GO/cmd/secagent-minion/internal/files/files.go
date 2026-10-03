@@ -46,10 +46,10 @@ var AllowedReadPrefixes = []string{
 
 // PutFileRequest décrit un transfert de fichier vers l'agent.
 type PutFileRequest struct {
-	TaskID string
-	Dest   string // chemin de destination absolu
+	TaskID  string
+	Dest    string // chemin de destination absolu
 	DataB64 string // contenu encodé en base64
-	Mode   string // ex: "0700" (défaut "0644")
+	Mode    string // ex: "0700" (défaut "0644")
 }
 
 // FetchFileRequest décrit une récupération de fichier depuis l'agent.

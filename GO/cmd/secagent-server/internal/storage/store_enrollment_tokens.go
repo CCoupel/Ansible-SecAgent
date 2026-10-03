@@ -12,10 +12,10 @@ import (
 // Matches SECURITY.md §3 table schema exactly.
 type EnrollmentToken struct {
 	ID              string
-	TokenHash       string    // SHA-256(token) — never the token in clear
-	HostnamePattern string    // Go regexp, anchored ^...$
-	Reusable        bool      // false = one-shot, true = permanent
-	UseCount        int       // incremented on each enrollment
+	TokenHash       string     // SHA-256(token) — never the token in clear
+	HostnamePattern string     // Go regexp, anchored ^...$
+	Reusable        bool       // false = one-shot, true = permanent
+	UseCount        int        // incremented on each enrollment
 	LastUsedAt      *time.Time // nullable
 	CreatedAt       time.Time
 	ExpiresAt       *time.Time // nullable — nil means no expiry

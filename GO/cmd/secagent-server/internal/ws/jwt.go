@@ -22,7 +22,7 @@ func SetJWTSecretsFunc(fn func() (current, previous string, deadline time.Time))
 
 // jwtValidationResult is the outcome of dual-key JWT validation.
 type jwtValidationResult struct {
-	Claims      jwt.MapClaims
+	Claims       jwt.MapClaims
 	UsedPrevious bool // true if validated with the previous secret
 }
 

@@ -36,12 +36,12 @@ type AgentConnection struct {
 // Message represents a message sent over the WebSocket
 type Message struct {
 	TaskID    string `json:"task_id"`
-	Type      string `json:"type"`     // ack, stdout, result, put_file, fetch_file
+	Type      string `json:"type"` // ack, stdout, result, put_file, fetch_file
 	RC        int    `json:"rc"`
 	Stdout    string `json:"stdout"`
 	Stderr    string `json:"stderr"`
 	Truncated bool   `json:"truncated"`
-	Data      string `json:"data"`  // For fetch_file
+	Data      string `json:"data"` // For fetch_file
 	Error     string `json:"error"`
 	Chunk     string `json:"chunk"` // For stdout streaming
 }

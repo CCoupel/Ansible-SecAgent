@@ -1,10 +1,10 @@
 // Phase 12 — relays.go
 // CLI subcommand "relays" — manage relay nodes registered on a proxy.
 //
-//   secagent-server relays list   [--format table|json|yaml]
-//   secagent-server relays add    --id <relay_id> --url <url> --token <token> [--mode push|pull] [--description <desc>]
-//   secagent-server relays remove <relay_id_or_uuid>
-//   secagent-server relays status [--format table|json|yaml]
+//	secagent-server relays list   [--format table|json|yaml]
+//	secagent-server relays add    --id <relay_id> --url <url> --token <token> [--mode push|pull] [--description <desc>]
+//	secagent-server relays remove <relay_id_or_uuid>
+//	secagent-server relays status [--format table|json|yaml]
 package cli
 
 import (

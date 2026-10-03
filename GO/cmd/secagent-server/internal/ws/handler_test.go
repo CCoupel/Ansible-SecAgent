@@ -603,7 +603,7 @@ func TestSetJWTSecretsFunc(t *testing.T) {
 func TestExtractSubFromJWTUnsafe_ValidToken(t *testing.T) {
 	// Build a simple JWT manually: header.payload.signature
 	// payload = {"sub":"host-test","role":"agent"}
-	import_header := "eyJhbGciOiJIUzI1NiJ9" // {"alg":"HS256"}
+	import_header := "eyJhbGciOiJIUzI1NiJ9"                            // {"alg":"HS256"}
 	import_payload := "eyJzdWIiOiJob3N0LXRlc3QiLCJyb2xlIjoiYWdlbnQifQ" // {"sub":"host-test","role":"agent"}
 	tokenStr := import_header + "." + import_payload + ".fakesig"
 

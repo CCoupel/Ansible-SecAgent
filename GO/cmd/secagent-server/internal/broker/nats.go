@@ -14,26 +14,26 @@ import (
 
 // Stream configuration constants — ARCHITECTURE.md §5
 const (
-	StreamTasks    = "RELAY_TASKS"
-	StreamResults  = "RELAY_RESULTS"
-	SubjectTasks   = "tasks.*"         // wildcard — subscribe to all hostnames
-	SubjectResults = "results.*"       // wildcard — subscribe to all task results
-	TasksTTLSec    = 300               // 5 minutes
-	ResultsTTLSec  = 60               // 60 seconds
-	TasksMaxBytes  = 1 * 1024 * 1024   // 1 MB
-	ResultsMaxBytes = 5 * 1024 * 1024  // 5 MB
+	StreamTasks     = "RELAY_TASKS"
+	StreamResults   = "RELAY_RESULTS"
+	SubjectTasks    = "tasks.*"       // wildcard — subscribe to all hostnames
+	SubjectResults  = "results.*"     // wildcard — subscribe to all task results
+	TasksTTLSec     = 300             // 5 minutes
+	ResultsTTLSec   = 60              // 60 seconds
+	TasksMaxBytes   = 1 * 1024 * 1024 // 1 MB
+	ResultsMaxBytes = 5 * 1024 * 1024 // 5 MB
 )
 
 // Client represents a NATS JetStream client for the relay server
 // Handles task publishing and result subscriptions for HA deployment
 type Client struct {
-	natsURL       string
-	nc            *nats.Conn
-	js            jetstream.JetStream
-	nodeID        string
-	wsSendFn      func(hostname string, message map[string]interface{}) error
-	resultFn      func(taskID string, payload map[string]interface{}) error
-	consumers     []jetstream.ConsumeContext
+	natsURL   string
+	nc        *nats.Conn
+	js        jetstream.JetStream
+	nodeID    string
+	wsSendFn  func(hostname string, message map[string]interface{}) error
+	resultFn  func(taskID string, payload map[string]interface{}) error
+	consumers []jetstream.ConsumeContext
 }
 
 // TaskMessage represents a message being published to NATS
@@ -151,13 +151,13 @@ func (c *Client) ensureStream(ctx context.Context, name string, subjects []strin
 	retention jetstream.RetentionPolicy, maxAge int, maxMsgSize int) error {
 
 	cfg := jetstream.StreamConfig{
-		Name:        name,
-		Subjects:    subjects,
-		Retention:   retention,
-		MaxAge:      time.Duration(maxAge) * time.Second,
-		MaxBytes:    int64(maxMsgSize),
-		Storage:     jetstream.FileStorage,
-		Replicas:    1,
+		Name:      name,
+		Subjects:  subjects,
+		Retention: retention,
+		MaxAge:    time.Duration(maxAge) * time.Second,
+		MaxBytes:  int64(maxMsgSize),
+		Storage:   jetstream.FileStorage,
+		Replicas:  1,
 	}
 
 	_, err := c.js.CreateOrUpdateStream(ctx, cfg)

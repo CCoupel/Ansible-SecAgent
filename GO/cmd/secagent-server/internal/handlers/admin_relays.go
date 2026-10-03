@@ -1,10 +1,10 @@
 // Phase 12 — admin_relays.go
 // Admin REST endpoints for managing relay nodes in proxy/gateway mode.
 //
-//   POST   /api/admin/relays           — register a relay (push or pull mode)
-//   GET    /api/admin/relays           — list all relay nodes
-//   GET    /api/admin/relays/status    — live connectivity status
-//   DELETE /api/admin/relays/{id}      — remove a relay node
+//	POST   /api/admin/relays           — register a relay (push or pull mode)
+//	GET    /api/admin/relays           — list all relay nodes
+//	GET    /api/admin/relays/status    — live connectivity status
+//	DELETE /api/admin/relays/{id}      — remove a relay node
 package handlers
 
 import (
@@ -28,10 +28,10 @@ import (
 
 // RelayCreateRequest is the body for POST /api/admin/relays.
 type RelayCreateRequest struct {
-	RelayID     string `json:"relay_id"`             // required, unique name e.g. "dmz1"
-	Mode        string `json:"mode,omitempty"`       // "pull" (default) or "push"
-	URL         string `json:"url,omitempty"`        // push mode: relay HTTP base URL
-	Token       string `json:"token,omitempty"`      // push mode: bearer token to auth to the relay
+	RelayID     string `json:"relay_id"`        // required, unique name e.g. "dmz1"
+	Mode        string `json:"mode,omitempty"`  // "pull" (default) or "push"
+	URL         string `json:"url,omitempty"`   // push mode: relay HTTP base URL
+	Token       string `json:"token,omitempty"` // push mode: bearer token to auth to the relay
 	Description string `json:"description,omitempty"`
 }
 

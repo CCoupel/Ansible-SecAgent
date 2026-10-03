@@ -478,8 +478,8 @@ func TestAdminSecurityBlacklistPurge_DeletesExpired(t *testing.T) {
 	futureExpiry := time.Now().Add(25 * time.Hour).UTC().Format(time.RFC3339)
 
 	reason := "test"
-	s.AddToBlacklist(ctx, "jti-expired", "host-1", pastExpiry, &reason)  //nolint:errcheck
-	s.AddToBlacklist(ctx, "jti-valid", "host-2", futureExpiry, &reason)   //nolint:errcheck
+	s.AddToBlacklist(ctx, "jti-expired", "host-1", pastExpiry, &reason) //nolint:errcheck
+	s.AddToBlacklist(ctx, "jti-valid", "host-2", futureExpiry, &reason) //nolint:errcheck
 
 	req := adminReq("POST", "/api/admin/security/blacklist/purge", nil)
 	w := httptest.NewRecorder()

@@ -87,8 +87,8 @@ func TestValidateCIDRs_Valid(t *testing.T) {
 		"10.0.0.0/8",
 		"192.168.1.0/24,10.0.0.0/8",
 		"172.16.0.0/12",
-		"127.0.0.1",    // plain IP accepted
-		"::1",          // IPv6
+		"127.0.0.1", // plain IP accepted
+		"::1",       // IPv6
 	}
 	for _, c := range cases {
 		if err := validateCIDRs(c); err != nil {

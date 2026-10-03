@@ -15,22 +15,22 @@ import (
 
 // AgentRecord represents stored agent data
 type AgentRecord struct {
-	Hostname      string
-	PublicKeyPEM  string
-	TokenJTI      string
-	EnrolledAt    time.Time
-	LastSeen      time.Time
-	Status        string // "connected", "disconnected"
-	Suspended     bool
-	Vars          string // JSON object, e.g. {"key": "value"}
+	Hostname     string
+	PublicKeyPEM string
+	TokenJTI     string
+	EnrolledAt   time.Time
+	LastSeen     time.Time
+	Status       string // "connected", "disconnected"
+	Suspended    bool
+	Vars         string // JSON object, e.g. {"key": "value"}
 }
 
 // AuthorizedKeyRecord represents a pre-authorized public key
 type AuthorizedKeyRecord struct {
-	Hostname      string
-	PublicKeyPEM  string
-	ApprovedAt    time.Time
-	ApprovedBy    string
+	Hostname     string
+	PublicKeyPEM string
+	ApprovedAt   time.Time
+	ApprovedBy   string
 }
 
 // BlacklistEntry represents a revoked JWT identifier

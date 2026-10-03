@@ -126,7 +126,7 @@ func mockEnrollServer(t *testing.T, agentPubKey *rsa.PublicKey, serverKey *rsa.P
 			}
 
 			json.NewEncoder(w).Encode(map[string]string{
-				"challenge":            challengeB64,
+				"challenge":             challengeB64,
 				"server_public_key_pem": serverPubPEM,
 			})
 
@@ -436,7 +436,7 @@ func TestEnrollStep2BadResponse(t *testing.T) {
 			ct, _ := rsa.EncryptOAEP(sha256.New(), rand.Reader, &agentKey.PublicKey, nonce, nil)
 			serverPubPEM, _ := PublicKeyPEM(serverKey)
 			json.NewEncoder(w).Encode(map[string]string{
-				"challenge":            base64.StdEncoding.EncodeToString(ct),
+				"challenge":             base64.StdEncoding.EncodeToString(ct),
 				"server_public_key_pem": serverPubPEM,
 			})
 		} else {

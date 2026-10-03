@@ -66,12 +66,12 @@ type BaseMsg struct {
 // ExecMsg est le message d'exécution de commande (§4 ARCHITECTURE.md).
 type ExecMsg struct {
 	BaseMsg
-	Cmd        string `json:"cmd"`
-	Stdin      string `json:"stdin,omitempty"` // base64 | ""
-	Timeout    int    `json:"timeout"`
-	Become     bool   `json:"become"`
+	Cmd          string `json:"cmd"`
+	Stdin        string `json:"stdin,omitempty"` // base64 | ""
+	Timeout      int    `json:"timeout"`
+	Become       bool   `json:"become"`
 	BecomeMethod string `json:"become_method,omitempty"`
-	ExpiresAt  int64  `json:"expires_at,omitempty"`
+	ExpiresAt    int64  `json:"expires_at,omitempty"`
 }
 
 // PutFileMsg est le message de transfert de fichier vers l'agent (§4).
@@ -183,12 +183,12 @@ type EnrollConfig struct {
 
 // Dispatcher maintient la connexion WebSocket et route les messages.
 type Dispatcher struct {
-	cfg            ConnConfig
-	enrollCfg      EnrollConfig
-	handler        MessageHandler
-	mu             sync.Mutex
-	tasks          map[string]context.CancelFunc // task_id → cancel goroutine
-	maxConcurrent  int
+	cfg           ConnConfig
+	enrollCfg     EnrollConfig
+	handler       MessageHandler
+	mu            sync.Mutex
+	tasks         map[string]context.CancelFunc // task_id → cancel goroutine
+	maxConcurrent int
 
 	// jwtMu protège l'accès concurrent au JWT courant (rotation rekey).
 	jwtMu sync.RWMutex

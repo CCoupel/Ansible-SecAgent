@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	nats "github.com/nats-io/nats.go"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natstest "github.com/nats-io/nats-server/v2/test"
+	nats "github.com/nats-io/nats.go"
 )
 
 // startTestNATSServer starts an embedded NATS JetStream server

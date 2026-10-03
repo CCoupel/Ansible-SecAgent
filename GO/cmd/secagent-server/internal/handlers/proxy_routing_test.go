@@ -179,7 +179,6 @@ func TestExecCommand_ProxyRouting_RelayOffline(t *testing.T) {
 	}
 }
 
-
 // ── UploadFile proxy routing ──────────────────────────────────────────────────
 
 // TestUploadFile_ProxyRouting_PushMode verifies that upload to a push-mode relay

@@ -405,10 +405,10 @@ func TestCLI_ServerStatus_ServerRunning(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/admin/status" {
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"status":     "ok",
-				"agents":     3,
-				"nats":       true,
-				"version":    "1.0",
+				"status":  "ok",
+				"agents":  3,
+				"nats":    true,
+				"version": "1.0",
 			})
 			return
 		}

@@ -30,19 +30,20 @@ type HostVars struct {
 
 // InventoryResponse represents the Ansible dynamic inventory format
 // Format matches ARCHITECTURE.md §6 and §14 exactly:
-// {
-//   "all": { "hosts": ["host-A", "host-B"] },
-//   "_meta": {
-//     "hostvars": {
-//       "host-A": {
-//         "ansible_connection": "relay",
-//         "ansible_host": "host-A",
-//         "secagent_status": "connected",
-//         "secagent_last_seen": "2026-03-03T10:00:00Z"
-//       }
-//     }
-//   }
-// }
+//
+//	{
+//	  "all": { "hosts": ["host-A", "host-B"] },
+//	  "_meta": {
+//	    "hostvars": {
+//	      "host-A": {
+//	        "ansible_connection": "relay",
+//	        "ansible_host": "host-A",
+//	        "secagent_status": "connected",
+//	        "secagent_last_seen": "2026-03-03T10:00:00Z"
+//	      }
+//	    }
+//	  }
+//	}
 type InventoryResponse struct {
 	All struct {
 		Hosts []string `json:"hosts"`
@@ -133,7 +134,6 @@ func buildInventoryResponse(onlyConnected bool) InventoryResponse {
 
 	return response
 }
-
 
 // parseOnlyConnected reads the only_connected query parameter (default false).
 func parseOnlyConnected(r *http.Request) bool {

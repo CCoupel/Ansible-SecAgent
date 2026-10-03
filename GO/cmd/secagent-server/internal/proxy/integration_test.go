@@ -4,11 +4,11 @@
 //
 // Five scenarios covering the full proxy/relay topology (v3.0 — push mode removed #123):
 //
-//   1. TestProxyModeExecRouting      — pull mode: real WS relay goroutine, real ws.DispatchToRelay
-//   2. TestProxyInventoryAggregation — two WS relays × 3 agents = 6 in aggregated inventory
-//   3. TestProxyHostNotFound         — unknown hostname → ErrHostNotFound sentinel
-//   4. TestProxyRelayDisconnect      — WS relay disconnect clears routing table
-//   5. TestProxyChaining             — pull mode + is_proxy flag stored in DB, exec successful
+//  1. TestProxyModeExecRouting      — pull mode: real WS relay goroutine, real ws.DispatchToRelay
+//  2. TestProxyInventoryAggregation — two WS relays × 3 agents = 6 in aggregated inventory
+//  3. TestProxyHostNotFound         — unknown hostname → ErrHostNotFound sentinel
+//  4. TestProxyRelayDisconnect      — WS relay disconnect clears routing table
+//  5. TestProxyChaining             — pull mode + is_proxy flag stored in DB, exec successful
 //
 // All tests run in-memory (no external infrastructure required):
 //   - Pull-mode tests: httptest.Server + gorilla/websocket relay goroutines

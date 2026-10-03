@@ -39,14 +39,14 @@ type RegisterRequest struct {
 // RegisterResponse returns encrypted JWT and server public key
 type RegisterResponse struct {
 	TokenEncrypted     string `json:"token_encrypted"`
-	JWTEncrypted       string `json:"jwt_encrypted"`      // alias — same value, for enrollment-token flow compatibility
+	JWTEncrypted       string `json:"jwt_encrypted"` // alias — same value, for enrollment-token flow compatibility
 	ServerPublicKeyPEM string `json:"server_public_key_pem"`
 }
 
 // ChallengeResponse is returned in phase-1 of the enrollment-token flow.
 type ChallengeResponse struct {
-	Challenge        string `json:"challenge"`              // base64 RSA-OAEP(nonce, agent_pubkey)
-	ServerPublicKey  string `json:"server_public_key_pem"` // server RSA public key for step2 encryption
+	Challenge       string `json:"challenge"`             // base64 RSA-OAEP(nonce, agent_pubkey)
+	ServerPublicKey string `json:"server_public_key_pem"` // server RSA public key for step2 encryption
 }
 
 // AdminAuthorizeRequest pre-authorizes a public key

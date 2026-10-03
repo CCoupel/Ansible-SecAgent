@@ -236,7 +236,7 @@ func signAgentJWT(hostname, jwtSecret string, ttl time.Duration) (string, string
 type KeysStatusResponse struct {
 	CurrentKeySHA256  string `json:"current_key_sha256"`
 	PreviousKeySHA256 string `json:"previous_key_sha256"` // empty if no rotation
-	Deadline          string `json:"deadline"`             // empty if no rotation
+	Deadline          string `json:"deadline"`            // empty if no rotation
 	RotationActive    bool   `json:"rotation_active"`
 	AgentsTotal       int    `json:"agents_total"`
 }

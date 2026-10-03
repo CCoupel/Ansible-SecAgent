@@ -67,8 +67,8 @@ type step1Request struct {
 
 // step1Response est la réponse de POST /api/register (étape 1).
 type step1Response struct {
-	Challenge        string `json:"challenge"`          // base64(OAEP(nonce, agent_pubkey))
-	ServerPublicKey  string `json:"server_public_key_pem"` // clef publique du serveur pour l'étape 2
+	Challenge       string `json:"challenge"`             // base64(OAEP(nonce, agent_pubkey))
+	ServerPublicKey string `json:"server_public_key_pem"` // clef publique du serveur pour l'étape 2
 }
 
 // step2Request est le corps de POST /api/register (étape 2).

@@ -489,9 +489,9 @@ func AdminRevokeMinion(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Minion revoked: hostname=%s ws_disconnected=%v", hostname, wsDisconnected)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"hostname":         hostname,
-		"status":           "revoked",
-		"ws_disconnected":  wsDisconnected,
+		"hostname":        hostname,
+		"status":          "revoked",
+		"ws_disconnected": wsDisconnected,
 	})
 }
 
@@ -529,10 +529,10 @@ func AdminStatus(w http.ResponseWriter, r *http.Request) {
 	uptimeSec := int(time.Since(serverStartTime).Seconds())
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"nats":            natsStatus,
-		"db":              dbStatus,
-		"ws_connections":  ws.GetConnectedCount(),
-		"uptime":          fmt.Sprintf("%ds", uptimeSec),
+		"nats":           natsStatus,
+		"db":             dbStatus,
+		"ws_connections": ws.GetConnectedCount(),
+		"uptime":         fmt.Sprintf("%ds", uptimeSec),
 	})
 }
 
