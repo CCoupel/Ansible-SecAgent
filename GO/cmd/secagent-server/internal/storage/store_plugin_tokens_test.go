@@ -386,3 +386,123 @@ func TestPluginTokenCheckHostnameInvalidRegexp(t *testing.T) {
 		t.Error("expected error for invalid regexp")
 	}
 }
+
+// TestPluginTokenCheckHostname_AlternationAnchored verifies that alternation
+// patterns are fully anchored at both ends, preventing partial-string bypass.
+//
+// Regression for #143: "^web1|db$" was interpreted as "(^web1)|(db$)", allowing
+// "xdb" (matches db$) and "web1-evil" (matches ^web1) to bypass the check.
+// The fix wraps the user pattern in a non-capturing group: "^(?:web1|db)$".
+func TestPluginTokenCheckHostname_AlternationAnchored(t *testing.T) {
+	cases := []struct {
+		name     string
+		pattern  string
+		hostname string
+		want     bool
+	}{
+		// ── Security regression cases (these FAILED before the fix) ────────
+		{"alternation rejects suffix bypass", "web1|db", "xdb", false},
+		{"alternation rejects prefix bypass", "web1|db", "web1-evil", false},
+		{"alternation rejects web1x", "web1|db", "web1x", false},
+		{"alternation rejects dbx", "web1|db", "dbx", false},
+
+		// ── Alternation should still match valid hostnames ─────────────────
+		{"alternation accepts first choice", "web1|db", "web1", true},
+		{"alternation accepts second choice", "web1|db", "db", true},
+
+		// ── Three-way alternation ──────────────────────────────────────────
+		{"three-way alternation match first", "web1|db|app", "web1", true},
+		{"three-way alternation match last", "web1|db|app", "app", true},
+		{"three-way alternation rejects bypass", "web1|db|app", "xapp", false},
+		{"three-way alternation rejects prefix bypass", "web1|db|app", "web1-extra", false},
+
+		// ── Non-regression: simple patterns must be unchanged ─────────────
+		{"non-regression exact", "vp-db-01", "vp-db-01", true},
+		{"non-regression exact no match", "vp-db-01", "vp-db-02", false},
+		{"non-regression wildcard", "vp.*", "vp-server-01", true},
+		{"non-regression wildcard no match", "vp.*", "notavp", false},
+		{"non-regression numeric suffix", "web[0-9]+", "web42", true},
+		{"non-regression numeric suffix no match", "web[0-9]+", "webx", false},
+		{"non-regression complex prod", ".*-prod-.*", "app-prod-01", true},
+		{"non-regression complex staging", ".*-prod-.*", "app-staging-01", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := PluginTokenCheckHostname(tc.pattern, tc.hostname)
+			if err != nil {
+				t.Fatalf("unexpected error for pattern=%q hostname=%q: %v", tc.pattern, tc.hostname, err)
+			}
+			if got != tc.want {
+				t.Errorf("pattern=%q hostname=%q: got %v, want %v",
+					tc.pattern, tc.hostname, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPluginTokenCheckHostname_AlternationAnchoredInvalidRegexp verifies that
+// wrapping in ^(?:...)$ does not change the error behaviour for invalid patterns.
+func TestPluginTokenCheckHostname_AlternationAnchoredInvalidRegexp(t *testing.T) {
+	cases := []string{"[invalid", "(?P<", "**bad"}
+	for _, p := range cases {
+		_, err := PluginTokenCheckHostname(p, "anything")
+		if err == nil {
+			t.Errorf("expected error for invalid pattern %q, got nil", p)
+		}
+	}
+}
+
+// TestPluginTokenCheckHostname_InjectionRejected verifies that patterns with
+// unbalanced groups (which would escape the ^(?:...)$ wrapper and create a
+// partial-anchor bypass) are rejected as invalid (#143 group-injection vector).
+//
+// Example: "web1)|(db" → "^(?:web1)|(db)$" compiles but anchors incorrectly
+// as "(^(?:web1))|(db)$", accepting "xdb". The fix pre-compiles the raw pattern,
+// which fails on the unbalanced ")" before wrapping is applied.
+func TestPluginTokenCheckHostname_InjectionRejected(t *testing.T) {
+	injectionPatterns := []struct {
+		name    string
+		pattern string
+	}{
+		{"unbalanced paren — bypass injection", "web1)|(db"},
+		{"extra close paren", "web1))"},
+		{"open paren injection", "web1|(db"},
+	}
+
+	for _, tc := range injectionPatterns {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := PluginTokenCheckHostname(tc.pattern, "anything")
+			if err == nil {
+				t.Errorf("SECURITY: pattern %q should be rejected as invalid but compiled — injection possible", tc.pattern)
+			}
+		})
+	}
+}
+
+// TestPluginTokenCheckHostname_InjectionHostnameBypassPrevented verifies that
+// even if "web1)|(db" were somehow stored, it cannot match hostnames that
+// should be excluded. (Belt-and-suspenders: the pattern is now rejected at
+// creation time, so this case is doubly defended.)
+func TestPluginTokenCheckHostname_ValidAlternationDoesNotBypass(t *testing.T) {
+	// Valid alternation — must not accept bypass hostnames
+	bypassCases := []struct {
+		hostname string
+		want     bool
+	}{
+		{"web1", true},
+		{"db", true},
+		{"xdb", false},
+		{"web1-evil", false},
+		{"web1x", false},
+	}
+	for _, tc := range bypassCases {
+		got, err := PluginTokenCheckHostname("web1|db", tc.hostname)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != tc.want {
+			t.Errorf("pattern=web1|db hostname=%q: got %v, want %v", tc.hostname, got, tc.want)
+		}
+	}
+}

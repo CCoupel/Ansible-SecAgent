@@ -14,17 +14,17 @@ import (
 // PluginToken represents a static bearer token authorizing an Ansible plugin.
 // Matches SECURITY.md §6 table schema exactly.
 type PluginToken struct {
-	ID                    string
-	TokenHash             string     // SHA-256(token) — never the token in clear
-	Description           string
-	Role                  string     // "plugin"
-	AllowedIPs            string     // comma-separated CIDRs, empty = no restriction
-	AllowedHostnamePattern string    // Go regexp anchored ^...$, empty = no restriction
-	CreatedAt             time.Time
-	ExpiresAt             *time.Time // nil = no expiry
-	LastUsedAt            *time.Time // nil = never used
-	LastUsedIP            string
-	Revoked               bool
+	ID                     string
+	TokenHash              string // SHA-256(token) — never the token in clear
+	Description            string
+	Role                   string // "plugin"
+	AllowedIPs             string // comma-separated CIDRs, empty = no restriction
+	AllowedHostnamePattern string // Go regexp anchored ^...$, empty = no restriction
+	CreatedAt              time.Time
+	ExpiresAt              *time.Time // nil = no expiry
+	LastUsedAt             *time.Time // nil = never used
+	LastUsedIP             string
+	Revoked                bool
 }
 
 // CreatePluginToken inserts a new plugin token.
@@ -231,15 +231,31 @@ func PluginTokenCheckIP(allowedIPs, remoteAddr string) (bool, error) {
 
 // PluginTokenCheckHostname returns true if hostname matches the token's allowed_hostname_pattern.
 // If allowed_hostname_pattern is empty, access is always allowed.
-// The pattern is anchored (^...$) as per SECURITY.md §6.
+//
+// Security: two-step anchoring (#143).
+//
+//  1. The raw pattern is compiled first. This rejects unbalanced groups such as
+//     "web1)|(db", which would otherwise compile as "^(?:web1)|(db)$" (the closing
+//     paren escapes the non-capturing group, recreating the partial-anchor bypass).
+//
+//  2. The validated pattern is wrapped in a non-capturing group: ^(?:pattern)$
+//     This prevents alternation bypass: "web1|db" anchors as "^(?:web1|db)$",
+//     accepting only "web1" and "db" (not "web1-evil" or "xdb").
 func PluginTokenCheckHostname(pattern, hostname string) (bool, error) {
 	if pattern == "" {
 		return true, nil
 	}
 
-	anchored := "^" + pattern + "$"
+	// Step 1: validate the raw pattern before wrapping.
+	if _, err := regexp.Compile(pattern); err != nil {
+		return false, fmt.Errorf("invalid hostname pattern %q: %w", pattern, err)
+	}
+
+	// Step 2: anchor with non-capturing group.
+	anchored := "^(?:" + pattern + ")$"
 	matched, err := regexp.MatchString(anchored, hostname)
 	if err != nil {
+		// Unreachable: a pattern that compiled in step 1 always compiles when wrapped.
 		return false, fmt.Errorf("invalid hostname pattern %q: %w", pattern, err)
 	}
 	return matched, nil

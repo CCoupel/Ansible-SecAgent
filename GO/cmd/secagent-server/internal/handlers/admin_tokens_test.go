@@ -689,6 +689,125 @@ func TestAdminPurgeTokensPurgedAtPresent(t *testing.T) {
 }
 
 // ========================================================================
+// POST /api/admin/tokens — hostname_pattern regexp validation (#143)
+// ========================================================================
+
+// TestAdminCreateEnrollmentToken_InvalidPattern verifies that an enrollment
+// token creation with a syntactically invalid regexp is rejected with 400.
+// Regression for #143: "web1)|(db" compiles as "^(?:web1)|(db)$" (escaping
+// the non-capturing group), allowing hostname bypass. The fix rejects the raw
+// pattern before wrapping.
+func TestAdminCreateEnrollmentToken_InvalidPattern(t *testing.T) {
+	cases := []struct {
+		name    string
+		pattern string
+	}{
+		{"unbalanced paren injection", "web1)|(db"},
+		{"unclosed bracket", "[invalid"},
+		{"double close paren", "web1))"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			SetAdminStore(s)
+
+			req := adminReq("POST", "/api/admin/tokens", TokenCreateRequest{
+				Role:            "enrollment",
+				HostnamePattern: tc.pattern,
+			})
+			w := httptest.NewRecorder()
+			AdminCreateToken(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for invalid pattern %q, got %d — %s",
+					tc.pattern, w.Code, w.Body.String())
+			}
+			var resp map[string]string
+			if err := json.NewDecoder(w.Body).Decode(&resp); err == nil {
+				if resp["error"] != "invalid_hostname_pattern" {
+					t.Errorf("expected error=invalid_hostname_pattern, got %q", resp["error"])
+				}
+			}
+		})
+	}
+}
+
+// TestAdminCreateEnrollmentToken_ValidPatternAccepted verifies that a valid
+// alternation pattern is still accepted (non-regression).
+func TestAdminCreateEnrollmentToken_ValidPatternAccepted(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	req := adminReq("POST", "/api/admin/tokens", TokenCreateRequest{
+		Role:            "enrollment",
+		HostnamePattern: "web1|db",
+	})
+	w := httptest.NewRecorder()
+	AdminCreateToken(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for valid alternation pattern, got %d — %s", w.Code, w.Body.String())
+	}
+}
+
+// TestAdminCreatePluginToken_InvalidPattern verifies that a plugin token
+// creation with an invalid allowed_hostname_pattern is rejected with 400.
+func TestAdminCreatePluginToken_InvalidPattern(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+
+	req := adminReq("POST", "/api/admin/tokens", TokenCreateRequest{
+		Role:                   "plugin",
+		Description:            "test-plugin",
+		AllowedHostnamePattern: "web1)|(db",
+	})
+	w := httptest.NewRecorder()
+	AdminCreateToken(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid plugin pattern, got %d — %s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err == nil {
+		if resp["error"] != "invalid_hostname_pattern" {
+			t.Errorf("expected error=invalid_hostname_pattern, got %q", resp["error"])
+		}
+	}
+}
+
+// TestAdminCreatePluginToken_ValidPatternAccepted verifies that an empty
+// allowed_hostname_pattern (no restriction) and a valid pattern both succeed.
+func TestAdminCreatePluginToken_ValidPatternAccepted(t *testing.T) {
+	cases := []struct {
+		name    string
+		pattern string
+	}{
+		{"empty pattern (no restriction)", ""},
+		{"valid alternation", "web1|db"},
+		{"valid wildcard", "ansible-control-[0-9]+"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			SetAdminStore(s)
+
+			req := adminReq("POST", "/api/admin/tokens", TokenCreateRequest{
+				Role:                   "plugin",
+				Description:            "test-plugin-" + tc.name,
+				AllowedHostnamePattern: tc.pattern,
+			})
+			w := httptest.NewRecorder()
+			AdminCreateToken(w, req)
+
+			if w.Code != http.StatusCreated {
+				t.Fatalf("expected 201 for pattern=%q, got %d — %s",
+					tc.pattern, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// ========================================================================
 // Internal helpers
 // ========================================================================
 

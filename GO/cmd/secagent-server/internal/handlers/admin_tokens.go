@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -24,20 +25,20 @@ import (
 // TokenCreateRequest is the body for POST /api/admin/tokens.
 // The "role" field determines whether an enrollment or plugin token is created.
 type TokenCreateRequest struct {
-	Role                   string `json:"role"`                      // "enrollment" or "plugin"
-	HostnamePattern        string `json:"hostname_pattern,omitempty"` // enrollment only
-	Reusable               int    `json:"reusable,omitempty"`         // enrollment only: 0=one-shot, 1=permanent
-	Description            string `json:"description,omitempty"`      // plugin only
-	AllowedIPs             string `json:"allowed_ips,omitempty"`      // plugin only, comma-separated CIDRs
+	Role                   string `json:"role"`                               // "enrollment" or "plugin"
+	HostnamePattern        string `json:"hostname_pattern,omitempty"`         // enrollment only
+	Reusable               int    `json:"reusable,omitempty"`                 // enrollment only: 0=one-shot, 1=permanent
+	Description            string `json:"description,omitempty"`              // plugin only
+	AllowedIPs             string `json:"allowed_ips,omitempty"`              // plugin only, comma-separated CIDRs
 	AllowedHostnamePattern string `json:"allowed_hostname_pattern,omitempty"` // plugin only
-	ExpiresAt              string `json:"expires_at,omitempty"`       // RFC3339 or empty = no expiry
+	ExpiresAt              string `json:"expires_at,omitempty"`               // RFC3339 or empty = no expiry
 	CreatedBy              string `json:"created_by,omitempty"`
 }
 
 // TokenCreateResponse is returned from POST /api/admin/tokens.
 // The token plain text is shown only once.
 type TokenCreateResponse struct {
-	Token     string `json:"token"`      // plain text — shown ONCE, never stored
+	Token     string `json:"token"` // plain text — shown ONCE, never stored
 	ID        string `json:"id"`
 	Role      string `json:"role"`
 	ExpiresAt string `json:"expires_at,omitempty"`
@@ -157,6 +158,10 @@ func AdminCreateToken(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_hostname_pattern"})
 			return
 		}
+		if _, err := regexp.Compile(req.HostnamePattern); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_hostname_pattern"})
+			return
+		}
 		tok := storage.EnrollmentToken{
 			ID:              id,
 			TokenHash:       tokenHash,
@@ -174,6 +179,12 @@ func AdminCreateToken(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Enrollment token created by admin: id=%s pattern=%s reusable=%v", id, req.HostnamePattern, tok.Reusable)
 
 	case "plugin":
+		if req.AllowedHostnamePattern != "" {
+			if _, err := regexp.Compile(req.AllowedHostnamePattern); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_hostname_pattern"})
+				return
+			}
+		}
 		tok := storage.PluginToken{
 			ID:                     id,
 			TokenHash:              tokenHash,
