@@ -1,13 +1,9 @@
 # .golangci.yml — Configuration golangci-lint v2 pour GO/
 #
-# En CI : activé avec --new-from-rev=HEAD~1 (nouveaux problèmes uniquement)
-# via golangci-lint-action@v7 + version v2.1.6.
-#
-# Pour activer le lint complet : retirer continue-on-error et --new-from-rev
-# dans .github/workflows/ci.yml (après commit 'gofmt -w .' séparé par dev-relay).
+# En CI : golangci-lint v2.14.0 via golangci-lint-action@v7, lint complet bloquant.
+# 0 issue mesurée par qa sur #144 avant activation (max-issues-per-linter: 0, plafonds désactivés).
 #
 # Lint local :
-#   cd GO && golangci-lint run --new-from-rev=HEAD~1
 #   cd GO && golangci-lint run   # lint complet
 
 version: "2"
@@ -35,5 +31,5 @@ formatters:
     - gofmt
 
 issues:
-  max-issues-per-linter: 50
-  max-same-issues: 5
+  max-issues-per-linter: 0
+  max-same-issues: 0
