@@ -38,3 +38,47 @@ jobs:
           JWT_SECRET_KEY: test
           ADMIN_TOKEN: test
         run: go test ./... -timeout 120s
+
+  lint:
+    name: Lint Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Non-bloquant (continue-on-error: true) : golangci-lint analyse uniquement
+    # le code nouvellement modifié (--new-from-rev=HEAD~1).
+    # Dette gofmt existante — voir le log de l'etape gofmt pour la liste des fichiers.
+    # Un commit 'gofmt -w .' separe est requis avant d'activer le lint complet.
+    # Pour activer le lint complet : retirer continue-on-error et --new-from-rev.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: GO/go.work
+          cache-dependency-path: GO/go.sum
+
+      - name: gofmt check
+        working-directory: GO
+        # L'etape echoue (exit 1) si des fichiers non-conformes sont trouves,
+        # ce qui cree une annotation d'erreur visible sur GitHub.
+        # continue-on-error au niveau de l'etape permet a golangci-lint de s'executer
+        # meme si gofmt echoue. La dette gofmt existante sera traitee dans un commit
+        # 'gofmt -w .' separe par dev-relay (voir le log de l'etape pour la liste).
+        continue-on-error: true
+        run: |
+          UNFORMATTED=$(gofmt -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "::error::Fichiers non conformes a gofmt (dette preexistante — commit 'gofmt -w .' separe requis) :"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+          echo "gofmt : aucun fichier non-conforme."
+
+      - name: golangci-lint (nouveaux problemes uniquement)
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.14.0
+          working-directory: GO
+          args: --new-from-rev=HEAD~1 --timeout=5m

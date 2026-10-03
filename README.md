@@ -1,5 +1,7 @@
 # Ansible-SecAgent
 
+[![CI](https://github.com/CCoupel/Ansible-SecAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/CCoupel/Ansible-SecAgent/actions/workflows/ci.yml)
+
 Système permettant d'exécuter des playbooks Ansible sur des hôtes distants sans connexion SSH entrante. Les agents clients initient eux-mêmes la connexion vers un serveur central (modèle **Salt Minion**, connexions inversées).
 
 ## Fonctionnalités principales
