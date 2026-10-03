@@ -168,7 +168,7 @@ Authorization: Bearer <ADMIN_TOKEN>
     "description": "ansible-control-prod",
     "role": "plugin",
     "allowed_ips": "192.168.1.10/32",
-    "allowed_hostname": "ansible-control-prod",
+    "allowed_hostname_pattern": "ansible-control-[0-9]+",
     "created_at": "2026-03-01T10:00:00Z",
     "expires_at": null,
     "last_used_at": "2026-03-06T10:00:00Z",
@@ -193,7 +193,7 @@ Content-Type: application/json
   "description": "ansible-control-prod",
   "role": "plugin",
   "allowed_ips": "192.168.1.10/32",
-  "allowed_hostname": "ansible-control-prod",
+  "allowed_hostname_pattern": "ansible-control-[0-9]+",
   "expires_in": "365d"
 }
 ```
@@ -207,6 +207,28 @@ Content-Type: application/json
 ```
 
 Le token en clair n'est retourné **qu'une seule fois** à la création. Ensuite, seul le hash est stocké.
+
+#### Note sur `allowed_hostname_pattern`
+
+Le champ `allowed_hostname_pattern` est une **regexp Go** (pas un glob shell). Le serveur valide le pattern à la **création du token** — si la regexp ne compile pas, l'API retourne HTTP `400 {"error":"invalid_hostname_pattern"}`.
+
+**Ancrage automatique** : Le serveur applique l'ancrage `^(?:pattern)$` (groupe non-capturant) pour éviter les bypasses d'alternation. Le pattern doit correspondre au **nom d'hôte complet**.
+
+**Exemples valides** :
+- `ansible-control-[0-9]+` → matche `ansible-control-1`, `ansible-control-42` (classe `[0-9]+`)
+- `ansible-.*` → matche `ansible-prod`, `ansible-staging-01`, mais PAS `notansible-prod` (ancrage début)
+- `.*-prod-.*` → matche `app-prod-01`, `db-prod-web` (dot-star `.*` = 0+ caractères)
+- `ansiblecent-0[1-3]` → matche `ansiblecent-01`, `ansiblecent-02`, `ansiblecent-03` (classe `[1-3]`)
+- `web1|db` → matche **exactement** `web1` ou `db` (pas `web1-evil` ni `xdb` — l'alternation est ancrée)
+- `(?i)web1|(?i)db` → case-insensitive pour les deux alternatives
+
+**Erreur classique** :
+- `web-*` n'est **pas** un glob shell — c'est une regexp Go cherchant un tiret littéral suivi d'une étoile. Utiliser `web-[0-9]+` ou `web-.*` à la place.
+
+**Sécurité** :
+- Un pattern invalide (ex: `[`) est rejeté à la création : `400 invalid_hostname_pattern`.
+- Un pattern trop large (ex: `.*`) accepte n'importe quel hostname. À utiliser avec précaution et préférer une restriction IP (`allowed_ips`).
+- L'alternation `web1|db` (enveloppe automatique `^(?:web1|db)$`) accepte exactement "web1" ou "db", pas les prefixes/suffixes.
 
 ---
 

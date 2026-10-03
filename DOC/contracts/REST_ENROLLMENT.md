@@ -28,14 +28,22 @@ secagent-minion                          secagent-server
 
 ## 2. Prérequis côté serveur
 
-Avant tout enrollment, l'admin doit avoir exécuté :
+Avant tout enrollment, l'admin doit avoir créé un token d'enrollment avec :
 ```bash
-secagent-server minions authorize <hostname>
+secagent-server tokens create --role enrollment \
+  --hostname-pattern "vp-db-.*" \
+  --expires-in "24h"
 ```
-Ce qui insère dans la table `enrollment_tokens` un token OTP avec :
-- `hostname` lié
+
+Cela insère dans la table `enrollment_tokens` un token OTP avec :
+- `hostname_pattern` — regexp Go ancrée `^...$` (ex: `vp-db-.*`, `web[0-9]+`)
 - `expires_at` (TTL configurable, défaut 24h)
-- `used = 0`
+- `reusable=0` (one-shot) ou `reusable=1` (multi-usage pipeline)
+
+Lors de l'enrollment (étape 1), le serveur :
+1. Vérifie que le token existe en DB
+2. Valide le hostname reçu contre `hostname_pattern` en utilisant `regexp.MatchString("^" + pattern + "$", hostname)`
+3. Accepte ou rejette avec 403 `hostname_not_allowed` si mismatch
 
 ---
 
@@ -123,7 +131,35 @@ Le JWT est chiffré avec la clef publique de l'agent — illisible sans la clef 
 
 ---
 
-## 5. Format du JWT agent
+## 5. Hostname Pattern Matching
+
+La validation du hostname utilise une **regexp Go** (pas un glob shell). Le serveur valide le pattern à la **création du token** — si la regexp ne compile pas, l'API retourne HTTP `400 {"error":"invalid_hostname_pattern"}`.
+
+**Ancrage automatique** : Le serveur applique l'ancrage `^(?:pattern)$` lors de l'étape 1 d'enrollment :
+```
+regexp.MatchString("^(?:" + hostname_pattern + ")$", hostname_from_request)
+```
+Le groupe non-capturant `(?:...)` prévient les bypasses d'alternation (voir exemples).
+
+**Exemples valides** :
+- `vp-db-01` → accepte **exactement** `vp-db-01`
+- `vp.*` → accepte `vp-server-01`, `vp-db-02`, mais PAS `notavp` (ancrage : commence par `vp`)
+- `web[0-9]+` → accepte `web1`, `web42` (classe `[0-9]+`)
+- `.*-prod-.*` → accepte `app-prod-01`, `db-prod-web` (dot-star `.*` = 0+ caractères)
+- `web1|db` → accepte **exactement** `web1` ou `db` (pas `web1-evil` ni `xdb` — l'alternation est ancrée)
+- `(?i)web1|(?i)db` → case-insensitive pour les deux alternatives
+
+**Erreur classique** :
+- `web-*` n'est **pas** un glob shell — c'est une regexp Go cherchant un tiret littéral suivi d'une étoile. Utiliser `web-[0-9]+` ou `web-.*` à la place.
+
+**Sécurité** :
+- Un pattern invalide (ex: `[`) est rejeté à la création : `400 invalid_hostname_pattern`.
+- Un pattern trop large (ex: `.*`) accepte n'importe quel hostname. Toujours préférer une restriction plus fine.
+- L'alternation `web1|db` (enveloppe automatique `^(?:web1|db)$`) accepte exactement "web1" ou "db", pas les prefixes/suffixes.
+
+---
+
+## 6. Format du JWT agent
 
 Une fois déchiffré, le JWT est un token HMAC-HS256 :
 
@@ -147,7 +183,7 @@ Une fois déchiffré, le JWT est un token HMAC-HS256 :
 
 ---
 
-## 6. Refresh token
+## 7. Refresh token
 
 ### Requête
 
@@ -180,7 +216,7 @@ Content-Type: application/json
 
 ---
 
-## 7. Comportements agent
+## 8. Comportements agent
 
 | Situation | Action |
 |---|---|
@@ -193,7 +229,7 @@ Content-Type: application/json
 
 ---
 
-## 8. Contraintes TLS
+## 9. Contraintes TLS
 
 - HTTPS obligatoire sur tous les appels enrollment
 - Certificat serveur vérifié (ou CA bundle via `RELAY_CA_BUNDLE`)

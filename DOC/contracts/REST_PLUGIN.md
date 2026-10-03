@@ -18,13 +18,13 @@ Authorization: Bearer <PLUGIN_TOKEN>
 Le `PLUGIN_TOKEN` est un token statique créé par l'admin :
 ```bash
 secagent-server tokens create --role plugin --description "ansible-control-prod" \
-  --allowed-ips "192.168.1.10/32" --allowed-hostname "ansible-control-prod"
+  --allowed-ips "192.168.1.10/32" --allowed-hostname-pattern "ansible-control-[0-9]+"
 ```
 
 Validation serveur à chaque requête :
 1. Token hash vérifié contre table `plugin_tokens`
 2. IP source vérifiée contre `allowed_ips` (CIDR)
-3. Header `X-Relay-Client-Host` vérifié contre `allowed_hostname` (si configuré)
+3. Header `X-Relay-Client-Host` vérifié contre `allowed_hostname_pattern` (regexp Go ancrée `^(?:pattern)$`, si configuré)
 4. Token non révoqué (`revoked = 0`)
 
 Header optionnel pour le binding hostname (utile derrière NAT) :

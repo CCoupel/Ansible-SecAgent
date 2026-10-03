@@ -178,31 +178,37 @@ CREATE TABLE agents (
     status        TEXT DEFAULT 'disconnected'
 );
 
--- Tokens d'enrollment (single-use)
+-- Tokens d'enrollment
 CREATE TABLE enrollment_tokens (
-    id          TEXT PRIMARY KEY,
-    token_hash  TEXT NOT NULL UNIQUE,
-    hostname    TEXT NOT NULL,
-    created_at  INTEGER NOT NULL,
-    expires_at  INTEGER NOT NULL,
-    used        INTEGER DEFAULT 0,
-    used_at     INTEGER,
-    created_by  TEXT
+    id               TEXT PRIMARY KEY,
+    token_hash       TEXT NOT NULL UNIQUE,      -- SHA-256(token)
+    hostname_pattern TEXT NOT NULL,             -- regexp Go validée, ancrée ^(?:pattern)$ à la validation
+                                                 -- ex: "vp.*", "web[0-9]+", "web1|db"
+                                                 -- invalide si ne compile pas → rejet 400 "invalid_hostname_pattern"
+    reusable         INTEGER DEFAULT 0,         -- 0 = one-shot, 1 = permanent
+    use_count        INTEGER DEFAULT 0,         -- nb d'enrollements via ce token
+    last_used_at     INTEGER,                   -- horodatage dernier usage
+    created_at       INTEGER NOT NULL,
+    expires_at       INTEGER,                   -- NULL = jamais expiré
+    created_by       TEXT                       -- "admin-cli", "terraform", etc.
 );
 
 -- Tokens plugin (connection + inventory)
 CREATE TABLE plugin_tokens (
-    id               TEXT PRIMARY KEY,
-    token_hash       TEXT NOT NULL UNIQUE,
-    description      TEXT,
-    role             TEXT NOT NULL,        -- "plugin"
-    allowed_ips      TEXT,                 -- CIDRs CSV | NULL
-    allowed_hostname TEXT,                 -- hostname déclaré | NULL
-    created_at       INTEGER NOT NULL,
-    expires_at       INTEGER,
-    last_used_at     INTEGER,
-    last_used_ip     TEXT,
-    revoked          INTEGER DEFAULT 0
+    id                      TEXT PRIMARY KEY,
+    token_hash              TEXT NOT NULL UNIQUE,  -- SHA-256(token)
+    description             TEXT,
+    role                    TEXT NOT NULL,         -- "plugin"
+    allowed_ips             TEXT,                  -- CIDRs CSV | NULL
+    allowed_hostname_pattern TEXT,                 -- regexp Go validée, ancrée ^(?:pattern)$ à la validation
+                                                    -- ex: "ansible-control-[0-9]+", "web1|db"
+                                                    -- invalide si ne compile pas → rejet 400 "invalid_hostname_pattern"
+                                                    -- NULL = aucune restriction hostname
+    created_at              INTEGER NOT NULL,
+    expires_at              INTEGER,
+    last_used_at            INTEGER,
+    last_used_ip            TEXT,
+    revoked                 INTEGER DEFAULT 0
 );
 
 -- Blacklist JTI (révocation agents)
