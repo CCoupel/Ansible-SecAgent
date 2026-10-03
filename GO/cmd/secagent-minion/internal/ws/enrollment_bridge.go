@@ -16,6 +16,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -127,7 +128,11 @@ func reenrollStep1(ctx context.Context, client *http.Client, ec EnrollConfig, pu
 	if err != nil {
 		return "", "", fmt.Errorf("reenroll step1: POST %s: %w", ec.RegisterURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Debug("reenroll step1: close response body", "err", err)
+		}
+	}()
 
 	if resp.StatusCode == http.StatusForbidden {
 		return "", "", &httpStatusError{code: http.StatusForbidden, msg: "enrollment token invalid/expired/used"}
@@ -184,7 +189,11 @@ func reenrollStep2(ctx context.Context, client *http.Client, ec EnrollConfig, no
 	if err != nil {
 		return "", fmt.Errorf("reenroll step2: POST %s: %w", ec.RegisterURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Debug("reenroll step2: close response body", "err", err)
+		}
+	}()
 
 	if resp.StatusCode == http.StatusForbidden {
 		return "", &httpStatusError{code: http.StatusForbidden, msg: "challenge response rejected"}

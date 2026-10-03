@@ -27,6 +27,7 @@ package facts
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -287,7 +288,11 @@ func readFileLines(path string) []string {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			slog.Debug("readFileLines: close", "path", path, "err", err)
+		}
+	}()
 	var lines []string
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {

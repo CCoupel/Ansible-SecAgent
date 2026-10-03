@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"math"
 	"net/http"
 	"os"
@@ -361,7 +362,11 @@ func (d *Dispatcher) connect(ctx context.Context, reconnect *ReconnectManager) e
 		}
 		return fmt.Errorf("ws: dial %s: %w", d.cfg.ServerURL, err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			slog.Debug("[WS] close connection", "err", err)
+		}
+	}()
 
 	reconnect.Reset()
 	log.Printf("[WS] Connected to %s", d.cfg.ServerURL)

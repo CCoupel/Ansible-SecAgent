@@ -7,9 +7,13 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
+
+// fileWriteString abstracts (*os.File).WriteString in StorePrivateKey to allow test injection.
+var fileWriteString = func(f *os.File, s string) (int, error) { return f.WriteString(s) }
 
 // GenerateRSAKey génère une paire de clefs RSA-4096.
 // Utilisé lors du premier démarrage si aucune clef n'existe.
@@ -50,13 +54,19 @@ func StorePrivateKey(key *rsa.PrivateKey, path string) error {
 		return fmt.Errorf("store private key: create: %w", err)
 	}
 	pemData := PrivateKeyPEM(key)
-	if _, err := f.WriteString(pemData); err != nil {
-		f.Close()
-		os.Remove(tmp)
+	if _, err := fileWriteString(f, pemData); err != nil {
+		if cErr := f.Close(); cErr != nil {
+			slog.Debug("store private key: close tmp on write error", "err", cErr)
+		}
+		if rErr := os.Remove(tmp); rErr != nil {
+			slog.Warn("store private key: tmp file not removed — potential key leak", "tmp", tmp, "err", rErr)
+		}
 		return fmt.Errorf("store private key: write: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+		if rErr := os.Remove(tmp); rErr != nil {
+			slog.Warn("store private key: tmp file not removed after close error — potential key leak", "tmp", tmp, "err", rErr)
+		}
 		return fmt.Errorf("store private key: close: %w", err)
 	}
 	return os.Rename(tmp, path)

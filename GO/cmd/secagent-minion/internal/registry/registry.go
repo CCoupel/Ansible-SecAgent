@@ -16,6 +16,7 @@ package registry
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,6 +24,9 @@ import (
 	"syscall"
 	"time"
 )
+
+// registrySaveClose abstracts (*os.File).Close in save() to allow test injection.
+var registrySaveClose = func(f *os.File) error { return f.Close() }
 
 // Job représente un enregistrement de tâche async.
 type Job struct {
@@ -230,12 +234,18 @@ func (r *Registry) save() error {
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(r.jobs); err != nil {
-		f.Close()
-		os.Remove(tmp)
+		if cErr := f.Close(); cErr != nil {
+			slog.Debug("registry: close tmp on encode error", "err", cErr)
+		}
+		if rErr := os.Remove(tmp); rErr != nil {
+			slog.Debug("registry: remove tmp on encode error", "err", rErr)
+		}
 		return err
 	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+	if err := registrySaveClose(f); err != nil {
+		if rErr := os.Remove(tmp); rErr != nil {
+			slog.Debug("registry: remove tmp on close error", "err", rErr)
+		}
 		return err
 	}
 

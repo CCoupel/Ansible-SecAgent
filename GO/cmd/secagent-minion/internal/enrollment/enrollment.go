@@ -28,6 +28,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -178,7 +179,11 @@ func enrollStep1(ctx context.Context, client *http.Client, cfg Config) (challeng
 	if err != nil {
 		return "", "", fmt.Errorf("enrollment step1: POST %s: %w", cfg.RegisterURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Debug("enrollment step1: close response body", "err", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		var errBody map[string]any
@@ -250,7 +255,11 @@ func enrollStep2(ctx context.Context, client *http.Client, cfg Config, nonce []b
 	if err != nil {
 		return "", fmt.Errorf("enrollment step2: POST %s: %w", cfg.RegisterURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Debug("enrollment step2: close response body", "err", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		var errBody map[string]any

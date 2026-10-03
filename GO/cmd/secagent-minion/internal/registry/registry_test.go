@@ -2,6 +2,7 @@ package registry
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -550,6 +551,121 @@ func TestAsyncStatusFields(t *testing.T) {
 	}
 	if status.AnsibleJobID != "jid-1" {
 		t.Error("AnsibleJobID not preserved")
+	}
+}
+
+// ========================================================================
+// save() — error paths (errcheck fixes coverage)
+// ========================================================================
+
+// TestSave_ContentIsValidJSON vérifie que save() produit un JSON valide.
+func TestSave_ContentIsValidJSON(t *testing.T) {
+	r := newTestRegistry(t)
+	r.RegisterJob("jid-json", 42, "echo hi", 10, "")
+
+	data, err := os.ReadFile(r.jobsFile)
+	if err != nil {
+		t.Fatalf("read jobs file: %v", err)
+	}
+	var jobs map[string]*Job
+	if err := json.Unmarshal(data, &jobs); err != nil {
+		t.Fatalf("jobs file is not valid JSON: %v", err)
+	}
+	if _, ok := jobs["jid-json"]; !ok {
+		t.Error("registered job not found in persisted file")
+	}
+}
+
+// TestSave_NoTmpAfterError vérifie qu'aucun fichier .tmp ne subsiste
+// lorsque save() est appelée sur un répertoire en lecture seule.
+func TestSave_NoTmpAfterDirReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	jobsFile := filepath.Join(dir, "jobs.json")
+
+	// On crée d'abord une registry valide, puis on la rend read-only.
+	r, err := New(jobsFile)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	r.RegisterJob("jid-before-chmod", 1, "ls", 10, "")
+
+	// Rendre le répertoire en lecture seule : save() doit échouer.
+	if err := os.Chmod(dir, 0555); err != nil {
+		t.Skip("cannot chmod temp dir, skipping: " + err.Error())
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0755) })
+
+	// Déclenche save() via RegisterJob — l'erreur est attendue.
+	// Mais aucun fichier .tmp ne doit rester.
+	_ = r.RegisterJob("jid-after-chmod", 2, "ls", 10, "")
+
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		// Le répertoire est read-only, ReadDir peut échouer sur certains OS.
+		t.Skip("ReadDir failed on read-only dir, skipping cleanup check")
+	}
+	for _, e := range entries {
+		if len(e.Name()) > 4 && e.Name()[len(e.Name())-4:] == ".tmp" {
+			t.Errorf("leftover tmp file after save error: %q", e.Name())
+		}
+	}
+}
+
+// TestSave_CloseError_NoTmpFile vérifie que save() ne laisse aucun fichier .tmp
+// sur disque quand f.Close() échoue après l'encodage.
+// Détecte la mutation : supprimer os.Remove(tmp) du chemin d'erreur de close.
+func TestSave_CloseError_NoTmpFile(t *testing.T) {
+	dir := t.TempDir()
+	jobsFile := filepath.Join(dir, "jobs.json")
+	r, err := New(jobsFile)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Injecter une erreur de close via la variable de package.
+	orig := registrySaveClose
+	registrySaveClose = func(f *os.File) error {
+		_ = f.Close() // fermer vraiment pour éviter la fuite de descripteur
+		return errors.New("injected close error")
+	}
+	defer func() { registrySaveClose = orig }()
+
+	// RegisterJob déclenche save() — doit retourner une erreur.
+	saveErr := r.RegisterJob("jid-close-inject", 42, "cmd", 10, "")
+	if saveErr == nil {
+		t.Fatal("expected error from injected close failure, got nil")
+	}
+
+	// Le répertoire doit être VIDE : aucun fichier .tmp ne doit subsister.
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		t.Fatalf("ReadDir: %v", readErr)
+	}
+	for _, e := range entries {
+		t.Errorf("file left on disk after save close error: %q (possible tmp file leak — mutation detected?)", e.Name())
+	}
+}
+
+// TestSave_UpdatePreservesOtherJobs vérifie que save() écrit TOUS les jobs,
+// pas seulement le dernier ajouté.
+func TestSave_UpdatePreservesOtherJobs(t *testing.T) {
+	r := newTestRegistry(t)
+	r.RegisterJob("jid-a", 1, "cmd-a", 10, "")
+	r.RegisterJob("jid-b", 2, "cmd-b", 20, "")
+
+	data, err := os.ReadFile(r.jobsFile)
+	if err != nil {
+		t.Fatalf("read jobs file: %v", err)
+	}
+	var jobs map[string]*Job
+	if err := json.Unmarshal(data, &jobs); err != nil {
+		t.Fatalf("jobs file is not valid JSON: %v", err)
+	}
+	if _, ok := jobs["jid-a"]; !ok {
+		t.Error("jid-a missing from persisted file after adding jid-b")
+	}
+	if _, ok := jobs["jid-b"]; !ok {
+		t.Error("jid-b missing from persisted file")
 	}
 }
 
