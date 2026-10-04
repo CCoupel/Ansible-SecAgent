@@ -301,21 +301,22 @@ secagent-server server stats
 | `ADMIN_TOKEN` | ✅ | Token admin (port 7771) |
 | `NATS_URL` | ✅ | URL NATS JetStream (`nats://nats:4222`) |
 | `DATABASE_URL` | — | SQLite path (`relay.db`) ou PostgreSQL URL |
-| `RSA_MASTER_KEY` | ✅ | Clef AES-256-GCM pour chiffrer les secrets en DB |
+| `RSA_MASTER_KEY` | ✅ | Clef AES-256-GCM pour chiffrer les secrets en DB (tokens push relay) |
 | `RELAY_PLUGIN_TOKEN` | ✅ | Token statique pour les plugins Ansible |
 | `REPEATER_ID` | — | Identifiant du relay (ex: `dmz1`) — requis en mode enfant |
-| `REPEATER_UPSTREAM_URL` | — | URL WSS du parent (ex: `wss://central:7772`) — requis en mode enfant-push |
-| `REPEATER_UPSTREAM_TOKEN` | — | Token d'authentification du relay enfant — requis en mode enfant-push |
+| `REPEATER_UPSTREAM_URL` | — | URL WSS du parent (ex: `wss://central:7772`) — requis en mode enfant pull |
+| `REPEATER_UPSTREAM_TOKEN` | — | Token JWT relay-child du relay enfant — requis en mode enfant pull |
 | `RELAY_GROUP_VARS` | — | Variables Ansible JSON injectées pour ce relay (ex: `{"env":"prod"}`) |
 | `SERVER_ADDR` | — | Adresse d'écoute (défaut `:7770`) |
 | `TLS_CERT` / `TLS_KEY` | — | Certificats TLS directs (sinon Caddy) |
 | `MAX_SNAPSHOT_RELAYS` | — | Limite nombre relays dans topology_snapshot (défaut 1000) |
 | `MAX_SNAPSHOT_HOSTS` | — | Limite nombre hôtes dans topology_snapshot (défaut 10000) |
+| `MAX_AGENT_LIST_HOSTS` | — | Limite nombre hôtes dans agent_list par appel (défaut = MAX_SNAPSHOT_HOSTS = 10 000) |
 | `MAX_WS_MESSAGE_SIZE_RELAY` | — | Taille maximale message WebSocket relay (défaut 10MB) |
 
 ---
 
-## 9. Mode Repeater — Arbre Hiérarchique (v3.0)
+## 9. Mode Repeater — Arbre Hiérarchique (v3.1)
 
 > Architecture complète : `DOC/common/ARCHITECTURE.md` §23
 
@@ -689,12 +690,12 @@ CREATE TABLE IF NOT EXISTS relay_routing (
 
 ---
 
-### 9.7 Docker Compose qualification v3.0
+### 9.7 Docker Compose qualification v3.1
 
 ```yaml
 services:
   central:
-    image: secagent-server:3.0
+    image: secagent-server:3.1
     environment:
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       ADMIN_TOKEN: ${ADMIN_TOKEN}
@@ -711,7 +712,7 @@ services:
       - "7772:7772"   # WSS (WebSocket termination par Caddy)
 
   relay-dmz1:
-    image: secagent-server:3.0
+    image: secagent-server:3.1
     environment:
       JWT_SECRET_KEY: ${JWT_SECRET_KEY_DMZ1}
       ADMIN_TOKEN: ${ADMIN_TOKEN}
@@ -732,7 +733,7 @@ services:
 
 ---
 
-### 9.8 Récapitulatif modifications (v3.0)
+### 9.8 Récapitulatif modifications (v3.1)
 
 | Aspect | Changement |
 |---|---|
