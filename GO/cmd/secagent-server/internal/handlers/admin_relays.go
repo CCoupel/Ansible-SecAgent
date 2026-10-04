@@ -392,6 +392,24 @@ func AdminDeleteRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A relay whose token JTI is unknown (legacy, issued before #153, or a push relay) cannot be
+	// blacklisted: deleting it would drop the revoked flag and let its old token reconnect until
+	// it expires. Refuse unless it was revoked first. No bypass.
+	info, ierr := adminStore.GetRelayTokenInfo(node.RelayID)
+	if ierr != nil {
+		log.Printf("AdminDeleteRelay GetRelayTokenInfo: %v", ierr)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		return
+	}
+	if info.JTI == "" && !info.Revoked {
+		log.Printf("[SECURITY WARNING] relay delete refused: relay_id=%s has no tracked token and is not revoked", node.RelayID)
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error":   "relay_not_revoked",
+			"message": "revoke the relay first (POST /api/admin/relays/{id}/revoke): its token cannot be blacklisted on delete",
+		})
+		return
+	}
+
 	// Pull relay: blacklist its token before the row (and its JTI) disappears (#153).
 	if node.Mode == "pull" {
 		if _, _, rerr := adminStore.RevokeRelayNode(r.Context(), node.RelayID, "relay deleted"); rerr != nil {
@@ -495,6 +513,11 @@ func AdminRevokeRelay(w http.ResponseWriter, r *http.Request) {
 // revokeRelayNode is shared by the relay and the tokens revoke endpoints.
 func revokeRelayNode(r *http.Request, node *storage.RelayNode) (RelayRevokeResponse, error) {
 	resp := RelayRevokeResponse{Revoked: true, ID: node.ID, RelayID: node.RelayID, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	info, _, err := adminStore.RevokeRelayNode(r.Context(), node.RelayID, "relay token revoked")
+	if err != nil {
+		log.Printf("revokeRelayNode: %v", err)
+		return RelayRevokeResponse{}, err
+	}
 	if node.Mode == "push" {
 		pushHooksMu.RLock()
 		stop := pushStopFn
@@ -503,11 +526,6 @@ func revokeRelayNode(r *http.Request, node *storage.RelayNode) (RelayRevokeRespo
 			stop(node.RelayID)
 		}
 	} else {
-		info, _, err := adminStore.RevokeRelayNode(r.Context(), node.RelayID, "relay token revoked")
-		if err != nil {
-			log.Printf("revokeRelayNode: %v", err)
-			return RelayRevokeResponse{}, err
-		}
 		resp.Blacklisted = info.JTI != ""
 		resp.LegacyToken = info.JTI == ""
 	}

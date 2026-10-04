@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,14 +32,32 @@ func mintParentToken(t *testing.T, body map[string]interface{}) (int, TokenCreat
 
 func in(d time.Duration) string { return time.Now().UTC().Add(d).Format(time.RFC3339) }
 
+// lockedBuffer is a log sink safe for concurrent writers (background handler goroutines log too).
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // captureLog redirects the standard logger and returns the sink.
-func captureLog(t *testing.T) *bytes.Buffer {
+func captureLog(t *testing.T) *lockedBuffer {
 	t.Helper()
-	var buf bytes.Buffer
+	buf := &lockedBuffer{}
 	prev := log.Writer()
-	log.SetOutput(&buf)
+	log.SetOutput(buf)
 	t.Cleanup(func() { log.SetOutput(prev) })
-	return &buf
+	return buf
 }
 
 // ── creation ─────────────────────────────────────────────────────────────────

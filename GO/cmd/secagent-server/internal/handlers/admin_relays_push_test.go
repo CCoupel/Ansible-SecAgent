@@ -154,6 +154,10 @@ func TestPushRelay_DeleteStopsDialer(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
+	// a push relay has no tracked token: it must be revoked before it can be deleted (#153)
+	if code, _, body := revokeRelayByPath(t, resp.ID); code != http.StatusOK {
+		t.Fatalf("revoke: %d %s", code, body)
+	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("DELETE", "/api/admin/relays/"+resp.ID, nil)
 	req.SetPathValue("id", resp.ID)
@@ -164,7 +168,7 @@ func TestPushRelay_DeleteStopsDialer(t *testing.T) {
 	}
 	calls.mu.Lock()
 	defer calls.mu.Unlock()
-	if len(calls.stopped) != 1 || calls.stopped[0] != "dmz1" {
+	if len(calls.stopped) == 0 || calls.stopped[len(calls.stopped)-1] != "dmz1" {
 		t.Errorf("stopped = %v", calls.stopped)
 	}
 }
