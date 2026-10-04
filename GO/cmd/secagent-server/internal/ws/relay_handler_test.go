@@ -31,6 +31,30 @@ func makeRelayJWT(relayID, role string) string {
 	return raw
 }
 
+// awaitCondition polls fn until it returns true or timeout expires.
+// It is used wherever the test must observe an asynchronous server-side state
+// change without a fixed sleep.
+func awaitCondition(timeout time.Duration, fn func() bool) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return fn()
+}
+
+// awaitRelayConnected polls IsRelayConnected until the relay is registered or the
+// timeout expires. It is used after dialRelay to avoid a race: the WebSocket
+// upgrade completes on the client side (dialRelay returns) before the server
+// goroutine has called registerRelayConnection. Without this wait the check is
+// racy and can fail under CI scheduling pressure even though the code is correct.
+func awaitRelayConnected(t *testing.T, relayID string, timeout time.Duration) bool {
+	t.Helper()
+	return awaitCondition(timeout, func() bool { return IsRelayConnected(relayID) })
+}
+
 // setupRelayTestServer starts a test HTTP server with RelayHandler and configures JWT.
 func setupRelayTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -150,7 +174,7 @@ func TestRelayHandler_AcceptRelayRole(t *testing.T) {
 	if conn == nil {
 		t.Fatal("expected successful connection")
 	}
-	if !IsRelayConnected("dmz1") {
+	if !awaitRelayConnected(t, "dmz1", 2*time.Second) {
 		t.Error("expected relay to be registered after connect")
 	}
 }
@@ -359,29 +383,28 @@ func TestRelayHandler_DisconnectCleansRouting(t *testing.T) {
 	defer func() { RelayRoutingBulkUpsertFunc = origFn }()
 
 	conn := dialRelay(t, srv, makeRelayJWT("dmz-disco", "relay"))
-	if !IsRelayConnected("dmz-disco") {
+	if !awaitRelayConnected(t, "dmz-disco", 2*time.Second) {
 		t.Fatal("expected relay registered after connect")
 	}
 
 	// Close the client-side connection
 	conn.Close()
 
-	// Wait briefly for server-side cleanup
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if !IsRelayConnected("dmz-disco") {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	if IsRelayConnected("dmz-disco") {
+	// Wait for server-side deregistration (delete from map comes first in
+	// unregisterRelayConnection, so IsRelayConnected becomes false before the
+	// routing cleanup is called).
+	if !awaitCondition(2*time.Second, func() bool { return !IsRelayConnected("dmz-disco") }) {
 		t.Error("expected relay unregistered after disconnect")
 	}
-	cleanupMu.Lock()
-	gotCleanup := cleanupCalled
-	cleanupMu.Unlock()
-	if !gotCleanup {
+
+	// Wait for routing cleanup: RelayRoutingBulkUpsertFunc is called AFTER the
+	// map delete, so cleanupCalled may be false when IsRelayConnected first
+	// returns false — poll to avoid that race.
+	if !awaitCondition(2*time.Second, func() bool {
+		cleanupMu.Lock()
+		defer cleanupMu.Unlock()
+		return cleanupCalled
+	}) {
 		t.Error("expected routing cleanup called on disconnect")
 	}
 }
