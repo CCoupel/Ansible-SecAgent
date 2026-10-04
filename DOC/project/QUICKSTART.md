@@ -115,7 +115,7 @@ docker logs secagent-minion-03 | grep "WebSocket connecté"
 
 ## Déploiement Qualif Multi-Zones (192.168.1.218)
 
-> ⚠️ **LIMITATION — topologie multi-zones non fonctionnelle en v3.0**
+> ⚠️ **LIMITATION — topologie multi-zones non fonctionnelle en v3.0.0**
 >
 > La connexion relay→proxy (mode pull, repeater-client) n'est pas encore implémentée
 > (issues #124, #125, #140). En conséquence :
