@@ -50,7 +50,9 @@ func TestFetchInventorySuccess(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(serverInventoryResponse))
+		if _, err := w.Write([]byte(serverInventoryResponse)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	})
 	defer srv.Close()
 
@@ -78,7 +80,9 @@ func TestFetchInventoryOnlyConnected(t *testing.T) {
 		querySeen = r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(serverInventoryResponse))
+		if _, err := w.Write([]byte(serverInventoryResponse)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	})
 	defer srv.Close()
 
@@ -104,7 +108,9 @@ func TestFetchInventoryWithToken(t *testing.T) {
 		authSeen = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(serverInventoryResponse))
+		if _, err := w.Write([]byte(serverInventoryResponse)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	})
 	defer srv.Close()
 
@@ -127,7 +133,9 @@ func TestFetchInventoryWithToken(t *testing.T) {
 func TestFetchInventoryHTTPError(t *testing.T) {
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"error":"missing_authorization"}`))
+		if _, err := w.Write([]byte(`{"error":"missing_authorization"}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	})
 	defer srv.Close()
 
@@ -149,7 +157,9 @@ func TestFetchInventoryInvalidJSON(t *testing.T) {
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("not valid json"))
+		if _, err := w.Write([]byte("not valid json")); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	})
 	defer srv.Close()
 
@@ -181,19 +191,23 @@ func TestCmdListOutput(t *testing.T) {
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(serverInventoryResponse))
+		if _, err := w.Write([]byte(serverInventoryResponse)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	})
 	defer srv.Close()
 
 	// Capture stdout
 	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
+	pr, pw, _ := os.Pipe()
+	os.Stdout = pw
 
 	cfg := config{serverURL: srv.URL, insecure: true}
 	err := cmdList(cfg)
 
-	w.Close()
+	if err := pw.Close(); err != nil {
+		t.Errorf("close pipe: %v", err)
+	}
 	os.Stdout = old
 
 	if err != nil {
@@ -201,7 +215,7 @@ func TestCmdListOutput(t *testing.T) {
 	}
 
 	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
+	n, _ := pr.Read(buf)
 	output := string(buf[:n])
 
 	// Valider que c'est du JSON valide avec les champs attendus
@@ -223,18 +237,22 @@ func TestCmdListEmptyInventory(t *testing.T) {
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(emptyResp))
+		if _, err := w.Write([]byte(emptyResp)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	})
 	defer srv.Close()
 
 	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
+	pr, pw, _ := os.Pipe()
+	os.Stdout = pw
 
 	cfg := config{serverURL: srv.URL, insecure: true}
 	err := cmdList(cfg)
 
-	w.Close()
+	if err := pw.Close(); err != nil {
+		t.Errorf("close pipe: %v", err)
+	}
 	os.Stdout = old
 
 	if err != nil {
@@ -242,7 +260,7 @@ func TestCmdListEmptyInventory(t *testing.T) {
 	}
 
 	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
+	n, _ := pr.Read(buf)
 	output := string(buf[:n])
 
 	var result AnsibleInventory
@@ -263,18 +281,22 @@ func TestCmdHostFound(t *testing.T) {
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(serverInventoryResponse))
+		if _, err := w.Write([]byte(serverInventoryResponse)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	})
 	defer srv.Close()
 
 	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
+	pr, pw, _ := os.Pipe()
+	os.Stdout = pw
 
 	cfg := config{serverURL: srv.URL, insecure: true}
 	err := cmdHost(cfg, "host-a")
 
-	w.Close()
+	if err := pw.Close(); err != nil {
+		t.Errorf("close pipe: %v", err)
+	}
 	os.Stdout = old
 
 	if err != nil {
@@ -282,7 +304,7 @@ func TestCmdHostFound(t *testing.T) {
 	}
 
 	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
+	n, _ := pr.Read(buf)
 	output := string(buf[:n])
 
 	var vars map[string]any
@@ -298,18 +320,22 @@ func TestCmdHostNotFound(t *testing.T) {
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(serverInventoryResponse))
+		if _, err := w.Write([]byte(serverInventoryResponse)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	})
 	defer srv.Close()
 
 	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
+	pr, pw, _ := os.Pipe()
+	os.Stdout = pw
 
 	cfg := config{serverURL: srv.URL, insecure: true}
 	err := cmdHost(cfg, "nonexistent-host")
 
-	w.Close()
+	if err := pw.Close(); err != nil {
+		t.Errorf("close pipe: %v", err)
+	}
 	os.Stdout = old
 
 	if err != nil {
@@ -317,7 +343,7 @@ func TestCmdHostNotFound(t *testing.T) {
 	}
 
 	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
+	n, _ := pr.Read(buf)
 	output := strings.TrimSpace(string(buf[:n]))
 
 	// Doit retourner {} pour les hôtes inconnus
@@ -330,18 +356,22 @@ func TestCmdHostServerError(t *testing.T) {
 	// Simule une erreur serveur → cmdHost doit quand même retourner {} sans erreur
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error":"internal"}`))
+		if _, err := w.Write([]byte(`{"error":"internal"}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	})
 	defer srv.Close()
 
 	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
+	pr, pw, _ := os.Pipe()
+	os.Stdout = pw
 
 	cfg := config{serverURL: srv.URL, insecure: true}
 	err := cmdHost(cfg, "host-a")
 
-	w.Close()
+	if err := pw.Close(); err != nil {
+		t.Errorf("close pipe: %v", err)
+	}
 	os.Stdout = old
 
 	// cmdHost ne doit pas retourner d'erreur (comportement Ansible : {} en cas d'erreur)
@@ -350,7 +380,7 @@ func TestCmdHostServerError(t *testing.T) {
 	}
 
 	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
+	n, _ := pr.Read(buf)
 	output := strings.TrimSpace(string(buf[:n]))
 
 	if output != "{}" {
@@ -395,7 +425,9 @@ func TestNewHTTPClientInvalidCABundle(t *testing.T) {
 func TestNewHTTPClientInvalidPEM(t *testing.T) {
 	dir := t.TempDir()
 	caFile := dir + "/ca.pem"
-	os.WriteFile(caFile, []byte("not valid pem"), 0644)
+	if err := os.WriteFile(caFile, []byte("not valid pem"), 0644); err != nil {
+		t.Fatalf("write CA file: %v", err)
+	}
 
 	cfg := config{caBundle: caFile}
 	_, err := newHTTPClient(cfg)
@@ -409,12 +441,13 @@ func TestNewHTTPClientInvalidPEM(t *testing.T) {
 // ========================================================================
 
 func TestLoadConfigDefaults(t *testing.T) {
-	// Nettoyer les variables d'environnement
-	os.Unsetenv("RELAY_SERVER_URL")
-	os.Unsetenv("RELAY_TOKEN")
-	os.Unsetenv("RELAY_CA_BUNDLE")
-	os.Unsetenv("RELAY_INSECURE_TLS")
-	os.Unsetenv("RELAY_ONLY_CONNECTED")
+	// Forcer les variables à vide — t.Setenv restaure automatiquement la valeur d'origine.
+	// getenv() traite "" comme absent et retourne le fallback.
+	t.Setenv("RELAY_SERVER_URL", "")
+	t.Setenv("RELAY_TOKEN", "")
+	t.Setenv("RELAY_CA_BUNDLE", "")
+	t.Setenv("RELAY_INSECURE_TLS", "")
+	t.Setenv("RELAY_ONLY_CONNECTED", "")
 
 	cfg := loadConfig()
 
@@ -433,16 +466,11 @@ func TestLoadConfigDefaults(t *testing.T) {
 }
 
 func TestLoadConfigFromEnv(t *testing.T) {
-	os.Setenv("RELAY_SERVER_URL", "https://relay.example.com")
-	os.Setenv("RELAY_TOKEN", "mytoken")
-	os.Setenv("RELAY_INSECURE_TLS", "true")
-	os.Setenv("RELAY_ONLY_CONNECTED", "true")
-	defer func() {
-		os.Unsetenv("RELAY_SERVER_URL")
-		os.Unsetenv("RELAY_TOKEN")
-		os.Unsetenv("RELAY_INSECURE_TLS")
-		os.Unsetenv("RELAY_ONLY_CONNECTED")
-	}()
+	// t.Setenv définit la variable ET restaure la valeur d'origine en fin de test.
+	t.Setenv("RELAY_SERVER_URL", "https://relay.example.com")
+	t.Setenv("RELAY_TOKEN", "mytoken")
+	t.Setenv("RELAY_INSECURE_TLS", "true")
+	t.Setenv("RELAY_ONLY_CONNECTED", "true")
 
 	cfg := loadConfig()
 
@@ -465,8 +493,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 // ========================================================================
 
 func TestGetenvWithValue(t *testing.T) {
-	os.Setenv("TEST_RELAY_KEY", "hello")
-	defer os.Unsetenv("TEST_RELAY_KEY")
+	t.Setenv("TEST_RELAY_KEY", "hello")
 
 	if v := getenv("TEST_RELAY_KEY", "default"); v != "hello" {
 		t.Errorf("expected hello, got %q", v)
@@ -474,7 +501,7 @@ func TestGetenvWithValue(t *testing.T) {
 }
 
 func TestGetenvFallback(t *testing.T) {
-	os.Unsetenv("TEST_RELAY_KEY_MISSING")
+	t.Setenv("TEST_RELAY_KEY_MISSING", "")
 	if v := getenv("TEST_RELAY_KEY_MISSING", "fallback"); v != "fallback" {
 		t.Errorf("expected fallback, got %q", v)
 	}
@@ -502,16 +529,18 @@ func TestCloseBodyNoError(t *testing.T) {
 func TestCloseBodyLogsErrorOnStderr(t *testing.T) {
 	// closeBody doit journaliser l'erreur sur stderr sans toucher stdout
 	oldErr := os.Stderr
-	r, w, _ := os.Pipe()
-	os.Stderr = w
+	pr, pw, _ := os.Pipe()
+	os.Stderr = pw
 
 	closeBody(&errCloser{err: errors.New("disk full")})
 
-	w.Close()
+	if err := pw.Close(); err != nil {
+		t.Errorf("close pipe: %v", err)
+	}
 	os.Stderr = oldErr
 
 	buf := make([]byte, 256)
-	n, _ := r.Read(buf)
+	n, _ := pr.Read(buf)
 	output := string(buf[:n])
 
 	if !strings.Contains(output, "disk full") {
