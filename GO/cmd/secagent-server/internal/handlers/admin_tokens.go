@@ -15,7 +15,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"secagent-server/cmd/secagent-server/internal/auth"
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
 // ========================================================================
@@ -23,16 +25,17 @@ import (
 // ========================================================================
 
 // TokenCreateRequest is the body for POST /api/admin/tokens.
-// The "role" field determines whether an enrollment or plugin token is created.
+// The "role" field determines whether an enrollment, plugin or relay-parent token is created.
 type TokenCreateRequest struct {
-	Role                   string `json:"role"`                               // "enrollment" or "plugin"
+	Role                   string `json:"role"`                               // "enrollment", "plugin" or "relay-parent"
 	HostnamePattern        string `json:"hostname_pattern,omitempty"`         // enrollment only
 	Reusable               int    `json:"reusable,omitempty"`                 // enrollment only: 0=one-shot, 1=permanent
 	Description            string `json:"description,omitempty"`              // plugin only
 	AllowedIPs             string `json:"allowed_ips,omitempty"`              // plugin only, comma-separated CIDRs
 	AllowedHostnamePattern string `json:"allowed_hostname_pattern,omitempty"` // plugin only
-	ExpiresAt              string `json:"expires_at,omitempty"`               // RFC3339 or empty = no expiry
+	ExpiresAt              string `json:"expires_at,omitempty"`               // RFC3339 or empty = no expiry (REQUIRED for relay-parent)
 	CreatedBy              string `json:"created_by,omitempty"`
+	Sub                    string `json:"sub,omitempty"` // relay-parent only: relay_id of the parent the JWT is minted for
 }
 
 // TokenCreateResponse is returned from POST /api/admin/tokens.
@@ -49,10 +52,31 @@ type TokenCreateResponse struct {
 	Description            string `json:"description,omitempty"`
 	AllowedIPs             string `json:"allowed_ips,omitempty"`
 	AllowedHostnamePattern string `json:"allowed_hostname_pattern,omitempty"`
+	// relay-parent fields
+	Sub string `json:"sub,omitempty"`
+	JTI string `json:"jti,omitempty"`
 	// audit
 	UseCount  int    `json:"use_count"`
 	CreatedAt string `json:"created_at"`
 }
+
+// RelayParentTokenSummary is the list view for relay-parent tokens: metadata only, never the JWT.
+type RelayParentTokenSummary struct {
+	ID          string `json:"id"`
+	Role        string `json:"role"`
+	Sub         string `json:"sub"`
+	JTI         string `json:"jti"`
+	Description string `json:"description,omitempty"`
+	ExpiresAt   string `json:"expires_at"`
+	Revoked     bool   `json:"revoked"`
+	RevokedAt   string `json:"revoked_at,omitempty"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// MaxRelayParentTokenLifetime caps the lifetime of a relay-parent token (#150).
+const MaxRelayParentTokenLifetime = 365 * 24 * time.Hour
+
+var relayIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
 
 // EnrollmentTokenSummary is the list view for enrollment tokens (no plain text).
 type EnrollmentTokenSummary struct {
@@ -109,7 +133,7 @@ func AdminCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Role = strings.TrimSpace(req.Role)
-	if req.Role != "enrollment" && req.Role != "plugin" {
+	if req.Role != "enrollment" && req.Role != "plugin" && req.Role != "relay-parent" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_role"})
 		return
 	}
@@ -120,6 +144,11 @@ func AdminCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	if req.Role == "relay-parent" {
+		createRelayParentToken(ctx, w, req)
+		return
+	}
 
 	// Generate token: 32 random bytes → hex prefix
 	rawBytes := make([]byte, 32)
@@ -226,8 +255,79 @@ func AdminCreateToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
+// createRelayParentToken mints a relay-parent JWT on THIS (child) relay for its parent (#150).
+// The JWT is signed with this node's secret, shown once in the response and never stored or
+// logged: only its metadata (JTI, parent, expiry) is persisted so it can be listed and revoked.
+func createRelayParentToken(ctx context.Context, w http.ResponseWriter, req TokenCreateRequest) {
+	sub := strings.TrimSpace(req.Sub)
+	if !relayIDPattern.MatchString(sub) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_sub"})
+		return
+	}
+	if strings.TrimSpace(req.ExpiresAt) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expires_required_for_relay_parent"})
+		return
+	}
+	exp, err := time.Parse(time.RFC3339, req.ExpiresAt)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_expires_at"})
+		return
+	}
+	now := time.Now().UTC()
+	ttl := exp.Sub(now)
+	if ttl <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expires_in_the_past"})
+		return
+	}
+	if ttl > MaxRelayParentTokenLifetime {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expires_exceeds_maximum_365d"})
+		return
+	}
+	// A parent cannot be an ancestor-looping identity of this node.
+	if ws.RelayWouldLoop(sub) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sub_would_create_loop"})
+		return
+	}
+
+	rawJWT, jti, err := auth.New(GetServerJWTSecrets, ttl).SignRelayParentTTL(sub, ttl)
+	if err != nil {
+		log.Printf("AdminCreateToken relay-parent: sign failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "jwt_generation_failed"})
+		return
+	}
+	id := uuid.New().String()
+	rec := storage.RelayParentToken{ID: id, JTI: jti, ParentID: sub, Description: req.Description,
+		CreatedAt: now, ExpiresAt: now.Add(ttl)}
+	if err := adminStore.CreateRelayParentToken(ctx, rec); err != nil {
+		log.Printf("AdminCreateToken relay-parent: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		return
+	}
+	writeJSON(w, http.StatusCreated, TokenCreateResponse{
+		Token:       rawJWT, // shown ONCE
+		ID:          id,
+		Role:        "relay-parent",
+		ExpiresAt:   rec.ExpiresAt.Format(time.RFC3339),
+		Description: req.Description,
+		Sub:         sub,
+		JTI:         jti,
+		CreatedAt:   now.Format(time.RFC3339),
+	})
+}
+
+func relayParentTokenToSummary(t storage.RelayParentToken) RelayParentTokenSummary {
+	s := RelayParentTokenSummary{
+		ID: t.ID, Role: "relay-parent", Sub: t.ParentID, JTI: t.JTI, Description: t.Description,
+		ExpiresAt: t.ExpiresAt.Format(time.RFC3339), Revoked: t.Revoked(), CreatedAt: t.CreatedAt.Format(time.RFC3339),
+	}
+	if t.RevokedAt != nil {
+		s.RevokedAt = t.RevokedAt.Format(time.RFC3339)
+	}
+	return s
+}
+
 // ========================================================================
-// GET /api/admin/tokens?role=enrollment|plugin|all
+// GET /api/admin/tokens?role=enrollment|plugin|relay-parent|all
 // ========================================================================
 
 // AdminListTokens returns all tokens, optionally filtered by role.
@@ -246,7 +346,7 @@ func AdminListTokens(w http.ResponseWriter, r *http.Request) {
 	if role == "" {
 		role = "all"
 	}
-	if role != "enrollment" && role != "plugin" && role != "all" {
+	if role != "enrollment" && role != "plugin" && role != "relay-parent" && role != "all" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_role"})
 		return
 	}
@@ -275,6 +375,18 @@ func AdminListTokens(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, t := range tokens {
 			result = append(result, pluginTokenToSummary(t))
+		}
+	}
+
+	if role == "relay-parent" || role == "all" {
+		tokens, err := adminStore.ListRelayParentTokens(ctx)
+		if err != nil {
+			log.Printf("AdminListTokens relay-parent: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+			return
+		}
+		for _, t := range tokens {
+			result = append(result, relayParentTokenToSummary(t))
 		}
 	}
 
@@ -322,6 +434,23 @@ func AdminRevokeToken(w http.ResponseWriter, r *http.Request) {
 			"revoked":    true,
 			"id":         id,
 			"updated_at": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	// Relay-parent token: blacklist the JTI and cut the live parent link (close 4010).
+	if rt, ok, rerr := adminStore.RevokeRelayParentToken(ctx, id); rerr != nil {
+		log.Printf("AdminRevokeToken relay-parent: %v", rerr)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		return
+	} else if ok {
+		disconnected := ws.RevokeRelayParentLink(rt.JTI)
+		log.Printf("Relay-parent token revoked: id=%s parent=%s link_closed=%v", id, rt.ParentID, disconnected)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"revoked":      true,
+			"id":           id,
+			"disconnected": disconnected,
+			"updated_at":   time.Now().UTC().Format(time.RFC3339),
 		})
 		return
 	}

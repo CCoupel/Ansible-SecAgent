@@ -642,51 +642,59 @@ const (
 	relayRoleParent = "relay-parent"
 )
 
+// relayAuth is the authenticated identity of a /ws/relay upgrade.
+type relayAuth struct {
+	RelayID string // jwt.sub
+	IsProxy bool
+	Role    string // relayRoleChild | relayRoleParent
+	JTI     string // jwt.jti (revocation key)
+}
+
 // extractRelayAuth validates the JWT of a /ws/relay upgrade and returns the relay id (sub),
 // the is_proxy hint and the role. Accepted roles: "relay" (a child opening a link to us) and
 // "relay-parent" (our parent opening a link to us, push mode #140; token signed by this node).
 // The full role model (relay-child / relay-parent split, #146) is not implemented yet.
 // Fail closed: no verifier, missing/invalid/revoked token, unknown role => refused.
-func extractRelayAuth(r *http.Request) (relayID string, isProxy bool, role string, err error) {
+func extractRelayAuth(r *http.Request) (relayAuth, error) {
 	authHeader := r.Header.Get("Authorization")
 
 	// Fail closed: without a JWT verifier, no relay is ever authenticated.
 	if JWTSecretsFunc == nil {
 		log.Printf("[SECURITY WARNING] relay connection refused: JWTSecretsFunc is not configured (fail closed)")
-		return "", false, "", fmt.Errorf("jwt_not_configured")
+		return relayAuth{}, fmt.Errorf("jwt_not_configured")
 	}
 	if !strings.HasPrefix(authHeader, "Bearer ") {
 		log.Printf("[SECURITY WARNING] relay connection refused: missing bearer token")
-		return "", false, "", fmt.Errorf("missing_relay_credentials")
+		return relayAuth{}, fmt.Errorf("missing_relay_credentials")
 	}
 	claims, _, valErr := ExtractJWTClaims(authHeader)
 	if valErr != nil {
 		log.Printf("[SECURITY WARNING] relay connection refused: invalid JWT: %v", valErr)
-		return "", false, "", fmt.Errorf("jwt_invalid: %w", valErr)
+		return relayAuth{}, fmt.Errorf("jwt_invalid: %w", valErr)
 	}
-	role, _ = claims["role"].(string)
+	role, _ := claims["role"].(string)
 	if role != relayRoleChild && role != relayRoleParent {
 		log.Printf("[SECURITY WARNING] relay connection refused: wrong JWT role %q", role)
-		return "", false, "", fmt.Errorf("jwt_wrong_role: got %q, want %s or %s", role, relayRoleChild, relayRoleParent)
+		return relayAuth{}, fmt.Errorf("jwt_wrong_role: got %q, want %s or %s", role, relayRoleChild, relayRoleParent)
 	}
 	sub, _ := claims["sub"].(string)
 	if sub == "" {
 		log.Printf("[SECURITY WARNING] relay connection refused: JWT without sub")
-		return "", false, "", fmt.Errorf("jwt_missing_sub")
+		return relayAuth{}, fmt.Errorf("jwt_missing_sub")
 	}
 	// Revocation: a revoked token must not reconnect (SECURITY.md §7).
 	jti, _ := claims["jti"].(string)
 	if jti == "" {
 		log.Printf("[SECURITY WARNING] relay connection refused: JWT without jti (relay_id=%s)", sub)
-		return "", false, "", fmt.Errorf("jwt_missing_jti")
+		return relayAuth{}, fmt.Errorf("jwt_missing_jti")
 	}
 	if err := checkRelayJTI(jti); err != nil {
 		log.Printf("[SECURITY WARNING] relay connection refused: relay_id=%s jti=%s: %v", sub, jti, err)
-		return "", false, "", err
+		return relayAuth{}, err
 	}
 	// is_proxy hint from query param (relay sets this when it is itself a proxy)
 	ip := r.URL.Query().Get("is_proxy") == "true"
-	return sub, ip, role, nil
+	return relayAuth{RelayID: sub, IsProxy: ip, Role: role, JTI: jti}, nil
 }
 
 // handleRelayMessage dispatches an incoming relay message to the appropriate handler.
@@ -831,13 +839,14 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 //  5. Message loop (relay_hello, agent_list, task_result, heartbeat)
 //  6. On disconnect: cleanup routing, resolve pending task futures
 func RelayHandler(w http.ResponseWriter, r *http.Request) {
-	relayID, isProxy, role, err := extractRelayAuth(r)
+	auth, err := extractRelayAuth(r)
 	if err != nil {
 		log.Printf("Relay WS auth rejected: %v", err)
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
 
+	relayID, isProxy := auth.RelayID, auth.IsProxy
 	conn, upgradeErr := upgrader.Upgrade(w, r, nil)
 	if upgradeErr != nil {
 		log.Printf("Relay WebSocket upgrade failed: relay_id=%s err=%v", relayID, upgradeErr)
@@ -845,8 +854,8 @@ func RelayHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Our PARENT opened this link (push mode, #140): we are the child side of the handshake.
-	if role == relayRoleParent {
-		serveParentLink(r.Context(), conn, relayID)
+	if auth.Role == relayRoleParent {
+		serveParentLink(r.Context(), conn, relayID, auth.JTI)
 		return
 	}
 
@@ -969,11 +978,52 @@ func SetRelayParentLinkFunc(fn func(ctx context.Context, conn *websocket.Conn, a
 	treeHooksMu.Unlock()
 }
 
+// ── Live parent links, by JWT id (#150) ──────────────────────────────────────
+
+var (
+	parentLinksMu sync.Mutex
+	parentLinks   = make(map[string]*websocket.Conn)
+)
+
+func registerParentLink(jti string, conn *websocket.Conn) {
+	parentLinksMu.Lock()
+	parentLinks[jti] = conn
+	parentLinksMu.Unlock()
+}
+
+func unregisterParentLink(jti string, conn *websocket.Conn) {
+	parentLinksMu.Lock()
+	if parentLinks[jti] == conn {
+		delete(parentLinks, jti)
+	}
+	parentLinksMu.Unlock()
+}
+
+// RevokeRelayParentLink closes the active parent link authenticated with the token jti, if any,
+// with the permanent code 4010 (the token is blacklisted: the parent cannot come back with it).
+// Returns true when a live link was closed.
+func RevokeRelayParentLink(jti string) bool {
+	parentLinksMu.Lock()
+	conn := parentLinks[jti]
+	delete(parentLinks, jti)
+	parentLinksMu.Unlock()
+	if conn == nil {
+		return false
+	}
+	log.Printf("[SECURITY WARNING] parent link closed: token revoked")
+	closeWithRejection(conn, &relayRejection{code: WSRelayCloseRevoked, reason: "token revoked"})
+	_ = conn.Close()
+	return true
+}
+
 // serveParentLink handles a connection authenticated with a relay-parent token: the peer is
 // OUR PARENT. Handshake: relay_hello (relay_id == jwt.sub, loop check against its ancestors)
 // → relay_ack with our identity → uplink (topology_snapshot sent by us, then steady state).
-func serveParentLink(ctx context.Context, conn *websocket.Conn, parentID string) {
+func serveParentLink(ctx context.Context, conn *websocket.Conn, parentID, jti string) {
 	defer func() { _ = conn.Close() }()
+	// Track the live link by token id so that revoking the token can cut it immediately (#150).
+	registerParentLink(jti, conn)
+	defer unregisterParentLink(jti, conn)
 	// refuse closes with 4012 (the parent may fix the cause and retry); refusePermanent with 4010.
 	refuse := func(reason string) {
 		log.Printf("[SECURITY WARNING] parent link refused (retryable): parent=%s reason=%s", parentID, reason)

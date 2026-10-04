@@ -404,3 +404,36 @@ func TestPush_ParentRoleNeverOpensChildLink(t *testing.T) {
 		t.Errorf("relay-parent token acted as a child (routed=%v connected=%v)", routed, IsRelayConnected("central"))
 	}
 }
+
+// Revoking a relay-parent token cuts the live parent link with the permanent code 4010 (#150).
+func TestPush_RevokeRelayParentLinkClosesWith4010(t *testing.T) {
+	setTreeHooks(t, "dmz1", nil, nil, nil)
+	linked := make(chan struct{}, 1)
+	setParentLink(t, func(conn *websocket.Conn, _ []string) error {
+		linked <- struct{}{}
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return err
+			}
+		}
+	}, nil)
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	c := dialRelay(t, srv, makeRelayJWT("central", "relay-parent"))
+	parentHello(t, c, "central", nil)
+	readMsg(t, c) // relay_ack
+	<-linked
+
+	if RevokeRelayParentLink("some-other-jti") {
+		t.Error("an unknown jti must not close anything")
+	}
+	if !RevokeRelayParentLink("test-jti-central") {
+		t.Fatal("the live link of this token must be closed")
+	}
+	if code := expectClose(t, c); code != WSRelayCloseRevoked {
+		t.Errorf("close code = %d, want 4010", code)
+	}
+	if RevokeRelayParentLink("test-jti-central") {
+		t.Error("a second revocation finds no live link")
+	}
+}
