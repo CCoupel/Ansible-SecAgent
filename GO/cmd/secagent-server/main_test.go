@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -272,7 +271,7 @@ func TestIsCLIMode_ServerAllSubcommands(t *testing.T) {
 func TestCLI_TokensList_ServerRunning(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/admin/tokens" && r.Method == http.MethodGet {
-			json.NewEncoder(w).Encode([]map[string]interface{}{
+			mustEncode(t, w, []map[string]interface{}{
 				{
 					"id":               "tok-cli-01",
 					"role":             "enrollment",
@@ -303,7 +302,7 @@ func TestCLI_TokensList_ServerRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("server not reachable: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("tokens list: expected 200 from mock server, got %d", resp.StatusCode)
 	}
@@ -314,7 +313,7 @@ func TestCLI_TokensList_ServerRunning(t *testing.T) {
 func TestCLI_InventoryList_ServerRunning(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/admin/minions" && r.Method == http.MethodGet {
-			json.NewEncoder(w).Encode([]map[string]interface{}{
+			mustEncode(t, w, []map[string]interface{}{
 				{"hostname": "host-01", "connected": true},
 				{"hostname": "host-02", "connected": false},
 			})
@@ -336,7 +335,7 @@ func TestCLI_InventoryList_ServerRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("server not reachable: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("inventory list: expected 200 from mock server, got %d", resp.StatusCode)
 	}
@@ -372,7 +371,7 @@ func TestCLI_ConnectionRefused_NoServer(t *testing.T) {
 func TestCLI_SecurityKeysStatus_ServerRunning(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/admin/security/keys/status" {
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			mustEncode(t, w, map[string]interface{}{
 				"current_key_id":    "key-01",
 				"rotation_deadline": nil,
 			})
@@ -394,7 +393,7 @@ func TestCLI_SecurityKeysStatus_ServerRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("server not reachable: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("security keys status: expected 200, got %d", resp.StatusCode)
 	}
@@ -404,7 +403,7 @@ func TestCLI_SecurityKeysStatus_ServerRunning(t *testing.T) {
 func TestCLI_ServerStatus_ServerRunning(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/admin/status" {
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			mustEncode(t, w, map[string]interface{}{
 				"status":  "ok",
 				"agents":  3,
 				"nats":    true,
@@ -428,7 +427,7 @@ func TestCLI_ServerStatus_ServerRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("server not reachable: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("server status: expected 200, got %d", resp.StatusCode)
 	}

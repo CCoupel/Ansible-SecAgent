@@ -782,7 +782,7 @@ func TestCloseAgent_ConnectedAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 
 	// Wait for server to register the connection
 	time.Sleep(50 * time.Millisecond)
@@ -813,7 +813,7 @@ func TestAgentHandler_MissingHostname(t *testing.T) {
 		// Connection may be refused or closed — that's fine
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// Should not be 101 (upgrade) — missing hostname means rejection
 	if resp.StatusCode == http.StatusSwitchingProtocols {
 		t.Error("expected rejection (not 101) when hostname is missing")
@@ -849,7 +849,7 @@ func TestAgentHandler_WithQueryParamHostname(t *testing.T) {
 		t.Errorf("expected qp-host, got %q", agentConn.Hostname)
 	}
 
-	conn.Close()
+	_ = conn.Close()
 	<-connected
 }
 

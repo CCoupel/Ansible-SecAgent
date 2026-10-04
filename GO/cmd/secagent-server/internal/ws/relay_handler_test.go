@@ -87,7 +87,7 @@ func dialRelay(t *testing.T, srv *httptest.Server, jwtToken string) *websocket.C
 		}
 		t.Fatalf("dial failed: %v", err)
 	}
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { _ = conn.Close() })
 	return conn
 }
 
@@ -195,7 +195,9 @@ func TestRelayHandler_HelloAck(t *testing.T) {
 
 	// Expect relay_ack
 	var ack RelayMessage
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	if err := conn.ReadJSON(&ack); err != nil {
 		t.Fatalf("ReadJSON ack: %v", err)
 	}
@@ -243,7 +245,9 @@ func TestRelayHandler_AgentList(t *testing.T) {
 
 	// Expect agent_list_ack
 	var ack RelayMessage
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	if err := conn.ReadJSON(&ack); err != nil {
 		t.Fatalf("ReadJSON ack: %v", err)
 	}
@@ -289,8 +293,12 @@ func TestRelayHandler_AgentList_EmptyList(t *testing.T) {
 	}
 
 	var ack RelayMessage
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	conn.ReadJSON(&ack) //nolint:errcheck
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	if err := conn.ReadJSON(&ack); err != nil {
+		t.Fatalf("ReadJSON ack: %v", err)
+	}
 
 	if ack.Type != "agent_list_ack" {
 		t.Errorf("expected agent_list_ack, got %q", ack.Type)
@@ -311,7 +319,9 @@ func TestRelayHandler_Heartbeat(t *testing.T) {
 	}
 
 	var ack RelayMessage
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	if err := conn.ReadJSON(&ack); err != nil {
 		t.Fatalf("ReadJSON heartbeat_ack: %v", err)
 	}
@@ -388,7 +398,7 @@ func TestRelayHandler_DisconnectCleansRouting(t *testing.T) {
 	}
 
 	// Close the client-side connection
-	conn.Close()
+	_ = conn.Close()
 
 	// Wait for server-side deregistration (delete from map comes first in
 	// unregisterRelayConnection, so IsRelayConnected becomes false before the
@@ -419,7 +429,9 @@ func TestRelayHandler_DisconnectResolvesPendingTasks(t *testing.T) {
 	ch := RegisterRelayTaskFuture("task-abandoned")
 
 	// Close connection — should resolve future with error
-	conn.Close()
+	if err := conn.Close(); err != nil {
+		t.Fatalf("conn.Close: %v", err)
+	}
 
 	select {
 	case got := <-ch:

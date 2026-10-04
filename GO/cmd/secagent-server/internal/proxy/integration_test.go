@@ -78,7 +78,7 @@ func intDialRelay(t *testing.T, srv *httptest.Server, relayID string, isProxy bo
 		}
 		t.Fatalf("intDialRelay %s: HTTP %d: %v", relayID, status, err)
 	}
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { _ = conn.Close() })
 	return conn
 }
 
@@ -137,7 +137,9 @@ func intSendAgentList(t *testing.T, conn *websocket.Conn, hostnames []string) {
 		t.Fatalf("intSendAgentList WriteJSON: %v", err)
 	}
 	var ack ws.RelayMessage
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second)) //nolint:errcheck
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("intSendAgentList SetReadDeadline: %v", err)
+	}
 	if err := conn.ReadJSON(&ack); err != nil {
 		t.Fatalf("intSendAgentList ReadJSON ack: %v", err)
 	}
@@ -153,7 +155,9 @@ func intRelayEchoWorker(conn *websocket.Conn, replyStdout string) <-chan struct{
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		conn.SetReadDeadline(time.Now().Add(5 * time.Second)) //nolint:errcheck
+		if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			return
+		}
 		var msg ws.RelayMessage
 		if err := conn.ReadJSON(&msg); err != nil {
 			return
@@ -167,7 +171,9 @@ func intRelayEchoWorker(conn *websocket.Conn, replyStdout string) <-chan struct{
 			RC:     0,
 			Stdout: replyStdout,
 		}
-		conn.WriteJSON(result) //nolint:errcheck
+		if err := conn.WriteJSON(result); err != nil {
+			return
+		}
 	}()
 	return done
 }
@@ -384,7 +390,7 @@ func TestProxyRelayDisconnect(t *testing.T) {
 	}
 
 	// Close relay WS connection — triggers unregisterRelayConnection
-	relayConn.Close()
+	_ = relayConn.Close()
 	intWaitRelayDisconnected(t, relayID, 3*time.Second)
 
 	// Wait briefly for async cleanup (BulkUpsertRelayRouting nil call)
@@ -488,7 +494,9 @@ func TestProxyChaining(t *testing.T) {
 	}
 	// Read relay_ack
 	var ack ws.RelayMessage
-	relayConn.SetReadDeadline(time.Now().Add(2 * time.Second)) //nolint:errcheck
+	if err := relayConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("relayConn SetReadDeadline: %v", err)
+	}
 	if err := relayConn.ReadJSON(&ack); err != nil {
 		t.Fatalf("ReadJSON relay_ack: %v", err)
 	}

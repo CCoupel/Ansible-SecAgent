@@ -120,7 +120,7 @@ func TestTokensCreate_Enrollment_Success(t *testing.T) {
 		}
 		// Verify body
 		var body map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&body)
+		mustDecode(t, r.Body, &body)
 		if body["role"] != "enrollment" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -131,7 +131,7 @@ func TestTokensCreate_Enrollment_Success(t *testing.T) {
 		}
 
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		mustEncode(t, w, map[string]interface{}{
 			"token":            "secagent_enr_abc123",
 			"id":               "uuid-enr-01",
 			"role":             "enrollment",
@@ -144,7 +144,9 @@ func TestTokensCreate_Enrollment_Success(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		rootCmd.SetArgs([]string{"tokens", "create", "--role", "enrollment", "--hostname-pattern", "vp.*"})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	if !strings.Contains(out, "secagent_enr_abc123") {
@@ -158,10 +160,10 @@ func TestTokensCreate_Enrollment_Success(t *testing.T) {
 func TestTokensCreate_Plugin_Success(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&body)
+		mustDecode(t, r.Body, &body)
 
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		mustEncode(t, w, map[string]interface{}{
 			"token":       "secagent_plg_xyz789",
 			"id":          "uuid-plg-01",
 			"role":        "plugin",
@@ -179,7 +181,9 @@ func TestTokensCreate_Plugin_Success(t *testing.T) {
 			"--description", "Terraform",
 			"--allowed-ips", "10.0.0.0/8",
 		})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	if !strings.Contains(out, "secagent_plg_xyz789") {
@@ -192,13 +196,13 @@ func TestTokensCreate_Plugin_WithExpiry(t *testing.T) {
 
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&body)
+		mustDecode(t, r.Body, &body)
 		if v, ok := body["expires_at"].(string); ok {
 			receivedExpires = v
 		}
 
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		mustEncode(t, w, map[string]interface{}{
 			"token":      "secagent_plg_exp",
 			"id":         "uuid-plg-02",
 			"role":       "plugin",
@@ -213,7 +217,9 @@ func TestTokensCreate_Plugin_WithExpiry(t *testing.T) {
 			"--role", "plugin",
 			"--expires", "30d",
 		})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	if receivedExpires == "" {
@@ -309,7 +315,7 @@ func TestTokensCreate_InvalidEnrollmentPattern(t *testing.T) {
 func TestTokensCreate_JSONFormat(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		mustEncode(t, w, map[string]interface{}{
 			"token":      "secagent_plg_json",
 			"id":         "uuid-json-01",
 			"role":       "plugin",
@@ -324,7 +330,9 @@ func TestTokensCreate_JSONFormat(t *testing.T) {
 			"--role", "plugin",
 			"--format", "json",
 		})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	var resp map[string]interface{}
@@ -341,7 +349,7 @@ func TestTokensList_All(t *testing.T) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		json.NewEncoder(w).Encode([]map[string]interface{}{
+		mustEncode(t, w, []map[string]interface{}{
 			{
 				"id":               "enr-01",
 				"role":             "enrollment",
@@ -365,7 +373,9 @@ func TestTokensList_All(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		rootCmd.SetArgs([]string{"tokens", "list"})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	if !strings.Contains(out, "enr-01") {
@@ -384,12 +394,14 @@ func TestTokensList_FilterByRole(t *testing.T) {
 	var receivedPath string
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		receivedPath = r.URL.Path + "?" + r.URL.RawQuery
-		json.NewEncoder(w).Encode([]interface{}{})
+		mustEncode(t, w, []interface{}{})
 	})
 
 	captureStdout(t, func() {
 		rootCmd.SetArgs([]string{"tokens", "list", "--role", "enrollment"})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	if !strings.Contains(receivedPath, "role=enrollment") {
@@ -400,12 +412,14 @@ func TestTokensList_FilterByRole(t *testing.T) {
 func TestTokensList_Empty(t *testing.T) {
 	t.Cleanup(func() { globalFormat = "table" })
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]interface{}{})
+		mustEncode(t, w, []interface{}{})
 	})
 
 	out := captureStdout(t, func() {
 		rootCmd.SetArgs([]string{"tokens", "list", "--format", "table"})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	if !strings.Contains(out, "No tokens found") {
@@ -415,14 +429,16 @@ func TestTokensList_Empty(t *testing.T) {
 
 func TestTokensList_JSONFormat(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]map[string]interface{}{
+		mustEncode(t, w, []map[string]interface{}{
 			{"id": "t1", "role": "plugin", "token_hash": "aaa", "created_at": "2026-03-01T00:00:00Z"},
 		})
 	})
 
 	out := captureStdout(t, func() {
 		rootCmd.SetArgs([]string{"tokens", "list", "--format", "json"})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	var resp []interface{}
@@ -453,7 +469,7 @@ func TestTokensRevoke_Success(t *testing.T) {
 					revokedID = parts[i-1]
 				}
 			}
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			mustEncode(t, w, map[string]interface{}{
 				"revoked":    true,
 				"id":         revokedID,
 				"updated_at": time.Now().UTC().Format(time.RFC3339),
@@ -465,7 +481,9 @@ func TestTokensRevoke_Success(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		rootCmd.SetArgs([]string{"tokens", "revoke", "plg-tok-01"})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	if revokedID != "plg-tok-01" {
@@ -479,7 +497,7 @@ func TestTokensRevoke_Success(t *testing.T) {
 func TestTokensRevoke_NotFound(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "token_not_found"})
+		mustEncode(t, w, map[string]string{"error": "token_not_found"})
 	})
 
 	// Should exit non-zero — we check that it doesn't panic
@@ -499,7 +517,7 @@ func TestTokensDelete_Success(t *testing.T) {
 			// path: /api/admin/tokens/{id}
 			parts := strings.Split(r.URL.Path, "/")
 			deletedID = parts[len(parts)-1]
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			mustEncode(t, w, map[string]interface{}{
 				"deleted": true,
 				"id":      deletedID,
 			})
@@ -510,7 +528,9 @@ func TestTokensDelete_Success(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		rootCmd.SetArgs([]string{"tokens", "delete", "enr-tok-01"})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	if deletedID != "enr-tok-01" {
@@ -527,7 +547,7 @@ func TestTokensPurge_Expired(t *testing.T) {
 	var receivedQuery string
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		receivedQuery = r.URL.RawQuery
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		mustEncode(t, w, map[string]interface{}{
 			"deleted_count": 3,
 			"purged_at":     time.Now().UTC().Format(time.RFC3339),
 		})
@@ -535,7 +555,9 @@ func TestTokensPurge_Expired(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		rootCmd.SetArgs([]string{"tokens", "purge", "--expired"})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	if !strings.Contains(receivedQuery, "expired=1") {
@@ -550,7 +572,7 @@ func TestTokensPurge_Used(t *testing.T) {
 	var receivedQuery string
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		receivedQuery = r.URL.RawQuery
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		mustEncode(t, w, map[string]interface{}{
 			"deleted_count": 1,
 			"purged_at":     time.Now().UTC().Format(time.RFC3339),
 		})
@@ -558,7 +580,9 @@ func TestTokensPurge_Used(t *testing.T) {
 
 	captureStdout(t, func() {
 		rootCmd.SetArgs([]string{"tokens", "purge", "--used"})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	if !strings.Contains(receivedQuery, "used=1") {
@@ -570,7 +594,7 @@ func TestTokensPurge_Both(t *testing.T) {
 	var receivedQuery string
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		receivedQuery = r.URL.RawQuery
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		mustEncode(t, w, map[string]interface{}{
 			"deleted_count": 5,
 			"purged_at":     time.Now().UTC().Format(time.RFC3339),
 		})
@@ -578,7 +602,9 @@ func TestTokensPurge_Both(t *testing.T) {
 
 	captureStdout(t, func() {
 		rootCmd.SetArgs([]string{"tokens", "purge", "--expired", "--used"})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	if !strings.Contains(receivedQuery, "expired=1") || !strings.Contains(receivedQuery, "used=1") {
@@ -600,7 +626,7 @@ func TestTokensPurge_NoFlags(t *testing.T) {
 
 func TestTokensPurge_JSONFormat(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		mustEncode(t, w, map[string]interface{}{
 			"deleted_count": 0,
 			"purged_at":     "2026-03-08T00:00:00Z",
 		})
@@ -608,7 +634,9 @@ func TestTokensPurge_JSONFormat(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		rootCmd.SetArgs([]string{"tokens", "purge", "--expired", "--format", "json"})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	var resp map[string]interface{}
@@ -622,7 +650,7 @@ func TestTokensPurge_JSONFormat(t *testing.T) {
 func TestTokensCreate_EnrollmentPrefixRelay_enr(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		mustEncode(t, w, map[string]interface{}{
 			"token":            "secagent_enr_" + fmt.Sprintf("%064x", 0),
 			"id":               "uuid-prefix-enr",
 			"role":             "enrollment",
@@ -639,7 +667,9 @@ func TestTokensCreate_EnrollmentPrefixRelay_enr(t *testing.T) {
 			"--role", "enrollment",
 			"--hostname-pattern", "vp.*",
 		})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	if !strings.Contains(out, "secagent_enr_") {
@@ -650,7 +680,7 @@ func TestTokensCreate_EnrollmentPrefixRelay_enr(t *testing.T) {
 func TestTokensCreate_PluginPrefixRelay_plg(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		mustEncode(t, w, map[string]interface{}{
 			"token":      "secagent_plg_" + fmt.Sprintf("%064x", 0),
 			"id":         "uuid-prefix-plg",
 			"role":       "plugin",
@@ -661,7 +691,9 @@ func TestTokensCreate_PluginPrefixRelay_plg(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		rootCmd.SetArgs([]string{"tokens", "create", "--role", "plugin"})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	if !strings.Contains(out, "secagent_plg_") {
@@ -675,7 +707,7 @@ func TestTokensList_NoPlainTextEvenOnServerBug(t *testing.T) {
 	t.Cleanup(func() { globalFormat = "table" })
 	// Even if the server accidentally returns a token field, list must not display it
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]map[string]interface{}{
+		mustEncode(t, w, []map[string]interface{}{
 			{
 				"id":         "plg-bug",
 				"role":       "plugin",
@@ -689,7 +721,9 @@ func TestTokensList_NoPlainTextEvenOnServerBug(t *testing.T) {
 	out := captureStdout(t, func() {
 		// Force table format — table renderer only shows token_hash (truncated)
 		rootCmd.SetArgs([]string{"tokens", "list", "--format", "table"})
-		rootCmd.Execute() //nolint:errcheck
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("unexpected CLI error: %v", err)
+		}
 	})
 
 	// Table output only shows token_hash (truncated), not the plain token

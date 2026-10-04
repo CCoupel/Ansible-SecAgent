@@ -512,9 +512,12 @@ func TestAPIExecutor_patch_with_body(t *testing.T) {
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
-		buf := make([]byte, r.ContentLength)
-		r.Body.Read(buf) //nolint:errcheck
-		gotBody = buf
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		gotBody = body
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -576,9 +579,12 @@ func TestAPIExecutor_headers_sent(t *testing.T) {
 func TestAPIExecutor_body_template(t *testing.T) {
 	var gotBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		buf := make([]byte, r.ContentLength)
-		r.Body.Read(buf) //nolint:errcheck
-		gotBody = buf
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		gotBody = body
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()

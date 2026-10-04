@@ -14,7 +14,7 @@ func newRelayTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("newRelayTestStore: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 

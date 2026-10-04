@@ -175,7 +175,7 @@ func newTestClient(t *testing.T) *Client {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	t.Cleanup(func() { client.Close() })
+	t.Cleanup(func() { _ = client.Close() })
 	return client
 }
 
@@ -379,20 +379,20 @@ func TestNewClientStreamsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first NewClient: %v", err)
 	}
-	defer c1.Close()
+	defer func() { _ = c1.Close() }()
 
 	// Second client — streams already exist, should not error
 	c2, err := NewClient(natsURL)
 	if err != nil {
 		t.Fatalf("second NewClient (idempotent streams): %v", err)
 	}
-	defer c2.Close()
+	defer func() { _ = c2.Close() }()
 }
 
 func TestNewClientInvalidURLError(t *testing.T) {
 	client, err := NewClient("nats://127.0.0.1:1")
 	if err == nil {
-		client.Close()
+		_ = client.Close()
 		t.Error("expected connection error for invalid server")
 	}
 }
@@ -617,7 +617,7 @@ func TestPublishTaskPayloadEncoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	defer sub.Unsubscribe()
+	defer func() { _ = sub.Unsubscribe() }()
 
 	payload := map[string]interface{}{
 		"task_id": "enc-task-1",

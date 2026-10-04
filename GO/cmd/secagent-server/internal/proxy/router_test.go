@@ -19,7 +19,7 @@ func newRouterTestStore(t *testing.T) *storage.Store {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
