@@ -17,11 +17,12 @@ All notable changes to this project will be documented in this file.
 - **Protocole repeater complet** : topologie arbre (un relay enfant a un seul parent), deux modes d'ouverture (`pull` enfant→parent, `push` parent→enfant) (#124, #125, #140)
   - **Mode pull** (enfant ouvre vers parent) : variables `REPEATER_ID`, `REPEATER_UPSTREAM_URL`, `REPEATER_UPSTREAM_TOKEN` ; l'enfant s'auto-enregistre via `relay_hello` (#124, #125)
   - **Mode push** (parent ouvre vers enfant) : token relay-parent chiffré AES-GCM avec `RSA_MASTER_KEY`, API `POST /api/admin/relays` (#140)
-  - **Handshake symétrique** : `relay_hello` (client) → `relay_ack` (serveur) → `topology_snapshot` (enfant) ; rejet (4010) si `relay_id ≠ jwt.sub` ou identité du pair change (#153)
+  - **Handshake symétrique** : `relay_hello` (client, relay_id == jwt.sub) → `relay_ack` (serveur, relay_id du serveur + ancestors) → `topology_snapshot` (enfant) ; rejet 4010 si identity mismatch ou boucle détecté (#148)
+  - **Validation client** : `relay_ack.relay_id` vérifié vs identité attendue ; changement d'identité du pair = 4010 permanent
 - **Hierarchical routing** (#127) :
   - `next-hop` task forwarding vers l'agent direct ou enfant relais
-  - Agent local **prioritaire** sur la table de routage (même si déclaré via relay)
-  - Limit `MAX_AGENT_LIST_HOSTS` (défaut 10 000) avec rejet (4012) si dépassé ; `host.conflict` détecté et journalisé une seule fois
+  - Agent local **prioritaire** sur la table de routage (ne peut pas être détourné par un relay déclarant le même hostname) — raison sécurité : `stdin` (become_pass) reste local
+  - Limit `MAX_AGENT_LIST_HOSTS` (défaut 10 000) avec rejet (4012) si dépassé ; `host.conflict` événement émis une seule fois par changement de propriétaire (#149)
   - Gestion `relay_chain` ascendant à chaque événement
 - **Révocation relay tokens** (#153) :
   - `POST /api/admin/relays/{id}/revoke` et `tokens revoke <relay_id>` : blacklist du JTI + fermeture (4010) du lien actif
@@ -45,9 +46,11 @@ All notable changes to this project will be documented in this file.
 - Docker Compose qualif : support topologie repeater (parent + 2 enfants)
 
 ### Fixed
-- **Sécurité** : relay-parent tokens ne fuient jamais en logs, seul output one-shot au create (#150)
-- Refus permanent (4010) ne fuite jamais le token dans la raison ; détection boucle + identity mismatch fail-closed (#140, #153)
-- Validation `relay_ack.relay_id` côté client (pull) ou vérification `relay_chain[-1]` côté serveur (push) (#154)
+- **Sécurité** : relay-parent tokens ne fuient jamais en logs, seul output one-shot au create (#150); relay-child tokens jamais loggés (#150)
+- Refus permanent (4010) ne fuite jamais le token dans la raison (texte borné 200 chars) ; détection boucle + identity mismatch fail-closed (#148, #140)
+- Validation symétrique `relay_hello.relay_id == jwt.sub` (serveur) et `relay_ack.relay_id` vs identité attendue (client) (#148)
+- CI : timeout per-package 300s sous -race (#145) ; golangci-lint v2.14.0 (46 //nolint:errcheck retirés) (#133, #144)
+- Tests race : awaitCondition dans relay_handler_test (#145) ; flaky sleeps dans repeater, handlers, proxy (#145)
 
 ### Known Limitations
 - `#152` : colonne `relay_nodes.token_hash` trompeuse (hash pour pull, token chiffré pour push) — renommage envisagé
