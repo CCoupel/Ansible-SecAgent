@@ -316,11 +316,11 @@ secagent-server server stats
 
 ---
 
-## 9. Mode Repeater — Arbre Hiérarchique (v3.1)
+## 9. Mode Repeater — Arbre Hiérarchique (v3.0.1)
 
 > Architecture complète : `DOC/common/ARCHITECTURE.md` §23
 
-**Changements v3.0** :
+**Changements v3.0.0** :
 - Suppression de `REPEATER_UPSTREAMS_FILE` (YAML) — utiliser variables d'environnement simples
 - Suppression du mode push REST → WebSocket uniquement (WSS persistant)
 - Topologie : arbre strict (un parent max par relay enfant)
@@ -584,7 +584,7 @@ secagent-server relays add <relay_id> --url <url> --token <token> --mode <push|p
 **Modèle de signature (HAUT-6)** : Chaque relay crée et signe ses tokens avec sa JWT_SECRET_KEY :
 - relay-child (créé par le parent) : parent signe, enfant ne peut pas valider (isolation clef)
 - relay-parent (créé par l'enfant) : enfant signe, parent ne peut pas valider (isolation clef)
-- Jamais de signature centralisée par la racine (évolution envisagée pour v3.1+)
+- Jamais de signature centralisée par la racine (évolution envisagée pour v3.0.1+)
 
 Les tokens relay sont créés via CLI avec le rôle approprié :
 
@@ -721,7 +721,7 @@ CREATE TABLE IF NOT EXISTS relay_routing (
 
 **Changement clé** : clé simple `hostname` (pas de composite). Topologie arbre = un seul chemin par hôte.
 
-**Sémantique mode** (v3.1) :
+**Sémantique mode** (v3.0.1) :
 - `pull` = connexion WSS entrante (enfant se connecte, auto-registration relay_hello); token persisté en tant que JTI
 - `push` = connexion WSS sortante (parent ouvre vers enfant, déclaré via API); token persisté chiffré (enc:AES-GCM)
 
@@ -732,12 +732,12 @@ CREATE TABLE IF NOT EXISTS relay_routing (
 
 ---
 
-### 9.7 Docker Compose qualification v3.1
+### 9.7 Docker Compose qualification v3.0.1
 
 ```yaml
 services:
   central:
-    image: secagent-server:3.1
+    image: secagent-server:3.0.1
     environment:
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       ADMIN_TOKEN: ${ADMIN_TOKEN}
@@ -775,7 +775,7 @@ services:
 
 ---
 
-### 9.8 Récapitulatif modifications (v3.1)
+### 9.8 Récapitulatif modifications (v3.0.1)
 
 | Aspect | Changement |
 |---|---|
