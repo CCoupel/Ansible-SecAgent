@@ -393,3 +393,25 @@ func TestSignRelayParent_FailsWithoutSecret(t *testing.T) {
 		t.Error("expected an error without a configured secret")
 	}
 }
+
+func TestSignRelayParentTTL_ExplicitExpiryAndRefusal(t *testing.T) {
+	svc := newSvc(singleKeyProvider("child-secret"))
+	raw, _, err := svc.SignRelayParentTTL("central", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, _, err := svc.Verify(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp, _ := claims["exp"].(float64)
+	iat, _ := claims["iat"].(float64)
+	if d := time.Duration(exp-iat) * time.Second; d != 24*time.Hour {
+		t.Errorf("ttl = %v, want 24h", d)
+	}
+	for _, ttl := range []time.Duration{0, -time.Hour} {
+		if raw, _, err := svc.SignRelayParentTTL("central", ttl); err == nil || raw != "" {
+			t.Errorf("ttl %v must be refused (a relay-parent token always expires)", ttl)
+		}
+	}
+}

@@ -117,6 +117,18 @@ CREATE TABLE IF NOT EXISTS plugin_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_plugin_tokens_hash ON plugin_tokens (token_hash);
 
+-- relay-parent tokens minted on a child relay (#150): metadata only, NEVER the JWT itself.
+CREATE TABLE IF NOT EXISTS relay_parent_tokens (
+    id          TEXT PRIMARY KEY,
+    jti         TEXT NOT NULL UNIQUE,
+    parent_id   TEXT NOT NULL,
+    description TEXT,
+    created_at  INTEGER NOT NULL,
+    expires_at  INTEGER NOT NULL,
+    revoked_at  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_relay_parent_tokens_parent ON relay_parent_tokens (parent_id);
+
 CREATE TABLE IF NOT EXISTS action_log (
     id              TEXT PRIMARY KEY,
     event           TEXT NOT NULL,

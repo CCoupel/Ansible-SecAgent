@@ -48,7 +48,16 @@ func (s *JWTService) SignRelay(relayID string) (rawJWT, jti string, err error) {
 // issues (signed with ITS secret) so that its parent can open a push-mode link to it (#140).
 // The parent's relay_id is stored in "sub". Returns (rawJWT, jti, error).
 func (s *JWTService) SignRelayParent(parentID string) (rawJWT, jti string, err error) {
-	return s.signWithRole(parentID, "relay-parent", 720*time.Hour) // 30 days
+	return s.SignRelayParentTTL(parentID, 720*time.Hour) // 30 days
+}
+
+// SignRelayParentTTL is SignRelayParent with an explicit lifetime. A relay-parent token ALWAYS
+// expires: a non-positive ttl is refused.
+func (s *JWTService) SignRelayParentTTL(parentID string, ttl time.Duration) (rawJWT, jti string, err error) {
+	if ttl <= 0 {
+		return "", "", fmt.Errorf("relay_parent_token_requires_expiry")
+	}
+	return s.signWithRole(parentID, "relay-parent", ttl)
 }
 
 // signWithRole is the shared implementation for Sign and SignRelay.
