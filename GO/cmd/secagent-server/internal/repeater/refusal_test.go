@@ -94,7 +94,7 @@ func (p *refusalPeer) gaps() []time.Duration {
 
 func refusalClient(t *testing.T, p *refusalPeer) (*Client, context.CancelFunc) {
 	t.Helper()
-	c := New(config.RepeaterConfig{ID: "dmz1", UpstreamURL: p.url(), UpstreamToken: "tok"}, Options{
+	c := New(config.RepeaterConfig{ID: "dmz1", UpstreamURL: p.url(), UpstreamToken: leakToken}, Options{
 		TLSConfig:  &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test server cert
 		MinBackoff: 20 * time.Millisecond, MaxBackoff: 80 * time.Millisecond,
 	})
@@ -127,9 +127,17 @@ func awaitDone(t *testing.T, ch <-chan struct{}, what string) {
 }
 
 func TestRefusal_Client4010IsPermanent(t *testing.T) {
+	sink := captureLogs(t)
 	p := newRefusalPeer(t, CloseCodePermanent, "central")
 	c, _ := refusalClient(t, p)
 	awaitDone(t, c.Done(), "client must give up after 4010")
+	// The operator must be told, loudly and without any secret (runLoop logs before returning).
+	logs := sink.String()
+	if !strings.Contains(logs, "[REPEATER] ERROR parent refused link (permanent), giving up") ||
+		!strings.Contains(logs, "operator action required") || !strings.Contains(logs, "code 4010") {
+		t.Errorf("permanent refusal must be logged at ERROR level with the operator hint and the close code:\n%s", logs)
+	}
+	assertNoLeak(t, logs, leakToken)
 	if err := c.Terminal(); !errors.Is(err, ErrPermanentRefusal) {
 		t.Fatalf("Terminal() = %v, want ErrPermanentRefusal", err)
 	}
@@ -215,7 +223,7 @@ func TestRefusal_CancelIsNotTerminal(t *testing.T) {
 func refusalDialer(t *testing.T, p *refusalPeer, relayID string, wouldLoop func(string) bool) (*Dialer, *atomic.Int32) {
 	t.Helper()
 	var serves atomic.Int32
-	d, err := NewDialer(DialTarget{RelayID: relayID, URL: p.url(), Token: "tok"}, DialerOptions{
+	d, err := NewDialer(DialTarget{RelayID: relayID, URL: p.url(), Token: leakToken}, DialerOptions{
 		Identity:   func() (string, []string) { return "central", nil },
 		WouldLoop:  wouldLoop,
 		TLSConfig:  &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test server cert
