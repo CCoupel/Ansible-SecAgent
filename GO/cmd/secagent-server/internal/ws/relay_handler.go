@@ -173,6 +173,7 @@ var (
 	relayNodeRegisterFn func(relayID string) error
 	relayEventUpstream  func(ev RelayMessage)
 	relayJTIBlacklistFn func(jti string) (bool, error)
+	relayHostRouteFn    func(hostname string) (string, error)
 )
 
 // SetRelayLocalIDFunc sets the provider of this node's own relay id (REPEATER_ID; "" if unset).
@@ -212,6 +213,84 @@ func SetRelayJTIBlacklistFunc(fn func(jti string) (bool, error)) {
 	treeHooksMu.Lock()
 	relayJTIBlacklistFn = fn
 	treeHooksMu.Unlock()
+}
+
+// SetRelayHostRouteFunc sets the lookup "which relay currently routes this hostname"
+// (empty string when unrouted). Used to refuse topology_snapshots that would hijack routes.
+func SetRelayHostRouteFunc(fn func(hostname string) (string, error)) {
+	treeHooksMu.Lock()
+	relayHostRouteFn = fn
+	treeHooksMu.Unlock()
+}
+
+func lookupHostRoute(hostname string) (string, error) {
+	treeHooksMu.RLock()
+	fn := relayHostRouteFn
+	treeHooksMu.RUnlock()
+	if fn == nil {
+		return "", nil
+	}
+	return fn(hostname)
+}
+
+// descendantOwner records which direct peer declared each descendant relay, so that
+// another peer cannot re-declare (and overwrite the routing of) the same relay.
+var (
+	descOwnerMu     sync.Mutex
+	descendantOwner = make(map[string]string) // descendant relay_id → declaring direct peer
+)
+
+// claimDescendants atomically checks that none of the relays is connected directly or
+// declared by another peer, then records peer as owner. Returns the offending relay on conflict.
+func claimDescendants(peer string, relays map[string]struct{}) (conflict string, ok bool) {
+	descOwnerMu.Lock()
+	defer descOwnerMu.Unlock()
+	for id := range relays {
+		if owner, taken := descendantOwner[id]; taken && owner != peer {
+			return id, false
+		}
+		if IsRelayConnected(id) {
+			return id, false
+		}
+	}
+	for id := range relays {
+		descendantOwner[id] = peer
+	}
+	return "", true
+}
+
+func releaseDescendants(peer string, relays map[string]struct{}) {
+	descOwnerMu.Lock()
+	defer descOwnerMu.Unlock()
+	for id := range relays {
+		if descendantOwner[id] == peer {
+			delete(descendantOwner, id)
+		}
+	}
+}
+
+// checkHostConflicts refuses hostnames already routed through a different peer or
+// connected locally. Hosts routed to this peer itself or to its declared relays are fine.
+func checkHostConflicts(conn *RelayConnection, relays map[string]struct{}, byRelay map[string][]string) error {
+	for _, hosts := range byRelay {
+		for _, h := range hosts {
+			if _, err := GetConnection(h); err == nil {
+				return fmt.Errorf("hostname %q is connected locally", h)
+			}
+			route, err := lookupHostRoute(h)
+			if err != nil {
+				return fmt.Errorf("route lookup failed: %w", err)
+			}
+			if route == "" || route == conn.RelayID {
+				continue
+			}
+			if _, mine := relays[route]; mine {
+				continue
+			}
+			return fmt.Errorf("hostname %q already routed via relay %q", h, route)
+		}
+	}
+	return nil
 }
 
 // checkRelayJTI refuses revoked tokens. Without a configured check the token is accepted
@@ -671,6 +750,7 @@ func RelayHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		releaseDescendants(relayID, relayConn.descendants)
 		unregisterRelayConnection(relayID)
 		_ = conn.Close()
 	}()
@@ -718,6 +798,12 @@ func isNormalClose(err error) bool {
 
 // resetRelayState clears all relay global state (used in tests).
 func resetRelayState() {
+	descOwnerMu.Lock()
+	for k := range descendantOwner {
+		delete(descendantOwner, k)
+	}
+	descOwnerMu.Unlock()
+
 	relayConnsMu.Lock()
 	for k := range relayConnections {
 		delete(relayConnections, k)
@@ -809,6 +895,18 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	relays, byRelay, err := validateSnapshot(conn, msg)
 	if err != nil {
 		reject(conn, "invalid topology_snapshot: "+err.Error())
+		return
+	}
+	// Route-hijack protection (HAUT-3): refuse before any write.
+	if id, ok := claimDescendants(conn.RelayID, relays); !ok {
+		log.Printf("[SECURITY WARNING] topology_snapshot refused: relay_id=%s declares relay %q already owned elsewhere", conn.RelayID, id)
+		reject(conn, "topology_snapshot conflicts with an existing relay")
+		return
+	}
+	if cerr := checkHostConflicts(conn, relays, byRelay); cerr != nil {
+		releaseDescendants(conn.RelayID, relays)
+		log.Printf("[SECURITY WARNING] topology_snapshot refused: relay_id=%s: %v", conn.RelayID, cerr)
+		reject(conn, "topology_snapshot conflicts with existing routing")
 		return
 	}
 	// Declare descendants and publish routing: hostname → declaring relay.

@@ -498,3 +498,115 @@ func TestRelayAuth_BlacklistErrorFailsClosed(t *testing.T) {
 		t.Errorf("status %d, want 401", code)
 	}
 }
+
+// ── route hijack via topology_snapshot (HAUT-3) ──────────────────────────────
+
+func setHostRoutes(t *testing.T, routes map[string]string) {
+	t.Helper()
+	SetRelayHostRouteFunc(func(h string) (string, error) { return routes[h], nil })
+	t.Cleanup(func() { SetRelayHostRouteFunc(nil) })
+}
+
+func TestTree_SnapshotCannotHijackConnectedRelay(t *testing.T) {
+	var mu sync.Mutex
+	var upserts []string
+	setRoutingHook(t, func(relayID string, hostnames []string) error {
+		mu.Lock()
+		if hostnames != nil {
+			upserts = append(upserts, relayID)
+		}
+		mu.Unlock()
+		return nil
+	})
+	setTreeHooks(t, "central", nil, nil, nil)
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+
+	b := dialRelay(t, srv, makeRelayJWT("relay-b", "relay"))
+	handshake(t, b, "relay-b")
+	if !awaitRelayConnected(t, "relay-b", 2*time.Second) {
+		t.Fatal("relay-b not connected")
+	}
+
+	a := dialRelay(t, srv, makeRelayJWT("relay-a", "relay"))
+	handshake(t, a, "relay-a")
+	sendSnapshot(t, a,
+		[]RelayTopoEntry{{RelayID: "relay-b", RelayChain: []string{"relay-a", "relay-b"}}},
+		[]RelayAgentInfo{{Hostname: "fake", RelayID: "relay-b", RelayChain: []string{"relay-a", "relay-b"}}})
+	if code := expectClose(t, a); code != WSRelayCloseRevoked {
+		t.Errorf("close code = %d, want 4010", code)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, id := range upserts {
+		if id == "relay-b" {
+			t.Errorf("routing of relay-b was overwritten: %v", upserts)
+		}
+	}
+}
+
+func TestTree_SnapshotCannotRedeclareRelayOwnedByAnotherPeer(t *testing.T) {
+	setTreeHooks(t, "central", nil, nil, nil)
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+
+	a := dialRelay(t, srv, makeRelayJWT("relay-a", "relay"))
+	handshake(t, a, "relay-a")
+	sendSnapshot(t, a, []RelayTopoEntry{{RelayID: "zone-x", RelayChain: []string{"relay-a", "zone-x"}}}, nil)
+	if m := readMsg(t, a); m.Type != "topology_ack" {
+		t.Fatalf("A's snapshot should be accepted, got %+v", m)
+	}
+
+	b := dialRelay(t, srv, makeRelayJWT("relay-b", "relay"))
+	handshake(t, b, "relay-b")
+	sendSnapshot(t, b, []RelayTopoEntry{{RelayID: "zone-x", RelayChain: []string{"relay-b", "zone-x"}}}, nil)
+	if code := expectClose(t, b); code != WSRelayCloseRevoked {
+		t.Errorf("close code = %d, want 4010", code)
+	}
+
+	// once A is gone, the relay can be declared elsewhere
+	_ = a.Close()
+	if !awaitCondition(2*time.Second, func() bool { return !IsRelayConnected("relay-a") }) {
+		t.Fatal("relay-a still connected")
+	}
+	// release is deferred in the handler goroutine; wait until a new claim succeeds
+	if !awaitCondition(2*time.Second, func() bool {
+		descOwnerMu.Lock()
+		defer descOwnerMu.Unlock()
+		_, held := descendantOwner["zone-x"]
+		return !held
+	}) {
+		t.Error("descendant ownership not released after owner disconnect")
+	}
+}
+
+func TestTree_SnapshotCannotHijackHostRoutedElsewhere(t *testing.T) {
+	setHostRoutes(t, map[string]string{"victim": "relay-b"})
+	setTreeHooks(t, "central", nil, nil, nil)
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	a := dialRelay(t, srv, makeRelayJWT("relay-a", "relay"))
+	handshake(t, a, "relay-a")
+	sendSnapshot(t, a, nil, []RelayAgentInfo{{Hostname: "victim", RelayID: "relay-a", RelayChain: []string{"relay-a"}}})
+	if code := expectClose(t, a); code != WSRelayCloseRevoked {
+		t.Errorf("close code = %d, want 4010", code)
+	}
+}
+
+func TestTree_SnapshotAllowsOwnExistingRoutes(t *testing.T) {
+	setHostRoutes(t, map[string]string{"h1": "relay-a", "h2": "zone-x"})
+	setTreeHooks(t, "central", nil, nil, nil)
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	a := dialRelay(t, srv, makeRelayJWT("relay-a", "relay"))
+	handshake(t, a, "relay-a")
+	sendSnapshot(t, a,
+		[]RelayTopoEntry{{RelayID: "zone-x", RelayChain: []string{"relay-a", "zone-x"}}},
+		[]RelayAgentInfo{
+			{Hostname: "h1", RelayID: "relay-a", RelayChain: []string{"relay-a"}},
+			{Hostname: "h2", RelayID: "zone-x", RelayChain: []string{"relay-a", "zone-x"}},
+		})
+	if m := readMsg(t, a); m.Type != "topology_ack" {
+		t.Errorf("reconnect re-declaring its own routes must be accepted, got %+v", m)
+	}
+}

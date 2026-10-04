@@ -217,6 +217,7 @@ func main() {
 		defer cancel()
 		return store.IsJTIBlacklisted(ctx, jti)
 	})
+	ws.SetRelayHostRouteFunc(store.GetRelayForHostname)
 	ws.SetRelayNodeRegisterFunc(func(relayID string) error { return registerPullRelay(store, relayID) })
 
 	// Child relay (#125): one goroutine keeps the WSS link to the unique parent.
