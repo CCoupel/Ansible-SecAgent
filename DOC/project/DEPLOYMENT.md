@@ -134,6 +134,76 @@ curl -s http://192.168.1.218:7770/api/inventory \
 
 ---
 
+## Gestion des Tokens Relay (v3.1)
+
+### Créer un token relay-parent (pour mode push)
+
+Sur l'enfant (dmz1), créer un token que le parent utilisera :
+
+```bash
+docker exec secagent-server secagent-server tokens create \
+  --role relay-parent \
+  --sub central \
+  --expires 90d \
+  --description "Token pour central→dmz1 push mode"
+
+# Sortie : secagent_relay_parent_xxxxxxxx (affiché UNE SEULE FOIS)
+# Transmettre ce token au parent pour POST /api/admin/relays
+```
+
+### Lister les tokens relay-parent
+
+```bash
+docker exec secagent-server secagent-server tokens list --role relay-parent
+
+# Sortie : id, parent_id (sub), expires_at, revoked_at
+```
+
+### Révoquer un token relay-parent
+
+```bash
+docker exec secagent-server secagent-server tokens revoke <token-id>
+
+# Effets :
+# - JTI blacklisté
+# - Lien parent actif fermé (close 4010 permanent)
+# - Parent ne peut plus se reconnecter avec ce token (401)
+```
+
+### Révoquer un relay enfant (mode pull)
+
+```bash
+# Via API (port 7771, admin)
+curl -X POST http://localhost:7771/api/admin/relays/dmz1/revoke \
+  -H "Authorization: Bearer <ADMIN_TOKEN>"
+
+# Via CLI
+docker exec secagent-server secagent-server relays revoke dmz1
+
+# Effets :
+# - JTI du token enfant blacklisté
+# - Lien enfant fermé (close 4010 permanent)
+# - Enfant ne peut plus se reconnecter
+```
+
+### Supprimer un relay (legacy ou post-revocation)
+
+⚠️ **Règle importante** : Toujours révoquer AVANT de supprimer (sinon 409 relay_not_revoked)
+
+```bash
+# 1. Révoquer d'abord
+docker exec secagent-server secagent-server relays revoke dmz1
+
+# 2. Puis supprimer
+docker exec secagent-server secagent-server relays delete dmz1
+
+# Ou via API
+curl -X DELETE http://localhost:7771/api/admin/relays/dmz1 \
+  -H "Authorization: Bearer <ADMIN_TOKEN>"
+```
+
+---
+
 ## Commandes Utiles
 
 ### Voir les logs du serveur
@@ -177,10 +247,42 @@ docker volume rm ansible_server_nats_data
 
 ## Variables d'Environnement
 
-### Server (.env)
+### Server Core (.env)
 ```
 JWT_SECRET_KEY=dev-secret-key-for-qualification-only-change-in-prod
 ADMIN_TOKEN=dev-admin-token-for-qualification-only-change-in-prod
+NATS_URL=nats://nats:4222
+DATABASE_URL=relay.db
+RSA_MASTER_KEY=dev-rsa-master-key-for-push-tokens-change-in-prod
+RELAY_PLUGIN_TOKEN=dev-plugin-token-change-in-prod
+```
+
+### Server Repeater Mode (enfant pull)
+```
+REPEATER_ID=dmz1                               # ID unique du relay enfant
+REPEATER_UPSTREAM_URL=wss://central:7772      # URL WSS du parent
+REPEATER_UPSTREAM_TOKEN=<jwt-relay-child>     # Token JWT rôle relay-child
+RELAY_GROUP_VARS={"region":"dmz"}             # Variables Ansible JSON
+```
+
+### Server Repeater Mode (enfant push - parent déclaré)
+```
+# Sur le parent (central): enregistrer l'enfant via API
+# POST /api/admin/relays
+# {
+#   "relay_id": "dmz1",
+#   "url": "wss://dmz1.internal:7772",
+#   "token": "<jwt-relay-parent>",
+#   "mode": "push"
+# }
+```
+
+### Limites (Repeater)
+```
+MAX_SNAPSHOT_HOSTS=10000           # Limite hôtes dans topology_snapshot (défaut 10000)
+MAX_SNAPSHOT_RELAYS=1000           # Limite relays dans topology_snapshot (défaut 1000)
+MAX_AGENT_LIST_HOSTS=10000         # Limite hôtes dans agent_list heartbeat (défaut 10000)
+MAX_WS_MESSAGE_SIZE_RELAY=10MB     # Taille max message WebSocket relay
 ```
 
 ### Agents (définis dans docker-compose.yml)
