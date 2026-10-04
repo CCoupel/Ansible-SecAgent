@@ -473,15 +473,15 @@ func main() {
 // linksProvider reports the state of the parent / push-child links (#154); nil = nothing to report.
 var linksProvider func() repeater.LinksStatus
 
-// handleHealth answers the liveness probe. The HTTP status stays 200 even when a link was
-// refused permanently (a node cut off from its parent still serves its agents and descendants:
-// it must not be restarted by a liveness probe); the condition is visible in "links" and
-// "degraded" so that it can be alerted on.
+// handleHealth answers the liveness probe. It is PUBLIC (no authentication): it exposes only the
+// boolean "degraded" (a link was refused permanently), never relay ids, states or reasons, which
+// would disclose the topology. The detail is in the admin status (port 7771) and `server status`.
+// The HTTP status stays 200 even when degraded (a node cut off from its parent still serves its
+// agents and descendants: it must not be restarted by a liveness probe).
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	body := map[string]interface{}{"status": "ok", "timestamp": time.Now().Unix()}
 	if linksProvider != nil {
 		if l := linksProvider(); !l.Empty() {
-			body["links"] = l
 			body["degraded"] = l.Degraded
 		}
 	}

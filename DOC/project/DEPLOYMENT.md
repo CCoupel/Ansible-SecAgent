@@ -353,8 +353,8 @@ Après un refus **permanent** (close 4010, identité changée, boucle), le clien
 
 | Interface | Contenu |
 |---|---|
-| `GET /health` (port 7770) | HTTP **200** maintenu (pas de redémarrage par la liveness). Champ `links` : `upstream` (`mode` pull/push, `peer`, `state`, `reason`, `since`) et `push_children[]` (`relay_id` + même état) ; `degraded: true` si un lien est `refused_permanent`. Absent sur une racine sans lien. |
-| `secagent-server server status` / `GET /api/admin/status` | Même bloc `links`, tableau LINK/PEER/STATE/SINCE/REASON et avertissement « operator action required » si dégradé. |
+| `GET /health` (port 7770, **public**) | HTTP **200** maintenu (pas de redémarrage par la liveness). Uniquement le booléen `degraded` (vrai si un lien est `refused_permanent`), absent sur une racine sans lien : **aucun** relay_id, état ni raison (divulgation de topologie). |
+| `secagent-server server status` / `GET /api/admin/status` (port 7771, **admin**) | Bloc `links` : `upstream` (`mode` pull/push, `peer`, `state`, `reason`, `since`) et `push_children[]` (`relay_id` + même état) ; tableau LINK/PEER/STATE/SINCE/REASON et avertissement « operator action required » si dégradé. La raison est assainie (caractères de contrôle remplacés, 200 car. max). |
 
 États : `connected`, `retrying` (connexion initiale, lien perdu, refus corrigible 4012, annulation : **pas** terminal), `refused_permanent` (terminal : action opérateur requise — token révoqué/remplacé, identité ou boucle à corriger, puis redémarrage ou nouvelle déclaration). La raison est bornée (200 car.) et ne contient jamais de token. Pas de métrique : aucune infrastructure de métriques n'existe aujourd'hui. Une sortie du processus (code dédié / `REPEATER_EXIT_ON_PERMANENT_REFUSAL`) n'est pas retenue pour l'instant ; une sonde de readiness distincte relèvera de #136.
 

@@ -45,35 +45,46 @@ func TestHealth_UnchangedWithoutLinks(t *testing.T) {
 	}
 }
 
-// A permanently refused link is visible in /health but the probe stays 200: a node cut off
-// from its parent still serves its agents and descendants and must not be restarted.
-func TestHealth_PermanentRefusalVisibleButStill200(t *testing.T) {
+// /health is public: a permanently refused link is flagged ("degraded") but the probe stays 200
+// and NOTHING about the topology is exposed (no relay id, no state, no reason, no links block).
+func TestHealth_PermanentRefusalFlagsDegradedAndStill200(t *testing.T) {
 	since := time.Now().UTC()
 	withLinks(t, func() repeater.LinksStatus {
 		return repeater.NewLinksStatus(
-			&repeater.UpstreamStatus{Mode: "pull", Peer: "central", LinkStatus: repeater.LinkStatus{
+			&repeater.UpstreamStatus{Mode: "pull", Peer: "central-secret-peer", LinkStatus: repeater.LinkStatus{
 				State: repeater.LinkRefusedPermanent, Reason: "peer closed with code 4010 (token revoked)", Since: since}},
 			[]repeater.NamedStatus{
-				{RelayID: "dmz2", LinkStatus: repeater.LinkStatus{State: repeater.LinkConnected, Since: since}},
-				{RelayID: "dmz3", LinkStatus: repeater.LinkStatus{State: repeater.LinkRetrying, Reason: "connect failed", Since: since}},
+				{RelayID: "dmz2-secret-child", LinkStatus: repeater.LinkStatus{State: repeater.LinkConnected, Since: since}},
+				{RelayID: "dmz3-secret-child", LinkStatus: repeater.LinkStatus{State: repeater.LinkRetrying, Reason: "connect failed", Since: since}},
 			})
 	})
-	code, m := healthBody(t)
-	if code != http.StatusOK || m["status"] != "ok" {
-		t.Fatalf("liveness must stay 200/ok: %d %v", code, m)
+	w := httptest.NewRecorder()
+	handleHealth(w, httptest.NewRequest("GET", "/health", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("liveness must stay 200, got %d", w.Code)
 	}
-	if m["degraded"] != true {
-		t.Errorf("degraded = %v, want true", m["degraded"])
+	var m map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+		t.Fatal(err)
 	}
-	links := m["links"].(map[string]any)
-	up := links["upstream"].(map[string]any)
-	if up["state"] != "refused_permanent" || up["mode"] != "pull" || up["peer"] != "central" ||
-		!strings.Contains(up["reason"].(string), "4010") || up["since"] == nil {
-		t.Errorf("upstream = %v", up)
+	if m["status"] != "ok" || m["degraded"] != true {
+		t.Errorf("health = %v, want status ok and degraded true", m)
 	}
-	push := links["push_children"].([]any)
-	if len(push) != 2 || push[0].(map[string]any)["relay_id"] != "dmz2" || push[1].(map[string]any)["state"] != "retrying" {
-		t.Errorf("push children = %v", push)
+	if _, ok := m["links"]; ok {
+		t.Error("/health must not carry the links block")
+	}
+	body := strings.ToLower(w.Body.String())
+	for _, leak := range []string{"central-secret-peer", "dmz2-secret-child", "dmz3-secret-child", "relay_id", "peer", "reason",
+		"refused_permanent", "retrying", "connected", "4010", "token revoked", "upstream", "push_children", "since"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("/health leaks %q: %s", leak, w.Body.String())
+		}
+	}
+	// only these keys are allowed
+	for k := range m {
+		if k != "status" && k != "timestamp" && k != "degraded" {
+			t.Errorf("unexpected key %q in /health", k)
+		}
 	}
 }
 
