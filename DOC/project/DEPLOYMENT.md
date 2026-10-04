@@ -134,7 +134,7 @@ curl -s http://192.168.1.218:7770/api/inventory \
 
 ---
 
-## Gestion des Tokens Relay (v3.1)
+## Gestion des Tokens Relay (v3.0.1)
 
 ### Créer un token relay-parent (pour mode push)
 
