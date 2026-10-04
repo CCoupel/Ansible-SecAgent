@@ -13,6 +13,7 @@ import (
 
 	"secagent-server/cmd/secagent-server/internal/broker"
 	"secagent-server/cmd/secagent-server/internal/cli"
+	"secagent-server/cmd/secagent-server/internal/config"
 	"secagent-server/cmd/secagent-server/internal/handlers"
 	"secagent-server/cmd/secagent-server/internal/hooks"
 	"secagent-server/cmd/secagent-server/internal/proxy"
@@ -77,10 +78,19 @@ func main() {
 		log.Fatal("ADMIN_TOKEN environment variable is required")
 	}
 
+	// Child relay configuration (#124): validated at startup, token never logged.
+	repeaterCfg, cfgErr := config.LoadRepeaterConfig()
+	if cfgErr != nil {
+		log.Fatalf("Invalid repeater configuration: %v", cfgErr)
+	}
+
 	log.Printf("[INIT] Ansible-SecAgent GO Server v1.0")
 	log.Printf("[INIT] NATS_URL: %s", natsURL)
 	log.Printf("[INIT] DATABASE_URL: %s", dbURL)
 	log.Printf("[INIT] LOG_LEVEL: %s", logLevel)
+	if repeaterCfg != nil {
+		log.Printf("[INIT] Repeater child mode: REPEATER_ID=%s upstream=%s", repeaterCfg.ID, repeaterCfg.UpstreamURL)
+	}
 
 	// Initialize storage (SQLite)
 	log.Println("[INIT] Initializing SQLite database...")
