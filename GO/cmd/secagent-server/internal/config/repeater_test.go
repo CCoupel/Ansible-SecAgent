@@ -27,6 +27,8 @@ func TestLoadRepeaterConfig(t *testing.T) {
 		{"token without url", map[string]string{"REPEATER_ID": "dmz1", "REPEATER_UPSTREAM_TOKEN": "tok"}, true, true},
 		{"ws scheme refused", map[string]string{"REPEATER_ID": "dmz1", "REPEATER_UPSTREAM_URL": "ws://c", "REPEATER_UPSTREAM_TOKEN": "tok"}, true, true},
 		{"https scheme refused", map[string]string{"REPEATER_ID": "dmz1", "REPEATER_UPSTREAM_URL": "https://c", "REPEATER_UPSTREAM_TOKEN": "tok"}, true, true},
+		{"userinfo user only", map[string]string{"REPEATER_ID": "dmz1", "REPEATER_UPSTREAM_URL": "wss://alice@c:7772", "REPEATER_UPSTREAM_TOKEN": "tok"}, true, true},
+		{"userinfo user:pass", map[string]string{"REPEATER_ID": "dmz1", "REPEATER_UPSTREAM_URL": "wss://alice:hunter2@c:7772", "REPEATER_UPSTREAM_TOKEN": "tok"}, true, true},
 		{"no host", map[string]string{"REPEATER_ID": "dmz1", "REPEATER_UPSTREAM_URL": "wss://", "REPEATER_UPSTREAM_TOKEN": "tok"}, true, true},
 		{"bad id chars", map[string]string{"REPEATER_ID": "dmz 1!", "REPEATER_UPSTREAM_URL": "wss://c", "REPEATER_UPSTREAM_TOKEN": "tok"}, true, true},
 		{"bad id without url", map[string]string{"REPEATER_ID": "a/b"}, true, true},
@@ -83,5 +85,17 @@ func TestRepeaterConfig_TokenNeverPrinted(t *testing.T) {
 		if strings.Contains(s, "secret-token") {
 			t.Errorf("token leaked: %s", s)
 		}
+	}
+}
+
+func TestLoadRepeaterConfig_UserinfoNotInError(t *testing.T) {
+	_, err := loadRepeaterConfig(env(map[string]string{
+		"REPEATER_ID": "dmz1", "REPEATER_UPSTREAM_URL": "wss://alice:hunter2@c", "REPEATER_UPSTREAM_TOKEN": "tok",
+	}))
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if strings.Contains(err.Error(), "alice") || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("userinfo leaked in error: %v", err)
 	}
 }

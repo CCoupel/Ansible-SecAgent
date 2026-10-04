@@ -85,6 +85,10 @@ func loadRepeaterConfig(getenv func(string) string) (*RepeaterConfig, error) {
 	if err != nil || u.Host == "" {
 		return nil, fmt.Errorf("%w: %s is not a valid URL", ErrInvalidRepeaterConfig, EnvRepeaterUpstreamURL)
 	}
+	if u.User != nil {
+		// Never echo the userinfo: it may hold credentials.
+		return nil, fmt.Errorf("%w: %s must not contain userinfo (credentials belong in %s)", ErrInvalidRepeaterConfig, EnvRepeaterUpstreamURL, EnvRepeaterUpstreamToken)
+	}
 	if u.Scheme != "wss" {
 		return nil, fmt.Errorf("%w: %s must use the wss:// scheme (TLS required)", ErrInvalidRepeaterConfig, EnvRepeaterUpstreamURL)
 	}
