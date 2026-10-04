@@ -4,6 +4,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
@@ -65,5 +66,31 @@ func setWSHooks(t *testing.T, h wsHooks) {
 		wsHooksMu.Lock()
 		curWSHooks = prev
 		wsHooksMu.Unlock()
+	})
+}
+
+// awaitCond polls fn until it returns true or timeout expires, then fails the
+// test. It replaces fixed sleeps used to wait for asynchronous server-side
+// effects (routing DB updates, is_proxy persistence).
+func awaitCond(t *testing.T, timeout time.Duration, what string, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !fn() {
+		t.Fatalf("timeout after %s waiting for: %s", timeout, what)
+	}
+}
+
+// awaitInventoryLen waits until the aggregated relay inventory holds n entries.
+func awaitInventoryLen(t *testing.T, r *ProxyRouter, n int) {
+	t.Helper()
+	awaitCond(t, 2*time.Second, "aggregated inventory size", func() bool {
+		entries, err := r.AggregateRelayInventory()
+		return err == nil && len(entries) == n
 	})
 }

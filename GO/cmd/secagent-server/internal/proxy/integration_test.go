@@ -209,8 +209,11 @@ func TestProxyModeExecRouting(t *testing.T) {
 	// Relay announces host
 	intSendAgentList(t, relayConn, []string{hostname})
 
-	// Brief wait for relay_routing DB update (async after ack)
-	time.Sleep(30 * time.Millisecond)
+	// Wait for relay_routing DB update (async after ack)
+	awaitCond(t, 2*time.Second, "routing populated for "+hostname, func() bool {
+		rid, err := s.GetRelayForHostname(hostname)
+		return err == nil && rid == relayID
+	})
 
 	// Verify routing table was populated
 	rid, err := s.GetRelayForHostname(hostname)
@@ -281,11 +284,9 @@ func TestProxyInventoryAggregation(t *testing.T) {
 	intWaitRelayConnected(t, relay2, 2*time.Second)
 	intSendAgentList(t, conn2, hosts2)
 
-	// Brief wait for DB writes to propagate
-	time.Sleep(50 * time.Millisecond)
-
-	// Aggregate inventory
+	// Aggregate inventory (wait for DB writes to propagate)
 	router := intNewPullRouter(s)
+	awaitInventoryLen(t, router, 6)
 	entries, err := router.AggregateRelayInventory()
 	if err != nil {
 		t.Fatalf("AggregateRelayInventory: %v", err)
@@ -369,10 +370,10 @@ func TestProxyRelayDisconnect(t *testing.T) {
 
 	// Relay announces 3 agents
 	intSendAgentList(t, relayConn, hosts)
-	time.Sleep(50 * time.Millisecond)
 
 	// Confirm routing table has 3 entries
 	router := intNewPullRouter(s)
+	awaitInventoryLen(t, router, 3)
 	before, err := router.AggregateRelayInventory()
 	if err != nil {
 		t.Fatalf("AggregateRelayInventory before disconnect: %v", err)
@@ -385,8 +386,11 @@ func TestProxyRelayDisconnect(t *testing.T) {
 	_ = relayConn.Close()
 	intWaitRelayDisconnected(t, relayID, 3*time.Second)
 
-	// Wait briefly for async cleanup (BulkUpsertRelayRouting nil call)
-	time.Sleep(50 * time.Millisecond)
+	// Wait for async cleanup (BulkUpsertRelayRouting nil call)
+	awaitCond(t, 2*time.Second, "routing cleared after disconnect", func() bool {
+		entries, err := s.ListRelayRouting(relayID)
+		return err == nil && len(entries) == 0
+	})
 
 	// Routing entries must be cleared
 	routingEntries, listErr := s.ListRelayRouting(relayID)
@@ -491,7 +495,11 @@ func TestProxyChaining(t *testing.T) {
 	}
 
 	// Wait for is_proxy update
-	time.Sleep(50 * time.Millisecond)
+	awaitCond(t, 2*time.Second, "RelayIsProxyUpdateFunc called", func() bool {
+		isProxyCallMu.Lock()
+		defer isProxyCallMu.Unlock()
+		return isProxyCalled
+	})
 
 	// Verify is_proxy was stored in DB
 	isProxyCallMu.Lock()
@@ -515,10 +523,10 @@ func TestProxyChaining(t *testing.T) {
 
 	// Proxy relay announces its agents
 	intSendAgentList(t, relayConn, []string{hostA, hostB})
-	time.Sleep(50 * time.Millisecond)
 
 	// AggregateRelayInventory includes proxy relay's agents
 	router := intNewPullRouter(s)
+	awaitInventoryLen(t, router, 2)
 	entries, err := router.AggregateRelayInventory()
 	if err != nil {
 		t.Fatalf("AggregateRelayInventory: %v", err)
