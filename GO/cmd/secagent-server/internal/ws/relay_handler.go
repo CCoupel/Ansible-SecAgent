@@ -539,23 +539,17 @@ func unregisterRelayConnection(relayID string) {
 	log.Printf("Relay disconnected: relay_id=%s", relayID)
 }
 
-// extractRelayFromRequest validates the JWT and extracts the relay_id.
-// Requires role == "relay" in the JWT claims.
-//
-// Accepted roles: "relay" (a child opening a link to us) and "relay-parent" (our parent
-// opening a link to us, push mode #140; token signed by this node). The full role model
-// (relay-child / relay-parent split, #146) is not implemented yet.
-func extractRelayFromRequest(r *http.Request) (relayID string, isProxy bool, err error) {
-	id, ip, _, err := extractRelayAuth(r)
-	return id, ip, err
-}
-
 // Relay JWT roles accepted on /ws/relay.
 const (
 	relayRoleChild  = "relay"
 	relayRoleParent = "relay-parent"
 )
 
+// extractRelayAuth validates the JWT of a /ws/relay upgrade and returns the relay id (sub),
+// the is_proxy hint and the role. Accepted roles: "relay" (a child opening a link to us) and
+// "relay-parent" (our parent opening a link to us, push mode #140; token signed by this node).
+// The full role model (relay-child / relay-parent split, #146) is not implemented yet.
+// Fail closed: no verifier, missing/invalid/revoked token, unknown role => refused.
 func extractRelayAuth(r *http.Request) (relayID string, isProxy bool, role string, err error) {
 	authHeader := r.Header.Get("Authorization")
 
