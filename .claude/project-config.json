@@ -48,7 +48,7 @@
         },
         "deploy": {
           "mechanism": "docker-compose",
-          "target": "docker-compose.prod.yml"
+          "target": "DEPLOYMENT/prod/docker-compose.server.yml"
         }
       }
     ]
@@ -86,8 +86,8 @@
     "idle_warning_interval_minutes": 5
   },
   "template_version": {
-    "tag": "v3.9.1",
-    "commit": "dc3d230f01188ea698f3eab3e7805cbaca9b0260"
+    "tag": "v3.9.3",
+    "commit": "fb77beee1fe95c5f250600fd3c18f09c8bd0b669"
   },
   "docs": {
     "mockup_dir": "docs/mockup"

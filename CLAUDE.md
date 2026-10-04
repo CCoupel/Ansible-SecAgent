@@ -115,27 +115,26 @@ Séquence correcte :
 
 | Nom | Rôle | Fichier | Spawn |
 |-----|------|---------|-------|
-| `planner` | Backlog GitHub Issues + structuration des phases | `.claude/agents/planner.md` | permanent |
-| `dev-agent` | Développeur secagent-minion (GO, `GO/cmd/agent/`) | `.claude/agents/dev-agent.md` | permanent |
-| `dev-relay` | Développeur secagent-server (GO, `GO/cmd/server/`) | `.claude/agents/dev-relay.md` | permanent |
-| `dev-inventory` | Développeur secagent-inventory (GO, `GO/cmd/inventory/`) | `.claude/agents/dev-inventory.md` | permanent |
-| `dev-connexion` | Développeur plugin connexion Ansible (Python, `PYTHON/`) | `.claude/agents/dev-connexion.md` | permanent |
+| `planner` | Backlog GitHub Issues + structuration des phases (type `implementation-planner`) | `.claude/agents/implementation-planner.template.md` + compagnon `implementation-planner.md` | permanent |
+| `dev-agent` | Développeur secagent-minion (GO, `GO/cmd/agent/`) | `.claude/agents/dev-agent.template.md` + compagnon `dev-agent.md` | permanent |
+| `dev-relay` | Développeur secagent-server (GO, `GO/cmd/server/`) | `.claude/agents/dev-relay.template.md` + compagnon `dev-relay.md` | permanent |
+| `dev-inventory` | Développeur secagent-inventory (GO, `GO/cmd/inventory/`) | `.claude/agents/dev-inventory.template.md` + compagnon `dev-inventory.md` | permanent |
+| `dev-connexion` | Développeur plugin connexion Ansible (Python, `PYTHON/`) | `.claude/agents/dev-connexion.template.md` (dev-plugin) + compagnon `dev-connexion.md` | permanent |
 | `test-writer` | Rédaction des tests (unitaires, intégration, E2E) | `.claude/agents/test-writer.template.md` | permanent |
 | `qa` | Exécution des tests, verdict GO/NOGO | `.claude/agents/qa.template.md` | permanent |
 | `security-reviewer` | Audit sécurité (TLS, JWT, become_pass, enrollment) | `.claude/agents/security-reviewer.md` | permanent |
-| `deploy-qualif` | Déploiement Docker Compose sur 192.168.1.218 | `.claude/agents/deploy-qualif.md` | permanent |
-| `deploy-prod` | Déploiement Kubernetes/Helm en production | `.claude/agents/deploy-prod.md` | permanent |
+| `deployer` | BUILD / PUBLISH / DEPLOY QUALIF (Docker Compose 192.168.1.218) et PROD (Docker Compose, même hôte) | `.claude/agents/deploy.template.md` + compagnons `environments/deploy.{qualif,prod}.md` | permanent |
 
-> **Fichier** sans suffixe (`dev-agent.md`, `planner.md`…) = définition projet complète et propre à
-> Ansible-SecAgent. **Fichier** en `.template.md` (`test-writer`, `qa`) = pas de compagnon projet,
-> le template générique fait foi tel quel.
+> **Convention template/compagnon** : `xxx.template.md` = template synchronisé (gitignoré, jamais édité) ;
+> `xxx.md` = compagnon projet tracké (périmètre, specs, règles propres à Ansible-SecAgent), à lire après le
+> template. Sans compagnon (`test-writer`, `qa`), le template fait foi tel quel. `security-reviewer.md` reste
+> une définition projet autonome (pas de template équivalent).
 
 > **permanent** = spawné au `/start-session`, reste en IDLE toute la session.
 
 Agents génériques additionnels livrés par le template (disponibles, **pas encore intégrés** au
 workflow `/start-session` ni au cycle CDP décrit ci-dessus — à activer manuellement si besoin) :
-`code-reviewer`, `doc-updater`, `infra`, `security`, `implementation-planner`, `pr-reviewer`,
-`marketing-release`, `deploy` (générique — ce projet utilise `deploy-qualif`/`deploy-prod` à la place).
+`code-reviewer`, `doc-updater`, `infra`, `security`, `pr-reviewer`, `marketing-release`.
 
 <!-- BEGIN TEAMLEADER_PROTOCOL — maintenu par le template, ne pas modifier manuellement -->
 
@@ -190,11 +189,21 @@ test-writer, code-reviewer, qa, doc-updater, deployer, security, infra
 
 ### Questions à l'utilisateur
 
-Quand tu as besoin d'une information, décision ou validation de l'utilisateur (y compris via un `BLOQUE` /
-`BLOCKED` / `BESOIN CADRAGE` d'un teammate), **présente-le toujours sous forme de questions numérotées**,
-fermées si possible, avec ta valeur par défaut recommandée, regroupées dans un seul message.
-Jamais de demande ouverte ni implicite. Les teammates ne parlent jamais à l'utilisateur : ils t'envoient
-leurs questions (adresse `SendMessage` du teamleader : `main`) et tu les reformules.
+**Règle absolue** : toute information, décision ou validation attendue de l'utilisateur est posée
+**via l'outil `AskUserQuestion`** — jamais en texte dans le chat (pas de liste numérotée, pas de « OUI/NON »,
+pas de `[O/n]`, pas de « dis-moi »). Ça vaut aussi pour les questions remontées par un teammate
+(`BLOQUE` / `BLOCKED` / `FAILED` / `BESOIN CADRAGE`).
+
+Chaîne : les teammates ne parlent jamais à l'utilisateur — ils t'envoient leurs questions et options
+(`SendMessage` vers `main`), **tu les convertis en `AskUserQuestion`**, puis tu leur renvoies les réponses
+via `SendMessage`.
+
+- Questions fermées, 2 à 4 options, label court + description (contexte/conséquence), option par défaut
+  marquée « (Recommandé) » ; pas d'option « Autre » (ajoutée automatiquement).
+- Tout regrouper dans **un seul appel** `AskUserQuestion` (jusqu'à 4 questions).
+- Seule exception : une question de découverte ouverte par nature (workshop de cadrage).
+
+Détail et checklist avant chaque message à l'utilisateur : `.claude/agents/teamleader.md`, section « Questions à l'utilisateur ».
 
 ### Relayer l'avancement
 

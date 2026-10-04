@@ -3,7 +3,7 @@
 > Genere depuis `TEMPLATE_claude/templates/environments/deploy-docker-compose.md` — selectionne
 > car `infrastructure.environments[].deploy.mechanism = "docker-compose"` pour PROD dans
 > `.claude/project-config.json`. Charge par `agents/deploy.md`, Tache DEPLOY PROD, etape
-> [2. MECANISME]. Fichier compose : `docker-compose.prod.yml`.
+> [2. MECANISME]. Fichier compose : `DEPLOYMENT/prod/docker-compose.server.yml`.
 
 Installation pure de l'artefact deja publie par PUBLISH PROD — aucun build, aucune
 publication ici (principe BORE, `agents/infra.md` section 3).
@@ -22,7 +22,7 @@ docker image inspect "git-tag:$VERSION" >/dev/null 2>&1 \
 
 # 2. Install
 [ -n "$REGISTRY_USER" ] && echo "$REGISTRY_PASSWORD" | docker login git-tag -u "$REGISTRY_USER" --password-stdin
-docker pull "git-tag:$VERSION" && docker-compose -f docker-compose.prod.yml up -d
+docker pull "git-tag:$VERSION" && docker-compose -f DEPLOYMENT/prod/docker-compose.server.yml up -d
 # ou (artefact fichier plutot qu'image) : rsync/scp de l'artefact vers le serveur cible, puis
 # restart du service via docker-compose
 
@@ -36,7 +36,7 @@ echo "Deploiement PROD termine - $VERSION"
 ## Echec
 
 ```bash
-docker-compose -f docker-compose.prod.yml logs --tail=50
+docker-compose -f DEPLOYMENT/prod/docker-compose.server.yml logs --tail=50
 ```
 
 Un echec ici est toujours un echec d'installation — le build (BUILD) et la publication (PUBLISH
@@ -45,7 +45,7 @@ PROD) ont deja reussi. Rapport a `main`, jamais de correction autonome.
 ## Rollback
 
 ```bash
-docker-compose -f docker-compose.prod.yml up -d --force-recreate --no-deps app  # relance l'image precedente si $VERSION n'a pas ete change en place
+docker-compose -f DEPLOYMENT/prod/docker-compose.server.yml up -d --force-recreate --no-deps app  # relance l'image precedente si $VERSION n'a pas ete change en place
 # ou, si la version precedente a ete ecrasee localement :
-docker pull "git-tag:$PREVIOUS_VERSION" && docker-compose -f docker-compose.prod.yml up -d
+docker pull "git-tag:$PREVIOUS_VERSION" && docker-compose -f DEPLOYMENT/prod/docker-compose.server.yml up -d
 ```

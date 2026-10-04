@@ -211,7 +211,7 @@ Generer automatiquement en privilegiant les milestones GitHub (source la plus pr
 **Fallback sans milestone** :
 - Issues fermees recentes → colonne "Livre"
 - Issues ouvertes avec label `roadmap` ou `enhancement` → colonne "A venir"
-- Issues ouvertes avec label `in progress` → colonne "En cours"
+- Issues ouvertes avec label `EN COURS` → colonne "En cours"
 
 Format :
 ```
