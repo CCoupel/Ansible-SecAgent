@@ -17,6 +17,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/handlers"
 	"secagent-server/cmd/secagent-server/internal/hooks"
 	"secagent-server/cmd/secagent-server/internal/proxy"
+	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/storage"
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
@@ -193,6 +194,18 @@ func main() {
 	}
 	ws.RelayIsProxyUpdateFunc = func(relayID string, isProxy bool) error {
 		return store.SetRelayIsProxy(relayID, isProxy)
+	}
+
+	// Child relay (#125): one goroutine keeps the WSS link to the unique parent.
+	if repeaterCfg != nil {
+		rc := repeater.New(*repeaterCfg, repeater.Options{
+			DirectAgents: directAgents,
+			Snapshot:     func() repeater.Snapshot { return buildSnapshot(repeaterCfg.ID, store) },
+		})
+		if err := rc.Start(dispatchCtx); err != nil {
+			log.Fatalf("Failed to start repeater client: %v", err)
+		}
+		log.Printf("[OK] Repeater client started (parent=%s)", repeaterCfg.UpstreamURL)
 	}
 
 	// Create routers
@@ -381,4 +394,42 @@ func isListening(addr string) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+// directAgents lists the agents connected directly to this node (1 level).
+func directAgents() []repeater.AgentInfo {
+	hosts := ws.GetConnectedHostnames()
+	out := make([]repeater.AgentInfo, 0, len(hosts))
+	for _, h := range hosts {
+		out = append(out, repeater.AgentInfo{Hostname: h, Status: "connected"})
+	}
+	return out
+}
+
+// buildSnapshot describes the subtree of this relay for topology_snapshot:
+// direct agents plus the descendant relays (and their routed agents).
+// relay_chain always starts with this relay's own id (cf. ARCHITECTURE §23.2).
+func buildSnapshot(selfID string, st *storage.Store) repeater.Snapshot {
+	snap := repeater.Snapshot{}
+	for _, h := range ws.GetConnectedHostnames() {
+		snap.Agents = append(snap.Agents, repeater.TopoAgent{Hostname: h, RelayID: selfID, RelayChain: []string{selfID}})
+	}
+	nodes, err := st.ListRelayNodes()
+	if err != nil {
+		log.Printf("[REPEATER] snapshot: list relay nodes: %v", err)
+		return snap
+	}
+	for _, n := range nodes {
+		chain := []string{selfID, n.RelayID}
+		snap.Relays = append(snap.Relays, repeater.TopoRelay{RelayID: n.RelayID, RelayChain: chain})
+		hosts, herr := st.ListRelayRouting(n.RelayID)
+		if herr != nil {
+			log.Printf("[REPEATER] snapshot: routing for %s: %v", n.RelayID, herr)
+			continue
+		}
+		for _, h := range hosts {
+			snap.Agents = append(snap.Agents, repeater.TopoAgent{Hostname: h, RelayID: n.RelayID, RelayChain: chain})
+		}
+	}
+	return snap
 }
