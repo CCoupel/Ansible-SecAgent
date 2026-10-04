@@ -71,7 +71,7 @@ func main() {
 
 	// PROXY_MODE and PROXY_RELAYS env vars are silently ignored (removed in v3.0 #123).
 	// Relay topology is always active: relays connect via /ws/relay (pull mode).
-	// Push-mode relay entries in the DB are preserved for future use (#140).
+	// Push-mode relay entries are dialed by the DialerManager (#140).
 
 	// Validate required environment variables
 	if jwtSecret == "" {
@@ -116,18 +116,9 @@ func main() {
 	handlers.SetRegisterStore(store)
 
 	// Always initialize ProxyRouter — relay WS topology is a core feature (v3.0+).
-	// Push-mode relay entries are preserved in the DB but are inert until #140.
 	proxyRouter := proxy.NewProxyRouter(store)
 	handlers.SetProxyRouter(proxyRouter)
 
-	// Log push-mode relay nodes from DB so operators know they are inert.
-	if nodes, listErr := store.ListRelayNodes(); listErr == nil {
-		for _, n := range nodes {
-			if n.Mode == "push" {
-				log.Printf("[RELAY] relay_id=%s mode=push → inert (REST polling removed in v3.0, see #140)", n.RelayID)
-			}
-		}
-	}
 	log.Println("[OK] ProxyRouter initialized (pull-mode WS topology)")
 
 	// Load/generate RSA keypair and JWT secrets from DB (idempotent)
@@ -198,8 +189,8 @@ func main() {
 		return store.SetRelayIsProxy(relayID, isProxy)
 	}
 
-	// Tree topology (#125): identity, ancestors and node registration used by /ws/relay.
-	var rc *repeater.Client
+	// Tree topology (#125/#140): identity, ancestors, registration and revocation used by /ws/relay.
+	var uplink *repeater.Uplink
 	ws.SetRelayLocalIDFunc(func() string {
 		if repeaterCfg != nil {
 			return repeaterCfg.ID
@@ -207,10 +198,10 @@ func main() {
 		return os.Getenv(config.EnvRepeaterID)
 	})
 	ws.SetRelayAncestorsFunc(func() []string {
-		if rc == nil {
+		if uplink == nil {
 			return nil
 		}
-		return rc.Ancestors()
+		return uplink.Ancestors()
 	})
 	ws.SetRelayJTIBlacklistFunc(func(jti string) (bool, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -220,28 +211,54 @@ func main() {
 	ws.SetRelayHostRouteFunc(store.GetRelayForHostname)
 	ws.SetRelayNodeRegisterFunc(func(relayID string) error { return registerPullRelay(store, relayID) })
 
-	// Child relay (#125): one goroutine keeps the WSS link to the unique parent.
+	// Upstream publisher shared by the two ways of having a parent: we dial it (pull, #125) or it
+	// dials us (push, #140). A node has a single parent: with REPEATER_UPSTREAM_* configured,
+	// links opened by a parent are refused.
+	selfID, _ := ws.RelayIdentity()
+	upEvents := make(chan repeater.Event, 256)
+	upOpts := repeater.Options{
+		DirectAgents: directAgents,
+		Snapshot:     func() repeater.Snapshot { return buildSnapshot(selfID, store) },
+		Events:       upEvents,
+	}
 	if repeaterCfg != nil {
-		events := make(chan repeater.Event, 256)
-		ws.SetRelayEventUpstreamFunc(func(m ws.RelayMessage) {
-			ev := repeater.Event{Event: m.Event, Hostname: m.Hostname, RelayID: m.RelayID, Status: m.Status,
-				RelayChain: m.RelayChain, GroupVars: m.GroupVars, Timestamp: m.Timestamp}
-			select {
-			case events <- ev:
-			default:
-				log.Printf("[REPEATER] upstream event queue full, event %s dropped", m.Event)
-			}
-		})
-		rc = repeater.New(*repeaterCfg, repeater.Options{
-			DirectAgents: directAgents,
-			Snapshot:     func() repeater.Snapshot { return buildSnapshot(repeaterCfg.ID, store) },
-			Events:       events,
-		})
+		rc := repeater.New(*repeaterCfg, upOpts)
+		uplink = rc.Uplink()
 		if err := rc.Start(dispatchCtx); err != nil {
 			log.Fatalf("Failed to start repeater client: %v", err)
 		}
 		log.Printf("[OK] Repeater client started (parent=%s)", repeaterCfg.UpstreamURL)
+	} else {
+		uplink = repeater.NewUplink(selfID, upOpts)
+		ws.SetRelayParentLinkFunc(uplink.ServeAccepted)
 	}
+	ws.SetRelayEventUpstreamFunc(func(m ws.RelayMessage) {
+		// Root without a parent link: nothing to forward to.
+		if repeaterCfg == nil && !uplink.Active() {
+			return
+		}
+		ev := repeater.Event{Event: m.Event, Hostname: m.Hostname, RelayID: m.RelayID, Status: m.Status,
+			RelayChain: m.RelayChain, GroupVars: m.GroupVars, Timestamp: m.Timestamp}
+		select {
+		case upEvents <- ev:
+		default:
+			log.Printf("[REPEATER] upstream event queue full, event %s dropped", m.Event)
+		}
+	})
+
+	// Push mode (#140): the parent dials its push children (relay_nodes.mode=push).
+	dialers := repeater.NewDialerManager(dispatchCtx, repeater.DialerOptions{
+		Identity:  ws.RelayIdentity,
+		WouldLoop: ws.RelayWouldLoop,
+		Serve:     ws.ServeDialedRelay,
+	})
+	handlers.SetRelayPushHooks(
+		func(relayID, url, token string) error {
+			return dialers.Start(repeater.DialTarget{RelayID: relayID, URL: url, Token: token})
+		},
+		dialers.Stop,
+	)
+	startPushDialers(store, dialers)
 
 	// Create routers
 	apiRouter := http.NewServeMux()
@@ -487,4 +504,34 @@ func registerPullRelay(st *storage.Store, relayID string) error {
 	return st.UpsertRelayNode(storage.RelayNode{
 		ID: hex.EncodeToString(b), RelayID: relayID, Mode: "pull", Status: "connected", LastSeen: &now,
 	})
+}
+
+// pushStarter starts the dial-out of one push child.
+type pushStarter interface {
+	Start(repeater.DialTarget) error
+}
+
+// startPushDialers starts a Dialer for every relay_nodes row with mode=push. An invalid or
+// undecryptable row is skipped with a warning (the token is never logged).
+func startPushDialers(st *storage.Store, mgr pushStarter) {
+	nodes, err := st.ListRelayNodes()
+	if err != nil {
+		log.Printf("[RELAY] cannot list relay nodes for push dial-out: %v", err)
+		return
+	}
+	for _, n := range nodes {
+		if n.Mode != "push" {
+			continue
+		}
+		token, terr := handlers.OpenPushToken(n.TokenHash)
+		if terr != nil {
+			log.Printf("[WARN] push relay %s skipped: %v", n.RelayID, terr)
+			continue
+		}
+		if serr := mgr.Start(repeater.DialTarget{RelayID: n.RelayID, URL: n.URL, Token: token}); serr != nil {
+			log.Printf("[WARN] push relay %s skipped: %v", n.RelayID, serr)
+			continue
+		}
+		log.Printf("[RELAY] dial-out started: relay_id=%s mode=push", n.RelayID)
+	}
 }

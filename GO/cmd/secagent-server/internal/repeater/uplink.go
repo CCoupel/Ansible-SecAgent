@@ -35,6 +35,13 @@ func NewUplink(id string, opts Options) *Uplink {
 	return &Uplink{id: id, opts: normalizeOptions(opts)}
 }
 
+// Active reports whether a parent link is currently being served.
+func (u *Uplink) Active() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.serving
+}
+
 // Ancestors returns this node's ancestors (parent first, root last); nil when unlinked.
 func (u *Uplink) Ancestors() []string {
 	u.mu.Lock()
