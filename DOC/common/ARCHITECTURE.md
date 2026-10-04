@@ -1713,7 +1713,7 @@ Si le serveur rejette la connexion WS avec HTTP 401 (JWT expiré ou révoqué ap
 
 ---
 
-## 23. Mode Repeater — Arbre Hiérarchique (v3.1)
+## 23. Mode Repeater — Arbre Hiérarchique (v3.0.1)
 
 > Voir aussi : `DOC/common/HLD.md` §6 pour schémas + `DOC/server/SERVER_SPEC.md` §9.1-9.7
 
@@ -1721,7 +1721,7 @@ Si le serveur rejette la connexion WS avec HTTP 401 (JWT expiré ou révoqué ap
 
 Le mode repeater permet de construire une topologie arbre stricte de relays, chacun gérant sa propre zone réseau (DMZ, clusters, régions…), tout en conservant les agents isolés par zone.
 
-**Changements v3.0 (par rapport à v2.0)** :
+**Changements v3.0.0 (par rapport à v2.0)** :
 - Suppression du mode push REST — seul WebSocket persiste (WSS)
 - Suppression de `PROXY_MODE` et `PushManager`
 - Topologie : arbre strict (un parent max par relay enfant), pas de graphe, pas de losange, pas de cycles
@@ -2260,14 +2260,14 @@ POST /api/admin/relays
 }
 ```
 
-#### Docker Compose qualification v3.0
+#### Docker Compose qualification v3.0.0
 
 **Note** : TLS obligatoire — exemple avec Caddy pour terminaison WSS/HTTPS.
 
 ```yaml
 services:
   central:
-    image: secagent-server:3.0
+    image: secagent-server:3.0.0
     environment:
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       ADMIN_TOKEN: ${ADMIN_TOKEN}
@@ -2308,7 +2308,7 @@ services:
 
 ---
 
-### 23.9 Récapitulatif modifications par composant (v3.0)
+### 23.9 Récapitulatif modifications par composant (v3.0.0)
 
 | Composant | Modification |
 |---|---|

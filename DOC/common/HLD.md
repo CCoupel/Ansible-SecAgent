@@ -538,9 +538,9 @@ Serveur → Agent                        Agent → Serveur
 
 ---
 
-## 6. Topologies repeater v3.1 — Arbre Hiérarchique
+## 6. Topologies repeater v3.0.1 — Arbre Hiérarchique
 
-### Arbre simple (topologie obligatoire v3.1)
+### Arbre simple (topologie obligatoire v3.0.1)
 
 ```mermaid
 graph TB
