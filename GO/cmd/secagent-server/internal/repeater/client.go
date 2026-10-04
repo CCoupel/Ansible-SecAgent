@@ -140,16 +140,25 @@ type Client struct {
 	cfg  config.RepeaterConfig
 	opts Options
 
-	mu        sync.Mutex
-	started   bool
-	parentID  string   // identity learned at first successful handshake
-	ancestors []string // ancestors of this node (parent first), from relay_ack
-	conn      *websocket.Conn
-	wmu       sync.Mutex // serialises writes on conn
+	up *Uplink
+
+	mu       sync.Mutex
+	started  bool
+	parentID string // identity learned at first successful handshake
+	conn     *websocket.Conn
 }
 
 // New builds a Client from the validated repeater config.
 func New(cfg config.RepeaterConfig, opts Options) *Client {
+	up := NewUplink(cfg.ID, opts)
+	return &Client{cfg: cfg, opts: up.opts, up: up}
+}
+
+// Uplink returns the shared uplink publisher (used to also accept a parent that dials us, #140).
+func (c *Client) Uplink() *Uplink { return c.up }
+
+// normalizeOptions applies production defaults.
+func normalizeOptions(opts Options) Options {
 	if opts.MinBackoff <= 0 {
 		opts.MinBackoff = DefaultMinBackoff
 	}
@@ -165,7 +174,7 @@ func New(cfg config.RepeaterConfig, opts Options) *Client {
 	if opts.HandshakeTimeout <= 0 {
 		opts.HandshakeTimeout = DefaultHandshakeTimeout
 	}
-	return &Client{cfg: cfg, opts: opts}
+	return opts
 }
 
 // ParentID returns the parent identity learned from relay_ack ("" before the first handshake).
@@ -177,11 +186,7 @@ func (c *Client) ParentID() string {
 
 // Ancestors returns this node's ancestors (parent first, root last) as announced
 // by the parent in relay_ack; nil before the first handshake.
-func (c *Client) Ancestors() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]string(nil), c.ancestors...)
-}
+func (c *Client) Ancestors() []string { return c.up.Ancestors() }
 
 // Start runs the single reconnect loop in one goroutine; it returns
 // immediately and the goroutine stops when ctx is cancelled. A second call is
@@ -243,14 +248,7 @@ func (c *Client) endpoint() string {
 	return strings.TrimRight(c.cfg.UpstreamURL, "/") + "/ws/relay"
 }
 
-func (c *Client) write(conn *websocket.Conn, v any) error {
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	if err := conn.SetWriteDeadline(time.Now().Add(c.opts.HandshakeTimeout)); err != nil {
-		return err
-	}
-	return conn.WriteJSON(v)
-}
+func (c *Client) write(conn *websocket.Conn, v any) error { return c.up.write(conn, v) }
 
 // session runs one connection until it ends. established=true once the
 // handshake (hello, ack, snapshot) completed.
@@ -297,103 +295,16 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 		return false, &refusedError{fmt.Sprintf("unexpected handshake reply type=%q status=%q", ack.Type, ack.Status)}
 	}
 	if err := c.checkParentIdentity(ack.RelayID); err != nil {
-		c.closeWithCode(conn, CloseCodeRefused, "parent identity mismatch")
+		c.up.closeWithCode(conn, CloseCodeRefused, "parent identity mismatch")
 		return false, &refusedError{err.Error()}
 	}
 
-	c.mu.Lock()
-	c.ancestors = append([]string(nil), ack.Ancestors...)
-	c.mu.Unlock()
-
-	// 3. topology_snapshot (always sent by the child)
-	snap := Snapshot{}
-	if c.opts.Snapshot != nil {
-		snap = c.opts.Snapshot()
-	}
-	if snap.Relays == nil {
-		snap.Relays = []TopoRelay{}
-	}
-	if snap.Agents == nil {
-		snap.Agents = []TopoAgent{}
-	}
-	if err := c.write(conn, snapshotMessage{Type: "topology_snapshot", Relays: snap.Relays, Agents: snap.Agents}); err != nil {
-		return false, fmt.Errorf("send topology_snapshot: %w", err)
-	}
+	c.up.SetAncestors(ack.Ancestors)
 	log.Printf("[REPEATER] linked to parent relay_id=%s as %s", ack.RelayID, c.cfg.ID)
-	established = true
 
-	// 4. steady state
-	if err := c.sendAgentList(conn); err != nil {
-		return true, err
-	}
-
-	readDeadline := c.opts.PingInterval * readTimeoutFactor
-	extend := func() error { return conn.SetReadDeadline(time.Now().Add(readDeadline)) }
-	if err := extend(); err != nil {
-		return true, err
-	}
-	conn.SetPongHandler(func(string) error { return extend() })
-
-	readErr := make(chan error, 1)
-	go func() {
-		for {
-			_, raw, err := conn.ReadMessage()
-			if err != nil {
-				readErr <- err
-				return
-			}
-			if err := extend(); err != nil {
-				readErr <- err
-				return
-			}
-			c.handleIncoming(sessCtx, conn, raw)
-		}
-	}()
-
-	ping := time.NewTicker(c.opts.PingInterval)
-	defer ping.Stop()
-	list := time.NewTicker(c.opts.AgentListInterval)
-	defer list.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return true, ctx.Err()
-		case err := <-readErr:
-			return true, wrapRead("read", err)
-		case <-ping.C:
-			c.wmu.Lock()
-			err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(c.opts.HandshakeTimeout))
-			c.wmu.Unlock()
-			if err != nil {
-				return true, fmt.Errorf("ping: %w", err)
-			}
-		case <-list.C:
-			if err := c.sendAgentList(conn); err != nil {
-				return true, err
-			}
-		case <-c.changed():
-			if err := c.sendAgentList(conn); err != nil {
-				return true, err
-			}
-		case ev, ok := <-c.events():
-			if !ok {
-				continue
-			}
-			if err := c.forwardEvent(conn, ev); err != nil {
-				return true, err
-			}
-		}
-	}
-}
-
-// changed/events return nil channels (block forever) when unset.
-func (c *Client) changed() <-chan struct{} { return c.opts.Changed }
-func (c *Client) events() <-chan Event {
-	if c.opts.Events == nil {
-		return nil
-	}
-	return c.opts.Events
+	// 3+4. topology_snapshot (always sent by the child) then steady state.
+	done, err := c.up.serve(ctx, conn)
+	return done, err
 }
 
 func wrapRead(what string, err error) error {
@@ -402,12 +313,6 @@ func wrapRead(what string, err error) error {
 		return &refusedError{fmt.Sprintf("%s: parent closed with code %d (%s)", what, ce.Code, ce.Text)}
 	}
 	return fmt.Errorf("%s: %w", what, err)
-}
-
-func (c *Client) closeWithCode(conn *websocket.Conn, code int, reason string) {
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), time.Now().Add(time.Second))
 }
 
 // checkParentIdentity pins the parent identity on first connection, then
@@ -424,77 +329,4 @@ func (c *Client) checkParentIdentity(got string) error {
 		return fmt.Errorf("parent identity changed: expected %q, got %q", c.parentID, got)
 	}
 	return nil
-}
-
-func (c *Client) sendAgentList(conn *websocket.Conn) error {
-	agents := []AgentInfo{}
-	if c.opts.DirectAgents != nil {
-		if a := c.opts.DirectAgents(); a != nil {
-			agents = a
-		}
-	}
-	msg := struct {
-		Type   string      `json:"type"`
-		Agents []AgentInfo `json:"agents"`
-	}{"agent_list", agents}
-	if err := c.write(conn, msg); err != nil {
-		return fmt.Errorf("send agent_list: %w", err)
-	}
-	return nil
-}
-
-// ForwardChain returns relay_chain with REPEATER_ID appended, or an error if
-// REPEATER_ID is already in it (anti-loop).
-func ForwardChain(chain []string, id string) ([]string, error) {
-	for _, r := range chain {
-		if r == id {
-			return nil, fmt.Errorf("loop detected: %q already in relay_chain", id)
-		}
-	}
-	out := make([]string, 0, len(chain)+1)
-	out = append(out, chain...)
-	return append(out, id), nil
-}
-
-func (c *Client) forwardEvent(conn *websocket.Conn, ev Event) error {
-	chain, err := ForwardChain(ev.RelayChain, c.cfg.ID)
-	if err != nil {
-		log.Printf("[REPEATER] event %s dropped: %v", ev.Event, err)
-		return nil
-	}
-	ev.RelayChain = chain
-	if ev.Timestamp == "" {
-		ev.Timestamp = time.Now().UTC().Format(time.RFC3339)
-	}
-	if err := c.write(conn, eventMessage{Type: "event_forward", Event: ev}); err != nil {
-		return fmt.Errorf("send event_forward: %w", err)
-	}
-	return nil
-}
-
-// handleIncoming processes a message from the parent. An event_forward coming
-// from the parent is NEVER re-forwarded to it.
-func (c *Client) handleIncoming(ctx context.Context, conn *websocket.Conn, raw []byte) {
-	var m message
-	if err := json.Unmarshal(raw, &m); err != nil {
-		log.Printf("[REPEATER] invalid message from parent: %v", err)
-		return
-	}
-	switch m.Type {
-	case "task_forward":
-		if c.opts.OnTask == nil {
-			log.Printf("[REPEATER] task_forward task_id=%s dropped: no handler", m.TaskID)
-			return
-		}
-		reply := func(v any) error { return c.write(conn, v) }
-		go c.opts.OnTask(ctx, json.RawMessage(raw), reply)
-	case "event_forward":
-		log.Printf("[REPEATER] event_forward from parent ignored (never re-forwarded upstream)")
-	case "agent_list_ack", "heartbeat_ack", "topology_ack":
-		// nothing to do
-	case "heartbeat":
-		_ = c.write(conn, message{Type: "heartbeat_ack", Timestamp: time.Now().UTC().Format(time.RFC3339)})
-	default:
-		log.Printf("[REPEATER] unknown message type from parent: %q", m.Type)
-	}
 }
