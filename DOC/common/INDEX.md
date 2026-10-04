@@ -252,8 +252,8 @@ go test ./cmd/server/internal/...
 ### Code Files
 - **Python server**: `PYTHON/server/api/main.py`
 - **Python agent**: `PYTHON/agent/secagent_agent.py`
-- **GO server**: `GO/cmd/server/internal/handlers/register.go`
-- **GO broker**: `GO/cmd/server/internal/broker/nats.go`
+- **GO server**: `GO/cmd/secagent-server/internal/handlers/register.go`
+- **GO broker**: `GO/cmd/secagent-server/internal/broker/nats.go`
 
 ### Documentation
 - **Technical specs**: `ARCHITECTURE.md`
@@ -274,7 +274,7 @@ go test ./cmd/server/internal/...
 A: Use Python MVP for development/testing. Use GO for production deployment (20x faster, 10x less memory).
 
 **Q: Where is the GO server main.go?**
-A: Still TODO. Start with `GO/cmd/server/internal/handlers/register.go` for reference implementation.
+A: `GO/cmd/secagent-server/main.go`. See `GO/cmd/secagent-server/internal/handlers/register.go` for reference implementation.
 
 **Q: Can I run Python and GO side-by-side?**
 A: Yes — they use same API contracts, NATS, SQLite. See `ARCHITECTURE.md` for migration guide.
