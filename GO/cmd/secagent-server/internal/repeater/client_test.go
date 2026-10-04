@@ -22,7 +22,6 @@ const waitTimeout = 5 * time.Second
 type mockParent struct {
 	srv          *httptest.Server
 	idv          atomic.Value // identity answered in relay_ack (string)
-	ackBody      func() any
 	conns        chan *websocket.Conn
 	hellos       chan map[string]any
 	auths        chan string
