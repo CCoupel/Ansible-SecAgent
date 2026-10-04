@@ -271,14 +271,14 @@ Tous les secrets du serveur sont stockés en DB chiffrés (AES-256-GCM) :
 | RSA keypair serveur | `server_config` | idem |
 | `key_rotation_deadline` | `server_config` | idem |
 
-### Modèle per-relay (v3.0)
+### Modèle per-relay (v3.0.0)
 
 **En mode repeater (topologie arbre)**, chaque relay a sa propre `JWT_SECRET_KEY` unique :
 - Rotation s'applique **indépendamment** par relay (pas de synchronisation globale)
 - Tokens relay-child et relay-parent signés par la clé du relay qui les crée
 - Chaque relay exécute sa propre rotation de clef sur son CLI (la grace period s'applique localement)
 - Les relays enfants gèrent la rotation des tokens relay-parent qu'ils ont émis pour leurs parents (dual-key via leur propre JWT_SECRET_KEY)
-- **Hors-scope v3.0** : synchronisation des rotations de clef entre relays (envisagée pour v3.1+ avec PKI hiérarchique)
+- **Hors-scope v3.0.0** : synchronisation des rotations de clef entre relays (envisagée pour v3.0.1+ avec PKI hiérarchique)
 
 ---
 
@@ -349,9 +349,9 @@ interne au même réseau, pas une garantie cryptographique.
 
 Pour une preuve cryptographique du hostname : utiliser mTLS (PKI interne, hors scope MVP).
 
-### Authentification plugin par relay (HAUT-6, v3.0)
+### Authentification plugin par relay (HAUT-6, v3.0.0)
 
-**Modèle v3.0** : Chaque relay signe ses propres plugin tokens (RELAY_PLUGIN_TOKEN)
+**Modèle v3.0.0** : Chaque relay signe ses propres plugin tokens (RELAY_PLUGIN_TOKEN)
 - Plugin pointe vers **UN relay uniquement** (pas de multi-relays)
 - Plugin s'authentifie avec le `RELAY_PLUGIN_TOKEN` du relay
 - Relay valide le token avec son JWT_SECRET_KEY (signature HS256)
@@ -361,10 +361,10 @@ Pour une preuve cryptographique du hostname : utiliser mTLS (PKI interne, hors s
 - Chaque relay valide les tokens indépendamment
 - Pas de colonne `allowed_relay_ids` — l'isolation se fait par la clé de signature
 
-**Évolution envisagée (v3.1+)** : Centraliser la signature des tokens à la racine
+**Évolution envisagée (v3.0.1+)** : Centraliser la signature des tokens à la racine
 - Permettre au plugin de parler à plusieurs relays avec un seul token
 - Nécessite une PKI hiérarchique (racine → intermédiaires → feuilles)
-- Hors scope MVP (v3.0)
+- Hors scope MVP (v3.0.0)
 
 ---
 
