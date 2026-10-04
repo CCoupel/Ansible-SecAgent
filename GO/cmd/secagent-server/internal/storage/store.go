@@ -155,7 +155,10 @@ CREATE TABLE IF NOT EXISTS relay_nodes (
     is_proxy    INTEGER NOT NULL DEFAULT 0,
     created_at  INTEGER NOT NULL,
     last_seen   INTEGER,
-    status      TEXT NOT NULL DEFAULT 'disconnected'
+    status      TEXT NOT NULL DEFAULT 'disconnected',
+    jti         TEXT,
+    token_exp   INTEGER,
+    revoked     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_relay_nodes_relay_id ON relay_nodes (relay_id);
 CREATE INDEX IF NOT EXISTS idx_relay_nodes_status   ON relay_nodes (status);
@@ -237,6 +240,10 @@ func NewStore(dbURL string) (*Store, error) {
 		"ALTER TABLE agents ADD COLUMN vars TEXT NOT NULL DEFAULT '{}'",
 		"ALTER TABLE relay_routing ADD COLUMN hop_type TEXT NOT NULL DEFAULT 'relay'",
 		"ALTER TABLE relay_routing ADD COLUMN relay_chain TEXT NOT NULL DEFAULT '[]'",
+		// #153: JTI / expiry of the relay token issued at registration, and the revoked flag
+		"ALTER TABLE relay_nodes ADD COLUMN jti TEXT",
+		"ALTER TABLE relay_nodes ADD COLUMN token_exp INTEGER",
+		"ALTER TABLE relay_nodes ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0",
 	} {
 		_, _ = db.Exec(stmt) // intentionally ignore "duplicate column" errors
 	}
