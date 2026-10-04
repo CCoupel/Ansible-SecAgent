@@ -208,35 +208,7 @@ func (c *Client) Start(ctx context.Context) error {
 }
 
 func (c *Client) run(ctx context.Context) {
-	backoff := c.opts.MinBackoff
-	for ctx.Err() == nil {
-		established, err := c.session(ctx)
-		if ctx.Err() != nil {
-			return
-		}
-		var ref *refusedError
-		wait := backoff
-		switch {
-		case errors.As(err, &ref):
-			// A refusal (loop, identity mismatch) is structural: do not hammer the parent.
-			log.Printf("[REPEATER] parent refused link: %v", err)
-			wait = c.opts.MaxBackoff
-			backoff = c.opts.MaxBackoff
-		case established:
-			// The link worked: restart the exponential sequence.
-			log.Printf("[REPEATER] link to parent lost: %v", err)
-			backoff = c.opts.MinBackoff
-			wait = backoff
-		default:
-			log.Printf("[REPEATER] connect failed: %v", err)
-			backoff = min(backoff*2, c.opts.MaxBackoff)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(wait):
-		}
-	}
+	runLoop(ctx, "parent", c.opts.MinBackoff, c.opts.MaxBackoff, c.session)
 }
 
 type refusedError struct{ reason string }
@@ -253,7 +225,7 @@ func (c *Client) write(conn *websocket.Conn, v any) error { return c.up.write(co
 // session runs one connection until it ends. established=true once the
 // handshake (hello, ack, snapshot) completed.
 func (c *Client) session(ctx context.Context) (established bool, err error) {
-	dialer := websocket.Dialer{TLSClientConfig: c.opts.TLSConfig, HandshakeTimeout: c.opts.HandshakeTimeout}
+	dialer := websocket.Dialer{TLSClientConfig: tlsOrDefault(c.opts.TLSConfig), HandshakeTimeout: c.opts.HandshakeTimeout}
 	hdr := http.Header{}
 	hdr.Set("Authorization", "Bearer "+c.cfg.UpstreamToken)
 	conn, _, derr := dialer.DialContext(ctx, c.endpoint(), hdr)
