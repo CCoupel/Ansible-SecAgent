@@ -17,7 +17,7 @@ import (
 // tokensCmd is the top-level "tokens" subcommand.
 var tokensCmd = &cobra.Command{
 	Use:   "tokens",
-	Short: "Manage enrollment and plugin tokens",
+	Short: "Manage enrollment, plugin and relay-parent tokens",
 }
 
 func init() {
@@ -40,19 +40,31 @@ var (
 	createDescription     string
 	createAllowedIPs      string
 	createAllowedHostname string
+	createSub             string
 )
+
+// maxRelayParentLifetime mirrors handlers.MaxRelayParentTokenLifetime (the server enforces it too).
+const maxRelayParentLifetime = 365 * 24 * time.Hour
+
+var relayIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
 
 var tokensCreateCmd = &cobra.Command{
 	Use:   "create",
-	Short: "Create an enrollment or plugin token",
-	Long: `Create an enrollment or plugin token.
+	Short: "Create an enrollment, plugin or relay-parent token",
+	Long: `Create an enrollment, plugin or relay-parent token.
+
+A relay-parent token is minted on a CHILD relay for its parent (push mode): the JWT is signed
+with this node's key, shown ONCE, and must be given to the parent's 'POST /api/admin/relays'
+(mode=push). --sub (the parent's relay_id) and --expires (at most 365d) are required.
+Revoke it with 'tokens revoke <id>': the parent is disconnected and cannot come back.
 
 Examples:
   secagent-server tokens create --role enrollment --hostname-pattern "vp.*" --reusable --expires 30d
-  secagent-server tokens create --role plugin --description "Terraform" --allowed-ips "10.0.0.0/8" --expires 24h`,
+  secagent-server tokens create --role plugin --description "Terraform" --allowed-ips "10.0.0.0/8" --expires 24h
+  secagent-server tokens create --role relay-parent --sub central --expires 90d`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if createRole != "enrollment" && createRole != "plugin" {
-			return fmt.Errorf("--role must be 'enrollment' or 'plugin'")
+		if createRole != "enrollment" && createRole != "plugin" && createRole != "relay-parent" {
+			return fmt.Errorf("--role must be 'enrollment', 'plugin' or 'relay-parent'")
 		}
 
 		body := map[string]interface{}{
@@ -88,6 +100,16 @@ Examples:
 			body["description"] = createDescription
 			body["allowed_ips"] = createAllowedIPs
 			body["allowed_hostname_pattern"] = createAllowedHostname
+
+		case "relay-parent":
+			if !relayIDRe.MatchString(strings.TrimSpace(createSub)) {
+				return fmt.Errorf("--sub (the parent's relay_id) is required for relay-parent tokens and must match %s", relayIDRe)
+			}
+			if createExpires == "" || createExpires == "never" {
+				return fmt.Errorf("--expires is required for relay-parent tokens (at most 365d)")
+			}
+			body["sub"] = strings.TrimSpace(createSub)
+			body["description"] = createDescription
 		}
 
 		// Parse expiry
@@ -95,6 +117,9 @@ Examples:
 			exp, err := parseDuration(createExpires)
 			if err != nil {
 				return fmt.Errorf("invalid --expires value %q: %w", createExpires, err)
+			}
+			if createRole == "relay-parent" && time.Until(exp) > maxRelayParentLifetime {
+				return fmt.Errorf("--expires %q exceeds the 365d maximum for relay-parent tokens", createExpires)
 			}
 			body["expires_at"] = exp.UTC().Format(time.RFC3339)
 		}
@@ -119,6 +144,9 @@ Examples:
 			_, _ = fmt.Printf("  Token (save now — shown only once): %s\n", r["token"])
 			_, _ = fmt.Printf("  ID:         %s\n", r["id"])
 			_, _ = fmt.Printf("  Role:       %s\n", r["role"])
+			if sub, ok := r["sub"].(string); ok && sub != "" {
+				_, _ = fmt.Printf("  Parent:     %s\n", sub)
+			}
 			if p, ok := r["hostname_pattern"].(string); ok && p != "" {
 				_, _ = fmt.Printf("  Pattern:    %s\n", p)
 			}
@@ -143,13 +171,14 @@ Examples:
 }
 
 func init() {
-	tokensCreateCmd.Flags().StringVar(&createRole, "role", "", "Token role: enrollment or plugin (required)")
+	tokensCreateCmd.Flags().StringVar(&createRole, "role", "", "Token role: enrollment, plugin or relay-parent (required)")
 	tokensCreateCmd.Flags().StringVar(&createHostnamePattern, "hostname-pattern", "", "Regexp for hostname (enrollment tokens)")
 	tokensCreateCmd.Flags().BoolVar(&createReusable, "reusable", false, "Allow multiple uses (enrollment tokens; default: one-shot)")
-	tokensCreateCmd.Flags().StringVar(&createExpires, "expires", "never", "Expiry: 30d, 24h, 90m, never (default: never)")
+	tokensCreateCmd.Flags().StringVar(&createExpires, "expires", "never", "Expiry: 30d, 24h, 90m, never (default: never; required for relay-parent, max 365d)")
 	tokensCreateCmd.Flags().StringVar(&createDescription, "description", "", "Human-readable description (plugin tokens)")
 	tokensCreateCmd.Flags().StringVar(&createAllowedIPs, "allowed-ips", "", "Comma-separated CIDRs (plugin tokens): \"10.0.0.0/8,192.168.1.0/24\"")
 	tokensCreateCmd.Flags().StringVar(&createAllowedHostname, "allowed-hostname-pattern", "", "Regexp for caller hostname (plugin tokens)")
+	tokensCreateCmd.Flags().StringVar(&createSub, "sub", "", "relay_id of the parent the token is minted for (relay-parent tokens, required)")
 	if err := tokensCreateCmd.MarkFlagRequired("role"); err != nil {
 		// MarkFlagRequired only fails when the flag name is invalid (programmer error).
 		// Log the error and exit cleanly — no panic in production.
@@ -168,8 +197,8 @@ var tokensListCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := "/api/admin/tokens"
 		if listRole != "" {
-			if listRole != "enrollment" && listRole != "plugin" && listRole != "all" {
-				return fmt.Errorf("--role must be enrollment, plugin, or all")
+			if listRole != "enrollment" && listRole != "plugin" && listRole != "relay-parent" && listRole != "all" {
+				return fmt.Errorf("--role must be enrollment, plugin, relay-parent, or all")
 			}
 			path += "?role=" + listRole
 		}
@@ -197,7 +226,10 @@ var tokensListCmd = &cobra.Command{
 			tp := newTabPrinter()
 			tp.println("ID\tROLE\tHASH (truncated)\tPATTERN/DESC\tEXPIRES\tUSED\tREVOKED")
 			for _, t := range list {
-				hash := fmt.Sprintf("%v", t["token_hash"])
+				hash := "-"
+				if h, ok := t["token_hash"].(string); ok {
+					hash = h
+				}
 				if len(hash) > 16 {
 					hash = hash[:16] + "..."
 				}
@@ -205,6 +237,8 @@ var tokensListCmd = &cobra.Command{
 				label := ""
 				if v, ok := t["hostname_pattern"].(string); ok && v != "" {
 					label = v
+				} else if v, ok := t["sub"].(string); ok && v != "" {
+					label = "parent=" + v // relay-parent tokens
 				} else if v, ok := t["description"].(string); ok && v != "" {
 					label = v
 				}
@@ -229,14 +263,14 @@ var tokensListCmd = &cobra.Command{
 }
 
 func init() {
-	tokensListCmd.Flags().StringVar(&listRole, "role", "", "Filter by role: enrollment, plugin (default: all)")
+	tokensListCmd.Flags().StringVar(&listRole, "role", "", "Filter by role: enrollment, plugin, relay-parent (default: all)")
 }
 
 // ── tokens revoke ─────────────────────────────────────────────────────────────
 
 var tokensRevokeCmd = &cobra.Command{
 	Use:   "revoke <id>",
-	Short: "Soft-revoke a plugin token (sets revoked=1)",
+	Short: "Revoke a plugin or relay-parent token (relay-parent: blacklists the JTI and disconnects the parent)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]

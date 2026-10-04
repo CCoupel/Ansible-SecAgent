@@ -270,8 +270,9 @@ secagent-server minions vars get|set|delete <hostname> [key] [value]
 
 # Tokens
 secagent-server tokens create --role plugin --description "..." --allowed-ips "..." --allowed-hostname "..." --expires 365d
-secagent-server tokens list [--role plugin|enrollment|all]
-secagent-server tokens revoke <id>
+secagent-server tokens create --role relay-parent --sub <parent_relay_id> --expires 90d   # #150 : minté sur l'ENFANT, --expires obligatoire (max 365d)
+secagent-server tokens list [--role plugin|enrollment|relay-parent|all]
+secagent-server tokens revoke <id>      # relay-parent : blacklist du JTI + fermeture (4010) du lien parent actif
 secagent-server tokens delete <id>
 secagent-server tokens purge --expired
 
@@ -566,20 +567,21 @@ secagent-server relays add <relay_id> --url <url> --token <token> --mode <push|p
 Les tokens relay sont créés via CLI avec le rôle approprié :
 
 **Relay-child** (créé sur le parent, présenté par l'enfant qui ouvre vers le parent) :
-```bash
-# Sur central (parent) :
-secagent-server tokens create --role relay-child \
-  --sub dmz1 \
-  --expires 90d
-```
+> *Pas encore disponible via `tokens create`* (modèle de rôles complet : #146). Aujourd'hui le JWT de l'enfant
+> (rôle `relay`, 30 j) est émis à l'enregistrement : `POST /api/admin/relays` (`relays add`, mode pull).
 
-**Relay-parent** (créé sur l'enfant, présenté par le parent qui ouvre vers l'enfant) :
+**Relay-parent** (créé sur l'enfant, présenté par le parent qui ouvre vers l'enfant — #150) :
 ```bash
 # Sur dmz1 (enfant) :
 secagent-server tokens create --role relay-parent \
   --sub central \
   --expires 90d
 ```
+- Adossé à `POST /api/admin/tokens` (`role=relay-parent`, `sub`, `expires_at`), réservé à l'admin.
+- `--expires` **obligatoire**, plafond **365 j** ; `sub` = `relay_id` du parent (identité qu'il présentera dans `relay_hello`).
+- Le JWT (signé avec la `JWT_SECRET_KEY` de l'enfant) est **affiché une seule fois** ; seules ses métadonnées (id, JTI, sub, expiration, révocation) sont persistées (table `relay_parent_tokens`), jamais le token ; `tokens list --role relay-parent` ne le montre pas.
+- `tokens revoke <id>` : le JTI entre en blacklist **et** le lien parent actif est fermé (close 4010) ; le parent ne peut plus se reconnecter avec ce token (401).
+- Le parent donne ensuite ce token à `POST /api/admin/relays` (`mode=push`, `url=wss://…`, `token`).
 
 **Sécurité :** 
 - Tokens jamais loggés en clair
