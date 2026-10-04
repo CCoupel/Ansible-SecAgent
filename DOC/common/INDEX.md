@@ -19,8 +19,8 @@ Ansible_Agent/
 │   └── README.md               # Python docs
 │
 ├── GO/                         # Phase 7 GO Migration (Complete)
-│   ├── cmd/server/
-│   │   ├── main.go             # [TODO] HTTP server
+│   ├── cmd/secagent-server/
+│   │   ├── main.go             # HTTP server (ports 7770/7771/7772)
 │   │   └── internal/
 │   │       ├── handlers/       # API endpoints (register, exec, inventory)
 │   │       ├── ws/             # WebSocket handler
@@ -79,16 +79,16 @@ python -m server.api.main
 
 ### For GO High-Performance Rewrite
 **Location**: `GO/`
-- **Handlers**: `GO/cmd/server/internal/handlers/` — API endpoints
-- **WebSocket**: `GO/cmd/server/internal/ws/` — Connection management
-- **Database**: `GO/cmd/server/internal/storage/` — SQLite wrapper
-- **Broker**: `GO/cmd/server/internal/broker/` — NATS client
+- **Handlers**: `GO/cmd/secagent-server/internal/handlers/` — API endpoints
+- **WebSocket**: `GO/cmd/secagent-server/internal/ws/` — Connection management
+- **Database**: `GO/cmd/secagent-server/internal/storage/` — SQLite wrapper
+- **Broker**: `GO/cmd/secagent-server/internal/broker/` — NATS client
 - **Docs**: `GO/README.md`
 
 **Build**:
 ```bash
-cd GO
-go build -o secagent-server ./cmd/server
+cd GO/cmd/secagent-server
+go build -o secagent-server .
 ./secagent-server
 ```
 
