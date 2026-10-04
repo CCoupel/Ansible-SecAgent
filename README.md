@@ -145,7 +145,7 @@ ansible-secagent/
 - ✅ **Phase 10** : Enrollment Token (système de tokens pré-signés)
 - ✅ **Phase 11** : Event Hooks unifiés (JSON config, 4 executors, action_log)
 - ✅ **Phase 12** : Proxy/Gateway multi-zone (pull/push, inventaire agrégé, chaînage, JWT rôle relay)
-- ✅ **Phase 13** : Repeater Relay Chain v3.1 (arbre hiérarchique, pull/push modes, token relay-parent, révocation JTI, state dans /health)
+- ✅ **Phase 13** : Repeater Relay Chain v3.1 (arbre hiérarchique, pull/push modes, token relay-parent, révocation JTI, état des liens dans l'API d'administration et /health avec drapeau degraded)
 - ⏳ **Phase 14** : Production Kubernetes (après validation qualif)
 
 **Version actuelle : v3.1** — Repeater chain IMPLEMENTED (GO rewrite 100% complete)

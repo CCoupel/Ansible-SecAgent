@@ -29,10 +29,11 @@ All notable changes to this project will be documented in this file.
   - Tokens relay-parent : CLI `tokens create --role relay-parent --sub <parent> --expires <d>` (max 365 j, obligatoire) (#150)
   - Métadonnées persistées (JTI, expiry, revoked) ; jamais le token en clair en DB
   - Relais antérieurs (#153) sans JTI : révoqués par le drapeau seul (legacy_token=true)
-- **État du lien amont** (#154, option B) :
-  - `/health` (port 7770) : HTTP 200 maintenu, champ `links` {upstream{mode, peer, state, reason, since}, push_children[]} + `degraded` si 4010
-  - `secagent-server server status` et `/api/admin/status` (port 7771) : tableau LINK/PEER/STATE/SINCE/REASON, avertissement « operator action required » si dégradé
+- **État du lien amont** (#154) :
+  - `/health` (port 7770) : HTTP 200 maintenu, drapeau `degraded` seul (pas d'exposition de topologie)
+  - `/api/admin/status` et `secagent-server server status` (port 7771) : tableau LINK/PEER/STATE/SINCE/REASON avec détail des liens, avertissement « operator action required » si dégradé
   - États `connected`, `retrying` (non-terminal), `refused_permanent` (terminal, action requise)
+  - Texte du close frame assaini (pas de révélation d'identités du pair en logs/statuts)
 - **Codes de fermeture `/ws/relay`** (#148) :
   - `4010` (refus permanent) : token révoqué, identity mismatch, boucle détectée → arrêt client (log ERROR)
   - `4012` (refus corrigible) : snapshot invalide, conflict de routage → reconnexion avec backoff (5 s → 60 s)
