@@ -538,9 +538,9 @@ Serveur → Agent                        Agent → Serveur
 
 ---
 
-## 6. Topologies repeater v3.0 — Arbre Hiérarchique
+## 6. Topologies repeater v3.1 — Arbre Hiérarchique
 
-### Arbre simple (topologie obligatoire v3.0)
+### Arbre simple (topologie obligatoire v3.1)
 
 ```mermaid
 graph TB
@@ -584,8 +584,8 @@ sequenceDiagram
     participant Parent as Parent (central)
     
     Child->>Parent: WSS /ws/relay + JWT(sub="dmz1")
-    Child->>Parent: relay_hello(relay_id="dmz1", ancestors=["central"])
-    Parent->>Child: relay_ack(relay_id="central")
+    Child->>Parent: relay_hello(relay_id="dmz1", ancestors=[])
+    Parent->>Child: relay_ack(relay_id="central", ancestors=[])
     Child->>Parent: topology_snapshot(descendants)
     Parent->>Child: acquittement
     Note over Child,Parent: Connexion établie
@@ -599,7 +599,7 @@ sequenceDiagram
     
     Parent->>Child: WSS /ws/relay + JWT(sub="central")
     Parent->>Child: relay_hello(relay_id="central", ancestors=[])
-    Child->>Parent: relay_ack(relay_id="dmz1")
+    Child->>Parent: relay_ack(relay_id="dmz1", ancestors=["central"])
     Child->>Parent: topology_snapshot(descendants)
     Parent->>Child: acquittement
     Note over Parent,Child: Connexion établie
