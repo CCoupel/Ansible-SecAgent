@@ -610,3 +610,54 @@ func TestTree_SnapshotAllowsOwnExistingRoutes(t *testing.T) {
 		t.Errorf("reconnect re-declaring its own routes must be accepted, got %+v", m)
 	}
 }
+
+// ── state machine (MOYEN-2) and chain bound (BAS-1) ──────────────────────────
+
+func TestTree_SnapshotBeforeHelloRefused(t *testing.T) {
+	setTreeHooks(t, "central", nil, nil, nil)
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
+	sendSnapshot(t, c, nil, []RelayAgentInfo{{Hostname: "h", RelayID: "dmz1", RelayChain: []string{"dmz1"}}})
+	if code := expectClose(t, c); code != WSRelayCloseRevoked {
+		t.Errorf("close code = %d, want 4010", code)
+	}
+}
+
+func TestTree_SnapshotChainTooLong(t *testing.T) {
+	setTreeHooks(t, "central", nil, nil, nil)
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
+	handshake(t, c, "dmz1")
+	chain := []string{"dmz1"}
+	for i := 0; i < maxRelayChainLen; i++ {
+		chain = append(chain, "n"+string(rune('a'+i%26))+string(rune('a'+i/26)))
+	}
+	sendSnapshot(t, c, []RelayTopoEntry{{RelayID: chain[len(chain)-1], RelayChain: chain}}, nil)
+	if code := expectClose(t, c); code != WSRelayCloseRevoked {
+		t.Errorf("close code = %d, want 4010", code)
+	}
+}
+
+func TestTree_EventChainTooLongDropped(t *testing.T) {
+	var n int
+	var mu sync.Mutex
+	setTreeHooks(t, "central", nil, nil, func(RelayMessage) { mu.Lock(); n++; mu.Unlock() })
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
+	handshake(t, c, "dmz1")
+	long := make([]string, maxRelayChainLen+1)
+	for i := range long {
+		long[i] = "dmz1"
+	}
+	_ = c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", RelayChain: long})
+	_ = c.WriteJSON(RelayMessage{Type: "heartbeat"})
+	readMsg(t, c)
+	mu.Lock()
+	defer mu.Unlock()
+	if n != 0 {
+		t.Errorf("over-long chain forwarded %d times", n)
+	}
+}

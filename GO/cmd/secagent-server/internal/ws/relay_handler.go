@@ -42,6 +42,7 @@ type RelayConnection struct {
 
 	// Tree state (#125) — only touched by the connection's read-loop goroutine.
 	descendants  map[string]struct{} // relays declared in the validated topology_snapshot
+	helloDone    bool                // relay_hello accepted: required before topology_snapshot / event_forward
 	snapshotDone bool
 	reject       *relayRejection // set by a handler to make the read loop close the link
 	evWindow     time.Time       // event_forward rate limit window start
@@ -53,6 +54,9 @@ type relayRejection struct {
 	code   int
 	reason string
 }
+
+// maxRelayChainLen bounds relay_chain length (tree depth) in snapshots and events.
+const maxRelayChainLen = 32
 
 // maxEventsPerSecond bounds event_forward from a single relay (flood protection).
 const maxEventsPerSecond = 200
@@ -605,6 +609,7 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		if err := registerRelayNode(conn.RelayID); err != nil {
 			log.Printf("relay_hello: auto-register error: relay_id=%s err=%v", conn.RelayID, err)
 		}
+		conn.helloDone = true
 		// relay_ack carries the PARENT's identity (this node), so the child can pin it.
 		ancestors := append([]string{localRelayID()}, localAncestors()...)
 		ack := RelayMessage{
@@ -834,6 +839,9 @@ func validateSnapshot(conn *RelayConnection, msg RelayMessage) (map[string]struc
 
 	// chainOK: starts with the child, ends with owner, no repetition, no ancestor/self.
 	chainOK := func(chain []string, owner string) error {
+		if len(chain) > maxRelayChainLen {
+			return fmt.Errorf("relay_chain too long (%d > %d)", len(chain), maxRelayChainLen)
+		}
 		if len(chain) == 0 || chain[0] != conn.RelayID || chain[len(chain)-1] != owner {
 			return fmt.Errorf("invalid relay_chain %v for %q", chain, owner)
 		}
@@ -888,6 +896,11 @@ func validateSnapshot(conn *RelayConnection, msg RelayMessage) (map[string]struc
 }
 
 func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
+	if !conn.helloDone {
+		log.Printf("[SECURITY WARNING] topology_snapshot before relay_hello: relay_id=%s", conn.RelayID)
+		reject(conn, "topology_snapshot before relay_hello")
+		return
+	}
 	if conn.snapshotDone {
 		reject(conn, "topology_snapshot already received")
 		return
@@ -936,6 +949,10 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 
 // handleEventForward validates an ascending event (HAUT-1) and propagates it upstream.
 func handleEventForward(conn *RelayConnection, msg RelayMessage) {
+	if !conn.helloDone {
+		log.Printf("[SECURITY WARNING] event_forward before relay_hello: relay_id=%s (dropped)", conn.RelayID)
+		return
+	}
 	now := time.Now()
 	if now.Sub(conn.evWindow) >= time.Second {
 		conn.evWindow, conn.evCount = now, 0
@@ -946,6 +963,10 @@ func handleEventForward(conn *RelayConnection, msg RelayMessage) {
 		return
 	}
 	chain := msg.RelayChain
+	if len(chain) > maxRelayChainLen {
+		log.Printf("[SECURITY WARNING] event_forward rejected: relay_id=%s relay_chain too long (%d)", conn.RelayID, len(chain))
+		return
+	}
 	if len(chain) == 0 || chain[len(chain)-1] != conn.RelayID {
 		log.Printf("[RELAY] event_forward rejected: relay_id=%s relay_chain=%v (last element must be the authenticated peer)", conn.RelayID, chain)
 		return
