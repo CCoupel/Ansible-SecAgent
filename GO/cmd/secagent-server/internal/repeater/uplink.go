@@ -60,20 +60,50 @@ func (u *Uplink) Serve(ctx context.Context, conn *websocket.Conn) error {
 	return err
 }
 
-func (u *Uplink) serve(ctx context.Context, conn *websocket.Conn) (established bool, err error) {
+func (u *Uplink) acquire() error {
 	u.mu.Lock()
+	defer u.mu.Unlock()
 	if u.serving {
-		u.mu.Unlock()
-		return false, ErrUplinkBusy
+		return ErrUplinkBusy
 	}
 	u.serving = true
-	u.mu.Unlock()
-	defer func() {
-		u.mu.Lock()
-		u.serving = false
-		u.mu.Unlock()
-	}()
+	return nil
+}
 
+func (u *Uplink) release() {
+	u.mu.Lock()
+	u.serving = false
+	u.mu.Unlock()
+}
+
+// ServeAccepted serves a link opened by our PARENT (push mode, #140). The single-parent
+// slot is acquired first; beforeServe (typically: send relay_ack) runs only if it was free,
+// then the ancestors are recorded and the link is served. Ancestors are cleared on exit.
+func (u *Uplink) ServeAccepted(ctx context.Context, conn *websocket.Conn, ancestors []string, beforeServe func() error) error {
+	if err := u.acquire(); err != nil {
+		return err
+	}
+	defer u.release()
+	if beforeServe != nil {
+		if err := beforeServe(); err != nil {
+			return err
+		}
+	}
+	u.SetAncestors(ancestors)
+	defer u.SetAncestors(nil)
+	_, err := u.run(ctx, conn)
+	return err
+}
+
+func (u *Uplink) serve(ctx context.Context, conn *websocket.Conn) (established bool, err error) {
+	if err := u.acquire(); err != nil {
+		return false, err
+	}
+	defer u.release()
+	return u.run(ctx, conn)
+}
+
+func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established bool, err error) {
 	sessCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() { <-sessCtx.Done(); _ = conn.Close() }()
