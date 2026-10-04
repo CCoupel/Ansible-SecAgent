@@ -437,3 +437,28 @@ func TestPush_RevokeRelayParentLinkClosesWith4010(t *testing.T) {
 		t.Error("a second revocation finds no live link")
 	}
 }
+
+// ServeDialedRelay hands the peer's close code back to the dialer: 4010 = permanent refusal.
+func TestPush_DialedLinkReturnsPeerCloseCode(t *testing.T) {
+	setTreeHooks(t, "central", nil, nil, nil)
+	for name, code := range map[string]int{"permanent 4010": WSRelayCloseRevoked, "correctable 4012": WSRelayCloseRetry, "normal 1000": websocket.CloseNormalClosure} {
+		t.Run(name, func(t *testing.T) {
+			result := make(chan error, 1)
+			srv := dialedPeer(t, "dmz-close", result)
+			child := dialPlain(t, srv)
+			if !awaitRelayConnected(t, "dmz-close", 3*time.Second) {
+				t.Fatal("not registered")
+			}
+			_ = child.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, "token revoked"), time.Now().Add(time.Second))
+			select {
+			case err := <-result:
+				var ce *websocket.CloseError
+				if !errors.As(err, &ce) || ce.Code != code {
+					t.Errorf("ServeDialedRelay returned %v, want a CloseError with code %d", err, code)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("ServeDialedRelay did not return")
+			}
+		})
+	}
+}

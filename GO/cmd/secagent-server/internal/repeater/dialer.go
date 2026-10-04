@@ -204,7 +204,12 @@ func (d *Dialer) session(ctx context.Context) (established bool, err error) {
 	}
 	d.tr.set(LinkConnected, "")
 	log.Printf("[REPEATER] linked to child relay_id=%s (push)", d.target.RelayID)
-	return true, d.opts.Serve(ctx, conn, d.target.RelayID)
+	if err := d.opts.Serve(ctx, conn, d.target.RelayID); err != nil {
+		// A close frame received on the served link carries the peer's decision: 4010 is a
+		// permanent refusal (revoked token, identity...), 4012 a correctable one (#148, #153).
+		return true, wrapRead("served link", err)
+	}
+	return true, nil
 }
 
 // DialerManager owns one Dialer per push relay and supports hot start/stop.

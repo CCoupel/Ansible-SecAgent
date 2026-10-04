@@ -948,12 +948,16 @@ func RelayHandler(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close()
 		return
 	}
-	serveRelayConn(conn, relayConn)
+	_ = serveRelayConn(conn, relayConn) // the error only matters to a dialer (ServeDialedRelay)
 }
 
 // serveRelayConn registers a child relay connection and runs its message loop until the
 // link ends. Shared by the accepted (pull) and the dialed (push) paths.
-func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) {
+//
+// It returns the error that ended the read loop (a *websocket.CloseError when the peer closed
+// the link with a code, e.g. 4010) or nil when WE closed it (rejection). ServeDialedRelay relays it
+// so that the dialer can tell a permanent refusal (4010) from a lost link.
+func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) error {
 	relayID := relayConn.RelayID
 	relayConn.wsConn = conn
 	conn.SetReadLimit(maxRelayMessageSize())
@@ -982,6 +986,7 @@ func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) {
 		return conn.SetReadDeadline(time.Now().Add(120 * time.Second))
 	})
 
+	var loopErr error
 	for {
 		var msg RelayMessage
 		if err := conn.ReadJSON(&msg); err != nil {
@@ -990,6 +995,7 @@ func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) {
 			} else {
 				log.Printf("Relay WS read error: relay_id=%s err=%v", relayID, err)
 			}
+			loopErr = err
 			break
 		}
 		// Reset deadline on any message
@@ -1002,6 +1008,7 @@ func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) {
 			break
 		}
 	}
+	return loopErr
 }
 
 // ── Push mode (#140) ─────────────────────────────────────────────────────────
@@ -1038,7 +1045,8 @@ var ErrRelayAlreadyConnected = errors.New("relay already connected")
 // ServeDialedRelay serves a child relay that WE dialed (push mode): relay_hello was sent and
 // relay_ack (with the expected identity) received by the caller. The child now sends its
 // topology_snapshot, then agent_list / event_forward / task_result, exactly as in pull mode.
-// It blocks until the link ends and always closes conn.
+// It blocks until the link ends and always closes conn. When the peer ended the link with a close
+// frame, the returned error is its *websocket.CloseError (code 4010 = permanent refusal, #148).
 func ServeDialedRelay(ctx context.Context, conn *websocket.Conn, peerID string) error {
 	if IsRelayConnected(peerID) {
 		_ = conn.Close()
@@ -1054,8 +1062,11 @@ func ServeDialedRelay(ctx context.Context, conn *websocket.Conn, peerID string) 
 		case <-done:
 		}
 	}()
-	serveRelayConn(conn, relayConn)
-	return ctx.Err()
+	err := serveRelayConn(conn, relayConn)
+	if ctx.Err() != nil {
+		return ctx.Err() // we were stopped: not a peer decision
+	}
+	return err
 }
 
 var (
