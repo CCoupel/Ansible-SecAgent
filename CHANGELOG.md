@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Unreleased] — milestone v3.0 « Fondations » (clos le 2026-10-04, non taggé)
+
+### Changed
+- **Spec du mode repeater (#122)** : topologie en **arbre** (un relay a un seul parent, un agent se connecte à un seul relay), lien ouvert au choix par l'enfant ou par le parent, handshake `relay_hello` → `relay_ack` → `topology_snapshot`, deux rôles JWT `relay-child` / `relay-parent`, refus de boucle (`C ∈ {P} ∪ ancêtres(P)`), inventaire d'un relay = toute sa descendance. Specs dans `DOC/common/ARCHITECTURE.md` §23, `DOC/server/SERVER_SPEC.md` §8-9, `DOC/security/SECURITY.md` §2. **Aucune implémentation** : le repeater-client arrive avec v3.1 (#124, #125, #140).
+- Les corps d'erreur JSON de `register.go` et des handlers admin se terminent désormais par un saut de ligne (`json.Encoder`), le `Content-Type: application/json` est posé sur tous les chemins d'erreur (#144).
+- La CI bloque désormais sur `gofmt` et `golangci-lint` v2.14.0 sur tout le module, tests compris (#133, #144).
+
+### Removed
+- **PushManager, client REST du proxy et variables `PROXY_MODE` / `PROXY_RELAYS`** (#123). Les variables sont ignorées sans erreur. La colonne `relay_nodes.mode` est conservée (`pull` : le relay ouvre vers ce serveur ; `push` : ce serveur ouvre vers ce relay, inerte jusqu'à #140). **Le routage multi-zone v2.0 n'est donc plus fonctionnel** ; la qualif multi-zone est cassée jusqu'à v3.1.
+
+### Fixed
+- Parsing de `DATABASE_URL` : `sqlite:////abs/path.db` donnait un chemin relatif (#131).
+- **Sécurité** : l'ancrage de `hostname_pattern` par concaténation (`"^"+pattern+"$"`) laissait passer les alternances (`web1|db` acceptait `xdb`) à l'enrollment et pour les tokens plugin ; ancrage `^(?:pattern)$`, pattern brut compilé avant l'enveloppe, validation à la création des tokens (HTTP 400 `invalid_hostname_pattern`) (#143). Défaut jamais déployé.
+- `logExecSafe` journalisait l'adresse mémoire de `stdin` ; marqueurs explicites `<redacted>` / `<set>` / `none` (#142).
+- 157 erreurs ignorées signalées par golangci-lint (errcheck, staticcheck, unused) corrigées dans le code de production, ~250 dans les tests, 46 directives `//nolint:errcheck` retirées ; accusés NATS `Ack`/`Nak` journalisés, erreurs de `Close` des fichiers écrits propagées, `panic` retiré de `cli/tokens.go` (#144).
+- Test `TestRelayHandler_DisconnectCleansRouting` instable en CI (course dans le test, pas dans le code) (voir #145 pour les courses restantes).
+
+### Added
+- Script `scripts/bootstrap-qualif.sh` (idempotent) et `DEPLOYMENT/qualif/README.md` (#135).
+- Badge CI dans `README.md`, config `GO/.golangci.yml` au format v2 (#133).
+- Documentation de `hostname_pattern` (regexp Go ancrée, pas un glob) (#134).
+
+---
+
 ## [v2.0.0] — 2026-10-02 — Phase 12 : Proxy/Gateway multi-zone
 
 ### Added

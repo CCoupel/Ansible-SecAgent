@@ -3,39 +3,47 @@
 > Source de vérité au démarrage de session (lue par `/start-session`). Mise à jour par `/end-session`.
 
 ## Version et environnements
-- **Dernière release** : `v2.0.0` (tag annoté sur `259fd13`, release GitHub publiée le 2026-10-02) — Phase 12 Proxy/Gateway multi-zone. La release n'a aucun asset (pas de binaires).
-- **Images GHCR v2.0.0** : publiées le 2026-10-02 via le workflow Release lancé à la demande (`tag=v2.0.0`, `skip_tests=true`) : `ghcr.io/ccoupel/secagent-server` et `secagent-minion` (tags `v2.0.0`, `2.0.0`, `latest`, paquets publics).
-- **Qualif** : 192.168.1.218 (Docker Compose, `DEPLOYMENT/qualif/docker-compose.proxy.yml`) — v2.0.0 validée sur be17cee (smoke 8/8, exec via proxy OK une fois les relay nodes enregistrés sur le port 7770 avec un token plugin).
-- **Prod Kubernetes** : hors périmètre v2.0.0 (pas de Helm chart, kubeconfig Rancher expiré, voir #136).
-- **Template Claude** : v3.9.0 (`cf187ca7`), synchronisé le 2026-10-02.
+- **Dernière release** : `v2.0.0` (tag sur `259fd13`, 2026-10-02), Phase 12 Proxy/Gateway multi-zone. Images GHCR `ghcr.io/ccoupel/secagent-server` et `secagent-minion` publiées.
+- **`main` (au 2026-10-04)** : milestone v3.0 « Fondations » **terminé, non taggé** (10 issues fermées). HEAD `c14cea5`, aligné sur `origin/main`, CI verte (run 37192729367). CHANGELOG : section `[Unreleased]` ajoutée.
+- **Qualif** : 192.168.1.218 (Docker Compose). **La topologie multi-zone v2 n'est plus fonctionnelle** depuis la suppression de `PROXY_RELAYS` (#123) : 5 checks du smoke échouent jusqu'à v3.1 (#124, #125, #140). Aucun déploiement v2.0 en production, donc pas de migration.
+- **Prod Kubernetes** : hors périmètre (Helm chart = #136, milestone v3.4).
+- **Template Claude** : v3.9.1 (`dc3d230f`).
 
-## CI GitHub (créée le 2026-10-02, issue #133 encore ouverte)
-- `.github/workflows/ci.yml` : build + `go test ./...` sur push/PR `main|master` — verte sur `1a7b963`.
-- `.github/workflows/release.yml` : tag `vX.Y.Z` ou `workflow_dispatch` (inputs `tag`, `skip_tests`) ; tests, images GHCR, release GitHub (notes du CHANGELOG + binaires linux/amd64 + SHA256SUMS) ; ne recrée jamais une release existante.
-- Manque : lint golangci-lint (config non vérifiée), tests Python (`SECAGENT-PYTHON/tests` vide), badge README, `version_file`.
-- Les tests sont bloquants, jamais masqués : un tag ne publie rien si les tests échouent.
+## CI GitHub
+- `.github/workflows/ci.yml` : job `Build + tests Go` (bloquant) et job `Lint Go` **bloquant** (`gofmt -l .` + golangci-lint v2.14.0, action v7, config `GO/.golangci.yml` au format v2, plafonds à 0, **sans exclusion sur les `_test.go`**, module entier). 0 issue mesurée. `release.yml` : tag `vX.Y.Z` ou `workflow_dispatch` (images GHCR + release).
+- Pas de golangci-lint local : télécharger le binaire v2.14.0 depuis la release GitHub (qa l'a fait dans son scratchpad). `go` est dans `/usr/local/go/bin` (pas dans le PATH).
+- Manque : tests Python (`SECAGENT-PYTHON/tests/` vide), `-race` en CI (courses connues #145).
 
-## Travail en cours
-- Branche `main`, alignée sur `origin/main` (`1a7b963`), arbre propre.
-- Milestone **v3.0 — repeater-client/server** (#13) : 1/16 fermée (#100 corrigée par `1a7b963`). Ouvertes : #122-#130, #131-#136.
-- Le correctif #100 (become/stdin non vide, timeout) est dans `main` mais PAS dans v2.0.0 : il sortira avec v3.0 (décision utilisateur, pas de v2.0.1).
-- Milestone v2.0 (#12) : fermé, 13/13, réellement implémenté (audit planner 2026-10-02).
+## Modèle v3 (spec validée, issue #122 fermée)
+- Topologie en **arbre** : un relay = un seul parent ; plusieurs sous-relays ; un agent = un seul relay ; un seul chemin par hôte, pas de redondance.
+- Lien ouvert par l'enfant (`REPEATER_UPSTREAM_URL` / `REPEATER_UPSTREAM_TOKEN` / `REPEATER_ID`, env simples) **ou** par le parent (enfant enregistré via API admin, `relay_nodes.mode=push`). `mode=pull` : le relay ouvre vers ce serveur.
+- Handshake : `relay_hello` (celui qui ouvre, `relay_id == jwt.sub`, `ancestors`) → `relay_ack` → `topology_snapshot` (toujours envoyé par l'enfant) → connexion établie ; puis `event_forward` (`host.*`, `relay.*`).
+- Refus de boucle : un lien « C enfant de P » est refusé ssi `C ∈ {P} ∪ ancêtres(P)`.
+- Deux rôles JWT : `relay-child` (créé sur le parent, signé par le secret du parent) et `relay-parent` (créé sur l'enfant, signé par le secret de l'enfant) ; `sub` = identifiant du porteur. JWT_SECRET_KEY, RELAY_PLUGIN_TOKEN et NATS propres à chaque relay, jamais partagés.
+- Inventaire d'un relay = **toute sa descendance** ; groupe Ansible = nom exact du relay, sans préfixe, sans contrôle de collision avec les hostnames ; group vars via `RELAY_GROUP_VARS` (env).
+- Routage : clé `hostname` seule ; en cas de déclaration par deux relays, le dernier arrivé gagne + event `host.conflict`.
+- Signature des tokens par la racine : reportée (#141, milestone v3.3).
 
-## Décisions de la session 2026-10-02
-- v2.0.0 taguée sur le dernier commit de doc (code Go identique à e9672dc et be17cee ; be17cee ne change que la config compose + docs).
-- A4 (auto-seed `PROXY_RELAYS`) absorbé par #124/#125 (auto-enregistrement du repeater-client).
-- Une CI rouge se corrige, elle ne se contourne pas (consigne explicite de l'utilisateur) : ne jamais masquer un test.
+## Milestones GitHub (au 2026-10-04)
+- v3.0 Fondations : 0 ouverte / 10 fermées.
+- **v3.1 Chaîne de relais** : #124 (config enfant), #125 (repeater-client, l'enfant ouvre), #140 (le parent ouvre / dial-out), #127 (routage), #129 (tests), #138 (doc), #145 (courses sous `-race`, sleeps fixes, `handlers` non rejouable en `-count>1`) : 7 ouvertes.
+- v3.2 Events et inventaire : #126, #128, #130, #137, #139 (5 ouvertes). v3.3 Confiance et signature des liens : #141. v3.4 Packaging K8s : #136.
+- **Aucun développement de v3.1 lancé.** Ordre prévu : #124 → #125 → #140 → #127.
 
-## À trancher (prochaine session)
-- **PushManager (#123)** : suppression du mode push et de `PROXY_RELAYS` livrés en v2.0 — à rediscuter avec l'utilisateur (rupture de compatibilité à documenter).
-- Ordre de v3.0 avec les 7 nouvelles issues (#131-#136, #124/#125 enrichies).
-- Fermer ou garder #133 (lint, tests Python).
-- Qualif : nettoyer le worktree `/tmp/qualif-v200` et décider du sort de `DEPLOYMENT/qualif/docker-compose.override.yml`.
-- `.gitattributes` (`* text=auto eol=lf`) et ajout de `MARKETING/` au `.gitignore` (template v3.9.0, site sur `gh-pages` uniquement).
+## À trancher / suivis
+- Lancer v3.1 (dev-relay sur #124 avec la spec #122) ; décider du sort de #145.
+- Suivis mineurs de qa sur #144 : 3 mutations survivantes (dont un test d'échec d'écriture pour `FileExecutor`), `os.Pipe()` ignoré dans les tests de l'inventory, 5 `//nolint:gosec` morts préexistants.
+- Labels hérités inutilisés : `phase:1` à `phase:12`, `owner:dev-plugins` (l'agent s'appelle `dev-connexion`).
+- Qualif : nettoyer `/tmp/qualif-v200`, décider du sort de `DEPLOYMENT/qualif/docker-compose.override.yml` (contournement `store.go`, devrait être inutile depuis #131).
+- Tag `v3.0.0` : à décider (la v3.0 « Fondations » ne contient pas encore le repeater).
 
 ## Règles / pièges
-- Le CRLF/LF fait apparaître des fichiers « modifiés » sans diff réelle (WSL/Windows) : vérifier avec `git diff --ignore-space-at-eol` avant de commiter.
-- Vérifier le code avant d'affirmer dans un CHANGELOG (des affirmations non vérifiées ont dû être retirées de la v2.0.0).
-- Le teamleader délègue : `doc-updater` et `infra` ne sont pas dans les 10 agents permanents, à lancer manuellement ; `/team-delete` arrête tous les teammates en fin de session.
-- `go` n'est pas dans le PATH du shell du teamleader : les tests Go passent par les agents dev ou par la CI.
-- `become_pass` ne doit jamais apparaître dans les logs (test `TestRunBecomePassNotInLogs`).
+- **Questions à l'utilisateur** : toujours via l'outil AskUserQuestion (règle des templates), jamais en texte libre.
+- **Labels** : le CDP maintient les labels de phase du template (`EN COURS` → `EN QA` → `DONE`, puis `status:completed` à la fermeture en retirant `status:todo`) ; le planner pose `status:todo`, `owner:*`, `type:*`. Pas de label `status:in-progress`.
+- **Trailer de commit** : exactement `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`. Les agents mettent souvent `Sonnet 4.6` : le contrôler à CHAQUE commit (`git show -s --format=%B HEAD | tail -2`). Correction locale possible par `git filter-branch --msg-filter` sur `origin/main..HEAD` seulement si l'arbre est propre et non poussé.
+- **Vérifier, ne pas croire** : les agents annoncent parfois des résultats faux (gofmt « 0 fichier » par erreur de syntaxe, rapport cité avec un mauvais chemin, DONE sans rapport, tests absents). Vérifier par `git`, `gh` et lecture des rapports ; qa recompte et refait des mutations.
+- Pas de push sans feu vert explicite de l'utilisateur ; le CDP délègue les commits (dev-*, deploy-qualif, doc-updater) avec liste de fichiers explicite (`git add` fichier par fichier, plusieurs agents partagent le même arbre).
+- Le CRLF/LF fait apparaître des fichiers « modifiés » sans diff réelle : `git diff --ignore-space-at-eol`.
+- `become_pass` ne doit jamais apparaître dans les logs (test `TestRunBecomePassNotInLogs` côté agent, `TestLogExecSafe_*` côté serveur) ; pas de `panic` en production.
+- Le plugin Python est dans `SECAGENT-PYTHON/` (pas `PYTHON/`).
+- `doc-updater` et `infra` ne sont pas dans les 10 agents permanents (spawn manuel) ; `/team-delete` arrête tous les teammates en fin de session.
