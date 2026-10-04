@@ -4,27 +4,79 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [Unreleased] — milestone v3.0 « Fondations » (clos le 2026-10-04, non taggé)
-
-### Changed
-- **Spec du mode repeater (#122)** : topologie en **arbre** (un relay a un seul parent, un agent se connecte à un seul relay), lien ouvert au choix par l'enfant ou par le parent, handshake `relay_hello` → `relay_ack` → `topology_snapshot`, deux rôles JWT `relay-child` / `relay-parent`, refus de boucle (`C ∈ {P} ∪ ancêtres(P)`), inventaire d'un relay = toute sa descendance. Specs dans `DOC/common/ARCHITECTURE.md` §23, `DOC/server/SERVER_SPEC.md` §8-9, `DOC/security/SECURITY.md` §2. **Aucune implémentation** : le repeater-client arrive avec v3.1 (#124, #125, #140).
-- Les corps d'erreur JSON de `register.go` et des handlers admin se terminent désormais par un saut de ligne (`json.Encoder`), le `Content-Type: application/json` est posé sur tous les chemins d'erreur (#144).
-- La CI bloque désormais sur `gofmt` et `golangci-lint` v2.14.0 sur tout le module, tests compris (#133, #144).
-
-### Removed
-- **PushManager, client REST du proxy et variables `PROXY_MODE` / `PROXY_RELAYS`** (#123). Les variables sont ignorées sans erreur. La colonne `relay_nodes.mode` est conservée (`pull` : le relay ouvre vers ce serveur ; `push` : ce serveur ouvre vers ce relay, inerte jusqu'à #140). **Le routage multi-zone v2.0 n'est donc plus fonctionnel** ; la qualif multi-zone est cassée jusqu'à v3.1.
-
-### Fixed
-- Parsing de `DATABASE_URL` : `sqlite:////abs/path.db` donnait un chemin relatif (#131).
-- **Sécurité** : l'ancrage de `hostname_pattern` par concaténation (`"^"+pattern+"$"`) laissait passer les alternances (`web1|db` acceptait `xdb`) à l'enrollment et pour les tokens plugin ; ancrage `^(?:pattern)$`, pattern brut compilé avant l'enveloppe, validation à la création des tokens (HTTP 400 `invalid_hostname_pattern`) (#143). Défaut jamais déployé.
-- `logExecSafe` journalisait l'adresse mémoire de `stdin` ; marqueurs explicites `<redacted>` / `<set>` / `none` (#142).
-- 157 erreurs ignorées signalées par golangci-lint (errcheck, staticcheck, unused) corrigées dans le code de production, ~250 dans les tests, 46 directives `//nolint:errcheck` retirées ; accusés NATS `Ack`/`Nak` journalisés, erreurs de `Close` des fichiers écrits propagées, `panic` retiré de `cli/tokens.go` (#144).
-- Test `TestRelayHandler_DisconnectCleansRouting` instable en CI (course dans le test, pas dans le code) (voir #145 pour les courses restantes).
+## [Unreleased]
 
 ### Added
-- Script `scripts/bootstrap-qualif.sh` (idempotent) et `DEPLOYMENT/qualif/README.md` (#135).
-- Badge CI dans `README.md`, config `GO/.golangci.yml` au format v2 (#133).
-- Documentation de `hostname_pattern` (regexp Go ancrée, pas un glob) (#134).
+- (future features for next milestone)
+
+---
+
+## [v3.1] — 2026-10-04 — Repeater Relay Chain
+
+### Added
+- **Protocole repeater complet** : topologie arbre (un relay enfant a un seul parent), deux modes d'ouverture (`pull` enfant→parent, `push` parent→enfant) (#124, #125, #140)
+  - **Mode pull** (enfant ouvre vers parent) : variables `REPEATER_ID`, `REPEATER_UPSTREAM_URL`, `REPEATER_UPSTREAM_TOKEN` ; l'enfant s'auto-enregistre via `relay_hello` (#124, #125)
+  - **Mode push** (parent ouvre vers enfant) : token relay-parent chiffré AES-GCM avec `RSA_MASTER_KEY`, API `POST /api/admin/relays` (#140)
+  - **Handshake symétrique** : `relay_hello` (client) → `relay_ack` (serveur) → `topology_snapshot` (enfant) ; rejet (4010) si `relay_id ≠ jwt.sub` ou identité du pair change (#153)
+- **Hierarchical routing** (#127) :
+  - `next-hop` task forwarding vers l'agent direct ou enfant relais
+  - Agent local **prioritaire** sur la table de routage (même si déclaré via relay)
+  - Limit `MAX_AGENT_LIST_HOSTS` (défaut 10 000) avec rejet (4012) si dépassé ; `host.conflict` détecté et journalisé une seule fois
+  - Gestion `relay_chain` ascendant à chaque événement
+- **Révocation relay tokens** (#153) :
+  - `POST /api/admin/relays/{id}/revoke` et `tokens revoke <relay_id>` : blacklist du JTI + fermeture (4010) du lien actif
+  - Tokens relay-parent : CLI `tokens create --role relay-parent --sub <parent> --expires <d>` (max 365 j, obligatoire) (#150)
+  - Métadonnées persistées (JTI, expiry, revoked) ; jamais le token en clair en DB
+  - Relais antérieurs (#153) sans JTI : révoqués par le drapeau seul (legacy_token=true)
+- **État du lien amont** (#154, option B) :
+  - `/health` (port 7770) : HTTP 200 maintenu, champ `links` {upstream{mode, peer, state, reason, since}, push_children[]} + `degraded` si 4010
+  - `secagent-server server status` et `/api/admin/status` (port 7771) : tableau LINK/PEER/STATE/SINCE/REASON, avertissement « operator action required » si dégradé
+  - États `connected`, `retrying` (non-terminal), `refused_permanent` (terminal, action requise)
+- **Codes de fermeture `/ws/relay`** (#148) :
+  - `4010` (refus permanent) : token révoqué, identity mismatch, boucle détectée → arrêt client (log ERROR)
+  - `4012` (refus corrigible) : snapshot invalide, conflict de routage → reconnexion avec backoff (5 s → 60 s)
+  - `4011` (token expiré) : non utilisé pour l'instant (réservé)
+
+### Changed
+- Les spécifications v3.0 (§23 ARCHITECTURE.md, §8-9 SERVER_SPEC.md, §2 SECURITY.md) sont désormais **implémentées et validées** (#124–#154)
+- Tables SQLite : `relay_nodes` (jti, token_exp, revoked), `relay_routing` (hierarchical avec relay_chain), `relay_parent_tokens` (métadonnées)
+- CLI `relays` renommée implicitement : accès via `secagent-server relays add|list|get|remove` (port 7771)
+- Variables d'environnement : `REPEATER_ID`, `REPEATER_UPSTREAM_URL`, `REPEATER_UPSTREAM_TOKEN`, `RSA_MASTER_KEY` (push), `MAX_AGENT_LIST_HOSTS`, `MAX_SNAPSHOT_HOSTS` ajoutées
+- Docker Compose qualif : support topologie repeater (parent + 2 enfants)
+
+### Fixed
+- **Sécurité** : relay-parent tokens ne fuient jamais en logs, seul output one-shot au create (#150)
+- Refus permanent (4010) ne fuite jamais le token dans la raison ; détection boucle + identity mismatch fail-closed (#140, #153)
+- Validation `relay_ack.relay_id` côté client (pull) ou vérification `relay_chain[-1]` côté serveur (push) (#154)
+
+### Known Limitations
+- `#152` : colonne `relay_nodes.token_hash` trompeuse (hash pour pull, token chiffré pour push) — renommage envisagé
+- `#126` : un hôte dans la profondeur n'est pas routable vers l'ancêtre jusqu'au prochain snapshot du parent
+- `#146` : rôle relay-child créé manuellement (pas de CLI) ; hiérarchie PKI envisagée pour v3.2+
+- `#151` : SSRF dans la validation dial-out — enregistrement en suivi
+- Métrique : aucune infrastructure de métriques n'existe actuellement (raison du lien stockée en texte uniquement)
+
+---
+
+## [v3.0] — 2026-10-03 — Fondations (specs seulement)
+
+### Changed
+- **Spec du mode repeater (#122)** : topologie en **arbre**, handshake `relay_hello` → `relay_ack` → `topology_snapshot`, deux rôles JWT `relay-child` / `relay-parent`, refus de boucle. **Aucune implémentation en v3.0**.
+- Les corps d'erreur JSON se terminent par un saut de ligne (`json.Encoder`) (#144).
+- La CI bloque sur `gofmt` et `golangci-lint` v2.14.0 (#133, #144).
+
+### Removed
+- **PushManager, REST relay polling, variables `PROXY_MODE` / `PROXY_RELAYS`** (#123). Colonne `relay_nodes.mode` conservée mais inerte jusqu'à v3.1.
+
+### Fixed
+- Parsing de `DATABASE_URL` : chemin absolu correct (#131).
+- `hostname_pattern` : ancrage strict `^(?:pattern)$` (#143).
+- `logExecSafe` : pas d'adresses mémoire (#142).
+- 157 erreurs golangci-lint corrigées (#144) ; test flaky corrigé (#145).
+
+### Added
+- Script `scripts/bootstrap-qualif.sh` (#135).
+- Badge CI, `GO/.golangci.yml` v2 (#133).
 
 ---
 
