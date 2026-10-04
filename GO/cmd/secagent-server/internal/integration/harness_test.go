@@ -22,7 +22,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const waitLimit = 15 * time.Second
+const waitLimit = 30 * time.Second // generous: only reached on failure, avoids flakes on a loaded CI runner
 
 func waitFor(t *testing.T, what string, fn func() bool) {
 	t.Helper()

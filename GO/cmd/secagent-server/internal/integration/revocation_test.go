@@ -145,3 +145,35 @@ func TestRevocation_Code4012IsRetried(t *testing.T) {
 		t.Errorf("the child must have seen three 4012 closes:\n%s", relay1.logs.String())
 	}
 }
+
+// DELETE of a relay whose token cannot be blacklisted (push) is refused with 409 unless it was
+// revoked first (#153); a revoked one can be deleted and its dialer stops.
+func TestRevocation_DeletingAPushRelayRequiresRevocationFirst(t *testing.T) {
+	t.Parallel()
+	root := startNode(t, nodeSpec{ID: "root"})
+	relay1 := startNode(t, nodeSpec{ID: "relay1"})
+	tok, _ := relay1.mintParentToken("root")
+	code, m := root.admin("POST", "/api/admin/relays", map[string]any{"relay_id": "relay1", "mode": "push", "url": relay1.wssURL(), "token": tok})
+	if code != http.StatusCreated {
+		t.Fatalf("register push: %d %v", code, m)
+	}
+	rowID := m["id"].(string)
+	waitFor(t, "dialed link up", func() bool { return root.pushState("relay1") == "connected" })
+
+	code, m = root.admin("DELETE", "/api/admin/relays/"+rowID, nil)
+	if code != http.StatusConflict || m["error"] != "relay_not_revoked" {
+		t.Fatalf("DELETE of an unrevoked push relay = %d %v, want 409 relay_not_revoked", code, m)
+	}
+	if root.pushState("relay1") != "connected" {
+		t.Error("a refused DELETE must leave the link untouched")
+	}
+
+	if code, m = root.admin("POST", "/api/admin/relays/"+rowID+"/revoke", nil); code != http.StatusOK {
+		t.Fatalf("revoke = %d %v", code, m)
+	}
+	if code, m = root.admin("DELETE", "/api/admin/relays/"+rowID, nil); code != http.StatusOK && code != http.StatusNoContent {
+		t.Fatalf("DELETE after revocation = %d %v", code, m)
+	}
+	waitFor(t, "the dialer of the deleted relay is gone", func() bool { return root.pushState("relay1") == "" })
+	assertNoSecrets(t, allLogs(root, relay1), tok)
+}

@@ -239,6 +239,7 @@ func assembleNode(t *testing.T) (http.Handler, func()) {
 	mux.HandleFunc("GET /api/admin/relays", handlers.AdminListRelays)
 	mux.HandleFunc("DELETE /api/admin/relays/{id}", handlers.AdminDeleteRelay)
 	mux.HandleFunc("POST /api/admin/relays/{id}/revoke", handlers.AdminRevokeRelay)
+	mux.HandleFunc("GET /api/admin/relays/status", handlers.AdminRelaysStatus)
 	mux.HandleFunc("GET /api/admin/status", handlers.AdminStatus)
 	mux.HandleFunc("/ws/agent", ws.AgentHandler)
 	mux.HandleFunc("/ws/relay", ws.RelayHandler)
