@@ -3,7 +3,6 @@ package repeater
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -93,13 +92,12 @@ func TestDialedLink_Close4010IsPermanentErrorLoggedAndNoRedial(t *testing.T) {
 	if !strings.Contains(st.Reason, "4010") {
 		t.Errorf("reason = %q", st.Reason)
 	}
-	if !errors.Is(d.Terminal(), ErrPermanentRefusal) {
-		t.Errorf("Terminal() = %v", d.Terminal())
-	}
-	n := c.attempts.Load()
-	time.Sleep(300 * time.Millisecond) // ~4 backoff periods: no redial allowed
-	if c.attempts.Load() != n || n != 1 {
-		t.Errorf("attempts = %d then %d, want exactly 1", n, c.attempts.Load())
+	// Status flips (runLoop's tracker) BEFORE runLoop returns and Dialer.terminal is assigned:
+	// wait for the terminal error itself instead of reading it right after the status.
+	awaitTerminal(t, d)
+	// runLoop has returned: no redial is possible any more, whatever the backoff.
+	if n := c.attempts.Load(); n != 1 {
+		t.Errorf("attempts = %d, want exactly 1 (no redial after 4010)", n)
 	}
 	logs := sink.String()
 	if !strings.Contains(logs, "ERROR") || !strings.Contains(logs, "operator action required") {
