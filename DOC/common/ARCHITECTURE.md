@@ -2190,12 +2190,26 @@ CREATE TABLE IF NOT EXISTS relay_nodes (
     id              TEXT PRIMARY KEY,       -- UUID interne
     relay_id        TEXT NOT NULL UNIQUE,   -- identifiant lisible, ex: "dmz1"
     description     TEXT,
-    token_hash      TEXT,                   -- hash JWT JTI du token relay (validation blacklist, revocation 4010)
-    token_encrypted TEXT,                   -- token relay mode=push chiffré AES-256-GCM (HAUT-5)
+    token_hash      TEXT,                   -- ⚠️ misnomer (#152): SHA-256(JTI) pour pull; AES-GCM(token) préfixé enc: pour push
+    jti             TEXT,                   -- JWT JTI du token relay (pour blacklist #153); NULL pour push
+    token_exp       INTEGER,                -- exp du JWT (expiration timestamp pour purge automatique blacklist)
+    token_encrypted TEXT,                   -- token relay mode=push chiffré AES-256-GCM avec RSA_MASTER_KEY (#140)
+    revoked         INTEGER DEFAULT 0,      -- flag révocation (#153); relais legacy (sans jti) révoqués par ce flag seul
     mode            TEXT NOT NULL DEFAULT 'pull',   -- "pull" (WSS entrante) | "push" (WSS sortante)
     created_at      INTEGER NOT NULL,
     last_seen       INTEGER,               -- Unix timestamp, NULL si jamais connecté (pull)
     status          TEXT NOT NULL DEFAULT 'pending'  -- "connected" | "disconnected" | "pending" (pull)
+);
+
+-- Tokens relay-parent (association relay_id → JTI pour la révocation)
+CREATE TABLE IF NOT EXISTS relay_parent_tokens (
+    id              TEXT PRIMARY KEY,       -- UUID publique du token
+    jti             TEXT NOT NULL UNIQUE,   -- JWT JTI pour blacklist à la révocation
+    parent_id       TEXT NOT NULL,          -- relay_id du parent (cli --sub) — validé contre relay_hello.relay_id
+    description     TEXT,
+    created_at      INTEGER NOT NULL,
+    expires_at      INTEGER NOT NULL,       -- exp du JWT (obligatoire, max 365j)
+    revoked_at      INTEGER                 -- timestamp révocation (NULL si actif); INSERT blacklist(jti) à cet instant
 );
 
 -- Table de routage hostname → relay_id (un seul chemin par hôte)
@@ -2206,12 +2220,6 @@ CREATE TABLE IF NOT EXISTS relay_routing (
     relay_chain TEXT,                  -- JSON sérialisé, ex: '["dmz1","zone-a"]'
     updated_at  INTEGER NOT NULL
 );
-
--- Tokens relay (association relay_id → JTI pour blacklist)
--- (standard table du système, voir §7 auth)
-
--- Group vars par relay (futur DB v3.1, pour v3.0 → env var RELAY_GROUP_VARS)
--- À définir en #128
 ```
 
 **Changement clé** : clé composite `(hostname, relay_id)` supprimée. Clé simple `hostname` car un seul chemin par hôte en topologie arbre.
@@ -2220,7 +2228,7 @@ CREATE TABLE IF NOT EXISTS relay_routing (
 
 ### 23.8 Configuration repeater-enfant
 
-#### Variables d'environnement (mode enfant-push)
+#### Variables d'environnement (mode enfant-pull)
 
 Pour déploiement simple où l'enfant ouvre vers son parent :
 
