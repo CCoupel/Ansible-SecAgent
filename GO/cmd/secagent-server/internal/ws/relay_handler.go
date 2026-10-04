@@ -84,6 +84,9 @@ type RelayMessage struct {
 	Event      string         `json:"event,omitempty"`
 	RelayChain []string       `json:"relay_chain,omitempty"`
 	GroupVars  map[string]any `json:"group_vars,omitempty"`
+	// host.conflict: previous and new owner of a hostname route
+	OldRelay string `json:"old_relay,omitempty"`
+	NewRelay string `json:"new_relay,omitempty"`
 
 	// agent_list / agent_list_ack
 	Agents []RelayAgentInfo `json:"agents,omitempty"`
@@ -180,6 +183,9 @@ var (
 	relayEventUpstream  func(ev RelayMessage)
 	relayJTIBlacklistFn func(jti string) (bool, error)
 	relayHostRouteFn    func(hostname string) (string, error)
+	relayRouteUpsertFn  func(hostname, relayID string, chain []string) error
+	relayRouteChainsFn  func(entries []RouteChainEntry) error
+	relayConflictFn     func(c HostConflict, fromBelow bool)
 )
 
 // SetRelayLocalIDFunc sets the provider of this node's own relay id (REPEATER_ID; "" if unset).
@@ -297,6 +303,86 @@ func checkHostConflicts(conn *RelayConnection, relays map[string]struct{}, byRel
 		}
 	}
 	return nil
+}
+
+// RouteChainEntry is a host route learned from a topology_snapshot: the declaring relay and
+// the top-down chain from this node's direct child (the peer) down to that relay.
+type RouteChainEntry struct {
+	Hostname string
+	RelayID  string
+	Chain    []string
+}
+
+// HostConflict describes a host whose route changed to a different owner (SECURITY.md §9):
+// last arrival wins, the event lets operators alert on suspicious route moves.
+type HostConflict struct {
+	Hostname   string
+	OldRelay   string // previous owner: relay_id, or LocalOwner when the agent is connected here
+	NewRelay   string // relay that now declares the host
+	RelayChain []string
+}
+
+// LocalOwner is HostConflict.OldRelay when the host is a directly connected agent.
+const LocalOwner = "local"
+
+// SetRelayRouteUpsertFunc sets the single-host route upsert (event_forward host.up/host.new).
+func SetRelayRouteUpsertFunc(fn func(hostname, relayID string, chain []string) error) {
+	treeHooksMu.Lock()
+	relayRouteUpsertFn = fn
+	treeHooksMu.Unlock()
+}
+
+// SetRelayRouteChainsFunc sets the recorder of full top-down chains for snapshot routes.
+func SetRelayRouteChainsFunc(fn func(entries []RouteChainEntry) error) {
+	treeHooksMu.Lock()
+	relayRouteChainsFn = fn
+	treeHooksMu.Unlock()
+}
+
+// SetRelayConflictFunc sets the host.conflict sink. fromBelow is true when the conflict was
+// reported by a descendant (already counted there): hooks should fire, no upstream re-emission.
+func SetRelayConflictFunc(fn func(c HostConflict, fromBelow bool)) {
+	treeHooksMu.Lock()
+	relayConflictFn = fn
+	treeHooksMu.Unlock()
+}
+
+func emitConflict(c HostConflict, fromBelow bool) {
+	log.Printf("[WARN] host.conflict: hostname=%s old=%s new=%s chain=%v", c.Hostname, c.OldRelay, c.NewRelay, c.RelayChain)
+	treeHooksMu.RLock()
+	fn := relayConflictFn
+	treeHooksMu.RUnlock()
+	if fn != nil {
+		fn(c, fromBelow)
+	}
+}
+
+// detectHostConflict returns a conflict when peer's claim on hostname moves it away from
+// another owner: a different relay not under peer, or a directly connected agent.
+func detectHostConflict(conn *RelayConnection, hostname string, chain []string) *HostConflict {
+	if _, err := GetConnection(hostname); err == nil {
+		return &HostConflict{Hostname: hostname, OldRelay: LocalOwner, NewRelay: conn.RelayID, RelayChain: chain}
+	}
+	prev, err := lookupHostRoute(hostname)
+	if err != nil || prev == "" || prev == conn.RelayID {
+		return nil
+	}
+	if _, mine := conn.descendants[prev]; mine {
+		return nil
+	}
+	return &HostConflict{Hostname: hostname, OldRelay: prev, NewRelay: conn.RelayID, RelayChain: chain}
+}
+
+func routeChainsHook() func(entries []RouteChainEntry) error {
+	treeHooksMu.RLock()
+	defer treeHooksMu.RUnlock()
+	return relayRouteChainsFn
+}
+
+func routeUpsertHook() func(hostname, relayID string, chain []string) error {
+	treeHooksMu.RLock()
+	defer treeHooksMu.RUnlock()
+	return relayRouteUpsertFn
 }
 
 // checkRelayJTI refuses revoked tokens. Fail closed: without a configured check
@@ -651,6 +737,12 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		for _, a := range msg.Agents {
 			if a.Hostname != "" {
 				hostnames = append(hostnames, a.Hostname)
+			}
+		}
+		// Last arrival wins, but a move away from another owner is reported (host.conflict).
+		for _, h := range hostnames {
+			if c := detectHostConflict(conn, h, []string{conn.RelayID}); c != nil {
+				emitConflict(*c, false)
 			}
 		}
 		if RelayRoutingBulkUpsertFunc != nil {
@@ -1079,6 +1171,15 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 			}
 		}
 	}
+	if fn := routeChainsHook(); fn != nil {
+		var entries []RouteChainEntry
+		for _, a := range msg.Agents {
+			entries = append(entries, RouteChainEntry{Hostname: a.Hostname, RelayID: a.RelayID, Chain: a.RelayChain})
+		}
+		if cerr := fn(entries); cerr != nil {
+			log.Printf("topology_snapshot: route chains: relay=%s err=%v", conn.RelayID, cerr)
+		}
+	}
 	conn.descendants = relays
 	conn.snapshotDone = true
 	ack := RelayMessage{Type: "topology_ack", RelayID: localRelayID(), Status: "ok", Count: len(msg.Agents),
@@ -1128,7 +1229,45 @@ func handleEventForward(conn *RelayConnection, msg RelayMessage) {
 			}
 		}
 	}
+	applyEventRouting(conn, msg)
 	forwardEventUpstream(msg)
+}
+
+// applyEventRouting keeps relay_routing in sync with descendants' events: host.up / host.new
+// (re)route the host to the relay where it lives (chain[0]) via the peer; a host.conflict
+// reported below is relayed to the hooks. host.down keeps the route (dispatch reports offline).
+func applyEventRouting(conn *RelayConnection, msg RelayMessage) {
+	chain := msg.RelayChain // origin first, authenticated peer last
+	switch msg.Event {
+	case "host.up", "host.new":
+		if msg.Hostname == "" {
+			return
+		}
+		origin := chain[0]
+		topDown := make([]string, len(chain))
+		for i, id := range chain {
+			topDown[len(chain)-1-i] = id
+		}
+		// The event comes from below: a conflict here is detected against OTHER owners only.
+		if c := detectHostConflict(conn, msg.Hostname, topDown); c != nil {
+			emitConflict(*c, false)
+		}
+		if origin != conn.RelayID {
+			if err := registerRelayNode(origin); err != nil {
+				log.Printf("event_forward: register relay %s: %v", origin, err)
+			}
+		}
+		if fn := routeUpsertHook(); fn != nil {
+			if err := fn(msg.Hostname, origin, topDown); err != nil {
+				log.Printf("event_forward: route update host=%s: %v", msg.Hostname, err)
+			}
+		}
+	case "host.conflict":
+		if msg.Hostname == "" {
+			return
+		}
+		emitConflict(HostConflict{Hostname: msg.Hostname, OldRelay: msg.OldRelay, NewRelay: msg.NewRelay, RelayChain: chain}, true)
+	}
 }
 
 // closeWithRejection sends the WS close frame for a rejected link.
