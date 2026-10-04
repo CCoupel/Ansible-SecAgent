@@ -32,7 +32,12 @@ func currentWSHooks() wsHooks {
 	return curWSHooks
 }
 
+// intJWTSecret is the HMAC secret ws.JWTSecretsFunc returns during proxy tests.
+// /ws/relay fails closed without JWT verification, so it is set once here.
+const intJWTSecret = "proxy-int-test-secret"
+
 func TestMain(m *testing.M) {
+	ws.SetJWTSecretsFunc(func() (string, string, time.Time) { return intJWTSecret, "", time.Time{} })
 	ws.RelayRoutingBulkUpsertFunc = func(relayID string, hostnames []string) error {
 		if fn := currentWSHooks().routing; fn != nil {
 			return fn(relayID, hostnames)

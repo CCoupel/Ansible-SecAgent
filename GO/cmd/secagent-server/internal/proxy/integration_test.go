@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 
 	"secagent-server/cmd/secagent-server/internal/storage"
@@ -53,16 +54,31 @@ func intRelayServer(t *testing.T, store *storage.Store) *httptest.Server {
 	return srv
 }
 
-// intDialRelay dials a /ws/relay connection using the relay_id query param
-// (test-mode fallback — ws.JWTSecretsFunc is nil during proxy package tests).
+// intRelayJWT signs a relay JWT accepted by ws.JWTSecretsFunc (set once in TestMain).
+func intRelayJWT(t *testing.T, relayID string) string {
+	t.Helper()
+	claims := jwt.MapClaims{
+		"sub": relayID, "role": "relay", "jti": "int-jti-" + relayID,
+		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
+	}
+	raw, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(intJWTSecret))
+	if err != nil {
+		t.Fatalf("sign relay JWT: %v", err)
+	}
+	return raw
+}
+
+// intDialRelay dials a /ws/relay connection authenticated with a signed relay JWT.
 // isProxy=true sets the query param that makes the relay announce itself as a proxy.
 func intDialRelay(t *testing.T, srv *httptest.Server, relayID string, isProxy bool) *websocket.Conn {
 	t.Helper()
-	u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/relay?relay_id=" + relayID
+	u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/relay"
 	if isProxy {
-		u += "&is_proxy=true"
+		u += "?is_proxy=true"
 	}
-	conn, resp, err := websocket.DefaultDialer.Dial(u, nil)
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Bearer "+intRelayJWT(t, relayID))
+	conn, resp, err := websocket.DefaultDialer.Dial(u, hdr)
 	if err != nil {
 		status := 0
 		if resp != nil {
