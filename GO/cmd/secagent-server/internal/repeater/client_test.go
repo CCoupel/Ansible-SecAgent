@@ -20,15 +20,16 @@ const waitTimeout = 5 * time.Second
 
 // mockParent is a WSS parent: it records handshakes and exposes the live conn.
 type mockParent struct {
-	srv       *httptest.Server
-	idv       atomic.Value // identity answered in relay_ack (string)
-	ackBody   func() any
-	conns     chan *websocket.Conn
-	hellos    chan map[string]any
-	auths     chan string
-	incoming  chan map[string]any
-	accepted  atomic.Int32
-	closeWith int // when >0: close with this code right after relay_hello
+	srv          *httptest.Server
+	idv          atomic.Value // identity answered in relay_ack (string)
+	ackBody      func() any
+	conns        chan *websocket.Conn
+	hellos       chan map[string]any
+	auths        chan string
+	incoming     chan map[string]any
+	accepted     atomic.Int32
+	ackAncestors []string
+	closeWith    int // when >0: close with this code right after relay_hello
 }
 
 func newMockParent(t *testing.T, id string) *mockParent {
@@ -58,7 +59,7 @@ func newMockParent(t *testing.T, id string) *mockParent {
 			_ = c.Close()
 			return
 		}
-		if err := c.WriteJSON(map[string]any{"type": "relay_ack", "relay_id": p.idv.Load().(string), "status": "ok"}); err != nil {
+		if err := c.WriteJSON(map[string]any{"type": "relay_ack", "relay_id": p.idv.Load().(string), "status": "ok", "ancestors": p.ackAncestors}); err != nil {
 			return
 		}
 		p.conns <- c
@@ -150,6 +151,18 @@ func TestHandshakeAndAgentList(t *testing.T) {
 	}
 	if c.ParentID() != "central" {
 		t.Errorf("ParentID = %q", c.ParentID())
+	}
+}
+
+func TestAncestorsLearnedFromAck(t *testing.T) {
+	p := newMockParent(t, "central")
+	p.ackAncestors = []string{"central", "root"}
+	c := startClient(t, p, Options{})
+	p.conn(t)
+	p.next(t, "topology_snapshot") // sent after the ack was processed
+	got := c.Ancestors()
+	if len(got) != 2 || got[0] != "central" || got[1] != "root" {
+		t.Errorf("Ancestors = %v", got)
 	}
 }
 

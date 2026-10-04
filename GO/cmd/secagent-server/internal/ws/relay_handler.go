@@ -15,9 +15,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // Relay-specific WebSocket close codes.
@@ -35,7 +39,23 @@ type RelayConnection struct {
 	IsProxy bool
 	Conn    interface{ WriteJSON(interface{}) error } // *websocket.Conn in production
 	mu      sync.Mutex
+
+	// Tree state (#125) — only touched by the connection's read-loop goroutine.
+	descendants  map[string]struct{} // relays declared in the validated topology_snapshot
+	snapshotDone bool
+	reject       *relayRejection // set by a handler to make the read loop close the link
+	evWindow     time.Time       // event_forward rate limit window start
+	evCount      int
 }
+
+// relayRejection asks the read loop to close the link with a WS close code.
+type relayRejection struct {
+	code   int
+	reason string
+}
+
+// maxEventsPerSecond bounds event_forward from a single relay (flood protection).
+const maxEventsPerSecond = 200
 
 // RelayMessage is the wire format for messages over /ws/relay.
 // All fields are optional; only the ones relevant to a given type are populated.
@@ -47,6 +67,17 @@ type RelayMessage struct {
 	Version  string `json:"version,omitempty"`
 	IsProxy  bool   `json:"is_proxy,omitempty"`
 	NodeType string `json:"node_type,omitempty"` // "relay" | "proxy" — alternative to is_proxy
+	// Ancestors: relay_hello = ancestors of the sender (push mode); relay_ack = ancestors of
+	// the child as known by the parent ({parent} ∪ ancestors(parent), parent first).
+	Ancestors []string `json:"ancestors,omitempty"`
+
+	// topology_snapshot: descendant relays (agents reuse the Agents field)
+	Relays []RelayTopoEntry `json:"relays,omitempty"`
+
+	// event_forward
+	Event      string         `json:"event,omitempty"`
+	RelayChain []string       `json:"relay_chain,omitempty"`
+	GroupVars  map[string]any `json:"group_vars,omitempty"`
 
 	// agent_list / agent_list_ack
 	Agents []RelayAgentInfo `json:"agents,omitempty"`
@@ -84,6 +115,15 @@ type RelayAgentInfo struct {
 	Hostname string `json:"hostname"`
 	Status   string `json:"status,omitempty"`
 	LastSeen string `json:"last_seen,omitempty"`
+	// topology_snapshot only
+	RelayID    string   `json:"relay_id,omitempty"`
+	RelayChain []string `json:"relay_chain,omitempty"`
+}
+
+// RelayTopoEntry is a descendant relay declared in a topology_snapshot.
+type RelayTopoEntry struct {
+	RelayID    string   `json:"relay_id"`
+	RelayChain []string `json:"relay_chain"`
 }
 
 // RelayTaskResult holds the outcome of a task dispatched to a relay.
@@ -123,6 +163,124 @@ var RelayStatusUpdateFunc func(relayID, status string, lastSeen int64) error
 // Injected from main.go: func(relayID string, isProxy bool) error
 // Called when a relay identifies itself as a proxy in relay_hello (node_type="proxy" or is_proxy=true).
 var RelayIsProxyUpdateFunc func(relayID string, isProxy bool) error
+
+// Tree-topology hooks (#125). They are guarded by a mutex because handler goroutines
+// read them while tests/main may (re)assign them; use the Set* functions.
+var (
+	treeHooksMu         sync.RWMutex
+	relayLocalIDFn      func() string
+	relayAncestorsFn    func() []string
+	relayNodeRegisterFn func(relayID string) error
+	relayEventUpstream  func(ev RelayMessage)
+)
+
+// SetRelayLocalIDFunc sets the provider of this node's own relay id (REPEATER_ID; "" if unset).
+func SetRelayLocalIDFunc(fn func() string) {
+	treeHooksMu.Lock()
+	relayLocalIDFn = fn
+	treeHooksMu.Unlock()
+}
+
+// SetRelayAncestorsFunc sets the provider of this node's ancestors, parent first, root last
+// (learned from its own upstream handshake; empty for the root).
+func SetRelayAncestorsFunc(fn func() []string) {
+	treeHooksMu.Lock()
+	relayAncestorsFn = fn
+	treeHooksMu.Unlock()
+}
+
+// SetRelayNodeRegisterFunc sets the idempotent relay_nodes registration (mode=pull,
+// status=connected) that must not overwrite an existing declaration.
+func SetRelayNodeRegisterFunc(fn func(relayID string) error) {
+	treeHooksMu.Lock()
+	relayNodeRegisterFn = fn
+	treeHooksMu.Unlock()
+}
+
+// SetRelayEventUpstreamFunc sets the forwarder of validated event_forward messages to this
+// node's own parent (nil on the root). The upstream client appends this node's id.
+func SetRelayEventUpstreamFunc(fn func(ev RelayMessage)) {
+	treeHooksMu.Lock()
+	relayEventUpstream = fn
+	treeHooksMu.Unlock()
+}
+
+func registerRelayNode(relayID string) error {
+	treeHooksMu.RLock()
+	fn := relayNodeRegisterFn
+	treeHooksMu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(relayID)
+}
+
+func forwardEventUpstream(ev RelayMessage) {
+	treeHooksMu.RLock()
+	fn := relayEventUpstream
+	treeHooksMu.RUnlock()
+	if fn != nil {
+		fn(ev)
+	}
+}
+
+// ── Limits ───────────────────────────────────────────────────────────────────
+
+func envInt(name string, def int) int {
+	if v, err := strconv.Atoi(os.Getenv(name)); err == nil && v > 0 {
+		return v
+	}
+	return def
+}
+
+func maxSnapshotRelays() int { return envInt("MAX_SNAPSHOT_RELAYS", 1000) }
+func maxSnapshotHosts() int  { return envInt("MAX_SNAPSHOT_HOSTS", 10000) }
+func maxRelayMessageSize() int64 {
+	return int64(envInt("MAX_WS_MESSAGE_SIZE_RELAY", 10*1024*1024))
+}
+
+const defaultLocalRelayID = "secagent-server"
+
+func localRelayID() string {
+	treeHooksMu.RLock()
+	fn := relayLocalIDFn
+	treeHooksMu.RUnlock()
+	if fn != nil {
+		if id := fn(); id != "" {
+			return id
+		}
+	}
+	return defaultLocalRelayID
+}
+
+func localAncestors() []string {
+	treeHooksMu.RLock()
+	fn := relayAncestorsFn
+	treeHooksMu.RUnlock()
+	if fn != nil {
+		return fn()
+	}
+	return nil
+}
+
+// loopedWith reports whether linking childID under this node would create a loop:
+// childID ∈ {this node} ∪ ancestors(this node).
+func loopedWith(childID string) bool {
+	if childID == localRelayID() {
+		return true
+	}
+	for _, a := range localAncestors() {
+		if a == childID {
+			return true
+		}
+	}
+	return false
+}
+
+func reject(conn *RelayConnection, reason string) {
+	log.Printf("[RELAY] link refused: relay_id=%s reason=%s", conn.RelayID, reason)
+	conn.reject = &relayRejection{code: WSRelayCloseRevoked, reason: reason}
+}
 
 // ── Public accessors ─────────────────────────────────────────────────────────
 
@@ -313,11 +471,15 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 	switch msg.Type {
 
 	case "relay_hello":
-		// Relay identifies itself; proxy acknowledges
-		if msg.RelayID != "" && msg.RelayID != conn.RelayID {
-			// Relay hello may re-assert a different relay_id — trust the JWT sub
-			log.Printf("Relay hello relay_id mismatch: jwt=%s hello=%s — using JWT",
-				conn.RelayID, msg.RelayID)
+		// The announced identity must be the authenticated one.
+		if msg.RelayID != conn.RelayID {
+			reject(conn, "relay_hello relay_id does not match jwt.sub")
+			return
+		}
+		// Structural loop check (also enforced at upgrade time).
+		if loopedWith(conn.RelayID) {
+			reject(conn, "loop detected: relay is the parent or one of its ancestors")
+			return
 		}
 		// node_type="proxy" or is_proxy=true both mark this node as a proxy
 		isProxyNode := msg.IsProxy || msg.NodeType == "proxy"
@@ -329,9 +491,16 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 				log.Printf("relay_hello: SetRelayIsProxy error: relay_id=%s err=%v", conn.RelayID, err)
 			}
 		}
+		// Auto-registration in relay_nodes (idempotent).
+		if err := registerRelayNode(conn.RelayID); err != nil {
+			log.Printf("relay_hello: auto-register error: relay_id=%s err=%v", conn.RelayID, err)
+		}
+		// relay_ack carries the PARENT's identity (this node), so the child can pin it.
+		ancestors := append([]string{localRelayID()}, localAncestors()...)
 		ack := RelayMessage{
 			Type:      "relay_ack",
-			RelayID:   conn.RelayID,
+			RelayID:   localRelayID(),
+			Ancestors: ancestors,
 			Status:    "ok",
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		}
@@ -342,6 +511,12 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		conn.mu.Unlock()
 		log.Printf("relay_hello ack: relay_id=%s version=%s is_proxy=%v node_type=%q",
 			conn.RelayID, msg.Version, conn.IsProxy, msg.NodeType)
+
+	case "topology_snapshot":
+		handleTopologySnapshot(conn, msg)
+
+	case "event_forward":
+		handleEventForward(conn, msg)
 
 	case "agent_list":
 		// Relay announces its connected agents → update relay_routing
@@ -444,9 +619,27 @@ func RelayHandler(w http.ResponseWriter, r *http.Request) {
 		IsProxy: isProxy,
 		Conn:    conn,
 	}
+
+	// Structural loop refusal, independent of what the peer sends afterwards.
+	if loopedWith(relayID) {
+		reject(relayConn, "loop detected: relay is the parent or one of its ancestors")
+		closeWithRejection(conn, relayConn.reject)
+		_ = conn.Close()
+		return
+	}
+	conn.SetReadLimit(maxRelayMessageSize())
+
 	registerRelayConnection(relayConn)
 
 	defer func() {
+		// Descendants declared by this relay are unreachable once it is gone.
+		if RelayRoutingBulkUpsertFunc != nil {
+			for id := range relayConn.descendants {
+				if err := RelayRoutingBulkUpsertFunc(id, nil); err != nil {
+					log.Printf("Relay WS cleanup: routing clear relay=%s err=%v", id, err)
+				}
+			}
+		}
 		unregisterRelayConnection(relayID)
 		_ = conn.Close()
 	}()
@@ -474,6 +667,10 @@ func RelayHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Relay WS SetReadDeadline loop: relay_id=%s err=%v", relayID, err)
 		}
 		handleRelayMessage(relayConn, msg)
+		if relayConn.reject != nil {
+			closeWithRejection(conn, relayConn.reject)
+			break
+		}
 	}
 }
 
@@ -501,4 +698,147 @@ func resetRelayState() {
 		delete(relayPendingTasks, k)
 	}
 	relayTasksMu.Unlock()
+}
+
+// validateSnapshot checks a topology_snapshot sent by the child conn.RelayID and
+// returns the descendant relay ids and the hostname → relay_id map.
+func validateSnapshot(conn *RelayConnection, msg RelayMessage) (map[string]struct{}, map[string][]string, error) {
+	if len(msg.Relays) > maxSnapshotRelays() {
+		return nil, nil, fmt.Errorf("too many relays (%d > %d)", len(msg.Relays), maxSnapshotRelays())
+	}
+	if len(msg.Agents) > maxSnapshotHosts() {
+		return nil, nil, fmt.Errorf("too many hosts (%d > %d)", len(msg.Agents), maxSnapshotHosts())
+	}
+	self := localRelayID()
+	forbidden := map[string]struct{}{self: {}}
+	for _, a := range localAncestors() {
+		forbidden[a] = struct{}{}
+	}
+
+	// chainOK: starts with the child, ends with owner, no repetition, no ancestor/self.
+	chainOK := func(chain []string, owner string) error {
+		if len(chain) == 0 || chain[0] != conn.RelayID || chain[len(chain)-1] != owner {
+			return fmt.Errorf("invalid relay_chain %v for %q", chain, owner)
+		}
+		seen := make(map[string]struct{}, len(chain))
+		for _, id := range chain {
+			if _, bad := forbidden[id]; bad {
+				return fmt.Errorf("relay_chain %v contains %q (loop)", chain, id)
+			}
+			if _, dup := seen[id]; dup {
+				return fmt.Errorf("relay_chain %v has a cycle on %q", chain, id)
+			}
+			seen[id] = struct{}{}
+		}
+		return nil
+	}
+
+	relays := make(map[string]struct{}, len(msg.Relays))
+	for _, r := range msg.Relays {
+		if r.RelayID == "" || r.RelayID == conn.RelayID {
+			return nil, nil, fmt.Errorf("invalid descendant relay_id %q", r.RelayID)
+		}
+		if _, dup := relays[r.RelayID]; dup {
+			return nil, nil, fmt.Errorf("duplicate relay_id %q", r.RelayID)
+		}
+		if err := chainOK(r.RelayChain, r.RelayID); err != nil {
+			return nil, nil, err
+		}
+		relays[r.RelayID] = struct{}{}
+	}
+
+	byRelay := make(map[string][]string)
+	seenHosts := make(map[string]struct{}, len(msg.Agents))
+	for _, a := range msg.Agents {
+		if a.Hostname == "" {
+			return nil, nil, fmt.Errorf("agent without hostname")
+		}
+		if _, dup := seenHosts[a.Hostname]; dup {
+			return nil, nil, fmt.Errorf("duplicate hostname %q", a.Hostname)
+		}
+		seenHosts[a.Hostname] = struct{}{}
+		if a.RelayID != conn.RelayID {
+			if _, known := relays[a.RelayID]; !known {
+				return nil, nil, fmt.Errorf("agent %q references undeclared relay %q", a.Hostname, a.RelayID)
+			}
+		}
+		if err := chainOK(a.RelayChain, a.RelayID); err != nil {
+			return nil, nil, err
+		}
+		byRelay[a.RelayID] = append(byRelay[a.RelayID], a.Hostname)
+	}
+	return relays, byRelay, nil
+}
+
+func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
+	if conn.snapshotDone {
+		reject(conn, "topology_snapshot already received")
+		return
+	}
+	relays, byRelay, err := validateSnapshot(conn, msg)
+	if err != nil {
+		reject(conn, "invalid topology_snapshot: "+err.Error())
+		return
+	}
+	// Declare descendants and publish routing: hostname → declaring relay.
+	for id := range relays {
+		if rerr := registerRelayNode(id); rerr != nil {
+			log.Printf("topology_snapshot: register relay %s: %v", id, rerr)
+		}
+	}
+	if RelayRoutingBulkUpsertFunc != nil {
+		for id, hosts := range byRelay {
+			if uerr := RelayRoutingBulkUpsertFunc(id, hosts); uerr != nil {
+				log.Printf("topology_snapshot: routing update relay=%s: %v", id, uerr)
+			}
+		}
+	}
+	conn.descendants = relays
+	conn.snapshotDone = true
+	ack := RelayMessage{Type: "topology_ack", RelayID: localRelayID(), Status: "ok", Count: len(msg.Agents),
+		Timestamp: time.Now().UTC().Format(time.RFC3339)}
+	conn.mu.Lock()
+	if werr := conn.Conn.WriteJSON(ack); werr != nil {
+		log.Printf("topology_ack write error: relay_id=%s err=%v", conn.RelayID, werr)
+	}
+	conn.mu.Unlock()
+	log.Printf("topology_snapshot: relay_id=%s relays=%d agents=%d", conn.RelayID, len(msg.Relays), len(msg.Agents))
+}
+
+// handleEventForward validates an ascending event (HAUT-1) and propagates it upstream.
+func handleEventForward(conn *RelayConnection, msg RelayMessage) {
+	now := time.Now()
+	if now.Sub(conn.evWindow) >= time.Second {
+		conn.evWindow, conn.evCount = now, 0
+	}
+	conn.evCount++
+	if conn.evCount > maxEventsPerSecond {
+		log.Printf("[RELAY] event_forward rate limit exceeded: relay_id=%s (dropped)", conn.RelayID)
+		return
+	}
+	chain := msg.RelayChain
+	if len(chain) == 0 || chain[len(chain)-1] != conn.RelayID {
+		log.Printf("[RELAY] event_forward rejected: relay_id=%s relay_chain=%v (last element must be the authenticated peer)", conn.RelayID, chain)
+		return
+	}
+	self := localRelayID()
+	for i, id := range chain {
+		if id == self {
+			log.Printf("[RELAY] event_forward rejected: relay_id=%s relay_chain contains local id (loop)", conn.RelayID)
+			return
+		}
+		if i < len(chain)-1 {
+			if _, ok := conn.descendants[id]; !ok {
+				log.Printf("[RELAY] event_forward rejected: relay_id=%s unknown descendant %q in relay_chain", conn.RelayID, id)
+				return
+			}
+		}
+	}
+	forwardEventUpstream(msg)
+}
+
+// closeWithRejection sends the WS close frame for a rejected link.
+func closeWithRejection(conn *websocket.Conn, rej *relayRejection) {
+	_ = conn.WriteControl(websocket.CloseMessage,
+		websocket.FormatCloseMessage(rej.code, rej.reason), time.Now().Add(time.Second))
 }

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -196,11 +198,38 @@ func main() {
 		return store.SetRelayIsProxy(relayID, isProxy)
 	}
 
+	// Tree topology (#125): identity, ancestors and node registration used by /ws/relay.
+	var rc *repeater.Client
+	ws.SetRelayLocalIDFunc(func() string {
+		if repeaterCfg != nil {
+			return repeaterCfg.ID
+		}
+		return os.Getenv(config.EnvRepeaterID)
+	})
+	ws.SetRelayAncestorsFunc(func() []string {
+		if rc == nil {
+			return nil
+		}
+		return rc.Ancestors()
+	})
+	ws.SetRelayNodeRegisterFunc(func(relayID string) error { return registerPullRelay(store, relayID) })
+
 	// Child relay (#125): one goroutine keeps the WSS link to the unique parent.
 	if repeaterCfg != nil {
-		rc := repeater.New(*repeaterCfg, repeater.Options{
+		events := make(chan repeater.Event, 256)
+		ws.SetRelayEventUpstreamFunc(func(m ws.RelayMessage) {
+			ev := repeater.Event{Event: m.Event, Hostname: m.Hostname, RelayID: m.RelayID, Status: m.Status,
+				RelayChain: m.RelayChain, GroupVars: m.GroupVars, Timestamp: m.Timestamp}
+			select {
+			case events <- ev:
+			default:
+				log.Printf("[REPEATER] upstream event queue full, event %s dropped", m.Event)
+			}
+		})
+		rc = repeater.New(*repeaterCfg, repeater.Options{
 			DirectAgents: directAgents,
 			Snapshot:     func() repeater.Snapshot { return buildSnapshot(repeaterCfg.ID, store) },
+			Events:       events,
 		})
 		if err := rc.Start(dispatchCtx); err != nil {
 			log.Fatalf("Failed to start repeater client: %v", err)
@@ -432,4 +461,24 @@ func buildSnapshot(selfID string, st *storage.Store) repeater.Snapshot {
 		}
 	}
 	return snap
+}
+
+// registerPullRelay idempotently records a relay that connected to us (mode=pull).
+// An existing declaration (e.g. admin-created) is kept: only its status/last_seen change.
+func registerPullRelay(st *storage.Store, relayID string) error {
+	existing, err := st.GetRelayNode(relayID)
+	if err != nil {
+		return fmt.Errorf("get relay node: %w", err)
+	}
+	now := time.Now().UTC().Unix()
+	if existing != nil {
+		return st.UpdateRelayStatus(relayID, "connected", now)
+	}
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Errorf("generate id: %w", err)
+	}
+	return st.UpsertRelayNode(storage.RelayNode{
+		ID: hex.EncodeToString(b), RelayID: relayID, Mode: "pull", Status: "connected", LastSeen: &now,
+	})
 }

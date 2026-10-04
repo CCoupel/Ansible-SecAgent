@@ -139,11 +139,12 @@ type Client struct {
 	cfg  config.RepeaterConfig
 	opts Options
 
-	mu       sync.Mutex
-	started  bool
-	parentID string // identity learned at first successful handshake
-	conn     *websocket.Conn
-	wmu      sync.Mutex // serialises writes on conn
+	mu        sync.Mutex
+	started   bool
+	parentID  string   // identity learned at first successful handshake
+	ancestors []string // ancestors of this node (parent first), from relay_ack
+	conn      *websocket.Conn
+	wmu       sync.Mutex // serialises writes on conn
 }
 
 // New builds a Client from the validated repeater config.
@@ -171,6 +172,14 @@ func (c *Client) ParentID() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.parentID
+}
+
+// Ancestors returns this node's ancestors (parent first, root last) as announced
+// by the parent in relay_ack; nil before the first handshake.
+func (c *Client) Ancestors() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.ancestors...)
 }
 
 // Start runs the single reconnect loop in one goroutine; it returns
@@ -286,6 +295,10 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 		c.closeWithCode(conn, CloseCodeRefused, "parent identity mismatch")
 		return false, &refusedError{err.Error()}
 	}
+
+	c.mu.Lock()
+	c.ancestors = append([]string(nil), ack.Ancestors...)
+	c.mu.Unlock()
 
 	// 3. topology_snapshot (always sent by the child)
 	snap := Snapshot{}
