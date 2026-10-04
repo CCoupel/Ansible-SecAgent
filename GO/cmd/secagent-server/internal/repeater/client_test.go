@@ -324,12 +324,14 @@ func TestParentIdentityMismatchRefused(t *testing.T) {
 	}
 }
 
-func TestParentRefusalCode4010(t *testing.T) {
+// A correctable refusal (4012) is retried with backoff; the permanent one (4010) is covered
+// in refusal_test.go.
+func TestParentRefusalCode4012IsRetried(t *testing.T) {
 	p := newMockParent(t, "central")
-	p.closeWith = CloseCodeRefused
+	p.closeWith = CloseCodeRetry
 	c := startClient(t, p, Options{})
 	<-p.hellos
-	// Refusal → client waits MaxBackoff (40ms) before retrying, and never reports ParentID.
+	// Correctable refusal → the client retries with backoff and never reports ParentID.
 	deadline := time.After(waitTimeout)
 	for p.accepted.Load() < 2 {
 		select {

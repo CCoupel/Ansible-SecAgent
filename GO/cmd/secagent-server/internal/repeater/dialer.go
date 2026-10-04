@@ -49,8 +49,16 @@ type Dialer struct {
 	target DialTarget
 	opts   DialerOptions
 
-	mu      sync.Mutex
-	started bool
+	mu       sync.Mutex
+	started  bool
+	terminal error // permanent refusal that stopped this dialer
+}
+
+// Terminal returns the permanent refusal that stopped the dialer (nil while it runs or retries).
+func (d *Dialer) Terminal() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.terminal
 }
 
 // ValidateDialTarget checks a push target: valid id, wss:// URL with a host and no userinfo, token set.
@@ -106,7 +114,12 @@ func (d *Dialer) Start(ctx context.Context) error {
 		return errors.New("dialer already started")
 	}
 	d.started = true
-	go runLoop(ctx, "child "+d.target.RelayID, d.opts.MinBackoff, d.opts.MaxBackoff, d.session)
+	go func() {
+		err := runLoop(ctx, "child "+d.target.RelayID, d.opts.MinBackoff, d.opts.MaxBackoff, d.session)
+		d.mu.Lock()
+		d.terminal = err
+		d.mu.Unlock()
+	}()
 	return nil
 }
 
@@ -118,7 +131,7 @@ func (d *Dialer) session(ctx context.Context) (established bool, err error) {
 	// Structural loop refusal BEFORE dialing: C ∈ {P} ∪ ancestors(P).
 	if d.opts.WouldLoop != nil && d.opts.WouldLoop(d.target.RelayID) {
 		log.Printf("[SECURITY WARNING] dial-out refused: child %s is this node or one of its ancestors (loop)", d.target.RelayID)
-		return false, &refusedError{"loop: child is this node or one of its ancestors"}
+		return false, &refusedError{reason: "loop: child is this node or one of its ancestors", permanent: true}
 	}
 
 	dialer := websocket.Dialer{TLSClientConfig: tlsOrDefault(d.opts.TLSConfig), HandshakeTimeout: d.opts.HandshakeTimeout}
@@ -166,15 +179,15 @@ func (d *Dialer) session(ctx context.Context) (established bool, err error) {
 	}
 	if ack.Type != "relay_ack" || ack.Status != "ok" {
 		closeConn()
-		return false, &refusedError{fmt.Sprintf("unexpected handshake reply type=%q status=%q", ack.Type, ack.Status)}
+		return false, &refusedError{reason: fmt.Sprintf("unexpected handshake reply type=%q status=%q", ack.Type, ack.Status)}
 	}
 	// The child must be who relay_nodes says it is.
 	if ack.RelayID != d.target.RelayID {
 		_ = conn.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(CloseCodeRefused, "child identity mismatch"), time.Now().Add(time.Second))
+			websocket.FormatCloseMessage(CloseCodePermanent, "child identity mismatch"), time.Now().Add(time.Second))
 		closeConn()
 		log.Printf("[SECURITY WARNING] dial-out refused: expected child %q, relay_ack announced %q", d.target.RelayID, ack.RelayID)
-		return false, &refusedError{fmt.Sprintf("child identity mismatch: expected %q, got %q", d.target.RelayID, ack.RelayID)}
+		return false, &refusedError{reason: fmt.Sprintf("child identity mismatch: expected %q, got %q", d.target.RelayID, ack.RelayID), permanent: true}
 	}
 	if err := conn.SetReadDeadline(time.Time{}); err != nil {
 		closeConn()

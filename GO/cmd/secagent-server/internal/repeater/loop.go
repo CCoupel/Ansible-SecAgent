@@ -4,29 +4,37 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 )
 
+// ErrPermanentRefusal wraps the reason when the peer refused the link for good (close 4010).
+var ErrPermanentRefusal = errors.New("link refused permanently")
+
 // runLoop calls session until ctx is cancelled, reconnecting with exponential backoff
-// (min → max). A session that reached steady state restarts the sequence; a refusal
-// (loop, identity mismatch, close 4010) waits the maximum delay: it is structural and
-// the peer must not be hammered. The 4010 distinction (#148) hooks in the refusedError case.
+// (min → max). A session that reached steady state restarts the sequence.
+// Refusals (#148): a PERMANENT one (close 4010: revoked/unauthorized identity, loop, identity
+// mismatch) stops the loop and is returned (wrapping ErrPermanentRefusal): the peer must not be
+// hammered and an operator must act. A CORRECTABLE one (close 4012) is retried with the normal
+// exponential backoff.
 func runLoop(ctx context.Context, peer string, minBackoff, maxBackoff time.Duration,
-	session func(context.Context) (established bool, err error)) {
+	session func(context.Context) (established bool, err error)) error {
 	backoff := minBackoff
 	for ctx.Err() == nil {
 		established, err := session(ctx)
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
 		var ref *refusedError
 		wait := backoff
 		switch {
+		case errors.As(err, &ref) && ref.permanent:
+			log.Printf("[REPEATER] ERROR %s refused link (permanent), giving up — operator action required: %v", peer, err)
+			return fmt.Errorf("%w: %s: %s", ErrPermanentRefusal, peer, ref.reason)
 		case errors.As(err, &ref):
-			log.Printf("[REPEATER] %s refused link: %v", peer, err)
-			wait = maxBackoff
-			backoff = maxBackoff
+			log.Printf("[REPEATER] %s refused link (correctable), retrying: %v", peer, err)
+			backoff = min(backoff*2, maxBackoff)
 		case established:
 			log.Printf("[REPEATER] link to %s lost: %v", peer, err)
 			backoff = minBackoff
@@ -37,10 +45,11 @@ func runLoop(ctx context.Context, peer string, minBackoff, maxBackoff time.Durat
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-time.After(wait):
 		}
 	}
+	return nil
 }
 
 // tlsOrDefault returns cfg, or the default client TLS configuration (system roots, TLS ≥ 1.2).

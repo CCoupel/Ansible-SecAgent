@@ -28,8 +28,13 @@ const (
 	NodeTypeRelay   = "relay"
 	ModePull        = "pull"
 
-	// CloseCodeRefused is used when the handshake is refused (loop, identity mismatch).
-	CloseCodeRefused = 4010
+	// CloseCodePermanent (4010): permanent refusal (revoked/unauthorized identity, loop, identity
+	// mismatch): the peer must never reconnect. CloseCodeRetry (4012): correctable refusal
+	// (invalid snapshot, protocol error, conflict): reconnect with backoff. See ARCHITECTURE.md.
+	CloseCodePermanent = 4010
+	CloseCodeRetry     = 4012
+	// CloseCodeRefused is the former name of CloseCodePermanent.
+	CloseCodeRefused = CloseCodePermanent
 
 	DefaultMinBackoff        = 5 * time.Second
 	DefaultMaxBackoff        = 60 * time.Second
@@ -148,13 +153,15 @@ type Client struct {
 	mu       sync.Mutex
 	started  bool
 	parentID string // identity learned at first successful handshake
+	terminal error  // set when a permanent refusal stopped the client
+	done     chan struct{}
 	conn     *websocket.Conn
 }
 
 // New builds a Client from the validated repeater config.
 func New(cfg config.RepeaterConfig, opts Options) *Client {
 	up := NewUplink(cfg.ID, opts)
-	return &Client{cfg: cfg, opts: up.opts, up: up}
+	return &Client{cfg: cfg, opts: up.opts, up: up, done: make(chan struct{})}
 }
 
 // Uplink returns the shared uplink publisher (used to also accept a parent that dials us, #140).
@@ -211,10 +218,30 @@ func (c *Client) Start(ctx context.Context) error {
 }
 
 func (c *Client) run(ctx context.Context) {
-	runLoop(ctx, "parent", c.opts.MinBackoff, c.opts.MaxBackoff, c.session)
+	err := runLoop(ctx, "parent", c.opts.MinBackoff, c.opts.MaxBackoff, c.session)
+	c.mu.Lock()
+	c.terminal = err
+	c.mu.Unlock()
+	if err != nil {
+		close(c.done)
+	}
 }
 
-type refusedError struct{ reason string }
+// Terminal returns the permanent refusal that stopped the client (nil while it runs or retries).
+func (c *Client) Terminal() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.terminal
+}
+
+// Done is closed when the client gave up after a permanent refusal (never closed on ctx cancel).
+func (c *Client) Done() <-chan struct{} { return c.done }
+
+// refusedError: the peer refused the link. permanent=true (close 4010) means never retry.
+type refusedError struct {
+	reason    string
+	permanent bool
+}
 
 func (e *refusedError) Error() string { return e.reason }
 
@@ -267,11 +294,11 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 		return false, wrapRead("read relay_ack", err)
 	}
 	if ack.Type != "relay_ack" || ack.Status != "ok" || ack.RelayID == "" {
-		return false, &refusedError{fmt.Sprintf("unexpected handshake reply type=%q status=%q", ack.Type, ack.Status)}
+		return false, &refusedError{reason: fmt.Sprintf("unexpected handshake reply type=%q status=%q", ack.Type, ack.Status)}
 	}
 	if err := c.checkParentIdentity(ack.RelayID); err != nil {
-		c.up.closeWithCode(conn, CloseCodeRefused, "parent identity mismatch")
-		return false, &refusedError{err.Error()}
+		c.up.closeWithCode(conn, CloseCodePermanent, "parent identity mismatch")
+		return false, &refusedError{reason: err.Error(), permanent: true}
 	}
 
 	c.up.SetAncestors(ack.Ancestors)
@@ -284,8 +311,13 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 
 func wrapRead(what string, err error) error {
 	var ce *websocket.CloseError
-	if errors.As(err, &ce) && ce.Code == CloseCodeRefused {
-		return &refusedError{fmt.Sprintf("%s: parent closed with code %d (%s)", what, ce.Code, ce.Text)}
+	if errors.As(err, &ce) {
+		switch ce.Code {
+		case CloseCodePermanent:
+			return &refusedError{reason: fmt.Sprintf("%s: peer closed with code %d (%s)", what, ce.Code, ce.Text), permanent: true}
+		case CloseCodeRetry:
+			return &refusedError{reason: fmt.Sprintf("%s: peer closed with code %d (%s)", what, ce.Code, ce.Text)}
+		}
 	}
 	return fmt.Errorf("%s: %w", what, err)
 }

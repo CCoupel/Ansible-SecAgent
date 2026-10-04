@@ -155,8 +155,8 @@ func TestInterop_ChildRefusesSecondParent(t *testing.T) {
 	var m map[string]any
 	err := second.ReadJSON(&m)
 	var ce *websocket.CloseError
-	if err == nil || !asCloseError(err, &ce) || ce.Code != 4010 {
-		t.Errorf("second parent must be refused with 4010, got msg=%v err=%v", m, err)
+	if err == nil || !asCloseError(err, &ce) || ce.Code != CloseCodeRetry {
+		t.Errorf("second parent must be refused with the correctable code 4012 (busy slot), got msg=%v err=%v", m, err)
 	}
 }
 

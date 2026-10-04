@@ -261,8 +261,8 @@ func TestTree_SnapshotRejected(t *testing.T) {
 			c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
 			handshake(t, c, "dmz1")
 			sendSnapshot(t, c, tt.relays, tt.agents)
-			if code := expectClose(t, c); code != WSRelayCloseRevoked {
-				t.Errorf("close code = %d, want 4010", code)
+			if code := expectClose(t, c); code != WSRelayCloseRetry {
+				t.Errorf("close code = %d, want 4012", code)
 			}
 		})
 	}
@@ -283,7 +283,7 @@ func TestTree_SnapshotLimits(t *testing.T) {
 			ag = append(ag, RelayAgentInfo{Hostname: h, RelayID: "dmz1", RelayChain: []string{"dmz1"}})
 		}
 		sendSnapshot(t, c, nil, ag)
-		if code := expectClose(t, c); code != WSRelayCloseRevoked {
+		if code := expectClose(t, c); code != WSRelayCloseRetry {
 			t.Errorf("close code = %d", code)
 		}
 	})
@@ -292,7 +292,7 @@ func TestTree_SnapshotLimits(t *testing.T) {
 		handshake(t, c, "dmz2")
 		sendSnapshot(t, c, []RelayTopoEntry{
 			{RelayID: "x", RelayChain: []string{"dmz2", "x"}}, {RelayID: "y", RelayChain: []string{"dmz2", "y"}}}, nil)
-		if code := expectClose(t, c); code != WSRelayCloseRevoked {
+		if code := expectClose(t, c); code != WSRelayCloseRetry {
 			t.Errorf("close code = %d", code)
 		}
 	})
@@ -309,7 +309,7 @@ func TestTree_SecondSnapshotRefused(t *testing.T) {
 		t.Fatalf("got %+v", m)
 	}
 	sendSnapshot(t, c, nil, nil)
-	if code := expectClose(t, c); code != WSRelayCloseRevoked {
+	if code := expectClose(t, c); code != WSRelayCloseRetry {
 		t.Errorf("close code = %d", code)
 	}
 }
@@ -558,8 +558,8 @@ func TestTree_SnapshotCannotHijackConnectedRelay(t *testing.T) {
 	sendSnapshot(t, a,
 		[]RelayTopoEntry{{RelayID: "relay-b", RelayChain: []string{"relay-a", "relay-b"}}},
 		[]RelayAgentInfo{{Hostname: "fake", RelayID: "relay-b", RelayChain: []string{"relay-a", "relay-b"}}})
-	if code := expectClose(t, a); code != WSRelayCloseRevoked {
-		t.Errorf("close code = %d, want 4010", code)
+	if code := expectClose(t, a); code != WSRelayCloseRetry {
+		t.Errorf("close code = %d, want 4012", code)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -585,8 +585,8 @@ func TestTree_SnapshotCannotRedeclareRelayOwnedByAnotherPeer(t *testing.T) {
 	b := dialRelay(t, srv, makeRelayJWT("relay-b", "relay"))
 	handshake(t, b, "relay-b")
 	sendSnapshot(t, b, []RelayTopoEntry{{RelayID: "zone-x", RelayChain: []string{"relay-b", "zone-x"}}}, nil)
-	if code := expectClose(t, b); code != WSRelayCloseRevoked {
-		t.Errorf("close code = %d, want 4010", code)
+	if code := expectClose(t, b); code != WSRelayCloseRetry {
+		t.Errorf("close code = %d, want 4012", code)
 	}
 
 	// once A is gone, the relay can be declared elsewhere
@@ -613,8 +613,8 @@ func TestTree_SnapshotCannotHijackHostRoutedElsewhere(t *testing.T) {
 	a := dialRelay(t, srv, makeRelayJWT("relay-a", "relay"))
 	handshake(t, a, "relay-a")
 	sendSnapshot(t, a, nil, []RelayAgentInfo{{Hostname: "victim", RelayID: "relay-a", RelayChain: []string{"relay-a"}}})
-	if code := expectClose(t, a); code != WSRelayCloseRevoked {
-		t.Errorf("close code = %d, want 4010", code)
+	if code := expectClose(t, a); code != WSRelayCloseRetry {
+		t.Errorf("close code = %d, want 4012", code)
 	}
 }
 
@@ -644,8 +644,8 @@ func TestTree_SnapshotBeforeHelloRefused(t *testing.T) {
 	defer srv.Close()
 	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
 	sendSnapshot(t, c, nil, []RelayAgentInfo{{Hostname: "h", RelayID: "dmz1", RelayChain: []string{"dmz1"}}})
-	if code := expectClose(t, c); code != WSRelayCloseRevoked {
-		t.Errorf("close code = %d, want 4010", code)
+	if code := expectClose(t, c); code != WSRelayCloseRetry {
+		t.Errorf("close code = %d, want 4012", code)
 	}
 }
 
@@ -660,8 +660,8 @@ func TestTree_SnapshotChainTooLong(t *testing.T) {
 		chain = append(chain, "n"+string(rune('a'+i%26))+string(rune('a'+i/26)))
 	}
 	sendSnapshot(t, c, []RelayTopoEntry{{RelayID: chain[len(chain)-1], RelayChain: chain}}, nil)
-	if code := expectClose(t, c); code != WSRelayCloseRevoked {
-		t.Errorf("close code = %d, want 4010", code)
+	if code := expectClose(t, c); code != WSRelayCloseRetry {
+		t.Errorf("close code = %d, want 4012", code)
 	}
 }
 

@@ -77,12 +77,13 @@ func TestPush_ParentLinkRefusals(t *testing.T) {
 		helloID   string
 		ancestors []string
 		busy      bool
+		code      int
 	}{
-		{"hook not wired (e.g. node has a pull parent)", false, "central", "central", nil, false},
-		{"hello relay_id != jwt.sub", true, "central", "other", nil, false},
-		{"parent is ourselves", true, "dmz1", "dmz1", nil, false},
-		{"we are an ancestor of the parent", true, "central", "central", []string{"root", "dmz1"}, false},
-		{"single-parent slot busy", true, "central", "central", nil, true},
+		{"hook not wired (e.g. node has a pull parent)", false, "central", "central", nil, false, WSRelayCloseRevoked},
+		{"hello relay_id != jwt.sub", true, "central", "other", nil, false, WSRelayCloseRevoked},
+		{"parent is ourselves", true, "dmz1", "dmz1", nil, false, WSRelayCloseRevoked},
+		{"we are an ancestor of the parent", true, "central", "central", []string{"root", "dmz1"}, false, WSRelayCloseRevoked},
+		{"single-parent slot busy (retryable)", true, "central", "central", nil, true, WSRelayCloseRetry},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -100,8 +101,8 @@ func TestPush_ParentLinkRefusals(t *testing.T) {
 			defer srv.Close()
 			c := dialRelay(t, srv, makeRelayJWT(tt.tokenSub, "relay-parent"))
 			parentHello(t, c, tt.helloID, tt.ancestors)
-			if code := expectClose(t, c); code != WSRelayCloseRevoked {
-				t.Errorf("close code = %d, want 4010 (no relay_ack must be sent)", code)
+			if code := expectClose(t, c); code != tt.code {
+				t.Errorf("close code = %d, want %d (no relay_ack must be sent)", code, tt.code)
 			}
 		})
 	}
@@ -116,8 +117,8 @@ func TestPush_ParentLinkRequiresHelloFirst(t *testing.T) {
 	if err := c.WriteJSON(RelayMessage{Type: "task_forward", TaskID: "t", Hostname: "h", Cmd: "id"}); err != nil {
 		t.Fatal(err)
 	}
-	if code := expectClose(t, c); code != WSRelayCloseRevoked {
-		t.Errorf("close code = %d, want 4010", code)
+	if code := expectClose(t, c); code != WSRelayCloseRetry {
+		t.Errorf("close code = %d, want 4012", code)
 	}
 }
 
@@ -266,8 +267,8 @@ func TestPush_DialedChildSnapshotHijackRefused(t *testing.T) {
 		t.Fatal("not registered")
 	}
 	sendSnapshot(t, child, nil, []RelayAgentInfo{{Hostname: "victim", RelayID: "dmz1", RelayChain: []string{"dmz1"}}})
-	if code := expectClose(t, child); code != WSRelayCloseRevoked {
-		t.Errorf("close code = %d, want 4010", code)
+	if code := expectClose(t, child); code != WSRelayCloseRetry {
+		t.Errorf("close code = %d, want 4012", code)
 	}
 }
 

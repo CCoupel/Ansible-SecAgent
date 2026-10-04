@@ -89,7 +89,7 @@ type scriptedPeer struct {
 	steady   atomic.Int32
 }
 
-// script: 1 → HTTP 401 (dial error), 2 → close 4010 after hello, 3 → handshake then abrupt
+// script: 1 → HTTP 401 (dial error), 2 → close 4012 (correctable refusal) after hello, 3 → handshake then abrupt
 // drop (link lost) after sending a heartbeat, 4+ → healthy link.
 func newScriptedPeer(t *testing.T, id string, ackID func(attempt int32) string) *scriptedPeer {
 	t.Helper()
@@ -111,7 +111,7 @@ func newScriptedPeer(t *testing.T, id string, ackID func(attempt int32) string) 
 			return
 		}
 		if n == 2 {
-			_ = c.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(CloseCodeRefused, "refused"), time.Now().Add(time.Second))
+			_ = c.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(CloseCodeRetry, "refused"), time.Now().Add(time.Second))
 			return
 		}
 		if err := c.WriteJSON(map[string]any{"type": "relay_ack", "relay_id": ackID(n), "status": "ok"}); err != nil {
@@ -137,7 +137,7 @@ func newScriptedPeer(t *testing.T, id string, ackID func(attempt int32) string) 
 
 func (p *scriptedPeer) url() string { return "wss" + strings.TrimPrefix(p.srv.URL, "https") }
 
-// Client side: dial error (401), close 4010, link lost + reconnection, steady
+// Client side: dial error (401), close 4012, link lost + reconnection, steady
 // state with heartbeats, and an unreachable parent — the token must never appear
 // in the standard log nor in slog.
 func TestLogs_ClientNeverLeaksToken(t *testing.T) {
@@ -154,7 +154,7 @@ func TestLogs_ClientNeverLeaksToken(t *testing.T) {
 	if err := c.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 10*time.Second, "healthy link after 401, 4010 and a dropped link", func() bool { return p.steady.Load() >= 1 })
+	waitFor(t, 10*time.Second, "healthy link after 401, 4012 and a dropped link", func() bool { return p.steady.Load() >= 1 })
 
 	// Unreachable parent: dial error path with the address in the message.
 	dead := httptest.NewTLSServer(http.NotFoundHandler())
@@ -182,17 +182,13 @@ func TestLogs_ClientNeverLeaksToken(t *testing.T) {
 	assertNoLeak(t, logs, leakToken)
 }
 
-// Dialer side (push): dial error (401), identity mismatch, link served then
+// Dialer side (push): dial error (401), correctable refusal, link served then
 // lost, loop refusal — the token must never appear in any log.
 func TestLogs_DialerNeverLeaksToken(t *testing.T) {
 	sink := captureLogs(t)
-	// attempt 2 = 4010 close, 3 = wrong identity, 4+ = good identity.
-	p := newScriptedPeer(t, "child1", func(n int32) string {
-		if n == 3 {
-			return "impostor"
-		}
-		return "child1"
-	})
+	// attempt 2 = 4012 close, 3+ = good identity (an identity mismatch is a PERMANENT refusal
+	// since #148: the dialer stops, covered in refusal_test.go).
+	p := newScriptedPeer(t, "child1", func(int32) string { return "child1" })
 	var serves atomic.Int32
 	opts := DialerOptions{
 		Identity:   func() (string, []string) { return "central", []string{"root"} },

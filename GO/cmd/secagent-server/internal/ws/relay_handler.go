@@ -4,10 +4,11 @@
 // Relays connect here with a JWT (role=relay) and announce their agents.
 // The proxy then dispatches tasks to the relay via this connection.
 //
-// Close codes (relay-specific):
+// Close codes (relay-specific, #148):
 //
-//	4010 — relay token revoked
-//	4011 — relay token expired
+//	4010 — PERMANENT refusal (revoked / unauthorized identity, loop): the peer must NOT reconnect
+//	4011 — relay token expired (refresh the token, then reconnect)
+//	4012 — CORRECTABLE refusal (invalid snapshot, protocol error, conflict, busy slot): reconnect with backoff
 //	4000 — normal close
 package ws
 
@@ -28,8 +29,9 @@ import (
 
 // Relay-specific WebSocket close codes.
 const (
-	WSRelayCloseRevoked = 4010
+	WSRelayCloseRevoked = 4010 // permanent refusal: revoked/unauthorized identity, loop — never reconnect
 	WSRelayCloseExpired = 4011
+	WSRelayCloseRetry   = 4012 // correctable refusal: the peer may reconnect with backoff
 	WSRelayCloseNormal  = 4000
 )
 
@@ -477,8 +479,17 @@ func loopedWith(childID string) bool {
 	return false
 }
 
+// reject asks the read loop to close the link with the CORRECTABLE code 4012 (invalid snapshot,
+// protocol error, conflict): the peer may fix the cause and reconnect with backoff.
 func reject(conn *RelayConnection, reason string) {
-	log.Printf("[RELAY] link refused: relay_id=%s reason=%s", conn.RelayID, reason)
+	log.Printf("[RELAY] link refused (retryable): relay_id=%s reason=%s", conn.RelayID, reason)
+	conn.reject = &relayRejection{code: WSRelayCloseRetry, reason: reason}
+}
+
+// rejectPermanent closes the link with 4010: the refusal cannot be fixed by retrying
+// (identity not authorized, loop). The client stops instead of reconnecting.
+func rejectPermanent(conn *RelayConnection, reason string) {
+	log.Printf("[SECURITY WARNING] link refused (permanent): relay_id=%s reason=%s", conn.RelayID, reason)
 	conn.reject = &relayRejection{code: WSRelayCloseRevoked, reason: reason}
 }
 
@@ -685,12 +696,12 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 	case "relay_hello":
 		// The announced identity must be the authenticated one.
 		if msg.RelayID != conn.RelayID {
-			reject(conn, "relay_hello relay_id does not match jwt.sub")
+			rejectPermanent(conn, "relay_hello relay_id does not match jwt.sub")
 			return
 		}
 		// Structural loop check (also enforced at upgrade time).
 		if loopedWith(conn.RelayID) {
-			reject(conn, "loop detected: relay is the parent or one of its ancestors")
+			rejectPermanent(conn, "loop detected: relay is the parent or one of its ancestors")
 			return
 		}
 		// node_type="proxy" or is_proxy=true both mark this node as a proxy
@@ -847,7 +858,7 @@ func RelayHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Structural loop refusal, independent of what the peer sends afterwards.
 	if loopedWith(relayID) {
-		reject(relayConn, "loop detected: relay is the parent or one of its ancestors")
+		rejectPermanent(relayConn, "loop detected: relay is the parent or one of its ancestors")
 		closeWithRejection(conn, relayConn.reject)
 		_ = conn.Close()
 		return
@@ -963,8 +974,13 @@ func SetRelayParentLinkFunc(fn func(ctx context.Context, conn *websocket.Conn, a
 // → relay_ack with our identity → uplink (topology_snapshot sent by us, then steady state).
 func serveParentLink(ctx context.Context, conn *websocket.Conn, parentID string) {
 	defer func() { _ = conn.Close() }()
+	// refuse closes with 4012 (the parent may fix the cause and retry); refusePermanent with 4010.
 	refuse := func(reason string) {
-		log.Printf("[SECURITY WARNING] parent link refused: parent=%s reason=%s", parentID, reason)
+		log.Printf("[SECURITY WARNING] parent link refused (retryable): parent=%s reason=%s", parentID, reason)
+		closeWithRejection(conn, &relayRejection{code: WSRelayCloseRetry, reason: reason})
+	}
+	refusePermanent := func(reason string) {
+		log.Printf("[SECURITY WARNING] parent link refused (permanent): parent=%s reason=%s", parentID, reason)
 		closeWithRejection(conn, &relayRejection{code: WSRelayCloseRevoked, reason: reason})
 	}
 
@@ -972,7 +988,7 @@ func serveParentLink(ctx context.Context, conn *websocket.Conn, parentID string)
 	link := parentLinkFn
 	treeHooksMu.RUnlock()
 	if link == nil {
-		refuse("this node does not accept a parent link")
+		refusePermanent("this node does not accept a parent link")
 		return
 	}
 
@@ -986,7 +1002,7 @@ func serveParentLink(ctx context.Context, conn *websocket.Conn, parentID string)
 		return
 	}
 	if hello.RelayID != parentID {
-		refuse("relay_hello relay_id does not match jwt.sub")
+		refusePermanent("relay_hello relay_id does not match jwt.sub")
 		return
 	}
 	if len(hello.Ancestors) > maxRelayChainLen {
@@ -1002,7 +1018,7 @@ func serveParentLink(ctx context.Context, conn *websocket.Conn, parentID string)
 		}
 	}
 	if loop {
-		refuse("loop detected: this node is the parent or one of its ancestors")
+		refusePermanent("loop detected: this node is the parent or one of its ancestors")
 		return
 	}
 
@@ -1020,7 +1036,8 @@ func serveParentLink(ctx context.Context, conn *websocket.Conn, parentID string)
 	if !acked {
 		// The single-parent slot was not available (or the hook failed): refused, no handshake done.
 		log.Printf("[SECURITY WARNING] parent link refused: parent=%s err=%v", parentID, err)
-		closeWithRejection(conn, &relayRejection{code: WSRelayCloseRevoked, reason: "parent link refused"})
+		// busy single-parent slot: another link may end soon, so the parent may retry
+		closeWithRejection(conn, &relayRejection{code: WSRelayCloseRetry, reason: "parent link refused"})
 		return
 	}
 	log.Printf("parent link closed: parent=%s err=%v", parentID, err)
