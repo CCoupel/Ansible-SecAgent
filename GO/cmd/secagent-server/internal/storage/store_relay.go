@@ -195,10 +195,11 @@ func (s *Store) UpsertRelayRouting(hostname, relayID string) error {
 
 	now := time.Now().UTC().Unix()
 	_, err := s.db.Exec(`
-		INSERT INTO relay_routing (hostname, relay_id, updated_at)
-		VALUES (?, ?, ?)
-		ON CONFLICT(hostname) DO UPDATE SET relay_id = excluded.relay_id, updated_at = excluded.updated_at
-	`, hostname, relayID, now)
+		INSERT INTO relay_routing (hostname, relay_id, updated_at, relay_chain)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(hostname) DO UPDATE SET relay_id = excluded.relay_id, updated_at = excluded.updated_at,
+			relay_chain = excluded.relay_chain
+	`, hostname, relayID, now, chainJSON([]string{relayID}))
 	if err != nil {
 		return fmt.Errorf("UpsertRelayRouting %q→%q: %w", hostname, relayID, err)
 	}
@@ -246,7 +247,11 @@ func (s *Store) BulkUpsertRelayRouting(relayID string, hostnames []string) error
 	}
 
 	now := time.Now().UTC().Unix()
-	stmt, err := tx.Prepare("INSERT INTO relay_routing (hostname, relay_id, updated_at) VALUES (?, ?, ?)")
+	// Last arrival wins: a hostname already routed through another relay is re-pointed here
+	// (the caller emits host.conflict). relay_chain defaults to [relayID] (direct agents).
+	stmt, err := tx.Prepare(`INSERT INTO relay_routing (hostname, relay_id, updated_at, relay_chain) VALUES (?, ?, ?, ?)
+		ON CONFLICT(hostname) DO UPDATE SET relay_id = excluded.relay_id, updated_at = excluded.updated_at,
+			relay_chain = excluded.relay_chain`)
 	if err != nil {
 		return fmt.Errorf("BulkUpsertRelayRouting prepare: %w", err)
 	}
@@ -256,7 +261,7 @@ func (s *Store) BulkUpsertRelayRouting(relayID string, hostnames []string) error
 		if hostname == "" {
 			continue
 		}
-		if _, err = stmt.Exec(hostname, relayID, now); err != nil {
+		if _, err = stmt.Exec(hostname, relayID, now, chainJSON([]string{relayID})); err != nil {
 			return fmt.Errorf("BulkUpsertRelayRouting insert %q: %w", hostname, err)
 		}
 	}

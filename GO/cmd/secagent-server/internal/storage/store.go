@@ -152,6 +152,8 @@ CREATE TABLE IF NOT EXISTS relay_routing (
     hostname    TEXT PRIMARY KEY,
     relay_id    TEXT NOT NULL,
     updated_at  INTEGER NOT NULL,
+    hop_type    TEXT NOT NULL DEFAULT 'relay',
+    relay_chain TEXT NOT NULL DEFAULT '[]',
     FOREIGN KEY (relay_id) REFERENCES relay_nodes(relay_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_relay_routing_relay_id ON relay_routing (relay_id);
@@ -221,6 +223,8 @@ func NewStore(dbURL string) (*Store, error) {
 	for _, stmt := range []string{
 		"ALTER TABLE agents ADD COLUMN suspended BOOLEAN NOT NULL DEFAULT FALSE",
 		"ALTER TABLE agents ADD COLUMN vars TEXT NOT NULL DEFAULT '{}'",
+		"ALTER TABLE relay_routing ADD COLUMN hop_type TEXT NOT NULL DEFAULT 'relay'",
+		"ALTER TABLE relay_routing ADD COLUMN relay_chain TEXT NOT NULL DEFAULT '[]'",
 	} {
 		_, _ = db.Exec(stmt) // intentionally ignore "duplicate column" errors
 	}
