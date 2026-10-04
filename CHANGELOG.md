@@ -34,10 +34,11 @@ All notable changes to this project will be documented in this file.
   - `/api/admin/status` et `secagent-server server status` (port 7771) : tableau LINK/PEER/STATE/SINCE/REASON avec détail des liens, avertissement « operator action required » si dégradé
   - États `connected`, `retrying` (non-terminal), `refused_permanent` (terminal, action requise)
   - Texte du close frame assaini (pas de révélation d'identités du pair en logs/statuts)
-- **Codes de fermeture `/ws/relay`** (#148) :
-  - `4010` (refus permanent) : token révoqué, identity mismatch, boucle détectée → arrêt client (log ERROR)
+- **Codes de fermeture `/ws/relay`** (#148, #153) :
+  - `4010` (refus permanent) : token révoqué, identity mismatch, boucle détectée → arrêt client (log ERROR « operator action required »), pas de reconnexion. Sur un lien push établi, le Dialer devient terminal (cf. #153)
   - `4012` (refus corrigible) : snapshot invalide, conflict de routage → reconnexion avec backoff (5 s → 60 s)
   - `4011` (token expiré) : non utilisé pour l'instant (réservé)
+  - **HTTP 401 avant upgrade** (token invalide à la reconnexion) : **pas** terminal, permet au parent de redémarrer
 
 ### Changed
 - Les spécifications v3.0 (§23 ARCHITECTURE.md, §8-9 SERVER_SPEC.md, §2 SECURITY.md) sont désormais **implémentées et validées** (#124–#154)
@@ -48,7 +49,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Sécurité** : relay-parent tokens ne fuient jamais en logs, seul output one-shot au create (#150); relay-child tokens jamais loggés (#150)
-- Refus permanent (4010) ne fuite jamais le token dans la raison (texte borné 200 chars) ; détection boucle + identity mismatch fail-closed (#148, #140)
+- Refus permanent (4010) ne fuite jamais le token dans la raison (texte borné **200 octets max**, tronqué sur une frontière de caractère UTF-8) ; détection boucle + identity mismatch fail-closed (#148, #140)
+- Une trame close 4010 reçue sur un lien push établi rend le Dialer terminal (refused_permanent, log ERROR, pas de reconnexion, degraded=true dans /health) (#153)
 - Validation symétrique `relay_hello.relay_id == jwt.sub` (serveur) et `relay_ack.relay_id` vs identité attendue (client) (#148)
 - CI : timeout per-package 300s sous -race (#145) ; golangci-lint v2.14.0 (46 //nolint:errcheck retirés) (#133, #144)
 - Tests race : awaitCondition dans relay_handler_test (#145) ; flaky sleeps dans repeater, handlers, proxy (#145)
