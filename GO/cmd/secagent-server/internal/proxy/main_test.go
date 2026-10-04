@@ -37,6 +37,7 @@ func currentWSHooks() wsHooks {
 const intJWTSecret = "proxy-int-test-secret"
 
 func TestMain(m *testing.M) {
+	ws.SetRelayJTIBlacklistFunc(func(string) (bool, error) { return false, nil }) // nothing revoked
 	ws.SetJWTSecretsFunc(func() (string, string, time.Time) { return intJWTSecret, "", time.Time{} })
 	ws.RelayRoutingBulkUpsertFunc = func(relayID string, hostnames []string) error {
 		if fn := currentWSHooks().routing; fn != nil {

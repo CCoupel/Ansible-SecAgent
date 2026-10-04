@@ -297,14 +297,15 @@ func checkHostConflicts(conn *RelayConnection, relays map[string]struct{}, byRel
 	return nil
 }
 
-// checkRelayJTI refuses revoked tokens. Without a configured check the token is accepted
-// (tests); main.go always wires it.
+// checkRelayJTI refuses revoked tokens. Fail closed: without a configured check
+// (main.go always wires it) no relay token is accepted.
 func checkRelayJTI(jti string) error {
 	treeHooksMu.RLock()
 	fn := relayJTIBlacklistFn
 	treeHooksMu.RUnlock()
 	if fn == nil {
-		return nil
+		log.Printf("[SECURITY WARNING] relay connection refused: JTI blacklist check is not configured (fail closed)")
+		return fmt.Errorf("blacklist_not_configured")
 	}
 	revoked, err := fn(jti)
 	if err != nil {

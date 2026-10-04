@@ -53,8 +53,13 @@ func routingDispatch(relayID string, hostnames []string) error {
 	return fn(relayID, hostnames)
 }
 
+// defaultNoBlacklist is the TestMain-installed blacklist check: nothing is revoked.
+func defaultNoBlacklist(string) (bool, error) { return false, nil }
+
 func TestMain(m *testing.M) {
 	RelayRoutingBulkUpsertFunc = routingDispatch
+	// /ws/relay fails closed without a JTI blacklist check: install the permissive default once.
+	SetRelayJTIBlacklistFunc(defaultNoBlacklist)
 	os.Exit(m.Run())
 }
 

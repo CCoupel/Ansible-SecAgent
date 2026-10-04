@@ -471,7 +471,7 @@ func TestRelayAuth_FailClosedWithoutJWTSecretsFunc(t *testing.T) {
 func setBlacklist(t *testing.T, fn func(string) (bool, error)) {
 	t.Helper()
 	SetRelayJTIBlacklistFunc(fn)
-	t.Cleanup(func() { SetRelayJTIBlacklistFunc(nil) })
+	t.Cleanup(func() { SetRelayJTIBlacklistFunc(defaultNoBlacklist) })
 }
 
 func TestRelayAuth_RevokedTokenRefused(t *testing.T) {
@@ -640,6 +640,21 @@ func TestTree_SnapshotChainTooLong(t *testing.T) {
 	}
 }
 
+func TestRelayAuth_BlacklistNotConfiguredFailsClosed(t *testing.T) {
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	SetRelayJTIBlacklistFunc(nil)
+	t.Cleanup(func() { SetRelayJTIBlacklistFunc(defaultNoBlacklist) })
+	if code := dialRelayExpectFail(t, srv, makeRelayJWT("dmz1", "relay")); code != http.StatusUnauthorized {
+		t.Errorf("status %d, want 401 when the blacklist hook is not wired", code)
+	}
+}
+
+// ── targeted tests for QA mutations ──────────────────────────────────────────
+
+// A chain of maxRelayChainLen+1 DISTINCT declared descendants: every other check
+// (peer last, declared intermediates, no local id, no repetition) passes, so only
+// the length bound can refuse it.
 func TestTree_EventChainTooLongDropped(t *testing.T) {
 	var n int
 	var mu sync.Mutex
@@ -648,16 +663,56 @@ func TestTree_EventChainTooLongDropped(t *testing.T) {
 	defer srv.Close()
 	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
 	handshake(t, c, "dmz1")
-	long := make([]string, maxRelayChainLen+1)
-	for i := range long {
-		long[i] = "dmz1"
+
+	// declare maxRelayChainLen distinct descendants (a snapshot chain can reach the bound itself)
+	var relays []RelayTopoEntry
+	var ids []string
+	for i := 0; i < maxRelayChainLen; i++ {
+		ids = append(ids, "d"+string(rune('a'+i%26))+string(rune('a'+i/26)))
+		relays = append(relays, RelayTopoEntry{RelayID: ids[i], RelayChain: []string{"dmz1", ids[i]}})
 	}
-	_ = c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", RelayChain: long})
-	_ = c.WriteJSON(RelayMessage{Type: "heartbeat"})
+	sendSnapshot(t, c, relays, nil)
+	if m := readMsg(t, c); m.Type != "topology_ack" {
+		t.Fatalf("snapshot: %+v", m)
+	}
+	send := func(chain []string) {
+		if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", RelayChain: chain}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	atBound := append(append([]string{}, ids[:maxRelayChainLen-1]...), "dmz1") // len == maxRelayChainLen: accepted
+	tooLong := append(append([]string{}, ids...), "dmz1")                      // len == maxRelayChainLen+1: refused
+	send(atBound)
+	send(tooLong)
+	if err := c.WriteJSON(RelayMessage{Type: "heartbeat"}); err != nil {
+		t.Fatal(err)
+	}
+	readMsg(t, c)
+	mu.Lock()
+	defer mu.Unlock()
+	if n != 1 {
+		t.Errorf("forwarded %d events, want exactly 1 (the one at the bound)", n)
+	}
+}
+
+func TestTree_EventBeforeHelloIgnored(t *testing.T) {
+	var n int
+	var mu sync.Mutex
+	setTreeHooks(t, "central", nil, nil, func(RelayMessage) { mu.Lock(); n++; mu.Unlock() })
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
+	// chain [dmz1] is otherwise valid; hello was not sent
+	if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", RelayChain: []string{"dmz1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.WriteJSON(RelayMessage{Type: "heartbeat"}); err != nil {
+		t.Fatal(err)
+	}
 	readMsg(t, c)
 	mu.Lock()
 	defer mu.Unlock()
 	if n != 0 {
-		t.Errorf("over-long chain forwarded %d times", n)
+		t.Errorf("event before relay_hello was forwarded %d times", n)
 	}
 }
