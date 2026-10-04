@@ -172,6 +172,7 @@ var (
 	relayAncestorsFn    func() []string
 	relayNodeRegisterFn func(relayID string) error
 	relayEventUpstream  func(ev RelayMessage)
+	relayJTIBlacklistFn func(jti string) (bool, error)
 )
 
 // SetRelayLocalIDFunc sets the provider of this node's own relay id (REPEATER_ID; "" if unset).
@@ -203,6 +204,33 @@ func SetRelayEventUpstreamFunc(fn func(ev RelayMessage)) {
 	treeHooksMu.Lock()
 	relayEventUpstream = fn
 	treeHooksMu.Unlock()
+}
+
+// SetRelayJTIBlacklistFunc sets the revocation check used at /ws/relay upgrade.
+// fn returns true when the JTI is blacklisted; an error is treated as a refusal (fail closed).
+func SetRelayJTIBlacklistFunc(fn func(jti string) (bool, error)) {
+	treeHooksMu.Lock()
+	relayJTIBlacklistFn = fn
+	treeHooksMu.Unlock()
+}
+
+// checkRelayJTI refuses revoked tokens. Without a configured check the token is accepted
+// (tests); main.go always wires it.
+func checkRelayJTI(jti string) error {
+	treeHooksMu.RLock()
+	fn := relayJTIBlacklistFn
+	treeHooksMu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	revoked, err := fn(jti)
+	if err != nil {
+		return fmt.Errorf("blacklist_check_failed: %w", err)
+	}
+	if revoked {
+		return fmt.Errorf("token_revoked")
+	}
+	return nil
 }
 
 func registerRelayNode(relayID string) error {
@@ -453,6 +481,16 @@ func extractRelayFromRequest(r *http.Request) (relayID string, isProxy bool, err
 	if sub == "" {
 		log.Printf("[SECURITY WARNING] relay connection refused: JWT without sub")
 		return "", false, fmt.Errorf("jwt_missing_sub")
+	}
+	// Revocation: a revoked token must not reconnect (SECURITY.md §7).
+	jti, _ := claims["jti"].(string)
+	if jti == "" {
+		log.Printf("[SECURITY WARNING] relay connection refused: JWT without jti (relay_id=%s)", sub)
+		return "", false, fmt.Errorf("jwt_missing_jti")
+	}
+	if err := checkRelayJTI(jti); err != nil {
+		log.Printf("[SECURITY WARNING] relay connection refused: relay_id=%s jti=%s: %v", sub, jti, err)
+		return "", false, err
 	}
 	// is_proxy hint from query param (relay sets this when it is itself a proxy)
 	ip := r.URL.Query().Get("is_proxy") == "true"

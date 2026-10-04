@@ -465,3 +465,36 @@ func TestRelayAuth_FailClosedWithoutJWTSecretsFunc(t *testing.T) {
 		})
 	}
 }
+
+// ── JTI blacklist at upgrade (HAUT-1) ────────────────────────────────────────
+
+func setBlacklist(t *testing.T, fn func(string) (bool, error)) {
+	t.Helper()
+	SetRelayJTIBlacklistFunc(fn)
+	t.Cleanup(func() { SetRelayJTIBlacklistFunc(nil) })
+}
+
+func TestRelayAuth_RevokedTokenRefused(t *testing.T) {
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	setBlacklist(t, func(jti string) (bool, error) { return jti == "test-jti-dmz1", nil })
+
+	if code := dialRelayExpectFail(t, srv, makeRelayJWT("dmz1", "relay")); code != http.StatusUnauthorized {
+		t.Errorf("revoked token: status %d, want 401", code)
+	}
+	// another relay (other jti) still connects
+	c := dialRelay(t, srv, makeRelayJWT("dmz2", "relay"))
+	if !awaitRelayConnected(t, "dmz2", 2*time.Second) {
+		t.Error("non-revoked relay should connect")
+	}
+	_ = c
+}
+
+func TestRelayAuth_BlacklistErrorFailsClosed(t *testing.T) {
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	setBlacklist(t, func(string) (bool, error) { return false, errors.New("db down") })
+	if code := dialRelayExpectFail(t, srv, makeRelayJWT("dmz1", "relay")); code != http.StatusUnauthorized {
+		t.Errorf("status %d, want 401", code)
+	}
+}
