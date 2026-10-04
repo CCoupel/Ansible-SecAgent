@@ -19,7 +19,7 @@ Le secagent-server est le **hub central** du système. Il :
 ### Blocs internes (GO)
 
 ```
-GO/cmd/server/
+GO/cmd/secagent-server/
 ├── main.go                          — ports 7770/7771/7772, injection secrets JWT
 ├── internal/
 │   ├── handlers/
@@ -372,24 +372,28 @@ Le client WebSocket (celui qui ouvre) et le serveur (celui qui accepte) établis
 Le client envoie son identité avec JWT(sub = son REPEATER_ID) :
 
 ```json
-{"type":"relay_hello", "relay_id":"<client_id>", "ancestors":[...], "version":"3.0"}
+{"type":"relay_hello", "relay_id":"<client_id>", "ancestors":["parent","grandparent"], "version":"3.1"}
 ```
 
-Serveur (récepteur) valide : relay_id == jwt.sub, et applique la détection de boucle (voir ARCHITECTURE.md §23.2) → sinon close(4010)
+Serveur (récepteur) valide :
+- ✅ `relay_hello.relay_id` présent ET `relay_hello.relay_id == jwt.sub` (identité du client)
+- ✅ Détection de boucle : C ∉ {P} ∪ ancêtres(P) (voir ARCHITECTURE.md §23.2)
+- ❌ Rejeter (close **4010** — refus permanent) si l'une de ces vérifications échoue
 
 **Étape 2 — relay_ack (serveur → client)** :
 
-Le serveur répond avec SON identité :
+Le serveur répond avec SON identité et la liste de SES ancêtres :
 
 ```json
-{"type":"relay_ack", "relay_id":"<server_id>", "status":"ok", "timestamp":"..."}
+{"type":"relay_ack", "relay_id":"<server_id>", "ancestors":["parent_of_server"], "status":"ok", "timestamp":"..."}
 ```
 
 **Validation côté client (l'ouvreur)** :
-- ✅ Vérifier que `relay_ack.relay_id` correspond à l'identité attendue du serveur :
+- ✅ Vérifier que `relay_ack.relay_id` correspond à l'identité ATTENDUE du serveur :
   - Mode pull : vérifier contre le parent configuré (REPEATER_UPSTREAM_URL) ou journaliser si première connexion
-  - Mode push : vérifier contre `relay_nodes.relay_id` pour ce relay enfant
-- ❌ Fermer (close 4010) si l'identité ne correspond pas
+  - Mode push : vérifier contre `relay_nodes.relay_id` enregistré pour ce relay enfant
+- ✅ Mémoriser `relay_ack.ancestors` pour usage dans event_forward (validation relay_chain)
+- ❌ Fermer (close **4010** — refus permanent) si l'identité ne correspond pas ou a changé par rapport au lien précédent
 
 **Étape 3 — topology_snapshot (depuis l'enfant)** :
 
@@ -546,6 +550,8 @@ POST /api/admin/relays/{id}/revoke
 → 200 { "revoked": true, "blacklisted": true, "legacy_token": false, "disconnected": true }
 
 # Remove relay (blackliste aussi le token et coupe le lien)
+# 409 relay_not_revoked si le relais n'a pas de JTI suivi (émis avant #153, ou relay push) et n'est pas déjà
+# révoqué : « revoke the relay first » — sinon l'ancien token pourrait se reconnecter. Aucun contournement.
 DELETE /api/admin/relays/{relay_id}
 → 204
 ```
@@ -658,6 +664,24 @@ GET /api/inventory  (sur relay central)
 
 ---
 
+### 9.5a Routage hiérarchique — Priorité agent local (#127)
+
+**Écart assumé vs spec : agent local prioritaire** :
+
+Un hôte connecté directement au relay GAGNE TOUJOURS sur la table `relay_routing`, même si déclaré via `agent_list` d'un enfant. **Justification sécurité** :
+- Exécution directe sur l'hôte local : `stdin` (become_pass) ne sort jamais du relay
+- Forwarding vers relay enfant : `stdin` doit traverser les réseaux intermédiaires, risque d'exposition
+- Un relay ne peut donc pas détourner les tâches d'un hôte local en se déclarant propriétaire
+
+**Comportement** :
+1. Agent X connecté via `/ws/agent` au relay R → `relay_routing(hostname=X, relay_id=R)` avec lookup direct de la WS
+2. Même si relay E (enfant) envoie `agent_list` déclarant l'agent X → `host.conflict` émis une seule fois, X reste routé vers R
+3. Test : `TestAgentList_ClaimOnLocalAgentCreatesNoRoute` (routage non créé) et `TestAgentList_RepeatedClaimEmitsConflictOnce`
+
+**Limite connue (#126)** : Un hôte profond (connecté via chaîne de relays) n'est routable chez l'ancêtre qu'après un nouveau `topology_snapshot` du parent intermédiaire. Les événements `host.up` d'un agent local ne remontent pas (à implémenter en #126).
+
+---
+
 ### 9.6 Schéma SQLite (tables repeater)
 
 ```sql
@@ -665,12 +689,25 @@ CREATE TABLE IF NOT EXISTS relay_nodes (
     id              TEXT PRIMARY KEY,
     relay_id        TEXT NOT NULL UNIQUE,
     description     TEXT,
-    token_hash      TEXT,                   -- hash JWT JTI du token relay (validation blacklist, revocation 4010)
-    token_encrypted TEXT,                   -- token relay mode=push chiffré AES-256-GCM (HAUT-5)
+    token_hash      TEXT,                   -- ⚠️ misnomer: SHA-256(JTI) pour pull; AES-GCM(token) préfixé enc: pour push (#152)
+    jti             TEXT,                   -- JWT JTI du token relay (pour blacklist #153, colonne NULL pour mode push)
+    token_exp       INTEGER,                -- exp du JWT (expiration timestamp pour purge blacklist)
+    token_encrypted TEXT,                   -- token relay mode=push chiffré AES-256-GCM avec RSA_MASTER_KEY (#140)
+    revoked         INTEGER DEFAULT 0,      -- flag révocation (#153); legacy relais (sans jti) révoqués par ce flag seul
     mode            TEXT NOT NULL DEFAULT 'pull',  -- "pull" (entrante) | "push" (sortante vers enfant)
     created_at      INTEGER NOT NULL,
     last_seen       INTEGER,
     status          TEXT NOT NULL DEFAULT 'pending'  -- "connected"|"disconnected"|"pending"
+);
+
+CREATE TABLE IF NOT EXISTS relay_parent_tokens (
+    id              TEXT PRIMARY KEY,       -- UUID publique du token
+    jti             TEXT NOT NULL UNIQUE,   -- JWT JTI pour blacklist à la révocation
+    parent_id       TEXT NOT NULL,          -- relay_id du parent (cli --sub) — validé contre relay_hello
+    description     TEXT,
+    created_at      INTEGER NOT NULL,
+    expires_at      INTEGER NOT NULL,       -- exp du JWT (obligatoire, max 365j)
+    revoked_at      INTEGER                 -- timestamp révocation (NULL si actif); INSERT blacklist(jti) à cet instant
 );
 
 CREATE TABLE IF NOT EXISTS relay_routing (
@@ -684,9 +721,14 @@ CREATE TABLE IF NOT EXISTS relay_routing (
 
 **Changement clé** : clé simple `hostname` (pas de composite). Topologie arbre = un seul chemin par hôte.
 
-**Sémantique mode** (v3.0) :
-- `pull` = connexion WSS entrante (enfant se connecte, auto-registration relay_hello)
-- `push` = connexion WSS sortante (parent ouvre vers enfant, déclaré via API)
+**Sémantique mode** (v3.1) :
+- `pull` = connexion WSS entrante (enfant se connecte, auto-registration relay_hello); token persisté en tant que JTI
+- `push` = connexion WSS sortante (parent ouvre vers enfant, déclaré via API); token persisté chiffré (enc:AES-GCM)
+
+**Notes** :
+- `token_hash` (colonne) mal nommée (#152) : elle stocke soit un hash (pull) soit du token chiffré (push). Renommage envisagé.
+- Relais antérieurs à #153 (sans `jti`) : `revoked` = true suffit pour refuser ; un `DELETE` d'un tel relais ne peut pas blacklister de JTI inexistant (contrainte : révoquer avant de supprimer)
+- `relay_parent_tokens` : jamais le token en clair persisté ; métadonnées uniquement pour audit et gestion du cycle de vie
 
 ---
 
