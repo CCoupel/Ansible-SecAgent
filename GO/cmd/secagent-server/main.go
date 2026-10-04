@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -192,6 +193,7 @@ func main() {
 
 	// Tree topology (#125/#140): identity, ancestors, registration and revocation used by /ws/relay.
 	var uplink *repeater.Uplink
+	var rc *repeater.Client // set when REPEATER_UPSTREAM_* configures a pull parent
 	ws.SetRelayLocalIDFunc(func() string {
 		if repeaterCfg != nil {
 			return repeaterCfg.ID
@@ -227,7 +229,7 @@ func main() {
 		OnTask:       forwarder.Handle,
 	}
 	if repeaterCfg != nil {
-		rc := repeater.New(*repeaterCfg, upOpts)
+		rc = repeater.New(*repeaterCfg, upOpts)
 		uplink = rc.Uplink()
 		if err := rc.Start(dispatchCtx); err != nil {
 			log.Fatalf("Failed to start repeater client: %v", err)
@@ -283,6 +285,19 @@ func main() {
 		dialers.Stop,
 	)
 	startPushDialers(store, dialers)
+
+	// Link status (#154): /health "links" and the admin status.
+	linksProvider = func() repeater.LinksStatus {
+		var up *repeater.UpstreamStatus
+		switch {
+		case rc != nil:
+			up = &repeater.UpstreamStatus{Mode: "pull", Peer: rc.ParentID(), LinkStatus: rc.Status()}
+		case uplink != nil && uplink.Active():
+			up = &repeater.UpstreamStatus{Mode: "push", LinkStatus: repeater.LinkStatus{State: repeater.LinkConnected}}
+		}
+		return repeater.NewLinksStatus(up, dialers.Statuses())
+	}
+	handlers.SetLinkStatusFunc(func() interface{} { return linksProvider() })
 
 	// Create routers
 	apiRouter := http.NewServeMux()
@@ -455,10 +470,24 @@ func main() {
 }
 
 // Health check endpoint — returns "ok" for backward compatibility with Python server
+// linksProvider reports the state of the parent / push-child links (#154); nil = nothing to report.
+var linksProvider func() repeater.LinksStatus
+
+// handleHealth answers the liveness probe. The HTTP status stays 200 even when a link was
+// refused permanently (a node cut off from its parent still serves its agents and descendants:
+// it must not be restarted by a liveness probe); the condition is visible in "links" and
+// "degraded" so that it can be alerted on.
 func handleHealth(w http.ResponseWriter, r *http.Request) {
+	body := map[string]interface{}{"status": "ok", "timestamp": time.Now().Unix()}
+	if linksProvider != nil {
+		if l := linksProvider(); !l.Empty() {
+			body["links"] = l
+			body["degraded"] = l.Degraded
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if _, err := fmt.Fprintf(w, `{"status":"ok","timestamp":%d}`, time.Now().Unix()); err != nil {
+	if err := json.NewEncoder(w).Encode(body); err != nil {
 		log.Printf("handleHealth write: %v", err)
 	}
 }

@@ -18,12 +18,13 @@ var ErrPermanentRefusal = errors.New("link refused permanently")
 // mismatch) stops the loop and is returned (wrapping ErrPermanentRefusal): the peer must not be
 // hammered and an operator must act. A CORRECTABLE one (close 4012) is retried with the normal
 // exponential backoff.
-func runLoop(ctx context.Context, peer string, minBackoff, maxBackoff time.Duration,
+func runLoop(ctx context.Context, peer string, minBackoff, maxBackoff time.Duration, tr *linkTracker,
 	session func(context.Context) (established bool, err error)) error {
 	backoff := minBackoff
 	for ctx.Err() == nil {
 		established, err := session(ctx)
 		if ctx.Err() != nil {
+			tr.set(LinkRetrying, "stopped") // cancellation is not a refusal
 			return nil
 		}
 		var ref *refusedError
@@ -31,16 +32,20 @@ func runLoop(ctx context.Context, peer string, minBackoff, maxBackoff time.Durat
 		switch {
 		case errors.As(err, &ref) && ref.permanent:
 			log.Printf("[REPEATER] ERROR %s refused link (permanent), giving up — operator action required: %v", peer, err)
+			tr.set(LinkRefusedPermanent, ref.reason)
 			return fmt.Errorf("%w: %s: %s", ErrPermanentRefusal, peer, ref.reason)
 		case errors.As(err, &ref):
 			log.Printf("[REPEATER] %s refused link (correctable), retrying: %v", peer, err)
+			tr.set(LinkRetrying, ref.reason)
 			backoff = min(backoff*2, maxBackoff)
 		case established:
 			log.Printf("[REPEATER] link to %s lost: %v", peer, err)
+			tr.set(LinkRetrying, "link lost: "+errText(err))
 			backoff = minBackoff
 			wait = backoff
 		default:
 			log.Printf("[REPEATER] connect to %s failed: %v", peer, err)
+			tr.set(LinkRetrying, "connect failed: "+errText(err))
 			backoff = min(backoff*2, maxBackoff)
 		}
 		select {
@@ -61,4 +66,11 @@ func tlsOrDefault(cfg *tls.Config) *tls.Config {
 		return cfg
 	}
 	return &tls.Config{MinVersion: tls.VersionTLS12}
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

@@ -149,6 +149,7 @@ type Client struct {
 	opts Options
 
 	up *Uplink
+	tr *linkTracker
 
 	mu       sync.Mutex
 	started  bool
@@ -161,7 +162,7 @@ type Client struct {
 // New builds a Client from the validated repeater config.
 func New(cfg config.RepeaterConfig, opts Options) *Client {
 	up := NewUplink(cfg.ID, opts)
-	return &Client{cfg: cfg, opts: up.opts, up: up, done: make(chan struct{})}
+	return &Client{cfg: cfg, opts: up.opts, up: up, tr: newLinkTracker(), done: make(chan struct{})}
 }
 
 // Uplink returns the shared uplink publisher (used to also accept a parent that dials us, #140).
@@ -218,7 +219,7 @@ func (c *Client) Start(ctx context.Context) error {
 }
 
 func (c *Client) run(ctx context.Context) {
-	err := runLoop(ctx, "parent", c.opts.MinBackoff, c.opts.MaxBackoff, c.session)
+	err := runLoop(ctx, "parent", c.opts.MinBackoff, c.opts.MaxBackoff, c.tr, c.session)
 	c.mu.Lock()
 	c.terminal = err
 	c.mu.Unlock()
@@ -226,6 +227,9 @@ func (c *Client) run(ctx context.Context) {
 		close(c.done)
 	}
 }
+
+// Status returns the observable state of the link to the parent (#154).
+func (c *Client) Status() LinkStatus { return c.tr.get() }
 
 // Terminal returns the permanent refusal that stopped the client (nil while it runs or retries).
 func (c *Client) Terminal() error {
@@ -302,6 +306,7 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 	}
 
 	c.up.SetAncestors(ack.Ancestors)
+	c.tr.set(LinkConnected, "")
 	log.Printf("[REPEATER] linked to parent relay_id=%s as %s", ack.RelayID, c.cfg.ID)
 
 	// 3+4. topology_snapshot (always sent by the child) then steady state.

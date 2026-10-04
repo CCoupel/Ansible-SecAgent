@@ -45,7 +45,10 @@ var serverStatusCmd = &cobra.Command{
 			tp.printf("db\t%v\n", m["db"])
 			tp.printf("ws_connections\t%v\n", m["ws_connections"])
 			tp.printf("uptime\t%v\n", m["uptime"])
-			return tp.flush()
+			if err := tp.flush(); err != nil {
+				return err
+			}
+			return printLinks(m["links"])
 		})
 	},
 }
@@ -79,4 +82,41 @@ var serverStatsCmd = &cobra.Command{
 			return tp.flush()
 		})
 	},
+}
+
+// printLinks shows the parent / push-child link states (#154); nothing when the node has none.
+func printLinks(raw interface{}) error {
+	links, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	up, _ := links["upstream"].(map[string]interface{})
+	push, _ := links["push_children"].([]interface{})
+	if up == nil && len(push) == 0 {
+		return nil
+	}
+	_, _ = fmt.Println()
+	tp := newTabPrinter()
+	tp.println("LINK\tPEER\tSTATE\tSINCE\tREASON")
+	if up != nil {
+		tp.printf("upstream (%v)\t%v\t%v\t%v\t%v\n", up["mode"], dash(up["peer"]), up["state"], dash(up["since"]), dash(up["reason"]))
+	}
+	for _, c := range push {
+		m, _ := c.(map[string]interface{})
+		tp.printf("push child\t%v\t%v\t%v\t%v\n", m["relay_id"], m["state"], dash(m["since"]), dash(m["reason"]))
+	}
+	if err := tp.flush(); err != nil {
+		return err
+	}
+	if d, _ := links["degraded"].(bool); d {
+		_, _ = fmt.Println("\nWARNING: a link was refused permanently (refused_permanent): operator action required.")
+	}
+	return nil
+}
+
+func dash(v interface{}) interface{} {
+	if s, ok := v.(string); !ok || s == "" {
+		return "-"
+	}
+	return v
 }

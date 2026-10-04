@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -52,7 +53,11 @@ type Dialer struct {
 	mu       sync.Mutex
 	started  bool
 	terminal error // permanent refusal that stopped this dialer
+	tr       *linkTracker
 }
+
+// Status returns the observable state of the link to this child (#154).
+func (d *Dialer) Status() LinkStatus { return d.tr.get() }
 
 // Terminal returns the permanent refusal that stopped the dialer (nil while it runs or retries).
 func (d *Dialer) Terminal() error {
@@ -100,7 +105,7 @@ func NewDialer(target DialTarget, opts DialerOptions) (*Dialer, error) {
 	if opts.HandshakeTimeout <= 0 {
 		opts.HandshakeTimeout = DefaultHandshakeTimeout
 	}
-	return &Dialer{target: target, opts: opts}, nil
+	return &Dialer{target: target, opts: opts, tr: newLinkTracker()}, nil
 }
 
 // String never exposes the token.
@@ -115,7 +120,7 @@ func (d *Dialer) Start(ctx context.Context) error {
 	}
 	d.started = true
 	go func() {
-		err := runLoop(ctx, "child "+d.target.RelayID, d.opts.MinBackoff, d.opts.MaxBackoff, d.session)
+		err := runLoop(ctx, "child "+d.target.RelayID, d.opts.MinBackoff, d.opts.MaxBackoff, d.tr, d.session)
 		d.mu.Lock()
 		d.terminal = err
 		d.mu.Unlock()
@@ -197,6 +202,7 @@ func (d *Dialer) session(ctx context.Context) (established bool, err error) {
 		closeConn()
 		return false, err
 	}
+	d.tr.set(LinkConnected, "")
 	log.Printf("[REPEATER] linked to child relay_id=%s (push)", d.target.RelayID)
 	return true, d.opts.Serve(ctx, conn, d.target.RelayID)
 }
@@ -208,11 +214,12 @@ type DialerManager struct {
 
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
+	dialers map[string]*Dialer
 }
 
 // NewDialerManager creates a manager whose dialers stop when ctx is cancelled.
 func NewDialerManager(ctx context.Context, opts DialerOptions) *DialerManager {
-	return &DialerManager{ctx: ctx, opts: opts, cancels: make(map[string]context.CancelFunc)}
+	return &DialerManager{ctx: ctx, opts: opts, cancels: make(map[string]context.CancelFunc), dialers: make(map[string]*Dialer)}
 }
 
 // Start (re)starts the dialer for target; an existing dialer for the same relay is replaced.
@@ -232,6 +239,7 @@ func (m *DialerManager) Start(target DialTarget) error {
 		return err
 	}
 	m.cancels[target.RelayID] = cancel
+	m.dialers[target.RelayID] = d
 	return nil
 }
 
@@ -242,7 +250,20 @@ func (m *DialerManager) Stop(relayID string) {
 	if cancel, ok := m.cancels[relayID]; ok {
 		cancel()
 		delete(m.cancels, relayID)
+		delete(m.dialers, relayID)
 	}
+}
+
+// Statuses returns the link status of every push child (one per relay_id), sorted by relay_id.
+func (m *DialerManager) Statuses() []NamedStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]NamedStatus, 0, len(m.dialers))
+	for id, d := range m.dialers {
+		out = append(out, NamedStatus{RelayID: id, LinkStatus: d.Status()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RelayID < out[j].RelayID })
+	return out
 }
 
 // Running returns the number of active dialers.

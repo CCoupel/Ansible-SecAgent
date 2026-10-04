@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/hooks"
@@ -501,6 +502,18 @@ func AdminRevokeMinion(w http.ResponseWriter, r *http.Request) {
 // NATSStatus is used internally to check broker health (injected from main).
 var NATSHealthCheck func() bool
 
+var (
+	linkStatusMu sync.RWMutex
+	linkStatusFn func() interface{}
+)
+
+// SetLinkStatusFunc wires the parent / push-child link status exposed by GET /api/admin/status (#154).
+func SetLinkStatusFunc(fn func() interface{}) {
+	linkStatusMu.Lock()
+	linkStatusFn = fn
+	linkStatusMu.Unlock()
+}
+
 // AdminStatus returns server health: nats, db, ws_connections, uptime.
 // GET /api/admin/status
 func AdminStatus(w http.ResponseWriter, r *http.Request) {
@@ -526,12 +539,19 @@ func AdminStatus(w http.ResponseWriter, r *http.Request) {
 
 	uptimeSec := int(time.Since(serverStartTime).Seconds())
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	body := map[string]interface{}{
 		"nats":           natsStatus,
 		"db":             dbStatus,
 		"ws_connections": ws.GetConnectedCount(),
 		"uptime":         fmt.Sprintf("%ds", uptimeSec),
-	})
+	}
+	linkStatusMu.RLock()
+	links := linkStatusFn
+	linkStatusMu.RUnlock()
+	if links != nil {
+		body["links"] = links()
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // AdminStats returns operational stats: agents_connected, agents_total, tasks_active.
