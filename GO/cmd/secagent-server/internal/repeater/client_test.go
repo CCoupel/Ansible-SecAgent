@@ -399,3 +399,17 @@ func TestBackoffGrowsAndCaps(t *testing.T) {
 		t.Errorf("backoff not capped: %v", gaps)
 	}
 }
+
+func TestStartRefusesNonWSS(t *testing.T) {
+	for _, u := range []string{"ws://x:7772", "https://x", "http://x", "wss://", "wss://user:pw@x", "", "://bad"} {
+		c := New(config.RepeaterConfig{ID: "a", UpstreamURL: u, UpstreamToken: "t"}, Options{})
+		err := c.Start(context.Background())
+		if err == nil {
+			t.Errorf("Start(%q) must fail", u)
+			continue
+		}
+		if strings.Contains(err.Error(), "pw") {
+			t.Errorf("error leaks userinfo: %v", err)
+		}
+	}
+}

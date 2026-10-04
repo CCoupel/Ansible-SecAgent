@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -186,6 +187,10 @@ func (c *Client) Ancestors() []string {
 // immediately and the goroutine stops when ctx is cancelled. A second call is
 // an error (one connection to one parent).
 func (c *Client) Start(ctx context.Context) error {
+	// Defense in depth: config already enforces wss://, never dial anything else.
+	if u, err := url.Parse(c.cfg.UpstreamURL); err != nil || u.Scheme != "wss" || u.Host == "" || u.User != nil {
+		return errors.New("repeater client: upstream URL must be a wss:// URL without userinfo")
+	}
 	c.mu.Lock()
 	if c.started {
 		c.mu.Unlock()
