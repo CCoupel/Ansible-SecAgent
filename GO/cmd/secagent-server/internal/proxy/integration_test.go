@@ -41,22 +41,14 @@ import (
 func intRelayServer(t *testing.T, store *storage.Store) *httptest.Server {
 	t.Helper()
 
-	origRouting := ws.RelayRoutingBulkUpsertFunc
-	origStatus := ws.RelayStatusUpdateFunc
-	origIsProxy := ws.RelayIsProxyUpdateFunc
-
-	ws.RelayRoutingBulkUpsertFunc = store.BulkUpsertRelayRouting
-	ws.RelayStatusUpdateFunc = store.UpdateRelayStatus
-	ws.RelayIsProxyUpdateFunc = store.SetRelayIsProxy
+	setWSHooks(t, wsHooks{
+		routing: store.BulkUpsertRelayRouting,
+		status:  store.UpdateRelayStatus,
+		isProxy: store.SetRelayIsProxy,
+	})
 
 	srv := httptest.NewServer(http.HandlerFunc(ws.RelayHandler))
-
-	t.Cleanup(func() {
-		srv.Close()
-		ws.RelayRoutingBulkUpsertFunc = origRouting
-		ws.RelayStatusUpdateFunc = origStatus
-		ws.RelayIsProxyUpdateFunc = origIsProxy
-	})
+	t.Cleanup(srv.Close)
 
 	return srv
 }
@@ -454,25 +446,19 @@ func TestProxyChaining(t *testing.T) {
 
 	// Wire integration functions (intRelayServer does this, but we need to capture
 	// the is_proxy update to verify the DB flag was persisted)
-	origRouting := ws.RelayRoutingBulkUpsertFunc
-	origStatus := ws.RelayStatusUpdateFunc
-	origIsProxy := ws.RelayIsProxyUpdateFunc
-	ws.RelayRoutingBulkUpsertFunc = s.BulkUpsertRelayRouting
-	ws.RelayStatusUpdateFunc = s.UpdateRelayStatus
-	ws.RelayIsProxyUpdateFunc = func(rid string, ip bool) error {
-		isProxyCallMu.Lock()
-		isProxyCalled = true
-		isProxyCalledValue = ip
-		isProxyCallMu.Unlock()
-		return s.SetRelayIsProxy(rid, ip)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(ws.RelayHandler))
-	t.Cleanup(func() {
-		srv.Close()
-		ws.RelayRoutingBulkUpsertFunc = origRouting
-		ws.RelayStatusUpdateFunc = origStatus
-		ws.RelayIsProxyUpdateFunc = origIsProxy
+	setWSHooks(t, wsHooks{
+		routing: s.BulkUpsertRelayRouting,
+		status:  s.UpdateRelayStatus,
+		isProxy: func(rid string, ip bool) error {
+			isProxyCallMu.Lock()
+			isProxyCalled = true
+			isProxyCalledValue = ip
+			isProxyCallMu.Unlock()
+			return s.SetRelayIsProxy(rid, ip)
+		},
 	})
+	srv := httptest.NewServer(http.HandlerFunc(ws.RelayHandler))
+	t.Cleanup(srv.Close)
 
 	// Pre-register relay node (as pull + is_proxy initially false)
 	intSeedPullRelay(t, s, relayID)

@@ -18,9 +18,27 @@ func newTestStore(t *testing.T) *storage.Store {
 	if err != nil {
 		t.Fatalf("newTestStore: %v", err)
 	}
+	// Tests inject s via SetAdminStore/SetRegisterStore; restore the shared
+	// stores from TestMain on cleanup so that later tests (and later -count
+	// iterations) never see a closed database.
+	prevAdmin, prevRegister := adminStore, registerStore
 	t.Cleanup(func() {
+		adminStore, registerStore = prevAdmin, prevRegister
 		_ = s.Close()
 	})
+	return s
+}
+
+// useFreshStores gives the test its own in-memory store, injected as both the
+// admin and register store, and restores the previous ones on cleanup. Tests
+// that rely on the package-level store (instead of calling newTestStore
+// themselves) use it so they are independent of execution order and can be
+// replayed with -count>1.
+func useFreshStores(t *testing.T) *storage.Store {
+	t.Helper()
+	s := newTestStore(t) // registers the cleanup that restores previous stores
+	SetAdminStore(s)
+	SetRegisterStore(s)
 	return s
 }
 

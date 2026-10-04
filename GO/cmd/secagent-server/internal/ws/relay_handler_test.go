@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +30,47 @@ func makeRelayJWT(relayID, role string) string {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	raw, _ := token.SignedString([]byte(relayTestSecret))
 	return raw
+}
+
+// routingHook is the per-test replacement for RelayRoutingBulkUpsertFunc.
+// RelayRoutingBulkUpsertFunc itself is assigned exactly once (TestMain), before
+// any server goroutine exists, to routingDispatch. Tests only swap routingHook
+// under routingHookMu, so a handler goroutine left over from a previous test
+// (hijacked WebSocket, not awaited by httptest.Server.Close) can never race
+// with the test setup.
+var (
+	routingHookMu sync.RWMutex
+	routingHook   func(relayID string, hostnames []string) error
+)
+
+func routingDispatch(relayID string, hostnames []string) error {
+	routingHookMu.RLock()
+	fn := routingHook
+	routingHookMu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(relayID, hostnames)
+}
+
+func TestMain(m *testing.M) {
+	RelayRoutingBulkUpsertFunc = routingDispatch
+	os.Exit(m.Run())
+}
+
+// setRoutingHook installs fn as the routing hook for the current test and
+// restores the previous hook on cleanup.
+func setRoutingHook(t *testing.T, fn func(relayID string, hostnames []string) error) {
+	t.Helper()
+	routingHookMu.Lock()
+	prev := routingHook
+	routingHook = fn
+	routingHookMu.Unlock()
+	t.Cleanup(func() {
+		routingHookMu.Lock()
+		routingHook = prev
+		routingHookMu.Unlock()
+	})
 }
 
 // awaitCondition polls fn until it returns true or timeout expires.
@@ -219,15 +261,16 @@ func TestRelayHandler_AgentList(t *testing.T) {
 	var capturedRelayID string
 	var capturedHostnames []string
 	var routingMu sync.Mutex
-	origFn := RelayRoutingBulkUpsertFunc
-	RelayRoutingBulkUpsertFunc = func(relayID string, hostnames []string) error {
+	setRoutingHook(t, func(relayID string, hostnames []string) error {
+		if relayID != "dmz-agents" || len(hostnames) == 0 {
+			return nil // ignore stale calls from other tests / disconnect cleanup
+		}
 		routingMu.Lock()
 		capturedRelayID = relayID
 		capturedHostnames = append([]string{}, hostnames...)
 		routingMu.Unlock()
 		return nil
-	}
-	defer func() { RelayRoutingBulkUpsertFunc = origFn }()
+	})
 
 	conn := dialRelay(t, srv, makeRelayJWT("dmz-agents", "relay"))
 
@@ -259,7 +302,13 @@ func TestRelayHandler_AgentList(t *testing.T) {
 	}
 
 	// Verify routing update was called
-	time.Sleep(50 * time.Millisecond) // brief wait for async processing
+	if !awaitCondition(2*time.Second, func() bool {
+		routingMu.Lock()
+		defer routingMu.Unlock()
+		return capturedRelayID != ""
+	}) {
+		t.Fatal("routing update not called after agent_list")
+	}
 	routingMu.Lock()
 	defer routingMu.Unlock()
 	if capturedRelayID != "dmz-agents" {
@@ -276,14 +325,15 @@ func TestRelayHandler_AgentList_EmptyList(t *testing.T) {
 
 	var callCount int
 	var callMu sync.Mutex
-	origFn := RelayRoutingBulkUpsertFunc
-	RelayRoutingBulkUpsertFunc = func(relayID string, hostnames []string) error {
+	setRoutingHook(t, func(relayID string, hostnames []string) error {
+		if relayID != "dmz-empty" {
+			return nil
+		}
 		callMu.Lock()
 		callCount++
 		callMu.Unlock()
 		return nil
-	}
-	defer func() { RelayRoutingBulkUpsertFunc = origFn }()
+	})
 
 	conn := dialRelay(t, srv, makeRelayJWT("dmz-empty", "relay"))
 
@@ -381,16 +431,14 @@ func TestRelayHandler_DisconnectCleansRouting(t *testing.T) {
 
 	var cleanupCalled bool
 	var cleanupMu sync.Mutex
-	origFn := RelayRoutingBulkUpsertFunc
-	RelayRoutingBulkUpsertFunc = func(relayID string, hostnames []string) error {
-		if len(hostnames) == 0 {
+	setRoutingHook(t, func(relayID string, hostnames []string) error {
+		if relayID == "dmz-disco" && len(hostnames) == 0 {
 			cleanupMu.Lock()
 			cleanupCalled = true
 			cleanupMu.Unlock()
 		}
 		return nil
-	}
-	defer func() { RelayRoutingBulkUpsertFunc = origFn }()
+	})
 
 	conn := dialRelay(t, srv, makeRelayJWT("dmz-disco", "relay"))
 	if !awaitRelayConnected(t, "dmz-disco", 2*time.Second) {

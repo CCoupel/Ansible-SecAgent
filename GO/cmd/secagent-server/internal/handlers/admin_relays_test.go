@@ -46,6 +46,7 @@ func doAdminRelayRequest(t *testing.T, handler http.HandlerFunc, method, path st
 // ── POST /api/admin/relays ────────────────────────────────────────────────────
 
 func TestAdminCreateRelay_PullMode(t *testing.T) {
+	useFreshStores(t)
 	rr := doAdminRelayRequest(t, AdminCreateRelay, "POST", "/api/admin/relays", map[string]interface{}{
 		"relay_id":    "test-dmz1",
 		"mode":        "pull",
@@ -75,6 +76,7 @@ func TestAdminCreateRelay_PullMode(t *testing.T) {
 }
 
 func TestAdminCreateRelay_PushMode(t *testing.T) {
+	useFreshStores(t)
 	rr := doAdminRelayRequest(t, AdminCreateRelay, "POST", "/api/admin/relays", map[string]interface{}{
 		"relay_id": "test-dmz2",
 		"mode":     "push",
@@ -102,6 +104,7 @@ func TestAdminCreateRelay_PushMode(t *testing.T) {
 }
 
 func TestAdminCreateRelay_MissingRelayID(t *testing.T) {
+	useFreshStores(t)
 	rr := doAdminRelayRequest(t, AdminCreateRelay, "POST", "/api/admin/relays", map[string]interface{}{
 		"mode": "pull",
 	})
@@ -111,6 +114,7 @@ func TestAdminCreateRelay_MissingRelayID(t *testing.T) {
 }
 
 func TestAdminCreateRelay_InvalidMode(t *testing.T) {
+	useFreshStores(t)
 	rr := doAdminRelayRequest(t, AdminCreateRelay, "POST", "/api/admin/relays", map[string]interface{}{
 		"relay_id": "test-relay",
 		"mode":     "invalid",
@@ -121,6 +125,7 @@ func TestAdminCreateRelay_InvalidMode(t *testing.T) {
 }
 
 func TestAdminCreateRelay_PushMissingURL(t *testing.T) {
+	useFreshStores(t)
 	rr := doAdminRelayRequest(t, AdminCreateRelay, "POST", "/api/admin/relays", map[string]interface{}{
 		"relay_id": "test-relay-push",
 		"mode":     "push",
@@ -133,6 +138,7 @@ func TestAdminCreateRelay_PushMissingURL(t *testing.T) {
 }
 
 func TestAdminCreateRelay_PushMissingToken(t *testing.T) {
+	useFreshStores(t)
 	rr := doAdminRelayRequest(t, AdminCreateRelay, "POST", "/api/admin/relays", map[string]interface{}{
 		"relay_id": "test-relay-push2",
 		"mode":     "push",
@@ -145,6 +151,7 @@ func TestAdminCreateRelay_PushMissingToken(t *testing.T) {
 }
 
 func TestAdminCreateRelay_DefaultModePull(t *testing.T) {
+	useFreshStores(t)
 	rr := doAdminRelayRequest(t, AdminCreateRelay, "POST", "/api/admin/relays", map[string]interface{}{
 		"relay_id": "test-default-mode",
 		// no mode → defaults to pull
@@ -160,6 +167,7 @@ func TestAdminCreateRelay_DefaultModePull(t *testing.T) {
 }
 
 func TestAdminCreateRelay_Unauthorized(t *testing.T) {
+	useFreshStores(t)
 	req := httptest.NewRequest("POST", "/api/admin/relays", bytes.NewBufferString(`{"relay_id":"x"}`))
 	req.Header.Set("Authorization", "Bearer wrong-token")
 	rr := httptest.NewRecorder()
@@ -172,6 +180,7 @@ func TestAdminCreateRelay_Unauthorized(t *testing.T) {
 // ── GET /api/admin/relays ─────────────────────────────────────────────────────
 
 func TestAdminListRelays(t *testing.T) {
+	useFreshStores(t)
 	// Create a relay first
 	doAdminRelayRequest(t, AdminCreateRelay, "POST", "/api/admin/relays", map[string]interface{}{
 		"relay_id": "list-relay-1",
@@ -198,6 +207,7 @@ func TestAdminListRelays(t *testing.T) {
 }
 
 func TestAdminListRelays_Unauthorized(t *testing.T) {
+	useFreshStores(t)
 	req := httptest.NewRequest("GET", "/api/admin/relays", nil)
 	rr := httptest.NewRecorder()
 	AdminListRelays(rr, req)
@@ -209,6 +219,7 @@ func TestAdminListRelays_Unauthorized(t *testing.T) {
 // ── GET /api/admin/relays/status ─────────────────────────────────────────────
 
 func TestAdminRelaysStatus(t *testing.T) {
+	useFreshStores(t)
 	rr := doAdminRelayRequest(t, AdminRelaysStatus, "GET", "/api/admin/relays/status", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
@@ -226,6 +237,7 @@ func TestAdminRelaysStatus(t *testing.T) {
 // ── DELETE /api/admin/relays/{id} ─────────────────────────────────────────────
 
 func TestAdminDeleteRelay(t *testing.T) {
+	useFreshStores(t)
 	// Create a relay
 	rr := doAdminRelayRequest(t, AdminCreateRelay, "POST", "/api/admin/relays", map[string]interface{}{
 		"relay_id": "relay-to-delete",
@@ -249,6 +261,7 @@ func TestAdminDeleteRelay(t *testing.T) {
 }
 
 func TestAdminDeleteRelay_NotFound(t *testing.T) {
+	useFreshStores(t)
 	req := httptest.NewRequest("DELETE", "/api/admin/relays/nonexistent-id", nil)
 	req.Header.Set("Authorization", "Bearer "+server.AdminToken)
 	req.SetPathValue("id", "nonexistent-id")
@@ -261,6 +274,7 @@ func TestAdminDeleteRelay_NotFound(t *testing.T) {
 }
 
 func TestAdminDeleteRelay_Unauthorized(t *testing.T) {
+	useFreshStores(t)
 	req := httptest.NewRequest("DELETE", "/api/admin/relays/some-id", nil)
 	req.SetPathValue("id", "some-id")
 	rr := httptest.NewRecorder()

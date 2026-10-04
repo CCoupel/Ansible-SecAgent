@@ -141,6 +141,7 @@ func fullEnrollment(t *testing.T, hostname, token string, agentPrivKey *rsa.Priv
 // ========================================================================
 
 func TestEnrollmentTokenOneShotSuccess(t *testing.T) {
+	useFreshStores(t)
 	agentPrivKey, agentPubPEM := genRSAPubPEM(t, 4096)
 	hostname := "enroll-oneshot-01"
 	token := "secagent_enr_oneshot_success_01"
@@ -169,6 +170,7 @@ func TestEnrollmentTokenOneShotSuccess(t *testing.T) {
 }
 
 func TestEnrollmentTokenOneShotRejectsSecondUse(t *testing.T) {
+	useFreshStores(t)
 	agentPrivKey, agentPubPEM := genRSAPubPEM(t, 4096)
 	hostname := "enroll-oneshot-02"
 	token := "secagent_enr_oneshot_reject_02"
@@ -196,6 +198,7 @@ func TestEnrollmentTokenOneShotRejectsSecondUse(t *testing.T) {
 // ========================================================================
 
 func TestEnrollmentTokenPermanentMultipleUses(t *testing.T) {
+	useFreshStores(t)
 	agentPrivKey1, agentPubPEM1 := genRSAPubPEM(t, 4096)
 	agentPrivKey2, agentPubPEM2 := genRSAPubPEM(t, 4096)
 
@@ -232,6 +235,7 @@ func TestEnrollmentTokenPermanentMultipleUses(t *testing.T) {
 // ========================================================================
 
 func TestEnrollmentTokenExpiredRejected(t *testing.T) {
+	useFreshStores(t)
 	_, agentPubPEM := genRSAPubPEM(t, 2048)
 	hostname := "enroll-expired-01"
 	token := "secagent_enr_expired_01"
@@ -250,6 +254,7 @@ func TestEnrollmentTokenExpiredRejected(t *testing.T) {
 // ========================================================================
 
 func TestEnrollmentTokenHostnameMismatchRejected(t *testing.T) {
+	useFreshStores(t)
 	_, agentPubPEM := genRSAPubPEM(t, 2048)
 	token := "secagent_enr_mismatch_01"
 
@@ -264,6 +269,7 @@ func TestEnrollmentTokenHostnameMismatchRejected(t *testing.T) {
 }
 
 func TestEnrollmentTokenHostnamePatternMatch(t *testing.T) {
+	useFreshStores(t)
 	agentPrivKey, agentPubPEM := genRSAPubPEM(t, 4096)
 	token := "secagent_enr_pattern_01"
 
@@ -284,6 +290,7 @@ func TestEnrollmentTokenHostnamePatternMatch(t *testing.T) {
 // ========================================================================
 
 func TestEnrollmentTokenNotFoundRejected(t *testing.T) {
+	useFreshStores(t)
 	_, agentPubPEM := genRSAPubPEM(t, 2048)
 
 	code, _ := doPhase1(t, "some-host", agentPubPEM, "secagent_enr_does_not_exist")
@@ -297,6 +304,7 @@ func TestEnrollmentTokenNotFoundRejected(t *testing.T) {
 // ========================================================================
 
 func TestEnrollmentTokenChallengeResponseMismatch(t *testing.T) {
+	useFreshStores(t)
 	_, agentPubPEM := genRSAPubPEM(t, 4096)
 	hostname := "enroll-mismatch-resp-01"
 	token := "secagent_enr_challenge_mismatch_01"
@@ -325,6 +333,7 @@ func TestEnrollmentTokenChallengeResponseMismatch(t *testing.T) {
 }
 
 func TestEnrollmentTokenChallengeExpired(t *testing.T) {
+	useFreshStores(t)
 	_, agentPubPEM := genRSAPubPEM(t, 4096)
 	hostname := "enroll-nonce-expired-01"
 	token := "secagent_enr_nonce_exp_01"
@@ -357,6 +366,7 @@ func TestEnrollmentTokenChallengeExpired(t *testing.T) {
 }
 
 func TestEnrollmentTokenPhase2WithoutPhase1(t *testing.T) {
+	useFreshStores(t)
 	_, agentPubPEM := genRSAPubPEM(t, 4096)
 	hostname := "enroll-nophase1-01"
 	token := "secagent_enr_nophase1_01"
@@ -380,6 +390,7 @@ func TestEnrollmentTokenPhase2WithoutPhase1(t *testing.T) {
 // ========================================================================
 
 func TestEnrollmentTokenChallengeResponseInvalidBase64(t *testing.T) {
+	useFreshStores(t)
 	_, agentPubPEM := genRSAPubPEM(t, 4096)
 	hostname := "enroll-badenc-01"
 	token := "secagent_enr_badenc_01"
@@ -413,6 +424,7 @@ func TestEnrollmentTokenChallengeResponseInvalidBase64(t *testing.T) {
 // ========================================================================
 
 func TestEnrollmentTokenLegacyFlowUnchanged(t *testing.T) {
+	useFreshStores(t)
 	agentPrivKey, agentPubPEM := genRSAPubPEM(t, 4096)
 	_ = agentPrivKey
 
@@ -447,6 +459,7 @@ func TestEnrollmentTokenLegacyFlowUnchanged(t *testing.T) {
 // ========================================================================
 
 func TestEnrollmentTokenJWTDecryptable(t *testing.T) {
+	useFreshStores(t)
 	agentPrivKey, agentPubPEM := genRSAPubPEM(t, 4096)
 	hostname := "enroll-jwt-01"
 	token := "secagent_enr_jwt_decrypt_01"

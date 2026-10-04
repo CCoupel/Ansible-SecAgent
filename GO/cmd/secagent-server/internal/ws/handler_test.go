@@ -785,7 +785,12 @@ func TestCloseAgent_ConnectedAgent(t *testing.T) {
 	defer func() { _ = clientConn.Close() }()
 
 	// Wait for server to register the connection
-	time.Sleep(50 * time.Millisecond)
+	if !awaitCondition(2*time.Second, func() bool {
+		_, e := GetConnection("close-test-host")
+		return e == nil
+	}) {
+		t.Fatal("agent close-test-host not registered within timeout")
+	}
 
 	result := CloseAgent("close-test-host", WSCloseRevoked, "revoked")
 	if !result {
@@ -840,7 +845,12 @@ func TestAgentHandler_WithQueryParamHostname(t *testing.T) {
 	}
 
 	// Verify connection was registered
-	time.Sleep(50 * time.Millisecond)
+	if !awaitCondition(2*time.Second, func() bool {
+		_, e := GetConnection("qp-host")
+		return e == nil
+	}) {
+		t.Fatal("agent qp-host not registered within timeout")
+	}
 	agentConn, getErr := GetConnection("qp-host")
 	if getErr != nil {
 		t.Fatalf("agent not registered: %v", getErr)

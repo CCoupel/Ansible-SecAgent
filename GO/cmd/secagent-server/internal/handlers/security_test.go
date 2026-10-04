@@ -204,8 +204,9 @@ func TestAdminRotateKeys_RequiresAdminAuth(t *testing.T) {
 }
 
 func TestAdminRotateKeys_NoStore(t *testing.T) {
+	prevAdminStore := adminStore
 	SetAdminStore(nil)
-	defer SetAdminStore(nil)
+	defer SetAdminStore(prevAdminStore)
 
 	req := adminReq("POST", "/api/admin/keys/rotate", nil)
 	w := httptest.NewRecorder()
