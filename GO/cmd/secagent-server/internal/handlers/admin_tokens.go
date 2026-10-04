@@ -455,6 +455,21 @@ func AdminRevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Relay node (pull token or push link) addressed by its id: SECURITY.md §7 « tokens revoke ».
+	if node, nerr := adminStore.GetRelayNodeByID(id); nerr != nil {
+		log.Printf("AdminRevokeToken relay: %v", nerr)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		return
+	} else if node != nil {
+		resp, rerr := revokeRelayNode(r, node)
+		if rerr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
 	// Enrollment tokens don't support soft-revoke — return 404
 	tok, err := adminStore.GetEnrollmentTokenByID(ctx, id)
 	if err != nil {

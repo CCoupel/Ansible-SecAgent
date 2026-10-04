@@ -450,10 +450,13 @@ secagent-server tokens purge --expired --used   # les deux
 
 ### Tokens relay (HAUT-4, HAUT-5)
 
-**Révocation (HAUT-4)** : Les tokens relay entrent dans la blacklist JTI identique aux agents :
-- Révocation : `secagent-server tokens revoke <relay-token-id>`
-- Effet immédiat : INSERT dans `blacklist(jti)` + close(4010) de la WS `/ws/relay` active
-- Aucun reconnect possible tant que le token est en blacklist
+**Révocation (HAUT-4, #153)** : Les tokens relay entrent dans la blacklist JTI identique aux agents :
+- Persistance à l'émission : `relay_nodes.jti` / `token_exp` (jamais le token) ; réémettre un token pour le même `relay_id` (nouvel `POST /api/admin/relays`) blackliste l'ancien JTI et coupe son lien.
+- Révocation : `POST /api/admin/relays/{id}/revoke` ou `secagent-server tokens revoke <id-du-relay>` (admin seulement) : INSERT dans `blacklist(jti)` + drapeau `relay_nodes.revoked` + close **4010** (permanent, le pair s'arrête) de la WS `/ws/relay` active (`ws.CloseRelay`).
+- `DELETE /api/admin/relays/{id}` fait de même (blacklist + fermeture du lien ; arrêt du dialer pour un relay push).
+- Aucun reconnect possible : le JTI blacklisté et le drapeau `revoked` sont vérifiés à l'upgrade (401, fail closed).
+- Relais créés avant #153 (sans JTI) : révocables via le drapeau `revoked` seul (réponse `legacy_token: true`) ; un `DELETE` d'un tel relais ne peut pas blacklister de JTI inconnu → révoquer **avant** de supprimer.
+- Tokens `relay-parent` (#150) : `tokens revoke <id>` blackliste le JTI et ferme le lien parent actif.
 
 **Stockage sécurisé (HAUT-5)** : Le token relay utilisé en mode push (parent ouvre vers enfant) est stocké **chiffré AES-256-GCM** :
 - Colonne `relay_nodes.token_encrypted TEXT` (chiffré avec RSA_MASTER_KEY)

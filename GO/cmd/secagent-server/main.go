@@ -209,6 +209,7 @@ func main() {
 		defer cancel()
 		return store.IsJTIBlacklisted(ctx, jti)
 	})
+	ws.SetRelayRevokedFunc(handlers.RelayRevokedCheck)
 	ws.SetRelayHostRouteFunc(store.GetRelayForHostname)
 	ws.SetRelayNodeRegisterFunc(func(relayID string) error { return registerPullRelay(store, relayID) })
 
@@ -350,6 +351,7 @@ func main() {
 	adminRouter.HandleFunc("GET /api/admin/relays", handlers.AdminListRelays)
 	adminRouter.HandleFunc("GET /api/admin/relays/status", handlers.AdminRelaysStatus)
 	adminRouter.HandleFunc("DELETE /api/admin/relays/{id}", handlers.AdminDeleteRelay)
+	adminRouter.HandleFunc("POST /api/admin/relays/{id}/revoke", handlers.AdminRevokeRelay)
 
 	// === PORT 7772: WEBSOCKET ===
 	wsRouter.HandleFunc("/ws/agent", ws.AgentHandler)

@@ -205,18 +205,22 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var jwtToken string
+	var newJTI string
+	var newJTIExp int64
+	var previous storage.RelayTokenInfo
 
 	switch req.Mode {
 	case "pull":
 		// Generate a long-lived JWT relay token (30 days)
 		jwtSvc := auth.New(GetServerJWTSecrets, 720*time.Hour)
-		rawJWT, _, err := jwtSvc.SignRelay(req.RelayID)
+		rawJWT, jti, err := jwtSvc.SignRelay(req.RelayID)
 		if err != nil {
 			log.Printf("AdminCreateRelay SignRelay: %v", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "jwt_generation_failed"})
 			return
 		}
 		jwtToken = rawJWT
+		newJTI, newJTIExp = jti, time.Now().Add(720*time.Hour).Unix() // SignRelay lifetime
 		// Store SHA-256 of the JWT for future reference (not strictly required for pull)
 		h := sha256.Sum256([]byte(rawJWT))
 		node.TokenHash = fmt.Sprintf("%x", h)
@@ -237,10 +241,30 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		node.TokenHash = sealed
 	}
 
+	// Re-registering a relay issues a NEW token: remember the previous JTI so it can be cut off.
+	if req.Mode == "pull" {
+		previous, _ = adminStore.GetRelayTokenInfo(req.RelayID)
+	}
+
 	if err := adminStore.UpsertRelayNode(node); err != nil {
 		log.Printf("AdminCreateRelay UpsertRelayNode: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 		return
+	}
+
+	if req.Mode == "pull" && newJTI != "" {
+		// Persist the JTI/expiry (never the token): required to revoke this relay later (#153).
+		if err := adminStore.SetRelayTokenInfo(req.RelayID, newJTI, newJTIExp); err != nil {
+			log.Printf("AdminCreateRelay SetRelayTokenInfo: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+			return
+		}
+		if previous.JTI != "" && previous.JTI != newJTI {
+			if err := adminStore.BlacklistJTI(r.Context(), previous.JTI, req.RelayID, "token replaced by re-registration", previous.Exp); err != nil {
+				log.Printf("AdminCreateRelay: blacklist previous token: %v", err)
+			}
+			ws.CloseRelay(req.RelayID, ws.WSRelayCloseRevoked, "token replaced")
+		}
 	}
 
 	log.Printf("Relay registered: relay_id=%s mode=%s id=%s", req.RelayID, req.Mode, id)
@@ -368,6 +392,15 @@ func AdminDeleteRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Pull relay: blacklist its token before the row (and its JTI) disappears (#153).
+	if node.Mode == "pull" {
+		if _, _, rerr := adminStore.RevokeRelayNode(r.Context(), node.RelayID, "relay deleted"); rerr != nil {
+			log.Printf("AdminDeleteRelay RevokeRelayNode: %v", rerr)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+			return
+		}
+	}
+
 	// Best-effort: delete routing entries before the node (FK cascade handles it,
 	// but explicit delete is safer if FK cascade is not enabled at connection level).
 	_ = adminStore.DeleteRelayRoutingByRelay(node.RelayID)
@@ -386,8 +419,10 @@ func AdminDeleteRelay(w http.ResponseWriter, r *http.Request) {
 			stop(node.RelayID)
 		}
 	}
+	// A deleted relay must not keep a live link: cut it (permanent code, #148).
+	disconnected := ws.CloseRelay(node.RelayID, ws.WSRelayCloseRevoked, "relay deleted")
 
-	log.Printf("Relay deleted: id=%s relay_id=%s", id, node.RelayID)
+	log.Printf("Relay deleted: id=%s relay_id=%s link_closed=%v", id, node.RelayID, disconnected)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -411,4 +446,85 @@ func relayNodeToSummary(n storage.RelayNode) RelaySummary {
 		s.LastSeen = &t
 	}
 	return s
+}
+
+// ========================================================================
+// POST /api/admin/relays/{id}/revoke  (#153)
+// ========================================================================
+
+// RelayRevokeResponse is returned by the relay revocation endpoints. It carries no secret.
+type RelayRevokeResponse struct {
+	Revoked      bool   `json:"revoked"`
+	ID           string `json:"id"`
+	RelayID      string `json:"relay_id"`
+	Blacklisted  bool   `json:"blacklisted"`  // the token JTI is now blacklisted
+	LegacyToken  bool   `json:"legacy_token"` // the token predates JTI tracking: refused through the revoked flag only
+	Disconnected bool   `json:"disconnected"` // a live link was closed (4010)
+	UpdatedAt    string `json:"updated_at"`
+}
+
+// AdminRevokeRelay revokes a relay: its token JTI is blacklisted (when known), the relay is
+// flagged revoked (refused at /ws/relay even for legacy tokens), and its live link is closed
+// with the permanent code 4010. Push relays: the dialer is stopped and the link closed.
+func AdminRevokeRelay(w http.ResponseWriter, r *http.Request) {
+	if !requireAdminAuth(w, r) {
+		return
+	}
+	if adminStore == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "store_not_initialized"})
+		return
+	}
+	node, err := adminStore.GetRelayNodeByID(r.PathValue("id"))
+	if err != nil {
+		log.Printf("AdminRevokeRelay: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		return
+	}
+	if node == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "relay_not_found"})
+		return
+	}
+	resp, err := revokeRelayNode(r, node)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// revokeRelayNode is shared by the relay and the tokens revoke endpoints.
+func revokeRelayNode(r *http.Request, node *storage.RelayNode) (RelayRevokeResponse, error) {
+	resp := RelayRevokeResponse{Revoked: true, ID: node.ID, RelayID: node.RelayID, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	if node.Mode == "push" {
+		pushHooksMu.RLock()
+		stop := pushStopFn
+		pushHooksMu.RUnlock()
+		if stop != nil {
+			stop(node.RelayID)
+		}
+	} else {
+		info, _, err := adminStore.RevokeRelayNode(r.Context(), node.RelayID, "relay token revoked")
+		if err != nil {
+			log.Printf("revokeRelayNode: %v", err)
+			return RelayRevokeResponse{}, err
+		}
+		resp.Blacklisted = info.JTI != ""
+		resp.LegacyToken = info.JTI == ""
+	}
+	resp.Disconnected = ws.CloseRelay(node.RelayID, ws.WSRelayCloseRevoked, "token revoked")
+	log.Printf("Relay revoked: relay_id=%s mode=%s blacklisted=%v legacy=%v link_closed=%v",
+		node.RelayID, node.Mode, resp.Blacklisted, resp.LegacyToken, resp.Disconnected)
+	return resp, nil
+}
+
+// RelayRevokedCheck is the ws.SetRelayRevokedFunc implementation backed by relay_nodes.
+func RelayRevokedCheck(relayID string) (bool, error) {
+	if adminStore == nil {
+		return false, errors.New("store_not_initialized")
+	}
+	info, err := adminStore.GetRelayTokenInfo(relayID)
+	if err != nil {
+		return false, err
+	}
+	return info.Revoked, nil
 }

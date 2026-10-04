@@ -529,7 +529,11 @@ POST /api/admin/relays
 }
 → 201
 
-# Remove relay
+# Revoke a relay (#153) : blacklist du JTI + drapeau revoked + close 4010 du lien actif
+POST /api/admin/relays/{id}/revoke
+→ 200 { "revoked": true, "blacklisted": true, "legacy_token": false, "disconnected": true }
+
+# Remove relay (blackliste aussi le token et coupe le lien)
 DELETE /api/admin/relays/{relay_id}
 → 204
 ```
