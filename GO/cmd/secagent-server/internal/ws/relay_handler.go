@@ -51,6 +51,7 @@ type RelayConnection struct {
 	reject       *relayRejection // set by a handler to make the read loop close the link
 	evWindow     time.Time       // event_forward rate limit window start
 	evCount      int
+	reported     map[string]string // hostname → "old->new" already reported as host.conflict (no event storm)
 }
 
 // relayRejection asks the read loop to close the link with a WS close code.
@@ -349,6 +350,21 @@ func SetRelayConflictFunc(fn func(c HostConflict, fromBelow bool)) {
 	treeHooksMu.Unlock()
 }
 
+// reportConflictOnce emits host.conflict only when the (old, new) owner pair differs from what
+// this connection already reported for the host: a relay repeating its agent_list every 30 s
+// must not cause an event storm.
+func reportConflictOnce(conn *RelayConnection, c HostConflict) {
+	key := c.OldRelay + "->" + c.NewRelay
+	if conn.reported == nil {
+		conn.reported = make(map[string]string)
+	}
+	if conn.reported[c.Hostname] == key {
+		return
+	}
+	conn.reported[c.Hostname] = key
+	emitConflict(c, false)
+}
+
 func emitConflict(c HostConflict, fromBelow bool) {
 	log.Printf("[WARN] host.conflict: hostname=%s old=%s new=%s chain=%v", c.Hostname, c.OldRelay, c.NewRelay, c.RelayChain)
 	treeHooksMu.RLock()
@@ -437,6 +453,9 @@ func envInt(name string, def int) int {
 
 func maxSnapshotRelays() int { return envInt("MAX_SNAPSHOT_RELAYS", 1000) }
 func maxSnapshotHosts() int  { return envInt("MAX_SNAPSHOT_HOSTS", 10000) }
+
+// maxAgentListHosts bounds one agent_list (each host costs a DB lookup for conflict detection).
+func maxAgentListHosts() int { return envInt("MAX_AGENT_LIST_HOSTS", 10000) }
 func maxRelayMessageSize() int64 {
 	return int64(envInt("MAX_WS_MESSAGE_SIZE_RELAY", 10*1024*1024))
 }
@@ -758,12 +777,34 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 				hostnames = append(hostnames, a.Hostname)
 			}
 		}
-		// Last arrival wins, but a move away from another owner is reported (host.conflict).
+		if n := len(msg.Agents); n > maxAgentListHosts() {
+			log.Printf("[SECURITY WARNING] agent_list refused: relay_id=%s hosts=%d limit=%d", conn.RelayID, n, maxAgentListHosts())
+			reject(conn, "agent_list too large")
+			return
+		}
+		// Last arrival wins between relays, but a move away from another owner is reported
+		// (host.conflict, once per owner change) and a live local agent is never re-routed.
+		routable := hostnames[:0:0]
+		seen := make(map[string]bool, len(hostnames))
 		for _, h := range hostnames {
-			if c := detectHostConflict(conn, h, []string{conn.RelayID}); c != nil {
-				emitConflict(*c, false)
+			c := detectHostConflict(conn, h, []string{conn.RelayID})
+			if c == nil {
+				delete(conn.reported, h)
+				routable = append(routable, h)
+				continue
+			}
+			seen[h] = true
+			reportConflictOnce(conn, *c)
+			if c.OldRelay != LocalOwner {
+				routable = append(routable, h) // relay-to-relay move: last arrival wins
 			}
 		}
+		for h := range conn.reported {
+			if !seen[h] { // the claim ended: a later conflict is a new event
+				delete(conn.reported, h)
+			}
+		}
+		hostnames = routable
 		if RelayRoutingBulkUpsertFunc != nil {
 			if err := RelayRoutingBulkUpsertFunc(conn.RelayID, hostnames); err != nil {
 				log.Printf("agent_list routing update error: relay_id=%s err=%v", conn.RelayID, err)
@@ -1317,7 +1358,12 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) {
 		}
 		// The event comes from below: a conflict here is detected against OTHER owners only.
 		if c := detectHostConflict(conn, msg.Hostname, topDown); c != nil {
-			emitConflict(*c, false)
+			reportConflictOnce(conn, *c)
+			if c.OldRelay == LocalOwner {
+				return // a live local agent is never re-routed
+			}
+		} else {
+			delete(conn.reported, msg.Hostname)
 		}
 		if origin != conn.RelayID {
 			if err := registerRelayNode(origin); err != nil {
