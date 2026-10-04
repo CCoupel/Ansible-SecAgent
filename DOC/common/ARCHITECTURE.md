@@ -1713,9 +1713,9 @@ Si le serveur rejette la connexion WS avec HTTP 401 (JWT expiré ou révoqué ap
 
 ---
 
-## 23. Mode Repeater — Arbre Hiérarchique (v3.0)
+## 23. Mode Repeater — Arbre Hiérarchique (v3.1)
 
-> Voir aussi : `DOC/common/HLD.md` §6 pour schémas + `DOC/server/SERVER_SPEC.md` §9
+> Voir aussi : `DOC/common/HLD.md` §6 pour schémas + `DOC/server/SERVER_SPEC.md` §9.1-9.7
 
 ### Vue d'ensemble
 
