@@ -88,7 +88,7 @@ func TestExecCommandAgentOffline(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	mustUnmarshal(t, w.Body.Bytes(), &resp)
 	if resp["error"] != "agent_offline" {
 		t.Errorf("expected error=agent_offline, got %v", resp["error"])
 	}
@@ -436,7 +436,7 @@ func TestAsyncStatusCompleted(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	mustUnmarshal(t, w.Body.Bytes(), &resp)
 
 	if resp["status"] != "finished" {
 		t.Errorf("expected status=finished, got %v", resp["status"])

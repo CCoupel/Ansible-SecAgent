@@ -158,7 +158,7 @@ func TestE2EEnrollmentTokenPermanentMultipleAgents(t *testing.T) {
 		t.Fatalf("AdminCreateToken: expected 201, got %d", cw.Code)
 	}
 	var createResp TokenCreateResponse
-	json.NewDecoder(cw.Body).Decode(&createResp)
+	mustDecode(t, cw.Body, &createResp)
 	tokenPlain := createResp.Token
 	tokenID := createResp.ID
 
@@ -216,7 +216,7 @@ func TestE2EEnrollmentTokenExpiredAtCreation(t *testing.T) {
 		t.Fatalf("AdminCreateToken: expected 201, got %d — %s", cw.Code, cw.Body.String())
 	}
 	var createResp TokenCreateResponse
-	json.NewDecoder(cw.Body).Decode(&createResp)
+	mustDecode(t, cw.Body, &createResp)
 	tokenPlain := createResp.Token
 
 	// Agent tries to enroll — must be rejected immediately
@@ -241,7 +241,7 @@ func TestE2EEnrollmentTokenDeletedMidFlow(t *testing.T) {
 	cw := httptest.NewRecorder()
 	AdminCreateToken(cw, createReq)
 	var createResp TokenCreateResponse
-	json.NewDecoder(cw.Body).Decode(&createResp)
+	mustDecode(t, cw.Body, &createResp)
 	tokenPlain := createResp.Token
 	tokenID := createResp.ID
 
@@ -270,7 +270,9 @@ func TestE2EEnrollmentTokenDeletedMidFlow(t *testing.T) {
 	// Phase 2 must fail — token no longer exists
 	serverPubKey := &server.PrivateKey.PublicKey
 	dummy := make([]byte, 16)
-	rand.Read(dummy)
+	if _, err := rand.Read(dummy); err != nil {
+		t.Fatalf("rand.Read: %v", err)
+	}
 	encrypted, _ := rsa.EncryptOAEP(sha256.New(), rand.Reader, serverPubKey, dummy, nil)
 	badResp := base64.StdEncoding.EncodeToString(encrypted)
 
@@ -295,7 +297,7 @@ func TestE2EEnrollmentTokenAdminListShowsUpdatedUseCount(t *testing.T) {
 	cw := httptest.NewRecorder()
 	AdminCreateToken(cw, createReq)
 	var createResp TokenCreateResponse
-	json.NewDecoder(cw.Body).Decode(&createResp)
+	mustDecode(t, cw.Body, &createResp)
 	tokenPlain := createResp.Token
 
 	// Enroll twice
@@ -318,7 +320,7 @@ func TestE2EEnrollmentTokenAdminListShowsUpdatedUseCount(t *testing.T) {
 	}
 
 	var result []map[string]interface{}
-	json.NewDecoder(lw.Body).Decode(&result)
+	mustDecode(t, lw.Body, &result)
 
 	// Find our token by hostname_pattern
 	found := false
@@ -358,7 +360,7 @@ func TestE2EEnrollmentTokenPurgeAfterUse(t *testing.T) {
 		w := httptest.NewRecorder()
 		AdminCreateToken(w, req)
 		var resp TokenCreateResponse
-		json.NewDecoder(w.Body).Decode(&resp)
+		mustDecode(t, w.Body, &resp)
 		return resp.Token, resp.ID
 	}
 
@@ -383,7 +385,7 @@ func TestE2EEnrollmentTokenPurgeAfterUse(t *testing.T) {
 	}
 
 	var purgeResp PurgeResponse
-	json.NewDecoder(pw.Body).Decode(&purgeResp)
+	mustDecode(t, pw.Body, &purgeResp)
 	if purgeResp.DeletedCount < 1 {
 		t.Errorf("expected at least 1 deleted, got %d", purgeResp.DeletedCount)
 	}
@@ -426,7 +428,7 @@ func TestE2EPluginTokenCreateAndUse(t *testing.T) {
 	}
 
 	var createResp TokenCreateResponse
-	json.NewDecoder(cw.Body).Decode(&createResp)
+	mustDecode(t, cw.Body, &createResp)
 	tokenPlain := createResp.Token
 	tokenID := createResp.ID
 
@@ -472,7 +474,7 @@ func TestE2EPluginTokenRevokeAndReject(t *testing.T) {
 	cw := httptest.NewRecorder()
 	AdminCreateToken(cw, createReq)
 	var createResp TokenCreateResponse
-	json.NewDecoder(cw.Body).Decode(&createResp)
+	mustDecode(t, cw.Body, &createResp)
 	tokenPlain := createResp.Token
 	tokenID := createResp.ID
 
@@ -506,7 +508,7 @@ func TestE2EPluginTokenRevokeAndReject(t *testing.T) {
 		t.Errorf("after revoke: expected 403, got %d", w2.Code)
 	}
 	var body map[string]string
-	json.NewDecoder(w2.Body).Decode(&body)
+	mustDecode(t, w2.Body, &body)
 	if body["error"] != "token_revoked" {
 		t.Errorf("expected token_revoked, got %q", body["error"])
 	}
@@ -525,7 +527,7 @@ func TestE2EPluginTokenDeleteAndReject(t *testing.T) {
 	cw := httptest.NewRecorder()
 	AdminCreateToken(cw, createReq)
 	var createResp TokenCreateResponse
-	json.NewDecoder(cw.Body).Decode(&createResp)
+	mustDecode(t, cw.Body, &createResp)
 	tokenPlain := createResp.Token
 	tokenID := createResp.ID
 
@@ -549,7 +551,7 @@ func TestE2EPluginTokenDeleteAndReject(t *testing.T) {
 		t.Errorf("after delete: expected 403, got %d", w.Code)
 	}
 	var body map[string]string
-	json.NewDecoder(w.Body).Decode(&body)
+	mustDecode(t, w.Body, &body)
 	if body["error"] != "token_not_found" {
 		t.Errorf("expected token_not_found, got %q", body["error"])
 	}
@@ -569,7 +571,7 @@ func TestE2EPluginTokenIPConstraintEnforced(t *testing.T) {
 	cw := httptest.NewRecorder()
 	AdminCreateToken(cw, createReq)
 	var createResp TokenCreateResponse
-	json.NewDecoder(cw.Body).Decode(&createResp)
+	mustDecode(t, cw.Body, &createResp)
 	tokenPlain := createResp.Token
 
 	// Allowed IP
@@ -592,7 +594,7 @@ func TestE2EPluginTokenIPConstraintEnforced(t *testing.T) {
 		t.Errorf("denied IP: expected 403, got %d", w2.Code)
 	}
 	var body map[string]string
-	json.NewDecoder(w2.Body).Decode(&body)
+	mustDecode(t, w2.Body, &body)
 	if body["error"] != "ip_not_allowed" {
 		t.Errorf("expected ip_not_allowed, got %q", body["error"])
 	}
@@ -612,7 +614,7 @@ func TestE2EPluginTokenHostnameConstraintEnforced(t *testing.T) {
 	cw := httptest.NewRecorder()
 	AdminCreateToken(cw, createReq)
 	var createResp TokenCreateResponse
-	json.NewDecoder(cw.Body).Decode(&createResp)
+	mustDecode(t, cw.Body, &createResp)
 	tokenPlain := createResp.Token
 
 	// Matching hostname
@@ -637,7 +639,7 @@ func TestE2EPluginTokenHostnameConstraintEnforced(t *testing.T) {
 		t.Errorf("mismatching hostname: expected 403, got %d", w2.Code)
 	}
 	var body map[string]string
-	json.NewDecoder(w2.Body).Decode(&body)
+	mustDecode(t, w2.Body, &body)
 	if body["error"] != "hostname_not_allowed" {
 		t.Errorf("expected hostname_not_allowed, got %q", body["error"])
 	}
@@ -656,7 +658,7 @@ func TestE2EPluginTokenExecCommandAudit(t *testing.T) {
 	cw := httptest.NewRecorder()
 	AdminCreateToken(cw, createReq)
 	var createResp TokenCreateResponse
-	json.NewDecoder(cw.Body).Decode(&createResp)
+	mustDecode(t, cw.Body, &createResp)
 	tokenPlain := createResp.Token
 	tokenID := createResp.ID
 
@@ -702,7 +704,7 @@ func TestE2EPluginTokenXForwardedForAudit(t *testing.T) {
 	cw := httptest.NewRecorder()
 	AdminCreateToken(cw, createReq)
 	var createResp TokenCreateResponse
-	json.NewDecoder(cw.Body).Decode(&createResp)
+	mustDecode(t, cw.Body, &createResp)
 	tokenPlain := createResp.Token
 	tokenID := createResp.ID
 
@@ -745,7 +747,7 @@ func TestE2EAdminListReflectsAllTokenTypes(t *testing.T) {
 	ew := httptest.NewRecorder()
 	AdminCreateToken(ew, enrReq)
 	var enrResp TokenCreateResponse
-	json.NewDecoder(ew.Body).Decode(&enrResp)
+	mustDecode(t, ew.Body, &enrResp)
 	enrPlain := enrResp.Token
 
 	// Create plugin token with expiry
@@ -759,7 +761,7 @@ func TestE2EAdminListReflectsAllTokenTypes(t *testing.T) {
 	pw := httptest.NewRecorder()
 	AdminCreateToken(pw, plgReq)
 	var plgResp TokenCreateResponse
-	json.NewDecoder(pw.Body).Decode(&plgResp)
+	mustDecode(t, pw.Body, &plgResp)
 	plgPlain := plgResp.Token
 
 	// Use enrollment token once

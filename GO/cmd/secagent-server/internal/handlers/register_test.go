@@ -65,7 +65,7 @@ func TestRegisterAgentSuccess(t *testing.T) {
 	}
 
 	var resp RegisterResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	mustUnmarshal(t, w.Body.Bytes(), &resp)
 
 	if resp.TokenEncrypted == "" {
 		t.Error("expected token_encrypted, got empty string")
@@ -119,7 +119,7 @@ func TestRegisterAgentKeyMismatch(t *testing.T) {
 	}
 
 	var resp map[string]string
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	mustUnmarshal(t, w.Body.Bytes(), &resp)
 	if resp["error"] != "public_key_mismatch" {
 		t.Errorf("expected public_key_mismatch, got: %v", resp["error"])
 	}
@@ -360,7 +360,7 @@ func TestTokenRefreshSuccess(t *testing.T) {
 	}
 
 	var resp map[string]string
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	mustUnmarshal(t, w.Body.Bytes(), &resp)
 
 	if resp["token_encrypted"] == "" {
 		t.Error("expected token_encrypted in response, got empty")

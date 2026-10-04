@@ -436,7 +436,7 @@ func TestEnrollmentTokenLegacyFlowUnchanged(t *testing.T) {
 	}
 
 	var resp RegisterResponse
-	json.NewDecoder(w.Body).Decode(&resp)
+	mustDecode(t, w.Body, &resp)
 	if resp.TokenEncrypted == "" {
 		t.Error("legacy flow: expected token_encrypted")
 	}

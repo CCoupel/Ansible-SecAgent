@@ -153,7 +153,7 @@ func TestAdminCreateRelay_DefaultModePull(t *testing.T) {
 		t.Fatalf("expected 201, got %d: %s", rr.Code, rr.Body.String())
 	}
 	var resp RelayCreateResponse
-	json.Unmarshal(rr.Body.Bytes(), &resp)
+	mustUnmarshal(t, rr.Body.Bytes(), &resp)
 	if resp.Mode != "pull" {
 		t.Errorf("expected default mode=pull, got %s", resp.Mode)
 	}
@@ -232,7 +232,7 @@ func TestAdminDeleteRelay(t *testing.T) {
 		"mode":     "pull",
 	})
 	var created RelayCreateResponse
-	json.Unmarshal(rr.Body.Bytes(), &created)
+	mustUnmarshal(t, rr.Body.Bytes(), &created)
 
 	// Delete by ID
 	req := httptest.NewRequest("DELETE", "/api/admin/relays/"+created.ID, nil)

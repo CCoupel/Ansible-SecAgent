@@ -85,13 +85,13 @@ func mockRelayHTTPServer(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/api/exec/"):
-			json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			mustEncode(t, w, map[string]interface{}{
 				"rc": 0, "stdout": "relay-exec-ok", "stderr": "", "truncated": false,
 			})
 		case strings.HasPrefix(r.URL.Path, "/api/upload/"):
-			json.NewEncoder(w).Encode(map[string]string{"status": "ok"}) //nolint:errcheck
+			mustEncode(t, w, map[string]string{"status": "ok"})
 		case strings.HasPrefix(r.URL.Path, "/api/fetch/"):
-			json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			mustEncode(t, w, map[string]interface{}{
 				"rc": 0, "data": "cmVsYXktZmV0Y2g=",
 			})
 		default:
@@ -125,7 +125,7 @@ func TestExecCommand_ProxyRouting_PushMode(t *testing.T) {
 		t.Fatalf("expected 503 (relay_offline for push relay without WS), got %d — %s", w.Code, w.Body.String())
 	}
 	var resp map[string]string
-	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	mustDecode(t, w.Body, &resp)
 	if !strings.Contains(resp["error"], "relay_offline") {
 		t.Errorf("expected relay_offline error, got %q", resp["error"])
 	}
@@ -148,7 +148,7 @@ func TestExecCommand_ProxyRouting_HostNotInRelay_FallsThrough(t *testing.T) {
 		t.Fatalf("expected 503 (agent_offline fallthrough), got %d — %s", w.Code, w.Body.String())
 	}
 	var resp map[string]string
-	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	mustDecode(t, w.Body, &resp)
 	if resp["error"] != "agent_offline" {
 		t.Errorf("expected error=agent_offline, got %q", resp["error"])
 	}
@@ -203,7 +203,7 @@ func TestUploadFile_ProxyRouting_PushMode(t *testing.T) {
 		t.Fatalf("expected 503 (relay_offline for push relay), got %d — %s", w.Code, w.Body.String())
 	}
 	var resp map[string]string
-	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	mustDecode(t, w.Body, &resp)
 	if !strings.Contains(resp["error"], "relay_offline") {
 		t.Errorf("expected relay_offline error, got %q", resp["error"])
 	}
@@ -231,7 +231,7 @@ func TestFetchFile_ProxyRouting_PushMode(t *testing.T) {
 		t.Fatalf("expected 503 (relay_offline for push relay), got %d — %s", w.Code, w.Body.String())
 	}
 	var resp map[string]string
-	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	mustDecode(t, w.Body, &resp)
 	if !strings.Contains(resp["error"], "relay_offline") {
 		t.Errorf("expected relay_offline error, got %q", resp["error"])
 	}
@@ -253,7 +253,7 @@ func TestGetInventory_UnifiedWithRelayAgents(t *testing.T) {
 	}
 
 	var resp InventoryResponse
-	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	mustDecode(t, w.Body, &resp)
 
 	// relay-h1 and relay-h2 should appear
 	hostSet := make(map[string]bool, len(resp.All.Hosts))
@@ -302,7 +302,7 @@ func TestGetInventory_RelayAgents_OnlyConnected_Filtered(t *testing.T) {
 	}
 
 	var resp InventoryResponse
-	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	mustDecode(t, w.Body, &resp)
 
 	for _, h := range resp.All.Hosts {
 		if h == "dc-relay-host" {
@@ -337,7 +337,7 @@ func TestGetInventory_LocalAgentTakesPrecedenceOverRelay(t *testing.T) {
 	}
 
 	var resp InventoryResponse
-	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	mustDecode(t, w.Body, &resp)
 
 	// dup-host should appear exactly once and without relay_id (local takes precedence)
 	count := 0
@@ -383,7 +383,7 @@ func TestGetInventory_NoProxyRouter_LocalOnly(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var resp InventoryResponse
-	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	mustDecode(t, w.Body, &resp)
 	if resp.All.Hosts == nil {
 		t.Error("expected non-nil hosts array")
 	}

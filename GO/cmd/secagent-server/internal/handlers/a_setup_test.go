@@ -16,10 +16,14 @@ import (
 // Usage: JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./...
 func TestMain(m *testing.M) {
 	if os.Getenv("JWT_SECRET_KEY") == "" {
-		os.Setenv("JWT_SECRET_KEY", "test-secret-key-for-unit-tests")
+		if err := os.Setenv("JWT_SECRET_KEY", "test-secret-key-for-unit-tests"); err != nil {
+			log.Fatalf("os.Setenv JWT_SECRET_KEY: %v", err)
+		}
 	}
 	if os.Getenv("ADMIN_TOKEN") == "" {
-		os.Setenv("ADMIN_TOKEN", "test-admin-token")
+		if err := os.Setenv("ADMIN_TOKEN", "test-admin-token"); err != nil {
+			log.Fatalf("os.Setenv ADMIN_TOKEN: %v", err)
+		}
 	}
 
 	// init() already ran and set JWTSecret + AdminToken.

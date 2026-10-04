@@ -288,7 +288,7 @@ func TestAdminListTokensAll(t *testing.T) {
 	}
 
 	var result []interface{}
-	json.Unmarshal(w.Body.Bytes(), &result)
+	mustUnmarshal(t, w.Body.Bytes(), &result)
 	if len(result) < 4 {
 		t.Errorf("expected at least 4 tokens, got %d", len(result))
 	}
@@ -311,7 +311,7 @@ func TestAdminListTokensFilterEnrollment(t *testing.T) {
 
 	// Parse as array of maps
 	var result []map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &result)
+	mustUnmarshal(t, w.Body.Bytes(), &result)
 
 	for _, item := range result {
 		if item["role"] != "enrollment" {
@@ -336,7 +336,7 @@ func TestAdminListTokensFilterPlugin(t *testing.T) {
 	}
 
 	var result []map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &result)
+	mustUnmarshal(t, w.Body.Bytes(), &result)
 
 	for _, item := range result {
 		if item["role"] != "plugin" {
@@ -358,7 +358,7 @@ func TestAdminListTokensEmpty(t *testing.T) {
 	}
 
 	var result []interface{}
-	json.Unmarshal(w.Body.Bytes(), &result)
+	mustUnmarshal(t, w.Body.Bytes(), &result)
 	if len(result) != 0 {
 		t.Errorf("expected empty list, got %d", len(result))
 	}
@@ -427,7 +427,7 @@ func TestAdminRevokePluginToken(t *testing.T) {
 	}
 
 	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
+	mustUnmarshal(t, w.Body.Bytes(), &body)
 	if body["revoked"] != true {
 		t.Errorf("expected revoked=true, got %v", body["revoked"])
 	}
@@ -491,7 +491,7 @@ func TestAdminDeleteEnrollmentToken(t *testing.T) {
 	}
 
 	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
+	mustUnmarshal(t, w.Body.Bytes(), &body)
 	if body["deleted"] != true {
 		t.Errorf("expected deleted=true, got %v", body["deleted"])
 	}
@@ -562,7 +562,7 @@ func TestAdminPurgeTokensExpired(t *testing.T) {
 	}
 
 	var resp PurgeResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	mustUnmarshal(t, w.Body.Bytes(), &resp)
 	if resp.DeletedCount != 1 {
 		t.Errorf("expected 1 deleted, got %d", resp.DeletedCount)
 	}
@@ -606,7 +606,7 @@ func TestAdminPurgeTokensUsed(t *testing.T) {
 	}
 
 	var resp PurgeResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	mustUnmarshal(t, w.Body.Bytes(), &resp)
 	if resp.DeletedCount != 1 {
 		t.Errorf("expected 1 deleted, got %d", resp.DeletedCount)
 	}
@@ -654,7 +654,7 @@ func TestAdminPurgeTokensBoth(t *testing.T) {
 	}
 
 	var resp PurgeResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	mustUnmarshal(t, w.Body.Bytes(), &resp)
 	if resp.DeletedCount != 2 {
 		t.Errorf("expected 2 deleted (1 expired + 1 used), got %d", resp.DeletedCount)
 	}
@@ -682,7 +682,7 @@ func TestAdminPurgeTokensPurgedAtPresent(t *testing.T) {
 	AdminPurgeTokens(w, req)
 
 	var resp PurgeResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	mustUnmarshal(t, w.Body.Bytes(), &resp)
 	if resp.PurgedAt == "" {
 		t.Error("expected purged_at timestamp in response")
 	}

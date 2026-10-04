@@ -54,7 +54,7 @@ func TestGetInventoryAll(t *testing.T) {
 	}
 
 	var resp InventoryResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	mustUnmarshal(t, w.Body.Bytes(), &resp)
 
 	if resp.All.Hosts == nil {
 		t.Error("expected All.Hosts array, got nil")
@@ -83,7 +83,7 @@ func TestGetInventoryOnlyConnected(t *testing.T) {
 	}
 
 	var resp InventoryResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	mustUnmarshal(t, w.Body.Bytes(), &resp)
 
 	// Check that all returned hosts are marked as connected
 	for hostname, hostvar := range resp.Meta.Hostvars {
@@ -106,7 +106,7 @@ func TestGetInventoryOnlyConnectedFalse(t *testing.T) {
 	}
 
 	var resp InventoryResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	mustUnmarshal(t, w.Body.Bytes(), &resp)
 
 	// Should include both connected and disconnected hosts
 	if len(resp.All.Hosts) < 2 {
@@ -128,7 +128,7 @@ func TestGetInventoryInvalidOnlyConnected(t *testing.T) {
 
 	// Should succeed with default behavior (not fail on invalid bool)
 	var resp InventoryResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	mustUnmarshal(t, w.Body.Bytes(), &resp)
 
 	if resp.All.Hosts == nil {
 		t.Error("expected valid response even with invalid query param")
@@ -144,7 +144,7 @@ func TestGetInventoryFormat(t *testing.T) {
 	GetInventory(w, httpReq)
 
 	var resp InventoryResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	mustUnmarshal(t, w.Body.Bytes(), &resp)
 
 	// Check that structure matches Ansible format
 	if len(resp.All.Hosts) < 1 {
@@ -182,7 +182,7 @@ func TestGetInventoryHostVarsCompleteness(t *testing.T) {
 	GetInventory(w, httpReq)
 
 	var resp InventoryResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	mustUnmarshal(t, w.Body.Bytes(), &resp)
 
 	if len(resp.All.Hosts) < 1 {
 		t.Skip("no hosts in inventory")

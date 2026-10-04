@@ -19,7 +19,7 @@ func newTestStore(t *testing.T) *storage.Store {
 		t.Fatalf("newTestStore: %v", err)
 	}
 	t.Cleanup(func() {
-		s.Close()
+		_ = s.Close()
 	})
 	return s
 }
@@ -29,7 +29,7 @@ func newTestStore(t *testing.T) *storage.Store {
 func adminReq(method, path string, body interface{}) *http.Request {
 	var buf bytes.Buffer
 	if body != nil {
-		json.NewEncoder(&buf).Encode(body)
+		_ = json.NewEncoder(&buf).Encode(body)
 	}
 	req := httptest.NewRequest(method, path, &buf)
 	req.Header.Set("Authorization", "Bearer "+server.AdminToken)
@@ -63,7 +63,7 @@ func TestAdminListMinions_Empty(t *testing.T) {
 	}
 
 	var result []MinionSummary
-	json.Unmarshal(w.Body.Bytes(), &result)
+	mustUnmarshal(t, w.Body.Bytes(), &result)
 	if result == nil {
 		t.Error("expected empty array, got nil")
 	}
@@ -84,7 +84,7 @@ func TestAdminListMinions_WithAgents(t *testing.T) {
 	}
 
 	var result []MinionSummary
-	json.Unmarshal(w.Body.Bytes(), &result)
+	mustUnmarshal(t, w.Body.Bytes(), &result)
 	if len(result) < 2 {
 		t.Errorf("expected at least 2 agents, got %d", len(result))
 	}
@@ -137,7 +137,7 @@ func TestAdminGetMinion_Found(t *testing.T) {
 	}
 
 	var detail MinionDetail
-	json.Unmarshal(w.Body.Bytes(), &detail)
+	mustUnmarshal(t, w.Body.Bytes(), &detail)
 	if detail.Hostname != "host-01" {
 		t.Errorf("expected hostname=host-01, got %q", detail.Hostname)
 	}
@@ -283,7 +283,7 @@ func TestAdminVarsCRUD(t *testing.T) {
 	}
 
 	var vars map[string]interface{}
-	json.Unmarshal(w2.Body.Bytes(), &vars)
+	mustUnmarshal(t, w2.Body.Bytes(), &vars)
 	if vars["ansible_user"] != "deploy" {
 		t.Errorf("expected ansible_user=deploy, got %v", vars["ansible_user"])
 	}
@@ -309,7 +309,7 @@ func TestAdminVarsCRUD(t *testing.T) {
 	AdminGetMinionVars(w4, req4)
 
 	var vars2 map[string]interface{}
-	json.Unmarshal(w4.Body.Bytes(), &vars2)
+	mustUnmarshal(t, w4.Body.Bytes(), &vars2)
 	if _, exists := vars2["env"]; exists {
 		t.Error("expected 'env' key to be deleted")
 	}
@@ -367,7 +367,7 @@ func TestAdminStatus(t *testing.T) {
 	}
 
 	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
+	mustUnmarshal(t, w.Body.Bytes(), &body)
 
 	if body["nats"] != "unreachable" {
 		t.Errorf("expected nats=unreachable, got %v", body["nats"])
@@ -394,7 +394,7 @@ func TestAdminStatusNATSOK(t *testing.T) {
 	AdminStatus(w, req)
 
 	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
+	mustUnmarshal(t, w.Body.Bytes(), &body)
 	if body["nats"] != "ok" {
 		t.Errorf("expected nats=ok, got %v", body["nats"])
 	}
@@ -415,7 +415,7 @@ func TestAdminStats(t *testing.T) {
 	}
 
 	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
+	mustUnmarshal(t, w.Body.Bytes(), &body)
 
 	total, ok := body["agents_total"].(float64)
 	if !ok || total < 2 {
@@ -448,7 +448,7 @@ func TestAdminRevokeMinion_AgentExists(t *testing.T) {
 	}
 
 	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
+	mustUnmarshal(t, w.Body.Bytes(), &body)
 	if body["status"] != "revoked" {
 		t.Errorf("expected status=revoked, got %v", body["status"])
 	}

@@ -46,7 +46,7 @@ func TestExecCommand_RelayLoopDetected_ZeroHops(t *testing.T) {
 		t.Fatalf("expected 508 relay_loop_detected, got %d — %s", w.Code, w.Body.String())
 	}
 	var resp map[string]string
-	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	mustDecode(t, w.Body, &resp)
 	if resp["error"] != "relay_loop_detected" {
 		t.Errorf("expected error=relay_loop_detected, got %q", resp["error"])
 	}
@@ -124,7 +124,7 @@ func TestUploadFile_RelayLoopDetected_ZeroHops(t *testing.T) {
 		t.Fatalf("expected 508 relay_loop_detected for upload, got %d — %s", w.Code, w.Body.String())
 	}
 	var resp map[string]string
-	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	mustDecode(t, w.Body, &resp)
 	if resp["error"] != "relay_loop_detected" {
 		t.Errorf("expected error=relay_loop_detected, got %q", resp["error"])
 	}
@@ -148,7 +148,7 @@ func TestFetchFile_RelayLoopDetected_ZeroHops(t *testing.T) {
 		t.Fatalf("expected 508 relay_loop_detected for fetch, got %d — %s", w.Code, w.Body.String())
 	}
 	var resp map[string]string
-	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	mustDecode(t, w.Body, &resp)
 	if resp["error"] != "relay_loop_detected" {
 		t.Errorf("expected error=relay_loop_detected, got %q", resp["error"])
 	}

@@ -163,7 +163,7 @@ func TestPluginAuthRevokedToken(t *testing.T) {
 	}
 
 	var body map[string]string
-	json.Unmarshal(w.Body.Bytes(), &body)
+	mustUnmarshal(t, w.Body.Bytes(), &body)
 	if body["error"] != "token_revoked" {
 		t.Errorf("expected token_revoked, got %q", body["error"])
 	}
@@ -185,7 +185,7 @@ func TestPluginAuthExpiredToken(t *testing.T) {
 	}
 
 	var body map[string]string
-	json.Unmarshal(w.Body.Bytes(), &body)
+	mustUnmarshal(t, w.Body.Bytes(), &body)
 	if body["error"] != "token_expired" {
 		t.Errorf("expected token_expired, got %q", body["error"])
 	}
@@ -251,7 +251,7 @@ func TestPluginAuthIPOutsideCIDR(t *testing.T) {
 	}
 
 	var body map[string]string
-	json.Unmarshal(w.Body.Bytes(), &body)
+	mustUnmarshal(t, w.Body.Bytes(), &body)
 	if body["error"] != "ip_not_allowed" {
 		t.Errorf("expected ip_not_allowed, got %q", body["error"])
 	}
@@ -322,7 +322,7 @@ func TestPluginAuthHostnameMismatch(t *testing.T) {
 	}
 
 	var body map[string]string
-	json.Unmarshal(w.Body.Bytes(), &body)
+	mustUnmarshal(t, w.Body.Bytes(), &body)
 	if body["error"] != "hostname_not_allowed" {
 		t.Errorf("expected hostname_not_allowed, got %q", body["error"])
 	}
@@ -558,7 +558,7 @@ func TestPluginTokenPrefixRelay_plg(t *testing.T) {
 	}
 
 	var resp TokenCreateResponse
-	json.NewDecoder(w.Body).Decode(&resp)
+	mustDecode(t, w.Body, &resp)
 	plain := resp.Token
 
 	if len(plain) < 13 || plain[:13] != "secagent_plg_" {

@@ -78,7 +78,7 @@ func TestAdminRotateKeys_NoBody_DefaultGrace(t *testing.T) {
 	}
 
 	var resp RotateKeysResponse
-	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	mustDecode(t, w.Body, &resp)
 
 	// Deadline should be ~24h from now (allow ±5 minutes)
 	deadline, err := time.Parse(time.RFC3339, resp.Deadline)
@@ -284,7 +284,7 @@ func TestAdminSecurityKeysStatus_RotationActive(t *testing.T) {
 	}
 
 	var resp KeysStatusResponse
-	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	mustDecode(t, w.Body, &resp)
 
 	if !resp.RotationActive {
 		t.Error("expected rotation_active=true")
@@ -323,7 +323,7 @@ func TestAdminSecurityKeysStatus_RotationExpired(t *testing.T) {
 	AdminSecurityKeysStatus(w, req)
 
 	var resp KeysStatusResponse
-	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	mustDecode(t, w.Body, &resp)
 
 	if resp.RotationActive {
 		t.Error("expected rotation_active=false when deadline is past")
@@ -347,7 +347,7 @@ func TestAdminSecurityTokens_Empty(t *testing.T) {
 	}
 
 	var tokens []TokenInfo
-	json.NewDecoder(w.Body).Decode(&tokens) //nolint:errcheck
+	mustDecode(t, w.Body, &tokens)
 	if len(tokens) != 0 {
 		t.Errorf("expected 0 tokens, got %d", len(tokens))
 	}
@@ -421,7 +421,7 @@ func TestAdminSecurityBlacklist_Empty(t *testing.T) {
 	}
 
 	var entries []BlacklistEntryResponse
-	json.NewDecoder(w.Body).Decode(&entries) //nolint:errcheck
+	mustDecode(t, w.Body, &entries)
 	if len(entries) != 0 {
 		t.Errorf("expected 0 entries, got %d", len(entries))
 	}
@@ -478,8 +478,12 @@ func TestAdminSecurityBlacklistPurge_DeletesExpired(t *testing.T) {
 	futureExpiry := time.Now().Add(25 * time.Hour).UTC().Format(time.RFC3339)
 
 	reason := "test"
-	s.AddToBlacklist(ctx, "jti-expired", "host-1", pastExpiry, &reason) //nolint:errcheck
-	s.AddToBlacklist(ctx, "jti-valid", "host-2", futureExpiry, &reason) //nolint:errcheck
+	if err := s.AddToBlacklist(ctx, "jti-expired", "host-1", pastExpiry, &reason); err != nil {
+		t.Fatalf("AddToBlacklist expired: %v", err)
+	}
+	if err := s.AddToBlacklist(ctx, "jti-valid", "host-2", futureExpiry, &reason); err != nil {
+		t.Fatalf("AddToBlacklist valid: %v", err)
+	}
 
 	req := adminReq("POST", "/api/admin/security/blacklist/purge", nil)
 	w := httptest.NewRecorder()
@@ -517,7 +521,7 @@ func TestAdminSecurityBlacklistPurge_EmptyTable(t *testing.T) {
 	}
 
 	var resp PurgeBlacklistResponse
-	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck
+	mustDecode(t, w.Body, &resp)
 	if resp.Deleted != 0 {
 		t.Errorf("expected 0 deleted, got %d", resp.Deleted)
 	}
