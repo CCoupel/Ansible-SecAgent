@@ -9,7 +9,7 @@ Système permettant d'exécuter des playbooks Ansible sur des hôtes distants sa
 - **Connexions inversées** — les agents initient la connexion sortante vers le serveur (NAT/firewall friendly)
 - **Auth JWT + RSA-4096** — enrollment sécurisé, rôles RBAC (`agent` / `plugin` / `admin` / `relay`)
 - **Event Hooks** — actions configurables via JSON (webhook, shell, file, API) déclenchées par événements agent
-- **Repeater Relay Chain** — topologie arbre hiérarchique (v3.1+) : relays enfants se connectent au parent (pull) ou parent se connecte aux enfants (push), inventaire unifié par héritage
+- **Repeater Relay Chain** — topologie arbre hiérarchique (v3.0.1+) : relays enfants se connectent au parent (pull) ou parent se connecte aux enfants (push), inventaire unifié par héritage
 
 ## Quick Start
 
@@ -145,10 +145,10 @@ ansible-secagent/
 - ✅ **Phase 10** : Enrollment Token (système de tokens pré-signés)
 - ✅ **Phase 11** : Event Hooks unifiés (JSON config, 4 executors, action_log)
 - ✅ **Phase 12** : Proxy/Gateway multi-zone (pull/push, inventaire agrégé, chaînage, JWT rôle relay)
-- ✅ **Phase 13** : Repeater Relay Chain v3.1 (arbre hiérarchique, pull/push modes, token relay-parent, révocation JTI, état des liens dans l'API d'administration et /health avec drapeau degraded)
+- ✅ **Phase 13** : Repeater Relay Chain v3.0.1 (arbre hiérarchique, pull/push modes, token relay-parent, révocation JTI, état des liens dans l'API d'administration et /health avec drapeau degraded)
 - ⏳ **Phase 14** : Production Kubernetes (après validation qualif)
 
-**Version actuelle : v3.1** — Repeater chain IMPLEMENTED (GO rewrite 100% complete)
+**Version actuelle : v3.0.1** — Repeater chain IMPLEMENTED (GO rewrite 100% complete)
 
 ## Contacts & Support
 
