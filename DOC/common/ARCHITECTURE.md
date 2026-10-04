@@ -1888,7 +1888,7 @@ C'est TOUJOURS l'enfant (relay logiquement plus profond) qui envoie le snapshot,
 **Validation du snapshot** :
 - ✅ Vérifier : tous les `relay_chain` sont valides (pas de REPEATER_ID du parent dedans)
 - ✅ Vérifier : pas de doublons hostname
-- ❌ Rejeter (close 4010 + log d'erreur) si validation échoue
+- ❌ Rejeter (close **4012** — refus corrigible — + log d'erreur) si validation échoue
 
 **Effets côté parent** :
 - Insertion dans `relay_nodes` des enfants déclarés
@@ -1997,14 +1997,18 @@ Quand `relay_routing` indique que le hostname est géré par un relay enfant :
 
 Le relay enfant reçoit et le traite comme un exec direct (ou le forward encore si l'hôte est downstream de lui).
 
-#### Codes de fermeture WebSocket
+#### Codes de fermeture WebSocket `/ws/relay` (#148)
 
-| Code | Signification |
-|---|---|
-| `4010` | Token relay révoqué ou non autorisé pour ce relay_id → ne pas reconnecter |
-| `4011` | Token relay expiré (TTL dépassé) → rafraîchir et reconnecter |
-| `4000` | Fermeture normale ou initiée par le client |
-| `1000` | Fermeture WebSocket standard |
+| Code | Nature | Signification | Comportement du pair qui reçoit le close |
+|---|---|---|---|
+| `4010` | **Refus permanent** | Identité non autorisée pour ce lien : token révoqué, `relay_id` ≠ `jwt.sub`, identité du pair différente de celle attendue, boucle détectée (C ∈ {P} ∪ ancêtres(P)) | **Ne pas reconnecter** : le client/dialer s'arrête (état terminal, log ERROR) ; une action opérateur est nécessaire |
+| `4011` | Token expiré | Token relay expiré (TTL dépassé) | Rafraîchir le token puis reconnecter |
+| `4012` | **Refus corrigible** | Erreur protocolaire ou de validation pouvant se résoudre : `topology_snapshot` invalide / déjà reçu / reçu avant `relay_hello`, conflit de routage ou de relay déclaré, slot « parent unique » occupé | Reconnexion avec backoff exponentiel (5 s → 60 s max) |
+| `4000` | Normal | Fermeture normale ou initiée par le client | — |
+| `1000` | Normal | Fermeture WebSocket standard | — |
+
+> Un refus HTTP 401 avant l'upgrade (token invalide, révoqué à la reconnexion, secret non configuré) n'a pas de code de fermeture : le client le traite comme une erreur de connexion (backoff 5 s → 60 s).
+
 
 ---
 

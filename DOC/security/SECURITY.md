@@ -204,6 +204,18 @@ Agent                         Server
 | `4003` | Re-enrollment requis (rotation de clefs) | Ré-enrollment automatique |
 | `1001` | Restart serveur / coupure réseau | Reconnexion avec backoff exponentiel (1s→2s→4s→…→60s max) |
 
+#### Codes de fermeture WebSocket `/ws/relay` (#148)
+
+| Code | Nature | Signification | Comportement du pair qui reçoit le close |
+|---|---|---|---|
+| `4010` | **Refus permanent** | Identité non autorisée pour ce lien : token révoqué, `relay_id` ≠ `jwt.sub`, identité du pair différente de celle attendue, boucle détectée (C ∈ {P} ∪ ancêtres(P)) | **Ne pas reconnecter** : le client/dialer s'arrête (état terminal, log ERROR) ; une action opérateur est nécessaire |
+| `4011` | Token expiré | Token relay expiré (TTL dépassé) | Rafraîchir le token puis reconnecter |
+| `4012` | **Refus corrigible** | Erreur protocolaire ou de validation pouvant se résoudre : `topology_snapshot` invalide / déjà reçu / reçu avant `relay_hello`, conflit de routage ou de relay déclaré, slot « parent unique » occupé | Reconnexion avec backoff exponentiel (5 s → 60 s max) |
+| `4000` | Normal | Fermeture normale ou initiée par le client | — |
+| `1000` | Normal | Fermeture WebSocket standard | — |
+
+> Un refus HTTP 401 avant l'upgrade (token invalide, révoqué à la reconnexion, secret non configuré) n'a pas de code de fermeture : le client le traite comme une erreur de connexion (backoff 5 s → 60 s).
+
 ---
 
 ## 5. Rotation des clefs serveur

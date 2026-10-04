@@ -410,7 +410,7 @@ Validation du snapshot :
 - Nombre de relays ≤ `MAX_SNAPSHOT_RELAYS` (défaut 1000)
 - Nombre d'hôtes ≤ `MAX_SNAPSHOT_HOSTS` (défaut 10000)
 - Taille du message ≤ `MAX_WS_MESSAGE_SIZE_RELAY` (défaut 10MB)
-- Rejeter (close 4010 + log) si validation échoue
+- Rejeter (close **4012** — refus corrigible — + log) si validation échoue
 
 **→ Après snapshot validé, la connexion est établie** (relay_nodes, relay_routing, inventaire initialisés)
 
@@ -491,6 +491,18 @@ Quand un relay déclare un hôte dans `topology_snapshot` ou `agent_list` alors 
 ```
 
 Enfant qui reçoit `task_forward` lookup sa `relay_routing` pour savoir s'il est l'agent direct ou doit le forwarder.
+
+#### Codes de fermeture WebSocket `/ws/relay` (#148)
+
+| Code | Nature | Signification | Comportement du pair qui reçoit le close |
+|---|---|---|---|
+| `4010` | **Refus permanent** | Identité non autorisée pour ce lien : token révoqué, `relay_id` ≠ `jwt.sub`, identité du pair différente de celle attendue, boucle détectée (C ∈ {P} ∪ ancêtres(P)) | **Ne pas reconnecter** : le client/dialer s'arrête (état terminal, log ERROR) ; une action opérateur est nécessaire |
+| `4011` | Token expiré | Token relay expiré (TTL dépassé) | Rafraîchir le token puis reconnecter |
+| `4012` | **Refus corrigible** | Erreur protocolaire ou de validation pouvant se résoudre : `topology_snapshot` invalide / déjà reçu / reçu avant `relay_hello`, conflit de routage ou de relay déclaré, slot « parent unique » occupé | Reconnexion avec backoff exponentiel (5 s → 60 s max) |
+| `4000` | Normal | Fermeture normale ou initiée par le client | — |
+| `1000` | Normal | Fermeture WebSocket standard | — |
+
+> Un refus HTTP 401 avant l'upgrade (token invalide, révoqué à la reconnexion, secret non configuré) n'a pas de code de fermeture : le client le traite comme une erreur de connexion (backoff 5 s → 60 s).
 
 ---
 

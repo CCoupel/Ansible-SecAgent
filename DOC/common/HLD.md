@@ -622,7 +622,7 @@ Même logique pour `relay.up/relay.down` quand un relay enfant rejoint ou quitte
 **Règle** : un lien « C devient enfant de P » est refusé si et seulement si C ∈ {P} ∪ ancêtres(P).
 - **Mode pull** (C ouvre vers P, P accepte) : P teste `relay_hello.relay_id` (= C) contre {P} ∪ SES_PROPRES ancêtres (appris à son handshake amont ; vide pour la racine). `relay_hello.ancestors` n'est pas utilisé pour ce test.
 - **Mode push** (P ouvre vers C, C accepte) : C teste son propre id contre {`relay_hello.relay_id` (= P)} ∪ `relay_hello.ancestors` (= ancêtres de P).
-- **Refus** : close 4010.
+- **Refus** : close 4010 (refus permanent : le pair ne reconnecte pas). Les refus corrigibles (snapshot invalide, conflit…) utilisent 4012 (reconnexion avec backoff).
 
 **Topologie de référence** : central > dmz1 > zone-a (ancestors(dmz1)=[central], ancestors(zone-a)=[dmz1, central]).
 
