@@ -30,14 +30,15 @@ jobs:
         working-directory: GO
         run: go build ./...
 
-      # Tests bloquants : aucun contournement. Echouent tant que l'issue #100
-      # (executor : bytesReader io.EOF, timeout) n'est pas corrigee.
+      # Tests bloquants : aucun contournement. -race exige CGO (actif sur ubuntu-latest).
+      # -timeout 300s par package : marge x8 sur le package le plus lent (handlers ~37 s en local
+      # sous -race), un runner GitHub etant 2 a 3 fois plus lent.
       - name: Tests
         working-directory: GO
         env:
           JWT_SECRET_KEY: test
           ADMIN_TOKEN: test
-        run: go test -race ./... -timeout 120s
+        run: go test -race ./... -timeout 300s
 
   lint:
     name: Lint Go

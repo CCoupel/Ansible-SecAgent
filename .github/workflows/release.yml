@@ -101,7 +101,7 @@ jobs:
         working-directory: GO
         run: go build ./...
 
-      # Bloquant, sans contournement (echoue tant que l'issue #100 n'est pas corrigee).
+      # Bloquant, sans contournement.
       - name: Tests
         working-directory: GO
         env:
