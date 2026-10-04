@@ -37,7 +37,7 @@ jobs:
         env:
           JWT_SECRET_KEY: test
           ADMIN_TOKEN: test
-        run: go test ./... -timeout 120s
+        run: go test -race ./... -timeout 120s
 
   lint:
     name: Lint Go
