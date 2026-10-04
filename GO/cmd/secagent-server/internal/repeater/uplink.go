@@ -264,7 +264,8 @@ func (u *Uplink) handleIncoming(ctx context.Context, conn *websocket.Conn, raw [
 		return
 	}
 	switch m.Type {
-	case "task_forward":
+	case "task_forward", "task_dispatch", "file_upload", "file_fetch":
+		// task_dispatch / file_* are what a parent's ProxyRouter sends; task_forward is the spec name.
 		if u.opts.OnTask == nil {
 			log.Printf("[REPEATER] task_forward task_id=%s dropped: no handler", m.TaskID)
 			return

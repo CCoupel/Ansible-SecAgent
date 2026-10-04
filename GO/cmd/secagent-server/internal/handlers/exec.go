@@ -123,6 +123,14 @@ func validateFetchRequest(req *FetchRequest) error {
 	return nil
 }
 
+// isLocalAgent reports whether hostname has a live /ws/agent connection on this node. A live
+// connection takes precedence over relay_routing: a relay declaring a host that is connected
+// here must not be able to divert its tasks (and become_pass stdin).
+func isLocalAgent(hostname string) bool {
+	_, err := ws.GetConnection(hostname)
+	return err == nil
+}
+
 // checkAgentOnline verifies that an agent has an active WebSocket connection.
 // Returns error with "hostname must not be empty" or "agent_offline".
 func checkAgentOnline(hostname string) error {
@@ -228,7 +236,7 @@ func ExecCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Proxy mode: check if hostname is on a remote relay BEFORE checking local WS
-	if proxyRouter != nil {
+	if proxyRouter != nil && !isLocalAgent(hostname) {
 		// Anti-loop: read X-Relay-Hops, reject if budget exhausted, decrement for outgoing call
 		proxyHops := proxy.DefaultMaxHops
 		if hopStr := r.Header.Get(proxy.RelayHopsHeader); hopStr != "" {
@@ -369,7 +377,7 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Proxy mode: check relay routing before local WS
-	if proxyRouter != nil {
+	if proxyRouter != nil && !isLocalAgent(hostname) {
 		// Anti-loop: read X-Relay-Hops, reject if budget exhausted, decrement for outgoing call
 		proxyHops := proxy.DefaultMaxHops
 		if hopStr := r.Header.Get(proxy.RelayHopsHeader); hopStr != "" {
@@ -467,7 +475,7 @@ func FetchFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Proxy mode: check relay routing before local WS
-	if proxyRouter != nil {
+	if proxyRouter != nil && !isLocalAgent(hostname) {
 		// Anti-loop: read X-Relay-Hops, reject if budget exhausted, decrement for outgoing call
 		proxyHops := proxy.DefaultMaxHops
 		if hopStr := r.Header.Get(proxy.RelayHopsHeader); hopStr != "" {

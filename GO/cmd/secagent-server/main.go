@@ -16,6 +16,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/broker"
 	"secagent-server/cmd/secagent-server/internal/cli"
 	"secagent-server/cmd/secagent-server/internal/config"
+	"secagent-server/cmd/secagent-server/internal/forward"
 	"secagent-server/cmd/secagent-server/internal/handlers"
 	"secagent-server/cmd/secagent-server/internal/hooks"
 	"secagent-server/cmd/secagent-server/internal/proxy"
@@ -216,10 +217,13 @@ func main() {
 	// links opened by a parent are refused.
 	selfID, _ := ws.RelayIdentity()
 	upEvents := make(chan repeater.Event, 256)
+	// Tasks sent down by our parent: resolve the next hop (live agent first, then relay_routing).
+	forwarder := &forward.Forwarder{NextHop: store.GetNextHopForHostname}
 	upOpts := repeater.Options{
 		DirectAgents: directAgents,
 		Snapshot:     func() repeater.Snapshot { return buildSnapshot(selfID, store) },
 		Events:       upEvents,
+		OnTask:       forwarder.Handle,
 	}
 	if repeaterCfg != nil {
 		rc := repeater.New(*repeaterCfg, upOpts)
@@ -237,12 +241,31 @@ func main() {
 		if repeaterCfg == nil && !uplink.Active() {
 			return
 		}
-		ev := repeater.Event{Event: m.Event, Hostname: m.Hostname, RelayID: m.RelayID, Status: m.Status,
-			RelayChain: m.RelayChain, GroupVars: m.GroupVars, Timestamp: m.Timestamp}
-		select {
-		case upEvents <- ev:
-		default:
-			log.Printf("[REPEATER] upstream event queue full, event %s dropped", m.Event)
+		queueUpstream(upEvents, repeater.Event{Event: m.Event, Hostname: m.Hostname, RelayID: m.RelayID, Status: m.Status,
+			RelayChain: m.RelayChain, GroupVars: m.GroupVars, Timestamp: m.Timestamp, OldRelay: m.OldRelay, NewRelay: m.NewRelay})
+	})
+
+	// Hierarchical routing (#127): chains of snapshot routes, event-driven routes, host.conflict.
+	ws.SetRelayRouteUpsertFunc(func(hostname, relayID string, chain []string) error {
+		_, err := store.UpsertRelayRoute(hostname, relayID, chain)
+		return err
+	})
+	ws.SetRelayRouteChainsFunc(func(entries []ws.RouteChainEntry) error {
+		rc := make([]storage.RouteChain, 0, len(entries))
+		for _, e := range entries {
+			rc = append(rc, storage.RouteChain{Hostname: e.Hostname, RelayID: e.RelayID, Chain: e.Chain})
+		}
+		return store.SetRelayRouteChains(rc)
+	})
+	ws.SetRelayConflictFunc(func(c ws.HostConflict, fromBelow bool) {
+		// Hooks fire at every level; a conflict detected HERE is also reported upstream
+		// (one detected below already travels as its own event_forward).
+		if hooks.GlobalDispatcher != nil {
+			hooks.GlobalDispatcher.Dispatch("host.conflict", c.Hostname, c.OldRelay+"->"+c.NewRelay, "")
+		}
+		if !fromBelow && (repeaterCfg != nil || uplink.Active()) {
+			queueUpstream(upEvents, repeater.Event{Event: "host.conflict", Hostname: c.Hostname,
+				RelayID: c.NewRelay, OldRelay: c.OldRelay, NewRelay: c.NewRelay})
 		}
 	})
 
@@ -533,5 +556,14 @@ func startPushDialers(st *storage.Store, mgr pushStarter) {
 			continue
 		}
 		log.Printf("[RELAY] dial-out started: relay_id=%s mode=push", n.RelayID)
+	}
+}
+
+// queueUpstream hands an event to the uplink without ever blocking a handler.
+func queueUpstream(ch chan<- repeater.Event, ev repeater.Event) {
+	select {
+	case ch <- ev:
+	default:
+		log.Printf("[REPEATER] upstream event queue full, event %s dropped", ev.Event)
 	}
 }

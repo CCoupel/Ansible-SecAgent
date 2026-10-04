@@ -58,10 +58,11 @@ func NewProxyRouter(store *storage.Store) *ProxyRouter {
 	}
 }
 
-// GetRelayForHostname looks up the relay responsible for hostname in relay_routing.
-// Returns ("", ErrHostNotFound) if no relay owns the hostname.
+// GetRelayForHostname looks up the NEXT HOP for hostname in relay_routing: the direct child relay
+// to dispatch to (relay_chain[0], or the declaring relay for direct routes), not necessarily
+// the relay the host is attached to. Returns ("", ErrHostNotFound) if the host is unrouted.
 func (r *ProxyRouter) GetRelayForHostname(hostname string) (string, error) {
-	relayID, err := r.store.GetRelayForHostname(hostname)
+	relayID, err := r.store.GetNextHopForHostname(hostname)
 	if err != nil {
 		return "", fmt.Errorf("relay_routing lookup: %w", err)
 	}
