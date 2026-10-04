@@ -307,7 +307,7 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 
 	c.up.SetAncestors(ack.Ancestors)
 	c.tr.set(LinkConnected, "")
-	log.Printf("[REPEATER] linked to parent relay_id=%s as %s", ack.RelayID, c.cfg.ID)
+	log.Printf("[REPEATER] linked to parent relay_id=%q as %s", ack.RelayID, c.cfg.ID)
 
 	// 3+4. topology_snapshot (always sent by the child) then steady state.
 	done, err := c.up.serve(ctx, conn)
@@ -319,12 +319,12 @@ func wrapRead(what string, err error) error {
 	if errors.As(err, &ce) {
 		switch ce.Code {
 		case CloseCodePermanent:
-			return &refusedError{reason: fmt.Sprintf("%s: peer closed with code %d (%s)", what, ce.Code, ce.Text), permanent: true}
+			return &refusedError{reason: fmt.Sprintf("%s: peer closed with code %d (%s)", what, ce.Code, sanitizeText(ce.Text)), permanent: true}
 		case CloseCodeRetry:
-			return &refusedError{reason: fmt.Sprintf("%s: peer closed with code %d (%s)", what, ce.Code, ce.Text)}
+			return &refusedError{reason: fmt.Sprintf("%s: peer closed with code %d (%s)", what, ce.Code, sanitizeText(ce.Text))}
 		}
 	}
-	return fmt.Errorf("%s: %w", what, err)
+	return fmt.Errorf("%s: %s", what, sanitizeText(err.Error()))
 }
 
 // checkParentIdentity pins the parent identity on first connection, then
@@ -334,7 +334,7 @@ func (c *Client) checkParentIdentity(got string) error {
 	defer c.mu.Unlock()
 	if c.parentID == "" {
 		c.parentID = got
-		log.Printf("[REPEATER] first connection: parent identity relay_id=%s", got)
+		log.Printf("[REPEATER] first connection: parent identity relay_id=%q", got)
 		return nil
 	}
 	if c.parentID != got {

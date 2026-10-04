@@ -31,20 +31,20 @@ func runLoop(ctx context.Context, peer string, minBackoff, maxBackoff time.Durat
 		wait := backoff
 		switch {
 		case errors.As(err, &ref) && ref.permanent:
-			log.Printf("[REPEATER] ERROR %s refused link (permanent), giving up — operator action required: %v", peer, err)
+			log.Printf("[REPEATER] ERROR %s refused link (permanent), giving up — operator action required: %s", peer, sanitizeText(errText(err)))
 			tr.set(LinkRefusedPermanent, ref.reason)
 			return fmt.Errorf("%w: %s: %s", ErrPermanentRefusal, peer, ref.reason)
 		case errors.As(err, &ref):
-			log.Printf("[REPEATER] %s refused link (correctable), retrying: %v", peer, err)
+			log.Printf("[REPEATER] %s refused link (correctable), retrying: %s", peer, sanitizeText(errText(err)))
 			tr.set(LinkRetrying, ref.reason)
 			backoff = min(backoff*2, maxBackoff)
 		case established:
-			log.Printf("[REPEATER] link to %s lost: %v", peer, err)
+			log.Printf("[REPEATER] link to %s lost: %s", peer, sanitizeText(errText(err)))
 			tr.set(LinkRetrying, "link lost: "+errText(err))
 			backoff = minBackoff
 			wait = backoff
 		default:
-			log.Printf("[REPEATER] connect to %s failed: %v", peer, err)
+			log.Printf("[REPEATER] connect to %s failed: %s", peer, sanitizeText(errText(err)))
 			tr.set(LinkRetrying, "connect failed: "+errText(err))
 			backoff = min(backoff*2, maxBackoff)
 		}

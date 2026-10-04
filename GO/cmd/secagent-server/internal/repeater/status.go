@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // LinkState is the observable state of a parent/child link (#154).
@@ -41,14 +42,37 @@ func newLinkTracker() *linkTracker {
 	return &linkTracker{st: LinkStatus{State: LinkRetrying, Reason: "starting", Since: time.Now().UTC()}}
 }
 
+// sanitizeText makes peer-controlled text safe to store and to log on ONE line: control
+// characters (including \r, \n, tabs, ESC) and Unicode line/paragraph separators become spaces,
+// so a remote peer cannot forge log lines (e.g. a fake "[SECURITY WARNING]") through a close
+// frame text or an error message. The result is trimmed and bounded to maxReasonLen bytes
+// (rune-aligned, "…" appended when cut).
+func sanitizeText(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' || r == '\u0085' {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.TrimSpace(s)
+	if len(s) > maxReasonLen {
+		cut := maxReasonLen
+		for cut > 0 && !utf8RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut] + "…"
+	}
+	return s
+}
+
+// utf8RuneStart reports whether b starts a UTF-8 sequence (not a continuation byte).
+func utf8RuneStart(b byte) bool { return b&0xC0 != 0x80 }
+
 func (t *linkTracker) set(state LinkState, reason string) {
 	if t == nil {
 		return
 	}
-	reason = strings.TrimSpace(reason)
-	if len(reason) > maxReasonLen {
-		reason = reason[:maxReasonLen] + "…"
-	}
+	reason = sanitizeText(reason)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.st.State == state && t.st.Reason == reason {

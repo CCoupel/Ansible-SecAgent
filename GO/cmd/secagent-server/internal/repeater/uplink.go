@@ -260,14 +260,14 @@ func (u *Uplink) forwardEvent(conn *websocket.Conn, ev Event) error {
 func (u *Uplink) handleIncoming(ctx context.Context, conn *websocket.Conn, raw []byte) {
 	var m message
 	if err := json.Unmarshal(raw, &m); err != nil {
-		log.Printf("[REPEATER] invalid message from parent: %v", err)
+		log.Printf("[REPEATER] invalid message from parent: %s", sanitizeText(err.Error()))
 		return
 	}
 	switch m.Type {
 	case "task_forward", "task_dispatch", "file_upload", "file_fetch":
 		// task_dispatch / file_* are what a parent's ProxyRouter sends; task_forward is the spec name.
 		if u.opts.OnTask == nil {
-			log.Printf("[REPEATER] task_forward task_id=%s dropped: no handler", m.TaskID)
+			log.Printf("[REPEATER] task_forward task_id=%q dropped: no handler", m.TaskID)
 			return
 		}
 		reply := func(v any) error { return u.write(conn, v) }

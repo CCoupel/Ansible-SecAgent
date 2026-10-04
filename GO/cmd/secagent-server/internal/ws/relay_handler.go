@@ -368,7 +368,7 @@ func reportConflictOnce(conn *RelayConnection, c HostConflict) {
 }
 
 func emitConflict(c HostConflict, fromBelow bool) {
-	log.Printf("[WARN] host.conflict: hostname=%s old=%s new=%s chain=%v", c.Hostname, c.OldRelay, c.NewRelay, c.RelayChain)
+	log.Printf("[WARN] host.conflict: hostname=%q old=%q new=%q chain=%q", c.Hostname, c.OldRelay, c.NewRelay, c.RelayChain)
 	treeHooksMu.RLock()
 	fn := relayConflictFn
 	treeHooksMu.RUnlock()
@@ -529,14 +529,14 @@ func loopedWith(childID string) bool {
 // reject asks the read loop to close the link with the CORRECTABLE code 4012 (invalid snapshot,
 // protocol error, conflict): the peer may fix the cause and reconnect with backoff.
 func reject(conn *RelayConnection, reason string) {
-	log.Printf("[RELAY] link refused (retryable): relay_id=%s reason=%s", conn.RelayID, reason)
+	log.Printf("[RELAY] link refused (retryable): relay_id=%s reason=%q", conn.RelayID, reason)
 	conn.reject = &relayRejection{code: WSRelayCloseRetry, reason: reason}
 }
 
 // rejectPermanent closes the link with 4010: the refusal cannot be fixed by retrying
 // (identity not authorized, loop). The client stops instead of reconnecting.
 func rejectPermanent(conn *RelayConnection, reason string) {
-	log.Printf("[SECURITY WARNING] link refused (permanent): relay_id=%s reason=%s", conn.RelayID, reason)
+	log.Printf("[SECURITY WARNING] link refused (permanent): relay_id=%s reason=%q", conn.RelayID, reason)
 	conn.reject = &relayRejection{code: WSRelayCloseRevoked, reason: reason}
 }
 
@@ -879,12 +879,12 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 			}
 			select {
 			case ch <- res:
-				log.Printf("task_result resolved: task_id=%s rc=%d relay_id=%s", msg.TaskID, msg.RC, conn.RelayID)
+				log.Printf("task_result resolved: task_id=%q rc=%d relay_id=%s", msg.TaskID, msg.RC, conn.RelayID)
 			default:
-				log.Printf("task_result channel full: task_id=%s relay_id=%s", msg.TaskID, conn.RelayID)
+				log.Printf("task_result channel full: task_id=%q relay_id=%s", msg.TaskID, conn.RelayID)
 			}
 		} else {
-			log.Printf("task_result with no pending future: task_id=%s relay_id=%s", msg.TaskID, conn.RelayID)
+			log.Printf("task_result with no pending future: task_id=%q relay_id=%s", msg.TaskID, conn.RelayID)
 		}
 
 	case "heartbeat":
@@ -899,7 +899,7 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		conn.mu.Unlock()
 
 	default:
-		log.Printf("unknown relay message type: type=%s relay_id=%s", msg.Type, conn.RelayID)
+		log.Printf("unknown relay message type: type=%q relay_id=%s", msg.Type, conn.RelayID)
 	}
 }
 
@@ -1240,15 +1240,15 @@ func validateSnapshot(conn *RelayConnection, msg RelayMessage) (map[string]struc
 			return fmt.Errorf("relay_chain too long (%d > %d)", len(chain), maxRelayChainLen)
 		}
 		if len(chain) == 0 || chain[0] != conn.RelayID || chain[len(chain)-1] != owner {
-			return fmt.Errorf("invalid relay_chain %v for %q", chain, owner)
+			return fmt.Errorf("invalid relay_chain %q for %q", chain, owner)
 		}
 		seen := make(map[string]struct{}, len(chain))
 		for _, id := range chain {
 			if _, bad := forbidden[id]; bad {
-				return fmt.Errorf("relay_chain %v contains %q (loop)", chain, id)
+				return fmt.Errorf("relay_chain %q contains %q (loop)", chain, id)
 			}
 			if _, dup := seen[id]; dup {
-				return fmt.Errorf("relay_chain %v has a cycle on %q", chain, id)
+				return fmt.Errorf("relay_chain %q has a cycle on %q", chain, id)
 			}
 			seen[id] = struct{}{}
 		}
@@ -1374,7 +1374,7 @@ func handleEventForward(conn *RelayConnection, msg RelayMessage) {
 		return
 	}
 	if len(chain) == 0 || chain[len(chain)-1] != conn.RelayID {
-		log.Printf("[RELAY] event_forward rejected: relay_id=%s relay_chain=%v (last element must be the authenticated peer)", conn.RelayID, chain)
+		log.Printf("[RELAY] event_forward rejected: relay_id=%s relay_chain=%q (last element must be the authenticated peer)", conn.RelayID, chain)
 		return
 	}
 	self := localRelayID()
@@ -1425,7 +1425,7 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) {
 		}
 		if fn := routeUpsertHook(); fn != nil {
 			if err := fn(msg.Hostname, origin, topDown); err != nil {
-				log.Printf("event_forward: route update host=%s: %v", msg.Hostname, err)
+				log.Printf("event_forward: route update host=%q: %v", msg.Hostname, err)
 			}
 		}
 	case "host.conflict":
