@@ -2,9 +2,11 @@ package ws
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -416,15 +418,38 @@ func TestTree_MessageSizeLimit(t *testing.T) {
 	defer srv.Close()
 	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
 	handshake(t, c, "dmz1")
-	big := make([]RelayAgentInfo, 200)
+	// Just over the 1024-byte limit: the whole frame fits in the server's read
+	// buffer, so closing the connection does not provoke a TCP RST that would
+	// discard the 1009 close frame before the client reads it.
+	big := make([]RelayAgentInfo, 25)
 	for i := range big {
 		big[i] = RelayAgentInfo{Hostname: "host-with-a-rather-long-name-" + string(rune('a'+i%26)), Status: "connected"}
 	}
-	if err := c.WriteJSON(RelayMessage{Type: "agent_list", Agents: big}); err != nil {
+	// The server may already be tearing the connection down while we write:
+	// a write error is an acceptable way for the limit to manifest.
+	_ = c.WriteJSON(RelayMessage{Type: "agent_list", Agents: big})
+
+	if err := c.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if code := expectClose(t, c); code != websocket.CloseMessageTooBig {
-		t.Errorf("close code = %d, want %d", code, websocket.CloseMessageTooBig)
+	var m RelayMessage
+	err := c.ReadJSON(&m)
+	if err == nil {
+		t.Fatalf("expected the connection to be closed by the size limit, got message %+v", m)
+	}
+	var ce *websocket.CloseError
+	if errors.As(err, &ce) {
+		if ce.Code != websocket.CloseMessageTooBig {
+			t.Errorf("close code = %d, want %d", ce.Code, websocket.CloseMessageTooBig)
+		}
+	} else if !errors.Is(err, syscall.ECONNRESET) && !errors.Is(err, io.EOF) && !errors.Is(err, syscall.EPIPE) {
+		// A reset is legitimate (close frame lost to a TCP RST); anything else
+		// (e.g. read deadline) means the server did NOT drop the connection.
+		t.Fatalf("expected close 1009 or a connection drop, got %v", err)
+	}
+	// Either way, the server must have dropped the relay.
+	if !awaitCondition(2*time.Second, func() bool { return !IsRelayConnected("dmz1") }) {
+		t.Error("relay still registered after exceeding the message size limit")
 	}
 }
 
