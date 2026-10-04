@@ -430,40 +430,33 @@ func unregisterRelayConnection(relayID string) {
 func extractRelayFromRequest(r *http.Request) (relayID string, isProxy bool, err error) {
 	authHeader := r.Header.Get("Authorization")
 
-	if JWTSecretsFunc != nil && strings.HasPrefix(authHeader, "Bearer ") {
-		claims, _, valErr := ExtractJWTClaims(authHeader)
-		if valErr != nil {
-			return "", false, fmt.Errorf("jwt_invalid: %w", valErr)
-		}
-		role, _ := claims["role"].(string)
-		if role != "relay" {
-			return "", false, fmt.Errorf("jwt_wrong_role: got %q, want relay", role)
-		}
-		sub, _ := claims["sub"].(string)
-		if sub == "" {
-			return "", false, fmt.Errorf("jwt_missing_sub")
-		}
-		// is_proxy hint from query param (relay sets this when it is itself a proxy)
-		ip := r.URL.Query().Get("is_proxy") == "true"
-		return sub, ip, nil
+	// Fail closed: without a JWT verifier, no relay is ever authenticated.
+	if JWTSecretsFunc == nil {
+		log.Printf("[SECURITY WARNING] relay connection refused: JWTSecretsFunc is not configured (fail closed)")
+		return "", false, fmt.Errorf("jwt_not_configured")
 	}
-
-	// Fallback for tests without JWTSecretsFunc configured
-	log.Printf("[RELAY] JWT verification bypassed — JWTSecretsFunc is nil")
-	if strings.HasPrefix(authHeader, "Bearer ") && len(authHeader) > 7 {
-		// Decode relay_id from JWT sub without verification
-		sub := extractSubFromJWTUnsafe(authHeader[7:])
-		if sub != "" {
-			ip := r.URL.Query().Get("is_proxy") == "true"
-			return sub, ip, nil
-		}
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		log.Printf("[SECURITY WARNING] relay connection refused: missing bearer token")
+		return "", false, fmt.Errorf("missing_relay_credentials")
 	}
-	// Allow relay_id via query param in test mode only
-	if id := r.URL.Query().Get("relay_id"); id != "" {
-		ip := r.URL.Query().Get("is_proxy") == "true"
-		return id, ip, nil
+	claims, _, valErr := ExtractJWTClaims(authHeader)
+	if valErr != nil {
+		log.Printf("[SECURITY WARNING] relay connection refused: invalid JWT: %v", valErr)
+		return "", false, fmt.Errorf("jwt_invalid: %w", valErr)
 	}
-	return "", false, fmt.Errorf("missing_relay_credentials")
+	role, _ := claims["role"].(string)
+	if role != "relay" {
+		log.Printf("[SECURITY WARNING] relay connection refused: wrong JWT role %q", role)
+		return "", false, fmt.Errorf("jwt_wrong_role: got %q, want relay", role)
+	}
+	sub, _ := claims["sub"].(string)
+	if sub == "" {
+		log.Printf("[SECURITY WARNING] relay connection refused: JWT without sub")
+		return "", false, fmt.Errorf("jwt_missing_sub")
+	}
+	// is_proxy hint from query param (relay sets this when it is itself a proxy)
+	ip := r.URL.Query().Get("is_proxy") == "true"
+	return sub, ip, nil
 }
 
 // handleRelayMessage dispatches an incoming relay message to the appropriate handler.

@@ -2,6 +2,8 @@ package ws
 
 import (
 	"errors"
+	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -423,5 +425,43 @@ func TestTree_MessageSizeLimit(t *testing.T) {
 	}
 	if code := expectClose(t, c); code != websocket.CloseMessageTooBig {
 		t.Errorf("close code = %d, want %d", code, websocket.CloseMessageTooBig)
+	}
+}
+
+// ── fail-closed authentication (HAUT-2) ──────────────────────────────────────
+
+func TestRelayAuth_FailClosedWithoutJWTSecretsFunc(t *testing.T) {
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	JWTSecretsFunc = nil // setupRelayTestServer's cleanup restores the previous value
+
+	tests := []struct {
+		name  string
+		query string
+		token string
+	}{
+		{"no credentials", "", ""},
+		{"relay_id query param", "?relay_id=dmz1", ""},
+		{"unverified bearer", "", makeRelayJWT("dmz1", "relay")},
+		{"unverified bearer + relay_id", "?relay_id=dmz1&is_proxy=true", makeRelayJWT("dmz1", "relay")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/relay" + tt.query
+			h := http.Header{}
+			if tt.token != "" {
+				h.Set("Authorization", "Bearer "+tt.token)
+			}
+			_, resp, err := websocket.DefaultDialer.Dial(url, h)
+			if err == nil {
+				t.Fatal("connection must be refused")
+			}
+			if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("response = %v, want 401", resp)
+			}
+			if IsRelayConnected("dmz1") {
+				t.Error("relay registered despite refusal")
+			}
+		})
 	}
 }
