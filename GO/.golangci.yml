@@ -19,12 +19,6 @@ linters:
     - staticcheck
     - ineffassign
     - unused
-  exclusions:
-    rules:
-      # errcheck moins strict sur les fichiers de test
-      - path: _test\.go
-        linters:
-          - errcheck
 
 formatters:
   enable:
