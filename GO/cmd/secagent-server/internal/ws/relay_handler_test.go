@@ -60,6 +60,7 @@ func TestMain(m *testing.M) {
 	RelayRoutingBulkUpsertFunc = routingDispatch
 	// /ws/relay fails closed without a JTI blacklist check: install the permissive default once.
 	SetRelayJTIBlacklistFunc(defaultNoBlacklist)
+	SetRelayRevokedFunc(func(string) (bool, error) { return false, nil })
 	os.Exit(m.Run())
 }
 

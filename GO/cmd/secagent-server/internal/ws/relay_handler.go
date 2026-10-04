@@ -42,6 +42,7 @@ type RelayConnection struct {
 	RelayID string
 	IsProxy bool
 	Conn    interface{ WriteJSON(interface{}) error } // *websocket.Conn in production
+	wsConn  *websocket.Conn                           // same connection, for CloseRelay (nil in unit tests)
 	mu      sync.Mutex
 
 	// Tree state (#125) — only touched by the connection's read-loop goroutine.
@@ -185,6 +186,7 @@ var (
 	relayNodeRegisterFn func(relayID string) error
 	relayEventUpstream  func(ev RelayMessage)
 	relayJTIBlacklistFn func(jti string) (bool, error)
+	relayRevokedFn      func(relayID string) (bool, error)
 	relayHostRouteFn    func(hostname string) (string, error)
 	relayRouteUpsertFn  func(hostname, relayID string, chain []string) error
 	relayRouteChainsFn  func(entries []RouteChainEntry) error
@@ -401,6 +403,32 @@ func routeUpsertHook() func(hostname, relayID string, chain []string) error {
 	treeHooksMu.RLock()
 	defer treeHooksMu.RUnlock()
 	return relayRouteUpsertFn
+}
+
+// SetRelayRevokedFunc sets the "is this relay revoked?" check applied to CHILD links at upgrade
+// (#153): it covers legacy relays whose token JTI is unknown. An error is a refusal (fail closed).
+func SetRelayRevokedFunc(fn func(relayID string) (bool, error)) {
+	treeHooksMu.Lock()
+	relayRevokedFn = fn
+	treeHooksMu.Unlock()
+}
+
+func checkRelayRevoked(relayID string) error {
+	treeHooksMu.RLock()
+	fn := relayRevokedFn
+	treeHooksMu.RUnlock()
+	if fn == nil {
+		log.Printf("[SECURITY WARNING] relay connection refused: revocation check is not configured (fail closed)")
+		return fmt.Errorf("revocation_check_not_configured")
+	}
+	revoked, err := fn(relayID)
+	if err != nil {
+		return fmt.Errorf("revocation_check_failed: %w", err)
+	}
+	if revoked {
+		return fmt.Errorf("relay_revoked")
+	}
+	return nil
 }
 
 // checkRelayJTI refuses revoked tokens. Fail closed: without a configured check
@@ -711,6 +739,13 @@ func extractRelayAuth(r *http.Request) (relayAuth, error) {
 		log.Printf("[SECURITY WARNING] relay connection refused: relay_id=%s jti=%s: %v", sub, jti, err)
 		return relayAuth{}, err
 	}
+	// A revoked relay (flagged in relay_nodes) is refused even if its JTI is unknown (legacy token).
+	if role == relayRoleChild {
+		if err := checkRelayRevoked(sub); err != nil {
+			log.Printf("[SECURITY WARNING] relay connection refused: relay_id=%s: %v", sub, err)
+			return relayAuth{}, err
+		}
+	}
 	// is_proxy hint from query param (relay sets this when it is itself a proxy)
 	ip := r.URL.Query().Get("is_proxy") == "true"
 	return relayAuth{RelayID: sub, IsProxy: ip, Role: role, JTI: jti}, nil
@@ -920,6 +955,7 @@ func RelayHandler(w http.ResponseWriter, r *http.Request) {
 // link ends. Shared by the accepted (pull) and the dialed (push) paths.
 func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) {
 	relayID := relayConn.RelayID
+	relayConn.wsConn = conn
 	conn.SetReadLimit(maxRelayMessageSize())
 
 	registerRelayConnection(relayConn)
@@ -973,6 +1009,23 @@ func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) {
 // RelayIdentity returns this node's own relay id and its ancestors (parent first).
 func RelayIdentity() (id string, ancestors []string) {
 	return localRelayID(), localAncestors()
+}
+
+// CloseRelay force-closes the active link of relayID (child link, pull or dialed) with the given
+// WebSocket close code (4010 = permanent: the peer stops, #148). The read loop then ends and
+// cleans routing/state as for any disconnect. Returns false when the relay is not connected.
+// Symmetric of CloseAgent.
+func CloseRelay(relayID string, code int, reason string) bool {
+	relayConnsMu.RLock()
+	rc := relayConnections[relayID]
+	relayConnsMu.RUnlock()
+	if rc == nil || rc.wsConn == nil {
+		return false
+	}
+	log.Printf("Relay force-closed: relay_id=%s code=%d reason=%s", relayID, code, reason)
+	closeWithRejection(rc.wsConn, &relayRejection{code: code, reason: reason})
+	_ = rc.wsConn.Close()
+	return true
 }
 
 // RelayWouldLoop reports whether linking childID under this node would create a loop

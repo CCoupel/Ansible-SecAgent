@@ -25,6 +25,7 @@ const wait = 5 * time.Second
 func TestMain(m *testing.M) {
 	ws.SetJWTSecretsFunc(func() (string, string, time.Time) { return fwdSecret, "", time.Time{} })
 	ws.SetRelayJTIBlacklistFunc(func(string) (bool, error) { return false, nil })
+	ws.SetRelayRevokedFunc(func(string) (bool, error) { return false, nil })
 	os.Exit(m.Run())
 }
 

@@ -39,6 +39,7 @@ func childNode(t *testing.T, childID string, agents []AgentInfo) (string, *Uplin
 	ws.SetRelayLocalIDFunc(func() string { return childID })
 	ws.SetRelayAncestorsFunc(func() []string { return nil })
 	ws.SetRelayJTIBlacklistFunc(func(string) (bool, error) { return false, nil })
+	ws.SetRelayRevokedFunc(func(string) (bool, error) { return false, nil })
 	up := NewUplink(childID, Options{
 		DirectAgents: func() []AgentInfo { return agents },
 		Snapshot: func() Snapshot {
@@ -54,6 +55,7 @@ func childNode(t *testing.T, childID string, agents []AgentInfo) (string, *Uplin
 		ws.SetRelayLocalIDFunc(nil)
 		ws.SetRelayAncestorsFunc(nil)
 		ws.SetRelayJTIBlacklistFunc(nil)
+		ws.SetRelayRevokedFunc(nil)
 		ws.SetRelayParentLinkFunc(nil)
 	})
 	return "wss" + strings.TrimPrefix(srv.URL, "https"), up

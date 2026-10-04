@@ -96,9 +96,11 @@ func newSpyRelay(t *testing.T, id string) *spyRelay {
 	prevSecrets := ws.JWTSecretsFunc
 	ws.SetJWTSecretsFunc(func() (string, string, time.Time) { return precSecret, "", time.Time{} })
 	ws.SetRelayJTIBlacklistFunc(func(string) (bool, error) { return false, nil })
+	ws.SetRelayRevokedFunc(func(string) (bool, error) { return false, nil })
 	t.Cleanup(func() {
 		ws.SetJWTSecretsFunc(prevSecrets)
 		ws.SetRelayJTIBlacklistFunc(nil)
+		ws.SetRelayRevokedFunc(nil)
 	})
 
 	raw, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
