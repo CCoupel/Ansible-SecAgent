@@ -3,7 +3,6 @@ package ws
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"testing"
 	"time"
 )
@@ -225,7 +224,9 @@ func TestPutFileMsgJSON(t *testing.T) {
 	}
 	data, _ := json.Marshal(msg)
 	var decoded PutFileMsg
-	json.Unmarshal(data, &decoded)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	if decoded.Dest != "/tmp/file.txt" {
 		t.Errorf("Dest: got %q", decoded.Dest)
 	}
@@ -241,7 +242,9 @@ func TestFetchFileMsgJSON(t *testing.T) {
 	}
 	data, _ := json.Marshal(msg)
 	var decoded FetchFileMsg
-	json.Unmarshal(data, &decoded)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	if decoded.Src != "/etc/hostname" {
 		t.Errorf("Src: got %q", decoded.Src)
 	}
@@ -251,7 +254,9 @@ func TestCancelMsgJSON(t *testing.T) {
 	msg := CancelMsg{BaseMsg: BaseMsg{TaskID: "t4", Type: "cancel"}}
 	data, _ := json.Marshal(msg)
 	var decoded CancelMsg
-	json.Unmarshal(data, &decoded)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	if decoded.TaskID != "t4" {
 		t.Errorf("TaskID: got %q", decoded.TaskID)
 	}
@@ -303,7 +308,7 @@ func TestBuildTLSConfigInvalidPEM(t *testing.T) {
 	dir := t.TempDir()
 	caFile := dir + "/ca.pem"
 	// Write invalid PEM
-	os.WriteFile(caFile, []byte("not valid pem"), 0644)
+	mustWriteFile(t, caFile, []byte("not valid pem"), 0644)
 
 	_, err := buildTLSConfig(caFile, false)
 	if err == nil {

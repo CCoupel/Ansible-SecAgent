@@ -387,7 +387,9 @@ func TestLimitedBufferStopsAtLimit(t *testing.T) {
 	for i := range large {
 		large[i] = 'x'
 	}
-	buf.Write(large)
+	if _, err := buf.Write(large); err != nil {
+		t.Fatalf("buf.Write: %v", err)
+	}
 	// Buffer accepts up to StdoutBufferMax+1024 bytes
 	if len(buf.Bytes()) > StdoutBufferMax+1024 {
 		t.Errorf("buffer too large: %d bytes", len(buf.Bytes()))
@@ -417,7 +419,9 @@ func TestBytesReaderRead(t *testing.T) {
 func TestBytesReaderEOF(t *testing.T) {
 	r := newBytesReader([]byte("a"))
 	buf := make([]byte, 10)
-	r.Read(buf) // consume all
+	if _, err := r.Read(buf); err != nil { // consume all
+		t.Fatalf("first r.Read: %v", err)
+	}
 	n, err := r.Read(buf)
 	if n != 0 {
 		t.Errorf("expected n=0 at EOF, got %d", n)

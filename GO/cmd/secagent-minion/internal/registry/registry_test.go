@@ -50,7 +50,7 @@ func TestNewLoadsExistingFile(t *testing.T) {
 		},
 	}
 	data, _ := json.MarshalIndent(jobs, "", "  ")
-	os.WriteFile(jobsFile, data, 0600)
+	mustWriteFile(t, jobsFile, data, 0600)
 
 	r, err := New(jobsFile)
 	if err != nil {
@@ -67,7 +67,7 @@ func TestNewLoadsExistingFile(t *testing.T) {
 func TestNewInvalidJSON(t *testing.T) {
 	dir := t.TempDir()
 	jobsFile := filepath.Join(dir, "jobs.json")
-	os.WriteFile(jobsFile, []byte("invalid json"), 0600)
+	mustWriteFile(t, jobsFile, []byte("invalid json"), 0600)
 
 	_, err := New(jobsFile)
 	if err == nil {
@@ -119,7 +119,7 @@ func TestRegisterJobPersists(t *testing.T) {
 	jobsFile := filepath.Join(dir, "jobs.json")
 	r, _ := New(jobsFile)
 
-	r.RegisterJob("jid-persist", 9999, "ls", 10, "")
+	mustRegisterJob(t, r, "jid-persist", 9999, "ls", 10, "")
 
 	// Reload from disk
 	r2, err := New(jobsFile)
@@ -162,7 +162,7 @@ func TestGetJobNotFound(t *testing.T) {
 
 func TestGetJobReturnsCopy(t *testing.T) {
 	r := newTestRegistry(t)
-	r.RegisterJob("jid-copy", 1, "cmd", 10, "")
+	mustRegisterJob(t, r, "jid-copy", 1, "cmd", 10, "")
 
 	job1 := r.GetJob("jid-copy")
 	job1.Finished = true // modify the copy
@@ -179,7 +179,7 @@ func TestGetJobReturnsCopy(t *testing.T) {
 
 func TestUpdateJob(t *testing.T) {
 	r := newTestRegistry(t)
-	r.RegisterJob("jid-update", 1, "cmd", 10, "")
+	mustRegisterJob(t, r, "jid-update", 1, "cmd", 10, "")
 
 	err := r.UpdateJob("jid-update", true, 0)
 	if err != nil {
@@ -197,9 +197,9 @@ func TestUpdateJob(t *testing.T) {
 
 func TestUpdateJobWithError(t *testing.T) {
 	r := newTestRegistry(t)
-	r.RegisterJob("jid-err", 1, "cmd", 10, "")
+	mustRegisterJob(t, r, "jid-err", 1, "cmd", 10, "")
 
-	r.UpdateJob("jid-err", true, 1)
+	mustUpdateJob(t, r, "jid-err", true, 1)
 
 	job := r.GetJob("jid-err")
 	if job.RC != 1 {
@@ -219,8 +219,8 @@ func TestUpdateJobPersists(t *testing.T) {
 	dir := t.TempDir()
 	jobsFile := filepath.Join(dir, "jobs.json")
 	r, _ := New(jobsFile)
-	r.RegisterJob("jid-p", 1, "cmd", 10, "")
-	r.UpdateJob("jid-p", true, 42)
+	mustRegisterJob(t, r, "jid-p", 1, "cmd", 10, "")
+	mustUpdateJob(t, r, "jid-p", true, 42)
 
 	r2, _ := New(jobsFile)
 	job := r2.GetJob("jid-p")
@@ -235,7 +235,7 @@ func TestUpdateJobPersists(t *testing.T) {
 
 func TestRemoveJob(t *testing.T) {
 	r := newTestRegistry(t)
-	r.RegisterJob("jid-remove", 1, "cmd", 10, "")
+	mustRegisterJob(t, r, "jid-remove", 1, "cmd", 10, "")
 
 	err := r.RemoveJob("jid-remove")
 	if err != nil {
@@ -260,8 +260,8 @@ func TestRemoveJobPersists(t *testing.T) {
 	dir := t.TempDir()
 	jobsFile := filepath.Join(dir, "jobs.json")
 	r, _ := New(jobsFile)
-	r.RegisterJob("jid-rm-p", 1, "cmd", 10, "")
-	r.RemoveJob("jid-rm-p")
+	mustRegisterJob(t, r, "jid-rm-p", 1, "cmd", 10, "")
+	mustRemoveJob(t, r, "jid-rm-p")
 
 	r2, _ := New(jobsFile)
 	if r2.GetJob("jid-rm-p") != nil {
@@ -276,7 +276,7 @@ func TestRemoveJobPersists(t *testing.T) {
 func TestRestoreOnRestartMarksDead(t *testing.T) {
 	r := newTestRegistry(t)
 	// Use PID 99999999 — almost certainly not running
-	r.RegisterJob("jid-dead", 99999999, "cmd", 30, "")
+	mustRegisterJob(t, r, "jid-dead", 99999999, "cmd", 30, "")
 
 	err := r.RestoreOnRestart()
 	if err != nil {
@@ -294,8 +294,8 @@ func TestRestoreOnRestartMarksDead(t *testing.T) {
 
 func TestRestoreOnRestartSkipsFinished(t *testing.T) {
 	r := newTestRegistry(t)
-	r.RegisterJob("jid-done", 99999999, "cmd", 30, "")
-	r.UpdateJob("jid-done", true, 0) // already finished
+	mustRegisterJob(t, r, "jid-done", 99999999, "cmd", 30, "")
+	mustUpdateJob(t, r, "jid-done", true, 0) // already finished
 
 	err := r.RestoreOnRestart()
 	if err != nil {
@@ -323,7 +323,7 @@ func TestRestoreOnRestartEmptyRegistry(t *testing.T) {
 
 func TestCheckAndKillExpiredMarksExpired(t *testing.T) {
 	r := newTestRegistry(t)
-	r.RegisterJob("jid-exp", 99999999, "cmd", 1, "")
+	mustRegisterJob(t, r, "jid-exp", 99999999, "cmd", 1, "")
 
 	// Manually backdate StartedAt to force expiry
 	r.mu.Lock()
@@ -346,9 +346,9 @@ func TestCheckAndKillExpiredMarksExpired(t *testing.T) {
 
 func TestCheckAndKillExpiredSkipsNotExpired(t *testing.T) {
 	r := newTestRegistry(t)
-	r.RegisterJob("jid-fresh", 99999999, "cmd", 3600, "") // 1 hour timeout
+	mustRegisterJob(t, r, "jid-fresh", 99999999, "cmd", 3600, "") // 1 hour timeout
 
-	r.CheckAndKillExpired()
+	mustCheckAndKillExpired(t, r)
 
 	job := r.GetJob("jid-fresh")
 	if job.Finished {
@@ -358,14 +358,14 @@ func TestCheckAndKillExpiredSkipsNotExpired(t *testing.T) {
 
 func TestCheckAndKillExpiredSkipsFinished(t *testing.T) {
 	r := newTestRegistry(t)
-	r.RegisterJob("jid-already-done", 99999999, "cmd", 1, "")
+	mustRegisterJob(t, r, "jid-already-done", 99999999, "cmd", 1, "")
 	r.mu.Lock()
 	r.jobs["jid-already-done"].StartedAt = time.Now().Add(-10 * time.Second)
 	r.jobs["jid-already-done"].Finished = true
 	r.jobs["jid-already-done"].RC = 0
 	r.mu.Unlock()
 
-	r.CheckAndKillExpired()
+	mustCheckAndKillExpired(t, r)
 
 	job := r.GetJob("jid-already-done")
 	// RC should remain 0 (not changed to -15)
@@ -380,7 +380,7 @@ func TestCheckAndKillExpiredSkipsFinished(t *testing.T) {
 
 func TestGetAsyncStatusRunning(t *testing.T) {
 	r := newTestRegistry(t)
-	r.RegisterJob("jid-running", 1, "cmd", 30, "")
+	mustRegisterJob(t, r, "jid-running", 1, "cmd", 30, "")
 
 	status, err := r.GetAsyncStatus("jid-running")
 	if err != nil {
@@ -396,8 +396,8 @@ func TestGetAsyncStatusRunning(t *testing.T) {
 
 func TestGetAsyncStatusFinished(t *testing.T) {
 	r := newTestRegistry(t)
-	r.RegisterJob("jid-fin", 1, "cmd", 30, "")
-	r.UpdateJob("jid-fin", true, 0)
+	mustRegisterJob(t, r, "jid-fin", 1, "cmd", 30, "")
+	mustUpdateJob(t, r, "jid-fin", true, 0)
 
 	status, err := r.GetAsyncStatus("jid-fin")
 	if err != nil {
@@ -413,8 +413,8 @@ func TestGetAsyncStatusFinished(t *testing.T) {
 
 func TestGetAsyncStatusFailed(t *testing.T) {
 	r := newTestRegistry(t)
-	r.RegisterJob("jid-fail", 1, "cmd", 30, "")
-	r.UpdateJob("jid-fail", true, 1)
+	mustRegisterJob(t, r, "jid-fail", 1, "cmd", 30, "")
+	mustUpdateJob(t, r, "jid-fail", true, 1)
 
 	status, err := r.GetAsyncStatus("jid-fail")
 	if err != nil {
@@ -446,11 +446,11 @@ func TestGetAsyncStatusNotFound(t *testing.T) {
 func TestGetAsyncStatusWithStdout(t *testing.T) {
 	dir := t.TempDir()
 	stdoutPath := filepath.Join(dir, "stdout.txt")
-	os.WriteFile(stdoutPath, []byte("command output"), 0644)
+	mustWriteFile(t, stdoutPath, []byte("command output"), 0644)
 
 	r := newTestRegistry(t)
-	r.RegisterJob("jid-stdout", 1, "cmd", 30, stdoutPath)
-	r.UpdateJob("jid-stdout", true, 0)
+	mustRegisterJob(t, r, "jid-stdout", 1, "cmd", 30, stdoutPath)
+	mustUpdateJob(t, r, "jid-stdout", true, 0)
 
 	status, err := r.GetAsyncStatus("jid-stdout")
 	if err != nil {
@@ -463,8 +463,8 @@ func TestGetAsyncStatusWithStdout(t *testing.T) {
 
 func TestGetAsyncStatusMissingStdoutFile(t *testing.T) {
 	r := newTestRegistry(t)
-	r.RegisterJob("jid-no-stdout", 1, "cmd", 30, "/nonexistent/stdout.txt")
-	r.UpdateJob("jid-no-stdout", true, 0)
+	mustRegisterJob(t, r, "jid-no-stdout", 1, "cmd", 30, "/nonexistent/stdout.txt")
+	mustUpdateJob(t, r, "jid-no-stdout", true, 0)
 
 	// Should not error, just empty stdout
 	status, err := r.GetAsyncStatus("jid-no-stdout")
@@ -506,7 +506,7 @@ func TestAtomicSaveNoTmpFile(t *testing.T) {
 	dir := t.TempDir()
 	jobsFile := filepath.Join(dir, "jobs.json")
 	r, _ := New(jobsFile)
-	r.RegisterJob("jid-atomic", 1, "cmd", 10, "")
+	mustRegisterJob(t, r, "jid-atomic", 1, "cmd", 10, "")
 
 	// No .tmp file should remain
 	entries, _ := os.ReadDir(dir)
@@ -561,7 +561,7 @@ func TestAsyncStatusFields(t *testing.T) {
 // TestSave_ContentIsValidJSON vérifie que save() produit un JSON valide.
 func TestSave_ContentIsValidJSON(t *testing.T) {
 	r := newTestRegistry(t)
-	r.RegisterJob("jid-json", 42, "echo hi", 10, "")
+	mustRegisterJob(t, r, "jid-json", 42, "echo hi", 10, "")
 
 	data, err := os.ReadFile(r.jobsFile)
 	if err != nil {
@@ -587,7 +587,7 @@ func TestSave_NoTmpAfterDirReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	r.RegisterJob("jid-before-chmod", 1, "ls", 10, "")
+	mustRegisterJob(t, r, "jid-before-chmod", 1, "ls", 10, "")
 
 	// Rendre le répertoire en lecture seule : save() doit échouer.
 	if err := os.Chmod(dir, 0555); err != nil {
@@ -650,8 +650,8 @@ func TestSave_CloseError_NoTmpFile(t *testing.T) {
 // pas seulement le dernier ajouté.
 func TestSave_UpdatePreservesOtherJobs(t *testing.T) {
 	r := newTestRegistry(t)
-	r.RegisterJob("jid-a", 1, "cmd-a", 10, "")
-	r.RegisterJob("jid-b", 2, "cmd-b", 20, "")
+	mustRegisterJob(t, r, "jid-a", 1, "cmd-a", 10, "")
+	mustRegisterJob(t, r, "jid-b", 2, "cmd-b", 20, "")
 
 	data, err := os.ReadFile(r.jobsFile)
 	if err != nil {

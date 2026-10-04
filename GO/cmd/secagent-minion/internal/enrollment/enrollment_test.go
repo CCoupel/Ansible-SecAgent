@@ -48,7 +48,11 @@ func mockEnrollServer(t *testing.T, agentPubKey *rsa.PublicKey, serverKey *rsa.P
 		if _, hasResponse := body["challenge_response"]; hasResponse {
 			// Step 2 : verification
 			var responseB64 string
-			json.Unmarshal(body["challenge_response"], &responseB64)
+			if err := json.Unmarshal(body["challenge_response"], &responseB64); err != nil {
+				t.Errorf("mock server: unmarshal challenge_response: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
 
 			// Decrypt response with server private key
 			ciphertext, err := base64.StdEncoding.DecodeString(responseB64)
@@ -87,15 +91,19 @@ func mockEnrollServer(t *testing.T, agentPubKey *rsa.PublicKey, serverKey *rsa.P
 			}
 			jwtEncryptedB64 := base64.StdEncoding.EncodeToString(jwtCiphertext)
 
-			json.NewEncoder(w).Encode(map[string]string{
+			if err := json.NewEncoder(w).Encode(map[string]string{
 				"jwt_encrypted": jwtEncryptedB64,
-			})
+			}); err != nil {
+				t.Errorf("mock server: encode step2 response: %v", err)
+			}
 
 		} else if _, hasToken := body["enrollment_token"]; hasToken {
 			// Step 1 : initiation
 			if step1StatusCode != http.StatusOK {
 				w.WriteHeader(step1StatusCode)
-				json.NewEncoder(w).Encode(map[string]string{"error": "rejected"})
+				if err := json.NewEncoder(w).Encode(map[string]string{"error": "rejected"}); err != nil {
+					t.Errorf("mock server: encode step1 error response: %v", err)
+				}
 				return
 			}
 
@@ -125,10 +133,12 @@ func mockEnrollServer(t *testing.T, agentPubKey *rsa.PublicKey, serverKey *rsa.P
 				return
 			}
 
-			json.NewEncoder(w).Encode(map[string]string{
+			if err := json.NewEncoder(w).Encode(map[string]string{
 				"challenge":             challengeB64,
 				"server_public_key_pem": serverPubPEM,
-			})
+			}); err != nil {
+				t.Errorf("mock server: encode step1 response: %v", err)
+			}
 
 		} else {
 			t.Errorf("mock server: unexpected request body (no enrollment_token or challenge_response)")
@@ -427,7 +437,11 @@ func TestEnrollStep2BadResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		var body map[string]json.RawMessage
-		json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("mock server: decode body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 
 		if _, hasToken := body["enrollment_token"]; hasToken {
 			// Step 1: return valid challenge
@@ -435,15 +449,19 @@ func TestEnrollStep2BadResponse(t *testing.T) {
 			rand.Read(nonce)
 			ct, _ := rsa.EncryptOAEP(sha256.New(), rand.Reader, &agentKey.PublicKey, nonce, nil)
 			serverPubPEM, _ := PublicKeyPEM(serverKey)
-			json.NewEncoder(w).Encode(map[string]string{
+			if err := json.NewEncoder(w).Encode(map[string]string{
 				"challenge":             base64.StdEncoding.EncodeToString(ct),
 				"server_public_key_pem": serverPubPEM,
-			})
+			}); err != nil {
+				t.Errorf("mock server: encode step1 response: %v", err)
+			}
 		} else {
 			// Step 2: return empty jwt_encrypted
-			json.NewEncoder(w).Encode(map[string]string{
+			if err := json.NewEncoder(w).Encode(map[string]string{
 				"jwt_encrypted": "",
-			})
+			}); err != nil {
+				t.Errorf("mock server: encode step2 empty response: %v", err)
+			}
 		}
 	}))
 	defer srv.Close()
@@ -525,7 +543,7 @@ func TestLoadPrivateKeyFromFile(t *testing.T) {
 	keyPath := filepath.Join(dir, "key.pem")
 
 	pemData := PrivateKeyPEM(key)
-	os.WriteFile(keyPath, []byte(pemData), 0600)
+	mustWriteFile(t, keyPath, []byte(pemData), 0600)
 
 	loaded, err := LoadPrivateKeyFromFile(keyPath)
 	if err != nil {
@@ -549,7 +567,7 @@ func TestLoadPrivateKeyFromFileNotFound(t *testing.T) {
 func TestLoadPrivateKeyFromFileInvalidPEM(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "bad.pem")
-	os.WriteFile(keyPath, []byte("not a pem file"), 0600)
+	mustWriteFile(t, keyPath, []byte("not a pem file"), 0600)
 
 	_, err := LoadPrivateKeyFromFile(keyPath)
 	if err == nil {
@@ -567,7 +585,7 @@ func TestLoadPrivateKeyFromFileInvalidKey(t *testing.T) {
 		Bytes: []byte("not-valid-key-bytes"),
 	}
 	pemData := pem.EncodeToMemory(block)
-	os.WriteFile(keyPath, pemData, 0600)
+	mustWriteFile(t, keyPath, pemData, 0600)
 
 	_, err := LoadPrivateKeyFromFile(keyPath)
 	if err == nil {
@@ -642,8 +660,8 @@ func TestWriteSecretOverwrites(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret.txt")
 
-	writeSecret(path, []byte("old secret"))
-	writeSecret(path, []byte("new secret"))
+	mustWriteSecret(t, path, []byte("old secret"))
+	mustWriteSecret(t, path, []byte("new secret"))
 
 	data, _ := os.ReadFile(path)
 	if string(data) != "new secret" {

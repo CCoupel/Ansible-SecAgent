@@ -261,7 +261,7 @@ func TestDispatcherRekeyUpdatesJWT(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		// Envoie le message rekey
 		msg := map[string]string{
@@ -274,8 +274,10 @@ func TestDispatcherRekeyUpdatesJWT(t *testing.T) {
 
 		// Laisse le dispatcher traiter le message, puis ferme proprement
 		time.Sleep(100 * time.Millisecond)
-		conn.WriteMessage(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "done"))
+		if err := conn.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "done")); err != nil {
+			t.Logf("mock server: WriteMessage close: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -339,10 +341,12 @@ func TestDispatcherReenrollOn401(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		time.Sleep(50 * time.Millisecond)
-		conn.WriteMessage(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "ok"))
+		if err := conn.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "ok")); err != nil {
+			t.Logf("mock server: WriteMessage close: %v", err)
+		}
 	}))
 	defer srv.Close()
 
