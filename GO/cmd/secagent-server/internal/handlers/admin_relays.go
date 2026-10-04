@@ -14,13 +14,66 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
 	"secagent-server/cmd/secagent-server/internal/auth"
+	"secagent-server/cmd/secagent-server/internal/crypto"
+	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/ws"
 )
+
+// ── Push-mode dial-out hooks (#140) ──────────────────────────────────────────
+
+var (
+	pushHooksMu sync.RWMutex
+	pushStartFn func(relayID, url, token string) error
+	pushStopFn  func(relayID string)
+)
+
+// SetRelayPushHooks wires the dial-out manager: start (hot) / stop a Dialer for a push relay.
+func SetRelayPushHooks(start func(relayID, url, token string) error, stop func(relayID string)) {
+	pushHooksMu.Lock()
+	pushStartFn, pushStopFn = start, stop
+	pushHooksMu.Unlock()
+}
+
+const pushTokenPrefix = "enc:"
+
+// SealPushToken encrypts a push-mode token for storage in relay_nodes.token_hash
+// (AES-256-GCM with RSA_MASTER_KEY, "enc:" prefix). Without a master key (dev/test) the
+// token is stored as is, like the RSA keys; production must set RSA_MASTER_KEY.
+func SealPushToken(token string) (string, error) {
+	key, ok := rsaMasterKey()
+	if !ok {
+		log.Printf("[WARN] RSA_MASTER_KEY not set: push relay token stored unencrypted")
+		return token, nil
+	}
+	enc, err := crypto.EncryptAESGCM(token, key)
+	if err != nil {
+		return "", fmt.Errorf("encrypt push token: %w", err)
+	}
+	return pushTokenPrefix + enc, nil
+}
+
+// OpenPushToken returns the clear token from its stored form (legacy rows are plaintext).
+func OpenPushToken(stored string) (string, error) {
+	if !strings.HasPrefix(stored, pushTokenPrefix) {
+		return stored, nil
+	}
+	key, ok := rsaMasterKey()
+	if !ok {
+		return "", fmt.Errorf("push token is encrypted but RSA_MASTER_KEY is not set")
+	}
+	clear, err := crypto.DecryptAESGCM(strings.TrimPrefix(stored, pushTokenPrefix), key)
+	if err != nil {
+		return "", fmt.Errorf("decrypt push token: %w", err)
+	}
+	return clear, nil
+}
 
 // ========================================================================
 // Request / Response types
@@ -117,6 +170,16 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "token_required_for_push_mode"})
 			return
 		}
+		// wss:// only, no userinfo, valid id (the error never echoes url userinfo or the token).
+		if err := repeater.ValidateDialTarget(repeater.DialTarget{RelayID: req.RelayID, URL: req.URL, Token: req.Token}); err != nil {
+			log.Printf("AdminCreateRelay push target rejected: relay_id=%s: %v", req.RelayID, err)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_push_target"})
+			return
+		}
+		if ws.RelayWouldLoop(req.RelayID) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "relay_id_would_create_loop"})
+			return
+		}
 	}
 
 	if adminStore == nil {
@@ -155,11 +218,14 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 
 	case "push":
 		node.URL = req.URL
-		// Store plain token for push mode — reserved for future use (#140).
-		// Push-mode relay entries are stored but REST polling is currently inert
-		// (PushManager was removed in v3.0 #123).
-		// Pull mode stores SHA-256 only (JWT not needed after registration).
-		node.TokenHash = req.Token
+		// The dialer needs the clear token: stored encrypted (RSA_MASTER_KEY), never returned.
+		sealed, err := SealPushToken(req.Token)
+		if err != nil {
+			log.Printf("AdminCreateRelay SealPushToken: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token_encryption_failed"})
+			return
+		}
+		node.TokenHash = sealed
 	}
 
 	if err := adminStore.UpsertRelayNode(node); err != nil {
@@ -169,6 +235,18 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("Relay registered: relay_id=%s mode=%s id=%s", req.RelayID, req.Mode, id)
+
+	// Push mode: start the dial-out immediately, without restart.
+	if req.Mode == "push" {
+		pushHooksMu.RLock()
+		start := pushStartFn
+		pushHooksMu.RUnlock()
+		if start != nil {
+			if err := start(req.RelayID, req.URL, req.Token); err != nil {
+				log.Printf("AdminCreateRelay: dialer start failed: relay_id=%s: %v", req.RelayID, err)
+			}
+		}
+	}
 
 	resp := RelayCreateResponse{
 		ID:          id,
@@ -289,6 +367,15 @@ func AdminDeleteRelay(w http.ResponseWriter, r *http.Request) {
 		log.Printf("AdminDeleteRelay DeleteRelayNode: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 		return
+	}
+
+	if node.Mode == "push" {
+		pushHooksMu.RLock()
+		stop := pushStopFn
+		pushHooksMu.RUnlock()
+		if stop != nil {
+			stop(node.RelayID)
+		}
 	}
 
 	log.Printf("Relay deleted: id=%s relay_id=%s", id, node.RelayID)

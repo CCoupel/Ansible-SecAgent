@@ -44,6 +44,13 @@ func (s *JWTService) SignRelay(relayID string) (rawJWT, jti string, err error) {
 	return s.signWithRole(relayID, "relay", 720*time.Hour) // 30 days
 }
 
+// SignRelayParent creates a signed HS256 JWT with role "relay-parent": the token a child relay
+// issues (signed with ITS secret) so that its parent can open a push-mode link to it (#140).
+// The parent's relay_id is stored in "sub". Returns (rawJWT, jti, error).
+func (s *JWTService) SignRelayParent(parentID string) (rawJWT, jti string, err error) {
+	return s.signWithRole(parentID, "relay-parent", 720*time.Hour) // 30 days
+}
+
 // signWithRole is the shared implementation for Sign and SignRelay.
 // Returns (rawJWT, jti, error).
 func (s *JWTService) signWithRole(sub, role string, ttl time.Duration) (rawJWT, jti string, err error) {

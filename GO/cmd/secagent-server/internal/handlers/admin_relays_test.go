@@ -80,7 +80,7 @@ func TestAdminCreateRelay_PushMode(t *testing.T) {
 	rr := doAdminRelayRequest(t, AdminCreateRelay, "POST", "/api/admin/relays", map[string]interface{}{
 		"relay_id": "test-dmz2",
 		"mode":     "push",
-		"url":      "https://dmz2.example.com:7770",
+		"url":      "wss://dmz2.example.com:7772",
 		"token":    "my-relay-token",
 	})
 
@@ -98,7 +98,7 @@ func TestAdminCreateRelay_PushMode(t *testing.T) {
 	if resp.JWTToken != "" {
 		t.Error("jwt_token should be empty for push mode")
 	}
-	if resp.URL != "https://dmz2.example.com:7770" {
+	if resp.URL != "wss://dmz2.example.com:7772" {
 		t.Errorf("unexpected url: %s", resp.URL)
 	}
 }
