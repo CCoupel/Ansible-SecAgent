@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +21,9 @@ type pushCalls struct {
 
 func setPushHooks(t *testing.T) *pushCalls {
 	t.Helper()
+	if os.Getenv("RSA_MASTER_KEY") == "" {
+		t.Setenv("RSA_MASTER_KEY", "unit-test-master-key") // push registration fails closed without it
+	}
 	c := &pushCalls{}
 	SetRelayPushHooks(func(relayID, url, token string) error {
 		c.mu.Lock()
@@ -161,5 +166,63 @@ func TestPushRelay_DeleteStopsDialer(t *testing.T) {
 	defer calls.mu.Unlock()
 	if len(calls.stopped) != 1 || calls.stopped[0] != "dmz1" {
 		t.Errorf("stopped = %v", calls.stopped)
+	}
+}
+
+func TestPushRelay_RefusedWithoutMasterKey(t *testing.T) {
+	useFreshStores(t)
+	calls := setPushHooks(t)
+	t.Setenv("RSA_MASTER_KEY", "")
+	rr := createPush(t, "dmz1", "wss://dmz1:7772", "child-signed-jwt")
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503 (fail closed): %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "child-signed-jwt") {
+		t.Error("token echoed")
+	}
+	if node, _ := adminStore.GetRelayNode("dmz1"); node != nil {
+		t.Errorf("no row may be stored without the master key: %+v", node)
+	}
+	calls.mu.Lock()
+	defer calls.mu.Unlock()
+	if len(calls.started) != 0 {
+		t.Error("no dialer may start")
+	}
+}
+
+func TestPushToken_SealOpenRoundTripWrongKeyAndTamper(t *testing.T) {
+	t.Setenv("RSA_MASTER_KEY", "key-one")
+	sealed, err := SealPushToken("secret-jwt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(sealed, "secret-jwt") || !strings.HasPrefix(sealed, "enc:") {
+		t.Fatalf("not sealed: %q", sealed)
+	}
+	if got, err := OpenPushToken(sealed); err != nil || got != "secret-jwt" {
+		t.Fatalf("round trip = %q %v", got, err)
+	}
+	// two seals of the same token differ (random nonce)
+	if again, _ := SealPushToken("secret-jwt"); again == sealed {
+		t.Error("sealing must be randomized")
+	}
+	// altered ciphertext is rejected (GCM authentication)
+	b := []byte(sealed)
+	b[len(b)-3] ^= 0x01
+	if got, err := OpenPushToken(string(b)); err == nil {
+		t.Errorf("tampered data accepted: %q", got)
+	}
+	// wrong key
+	t.Setenv("RSA_MASTER_KEY", "key-two")
+	if got, err := OpenPushToken(sealed); err == nil {
+		t.Errorf("wrong key accepted: %q", got)
+	}
+	// missing key
+	t.Setenv("RSA_MASTER_KEY", "")
+	if _, err := OpenPushToken(sealed); err == nil {
+		t.Error("missing key must fail")
+	}
+	if _, err := SealPushToken("x"); !errors.Is(err, ErrPushTokenKeyMissing) {
+		t.Errorf("seal without key: %v", err)
 	}
 }

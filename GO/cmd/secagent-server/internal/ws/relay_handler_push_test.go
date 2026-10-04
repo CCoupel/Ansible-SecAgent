@@ -371,3 +371,35 @@ func TestPush_RelayWouldLoopAndIdentity(t *testing.T) {
 		}
 	}
 }
+
+// A relay-parent token must never open a CHILD link: even a hello + agent_list from it
+// registers nothing and updates no routing.
+func TestPush_ParentRoleNeverOpensChildLink(t *testing.T) {
+	var mu sync.Mutex
+	routed := false
+	setRoutingHook(t, func(string, []string) error { mu.Lock(); routed = true; mu.Unlock(); return nil })
+	setTreeHooks(t, "dmz1", nil, nil, nil)
+	setParentLink(t, func(conn *websocket.Conn, _ []string) error {
+		// drain: the parent link only reads what the uplink would read
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return err
+			}
+		}
+	}, nil)
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	c := dialRelay(t, srv, makeRelayJWT("central", "relay-parent"))
+	parentHello(t, c, "central", nil)
+	readMsg(t, c) // relay_ack
+	if err := c.WriteJSON(RelayMessage{Type: "agent_list", Agents: []RelayAgentInfo{{Hostname: "h"}}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Close()
+	time.Sleep(50 * time.Millisecond) // negative check: give a wrong implementation time to act
+	mu.Lock()
+	defer mu.Unlock()
+	if routed || IsRelayConnected("central") {
+		t.Errorf("relay-parent token acted as a child (routed=%v connected=%v)", routed, IsRelayConnected("central"))
+	}
+}

@@ -13,6 +13,7 @@ package ws
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -832,7 +833,7 @@ func RelayIdentity() (id string, ancestors []string) {
 func RelayWouldLoop(childID string) bool { return loopedWith(childID) }
 
 // ErrRelayAlreadyConnected is returned by ServeDialedRelay when the peer is already linked.
-var ErrRelayAlreadyConnected = fmt.Errorf("relay already connected")
+var ErrRelayAlreadyConnected = errors.New("relay already connected")
 
 // ServeDialedRelay serves a child relay that WE dialed (push mode): relay_hello was sent and
 // relay_ack (with the expected identity) received by the caller. The child now sends its

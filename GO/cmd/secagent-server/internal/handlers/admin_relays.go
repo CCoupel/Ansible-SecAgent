@@ -10,6 +10,7 @@ package handlers
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -43,14 +44,18 @@ func SetRelayPushHooks(start func(relayID, url, token string) error, stop func(r
 
 const pushTokenPrefix = "enc:"
 
+// ErrPushTokenKeyMissing is returned when a push token must be stored but RSA_MASTER_KEY is unset.
+var ErrPushTokenKeyMissing = errors.New("RSA_MASTER_KEY is required to store a push relay token")
+
 // SealPushToken encrypts a push-mode token for storage in relay_nodes.token_hash
-// (AES-256-GCM with RSA_MASTER_KEY, "enc:" prefix). Without a master key (dev/test) the
-// token is stored as is, like the RSA keys; production must set RSA_MASTER_KEY.
+// (AES-256-GCM with RSA_MASTER_KEY, "enc:" prefix). Fail closed: without a master key the
+// token is never stored in clear. (The column is named token_hash for historical reasons:
+// for push nodes it holds the encrypted token, not a hash.)
 func SealPushToken(token string) (string, error) {
 	key, ok := rsaMasterKey()
 	if !ok {
-		log.Printf("[WARN] RSA_MASTER_KEY not set: push relay token stored unencrypted")
-		return token, nil
+		log.Printf("[SECURITY WARNING] push relay registration refused: RSA_MASTER_KEY is not set")
+		return "", ErrPushTokenKeyMissing
 	}
 	enc, err := crypto.EncryptAESGCM(token, key)
 	if err != nil {
@@ -66,13 +71,13 @@ func OpenPushToken(stored string) (string, error) {
 	}
 	key, ok := rsaMasterKey()
 	if !ok {
-		return "", fmt.Errorf("push token is encrypted but RSA_MASTER_KEY is not set")
+		return "", errors.New("push token is encrypted but RSA_MASTER_KEY is not set")
 	}
-	clear, err := crypto.DecryptAESGCM(strings.TrimPrefix(stored, pushTokenPrefix), key)
+	token, err := crypto.DecryptAESGCM(strings.TrimPrefix(stored, pushTokenPrefix), key)
 	if err != nil {
 		return "", fmt.Errorf("decrypt push token: %w", err)
 	}
-	return clear, nil
+	return token, nil
 }
 
 // ========================================================================
@@ -221,6 +226,10 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		// The dialer needs the clear token: stored encrypted (RSA_MASTER_KEY), never returned.
 		sealed, err := SealPushToken(req.Token)
 		if err != nil {
+			if errors.Is(err, ErrPushTokenKeyMissing) {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "rsa_master_key_required_for_push_mode"})
+				return
+			}
 			log.Printf("AdminCreateRelay SealPushToken: %v", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token_encryption_failed"})
 			return

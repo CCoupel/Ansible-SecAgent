@@ -77,6 +77,7 @@ func TestAdminCreateRelay_PullMode(t *testing.T) {
 
 func TestAdminCreateRelay_PushMode(t *testing.T) {
 	useFreshStores(t)
+	t.Setenv("RSA_MASTER_KEY", "unit-test-master-key")
 	rr := doAdminRelayRequest(t, AdminCreateRelay, "POST", "/api/admin/relays", map[string]interface{}{
 		"relay_id": "test-dmz2",
 		"mode":     "push",
