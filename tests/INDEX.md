@@ -8,3 +8,4 @@
 
 | Chemin | Niveau | Composant | Feature | Statut | Tags |
 |--------|--------|-----------|---------|--------|------|
+| GO/cmd/secagent-server/internal/integration/ | integration | secagent-server | #129 chaîne repeater e2e (pull/push, routage hiérarchique, refus, révocation) | feature | critical |
