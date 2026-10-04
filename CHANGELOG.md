@@ -11,7 +11,7 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [v3.1] — 2026-10-04 — Repeater Relay Chain
+## [v3.0.1] — 2026-10-04 — Repeater Relay Chain
 
 ### Added
 - **Protocole repeater complet** : topologie arbre (un relay enfant a un seul parent), deux modes d'ouverture (`pull` enfant→parent, `push` parent→enfant) (#124, #125, #140)
@@ -58,21 +58,21 @@ All notable changes to this project will be documented in this file.
 ### Known Limitations
 - `#152` : colonne `relay_nodes.token_hash` trompeuse (hash pour pull, token chiffré pour push) — renommage envisagé
 - `#126` : un hôte dans la profondeur n'est pas routable vers l'ancêtre jusqu'au prochain snapshot du parent
-- `#146` : rôle relay-child créé manuellement (pas de CLI) ; hiérarchie PKI envisagée pour v3.2+
+- `#146` : rôle relay-child créé manuellement (pas de CLI) ; hiérarchie PKI envisagée pour v3.0.2+
 - `#151` : SSRF dans la validation dial-out — enregistrement en suivi
 - Métrique : aucune infrastructure de métriques n'existe actuellement (raison du lien stockée en texte uniquement)
 
 ---
 
-## [v3.0] — 2026-10-03 — Fondations (specs seulement)
+## [v3.0.0] — 2026-10-03 — Fondations (specs seulement)
 
 ### Changed
-- **Spec du mode repeater (#122)** : topologie en **arbre**, handshake `relay_hello` → `relay_ack` → `topology_snapshot`, deux rôles JWT `relay-child` / `relay-parent`, refus de boucle. **Aucune implémentation en v3.0**.
+- **Spec du mode repeater (#122)** : topologie en **arbre**, handshake `relay_hello` → `relay_ack` → `topology_snapshot`, deux rôles JWT `relay-child` / `relay-parent`, refus de boucle. **Aucune implémentation en v3.0.0**.
 - Les corps d'erreur JSON se terminent par un saut de ligne (`json.Encoder`) (#144).
 - La CI bloque sur `gofmt` et `golangci-lint` v2.14.0 (#133, #144).
 
 ### Removed
-- **PushManager, REST relay polling, variables `PROXY_MODE` / `PROXY_RELAYS`** (#123). Colonne `relay_nodes.mode` conservée mais inerte jusqu'à v3.1.
+- **PushManager, REST relay polling, variables `PROXY_MODE` / `PROXY_RELAYS`** (#123). Colonne `relay_nodes.mode` conservée mais inerte jusqu'à v3.0.1.
 
 ### Fixed
 - Parsing de `DATABASE_URL` : chemin absolu correct (#131).
@@ -124,10 +124,10 @@ All notable changes to this project will be documented in this file.
 
 The following are **known issues** and **operational constraints**:
 
-1. **Non-empty stdin + become/become_pass returns rc=1** (executor.go, issue #100) — When a task with `become` or `become_pass` receives non-empty stdin, `bytesReader` returns `fmt.Errorf("EOF")` instead of `io.EOF`, causing executor to fail with rc=1. Correction envisaged in v3.0.
+1. **Non-empty stdin + become/become_pass returns rc=1** (executor.go, issue #100) — When a task with `become` or `become_pass` receives non-empty stdin, `bytesReader` returns `fmt.Errorf("EOF")` instead of `io.EOF`, causing executor to fail with rc=1. Correction envisaged in v3.0.0.
    - **Qualification result**: Confirmed in E2E-4 test (cat with stdin non-empty → rc=1).
 
-2. **Child process timeout only kills /bin/sh** (executor.go) — Context timeout kills only the shell process, not descendant processes spawned by the playbook. Grandchild processes may continue running. Correction envisaged in v3.0.
+2. **Child process timeout only kills /bin/sh** (executor.go) — Context timeout kills only the shell process, not descendant processes spawned by the playbook. Grandchild processes may continue running. Correction envisaged in v3.0.0.
 
 3. **SQLite path handling** (store.go:165, store.go:167-168) — Configuration must use direct paths without URI prefix. In docker-compose or environment, use absolute paths (e.g., `/data/relay.db`). This is an operational constraint.
    - **Qualification**: Confirmed in be17cee docker-compose.proxy.yml (uses `/data/relay*.db` paths directly).
@@ -150,7 +150,7 @@ The following are **known issues** and **operational constraints**:
 
 6. **Enrollment token hostname pattern is anchored regex** — The hostname pattern in enrollment tokens is validated as an **anchored regex** (e.g., `.*` matches all hostnames, `^prod-.*\.example\.com$` matches specific pattern).
 
-**Deprecation Notice**: v3.0 (issue #123) replaces `PushManager` and `PROXY_RELAYS` with a new WebSocket relay chain architecture with improved event propagation. Users on v2.0.0 with push-mode relays should plan migration to v3.0 architecture.
+**Deprecation Notice**: v3.0.0 (issue #123) replaces `PushManager` and `PROXY_RELAYS` with a new WebSocket relay chain architecture with improved event propagation. Users on v2.0.0 with push-mode relays should plan migration to v3.0.0 architecture.
 
 ### Tests
 - 917/920 tests unitaires et intégration passent (QA VALIDATED)
