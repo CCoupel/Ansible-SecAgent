@@ -248,6 +248,7 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 		"JWT_SECRET_KEY="+n.jwtSecret,
 		"RSA_MASTER_KEY="+masterKey,
 		"DATABASE_URL=sqlite:///"+dbPath,
+		"RELAY_ACTION_LOG="+filepath.Join(filepath.Dir(dbPath), "actions.log"),
 		"RELAY_HOOKS_CONFIG="+n.hooksPath, // absent unless spec.Hooks: 0 hooks active
 		"REPEATER_ID="+spec.ID,
 		"REPEATER_UPSTREAM_URL="+spec.ParentURL,

@@ -129,21 +129,6 @@ CREATE TABLE IF NOT EXISTS relay_parent_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_relay_parent_tokens_parent ON relay_parent_tokens (parent_id);
 
-CREATE TABLE IF NOT EXISTS action_log (
-    id              TEXT PRIMARY KEY,
-    event           TEXT NOT NULL,
-    hostname        TEXT NOT NULL,
-    action_type     TEXT NOT NULL,
-    action_index    INTEGER NOT NULL,
-    config_snapshot TEXT NOT NULL,
-    success         INTEGER NOT NULL DEFAULT 0,
-    error           TEXT,
-    duration_ms     INTEGER,
-    executed_at     INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_action_log_hostname ON action_log (hostname, executed_at DESC);
-CREATE INDEX IF NOT EXISTS idx_action_log_event    ON action_log (event,    executed_at DESC);
-
 -- Phase 12: Proxy/Gateway — relay node registry and hostname routing
 CREATE TABLE IF NOT EXISTS relay_nodes (
     id          TEXT PRIMARY KEY,

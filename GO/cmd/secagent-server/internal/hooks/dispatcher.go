@@ -14,7 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/actionlog"
 )
 
 // ── Job ───────────────────────────────────────────────────────────────────────
@@ -30,9 +30,10 @@ type dispatchJob struct {
 
 // ── ActionLogger interface ─────────────────────────────────────────────────────
 
-// ActionLogger is the subset of *storage.Store used to persist execution results.
+// ActionLogger persists execution results (the append-only journal, #161). An error must never
+// block the dispatch: it is logged as a warning.
 type ActionLogger interface {
-	CreateActionLog(ctx context.Context, entry storage.ActionLogEntry) error
+	Append(entry actionlog.Entry) error
 }
 
 // buildVars constructs the template variable map from a dispatch job's fields.
@@ -237,7 +238,7 @@ func (d *Dispatcher) processJob(ctx context.Context, job dispatchJob) {
 	}
 }
 
-// executeAction runs one action and logs the result to action_log.
+// executeAction runs one action and appends the result to the action journal.
 func (d *Dispatcher) executeAction(ctx context.Context, job dispatchJob, action ActionDef, idx int, vars map[string]string) {
 	var ex Executor
 	switch action.Type {
@@ -256,23 +257,25 @@ func (d *Dispatcher) executeAction(ctx context.Context, job dispatchJob, action 
 
 	success, errMsg, durationMs := ex.Execute(ctx, action, vars)
 
-	snapshot, _ := json.Marshal(action)
-	entry := storage.ActionLogEntry{
+	// The hook configuration holds secrets (webhook HMAC key, authorization headers, URLs with
+	// tokens): the journal gets a masked snapshot and an error with its URLs masked.
+	raw, _ := json.Marshal(action)
+	entry := actionlog.Entry{
 		ID:             uuid.New().String(),
 		Event:          job.event,
 		Hostname:       job.hostname,
 		ActionType:     action.Type,
 		ActionIndex:    idx,
-		ConfigSnapshot: string(snapshot),
+		ConfigSnapshot: actionlog.RedactAction(raw),
 		Success:        success,
-		Error:          errMsg,
+		Error:          actionlog.RedactError(errMsg),
 		DurationMs:     durationMs,
 		ExecutedAt:     time.Now().UTC(),
 	}
 
 	if d.store != nil {
-		if err := d.store.CreateActionLog(ctx, entry); err != nil {
-			log.Printf("[WARN] hooks: CreateActionLog: %v", err)
+		if err := d.store.Append(entry); err != nil {
+			log.Printf("[WARN] hooks: action journal: %v", err)
 		}
 	}
 

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"secagent-server/cmd/secagent-server/internal/actionlog"
 	"secagent-server/cmd/secagent-server/internal/hooks"
 	"secagent-server/cmd/secagent-server/internal/storage"
 	"secagent-server/cmd/secagent-server/internal/ws"
@@ -638,14 +639,34 @@ func AdminDeleteMinion(w http.ResponseWriter, r *http.Request) {
 // GET /api/admin/hooks/log
 // ========================================================================
 
-// AdminHooksLog returns action_log entries with optional filters.
-// Query params: limit (1–200, default 50), event, hostname.
+var (
+	actionJournalMu sync.RWMutex
+	actionJournalV  *actionlog.Journal
+)
+
+// SetActionJournal injects the hook action journal read by GET /api/admin/hooks/log.
+func SetActionJournal(j *actionlog.Journal) {
+	actionJournalMu.Lock()
+	actionJournalV = j
+	actionJournalMu.Unlock()
+}
+
+func actionJournal() *actionlog.Journal {
+	actionJournalMu.RLock()
+	defer actionJournalMu.RUnlock()
+	return actionJournalV
+}
+
+// AdminHooksLog returns the hook action journal entries (actions.log, #161) with optional filters.
+// Query params: limit (1–200, default 50), event, hostname. config_snapshot is masked: it never
+// carries a webhook secret, a header value, a body or a shell argument.
 func AdminHooksLog(w http.ResponseWriter, r *http.Request) {
 	if !requireAdminAuth(w, r) {
 		return
 	}
-	if adminStore == nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "store_not_initialized"})
+	journal := actionJournal()
+	if journal == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "action_log_not_initialized"})
 		return
 	}
 
@@ -662,16 +683,14 @@ func AdminHooksLog(w http.ResponseWriter, r *http.Request) {
 		limit = n
 	}
 
-	filter := storage.ActionLogFilter{
+	entries, err := journal.List(actionlog.Filter{
 		Event:    r.URL.Query().Get("event"),
 		Hostname: r.URL.Query().Get("hostname"),
 		Limit:    limit,
-	}
-
-	entries, err := adminStore.ListActionLogs(r.Context(), filter)
+	})
 	if err != nil {
 		log.Printf("AdminHooksLog: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "action_log_error"})
 		return
 	}
 

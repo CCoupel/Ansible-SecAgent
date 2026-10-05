@@ -13,6 +13,9 @@ All notable changes to this project will be documented in this file.
 - **NATS JetStream retiré du serveur et du déploiement (#178)** : aucun usage fonctionnel (l'exec passe par WebSocket direct), aucune perte. Suppression de `internal/broker`, de `GO/nats.conf`, des services/volumes `nats*` des Compose hors prod, des dépendances `nats-io` du `go.mod`. `NATS_URL` encore définie : un seul `[WARN] NATS_URL is obsolete and ignored`, démarrage normal.
 - **[BREAKING]** `GET /api/admin/status` et `secagent-server server status` ne renvoient plus le champ `nats`.
 
+### Changed
+- **Journal des actions de hooks (#161)** : `action_log` (SQLite) remplacé par un journal JSON Lines append-only `actions.log` (`RELAY_ACTION_LOG`, défaut `STATE_DIR/actions.log`), sans fsync par ligne, rotation par taille (10 Mio × 5). Le `config_snapshot` ne contient plus aucun secret (il enregistrait en clair le secret HMAC et les en-têtes d'authentification des webhooks).
+
 ### Security
 - **#176** : suppression de `completedResults` et de `GET /api/async_status/{task_id}` (map sans mutex, non bornée, sans appelant en production).
 - **#169** : `/ws/agent` refuse (401, avant l'upgrade) un JTI blacklisté, remplacé ou un agent inconnu ; fail closed.

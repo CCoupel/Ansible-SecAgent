@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"secagent-server/cmd/secagent-server/internal/actionlog"
 	"secagent-server/cmd/secagent-server/internal/config"
 	"secagent-server/cmd/secagent-server/internal/forward"
 	"secagent-server/cmd/secagent-server/internal/handlers"
@@ -18,6 +19,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/logsafe"
 	"secagent-server/cmd/secagent-server/internal/proxy"
 	"secagent-server/cmd/secagent-server/internal/repeater"
+	"secagent-server/cmd/secagent-server/internal/state"
 	"secagent-server/cmd/secagent-server/internal/storage"
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
@@ -33,6 +35,7 @@ type Node struct {
 
 	store       *storage.Store
 	dispatcher  *hooks.Dispatcher
+	journal     *actionlog.Journal
 	hooksPath   string
 	dispatchCtx context.Context
 	cancel      context.CancelFunc
@@ -131,7 +134,13 @@ func Build(cfg Config) (node *Node, err error) {
 	// Initialize hooks dispatcher (async event delivery)
 	n.dispatchCtx, n.cancel = context.WithCancel(context.Background())
 	dispatchCtx := n.dispatchCtx
-	dispatcher := hooks.NewDispatcher(store, 1000)
+	journal, jerr := actionlog.Open(actionlog.Options{Path: actionlog.PathFromEnv(state.DirFromEnv())})
+	if jerr != nil {
+		return nil, fmt.Errorf("failed to prepare the action journal: %w", jerr)
+	}
+	n.journal = journal
+	handlers.SetActionJournal(journal)
+	dispatcher := hooks.NewDispatcher(journal, 1000)
 	dispatcher.Start(dispatchCtx)
 	hooks.GlobalDispatcher = dispatcher
 	n.dispatcher = dispatcher
@@ -335,6 +344,11 @@ func (n *Node) Close() {
 	n.closeOnce.Do(func() {
 		if n.cancel != nil {
 			n.cancel()
+		}
+		if n.journal != nil {
+			if err := n.journal.Close(); err != nil {
+				log.Printf("action journal close: %v", err)
+			}
 		}
 		if n.store != nil {
 			if err := n.store.Close(); err != nil {

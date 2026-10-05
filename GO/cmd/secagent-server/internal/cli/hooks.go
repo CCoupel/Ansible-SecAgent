@@ -85,7 +85,7 @@ var (
 var hooksLogCmd = &cobra.Command{
 	Use:   "log",
 	Short: "Show hook execution log",
-	Long:  `Displays recent hook action executions from the server action_log table.`,
+	Long:  `Displays recent hook action executions from the server action journal (actions.log).`,
 	RunE:  runHooksLog,
 }
 

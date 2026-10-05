@@ -6,4 +6,5 @@
 - `GET /api/async_status/{task_id}` supprimé (#176) : jamais alimenté en production ; le statut d'un job async passe par un `exec` de `async_status.py` vers l'agent.
 - `POST /api/exec|upload|fetch/{hostname}` : nouveaux refus `503 {"error":"agent_suspended"}` et `503 {"error":"agent_state_unavailable"}` (#173). Inventaire : champ optionnel `secagent_suspended` (#173).
 - `/ws/agent` : refus `401` avant l'upgrade d'un token révoqué ou remplacé (#169).
+- `GET /api/admin/hooks/log` : lu dans le journal append-only `actions.log` (`RELAY_ACTION_LOG`, défaut `STATE_DIR/actions.log`, rotation 10 Mio × 5) et non plus dans la table `action_log` (#161). `config_snapshot` est désormais **masqué** (secret HMAC, valeurs des en-têtes, corps, arguments shell, query string et userinfo des URL) ; `error` masque les URL. Erreur `500 action_log_not_initialized` si le journal n'est pas configuré.
 - Contrat NATS (`NATS.md`) obsolète : à retirer par #172.
