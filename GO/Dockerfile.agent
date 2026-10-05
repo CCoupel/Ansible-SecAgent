@@ -45,8 +45,8 @@ ASYNC_DIR="${RELAY_ASYNC_DIR:-/var/lib/secagent-minion/async}"
 
 # Create required directories
 mkdir -p "${ASYNC_DIR}"
-mkdir -p "$(dirname ${KEY_PATH})"
-mkdir -p "$(dirname ${JWT_PATH})"
+mkdir -p "$(dirname "${KEY_PATH}")"
+mkdir -p "$(dirname "${JWT_PATH}")"
 
 # Pre-generate RSA-4096 key if not present
 # This is needed because the Go agent uses os.IsNotExist() which doesn't
@@ -59,8 +59,8 @@ if [ ! -f "${KEY_PATH}" ]; then
 fi
 
 # Fix ownership
-chown -R relay:relay "$(dirname ${KEY_PATH})" 2>/dev/null || true
-chown -R relay:relay "$(dirname ${JWT_PATH})" 2>/dev/null || true
+chown -R relay:relay "$(dirname "${KEY_PATH}")" 2>/dev/null || true
+chown -R relay:relay "$(dirname "${JWT_PATH}")" 2>/dev/null || true
 chown -R relay:relay "${ASYNC_DIR}" 2>/dev/null || true
 
 exec su-exec relay /app/secagent-minion "$@"

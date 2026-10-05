@@ -1,8 +1,20 @@
-*.exe
+# Binaires, donnees et secrets : jamais dans le contexte de build
+secagent-server
+secagent-minion
+secagent-inventory
 relay-server
 relay-server-linux
-relay.db*
+**/*.exe
+**/*.db
+**/*.db-*
+**/relay.state*
+**/relay.lock*
+**/*.pem
+**/*.key
+**/.env*
+_work
+.git
+**/.git
 test_results.txt
 **/*_test.go
-**/.git
 **/testdata
