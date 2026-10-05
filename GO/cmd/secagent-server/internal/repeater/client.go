@@ -39,6 +39,8 @@ const (
 	DefaultMinBackoff        = 5 * time.Second
 	DefaultMaxBackoff        = 60 * time.Second
 	DefaultAgentListInterval = 30 * time.Second
+	DefaultTopologyDebounce  = 200 * time.Millisecond
+	DefaultTopologyMinGap    = 2 * time.Second
 	DefaultPingInterval      = 30 * time.Second
 	DefaultHandshakeTimeout  = 15 * time.Second
 	readTimeoutFactor        = 3
@@ -136,6 +138,14 @@ type Options struct {
 	Events <-chan Event
 	// Changed signals a downstream state change → agent_list is re-sent (optional).
 	Changed <-chan struct{}
+	// TopologyChanged signals that the set of relays below this node changed: a FULL
+	// topology_snapshot is re-sent to the parent ("snapshot = truth of the subtree"). Signals are
+	// coalesced: TopologyDebounce after the first one, and at least TopologyMinGap between two
+	// snapshots (the parent rate limits replacement snapshots per link). Optional.
+	TopologyChanged <-chan struct{}
+	// TopologyDebounce / TopologyMinGap tune the coalescing (defaults 200 ms / 2 s).
+	TopologyDebounce time.Duration
+	TopologyMinGap   time.Duration
 	// GroupVars are this relay's Ansible group variables (RELAY_GROUP_VARS, already validated):
 	// sent in relay_hello (pull) and in every topology_snapshot (pull and push).
 	GroupVars map[string]any
@@ -188,6 +198,12 @@ func normalizeOptions(opts Options) Options {
 	}
 	if opts.PingInterval <= 0 {
 		opts.PingInterval = DefaultPingInterval
+	}
+	if opts.TopologyDebounce <= 0 {
+		opts.TopologyDebounce = DefaultTopologyDebounce
+	}
+	if opts.TopologyMinGap <= 0 {
+		opts.TopologyMinGap = DefaultTopologyMinGap
 	}
 	if opts.HandshakeTimeout <= 0 {
 		opts.HandshakeTimeout = DefaultHandshakeTimeout

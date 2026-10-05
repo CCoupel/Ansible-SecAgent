@@ -114,19 +114,10 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 	sessCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() { <-sessCtx.Done(); _ = conn.Close() }()
-	snap := Snapshot{}
-	if u.opts.Snapshot != nil {
-		snap = u.opts.Snapshot()
+	if err := u.sendSnapshot(conn); err != nil {
+		return false, err
 	}
-	if snap.Relays == nil {
-		snap.Relays = []TopoRelay{}
-	}
-	if snap.Agents == nil {
-		snap.Agents = []TopoAgent{}
-	}
-	if err := u.write(conn, snapshotMessage{Type: "topology_snapshot", Relays: snap.Relays, Agents: snap.Agents, GroupVars: u.opts.GroupVars}); err != nil {
-		return false, fmt.Errorf("send topology_snapshot: %w", err)
-	}
+	lastSnap := time.Now()
 	established = true
 
 	// 4. steady state
@@ -157,6 +148,13 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 		}
 	}()
 
+	var topoTimer *time.Timer
+	var topoC <-chan time.Time
+	defer func() {
+		if topoTimer != nil {
+			topoTimer.Stop()
+		}
+	}()
 	ping := time.NewTicker(u.opts.PingInterval)
 	defer ping.Stop()
 	list := time.NewTicker(u.opts.AgentListInterval)
@@ -179,6 +177,23 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 			if err := u.sendAgentList(conn); err != nil {
 				return true, err
 			}
+		case <-u.topologyChanged():
+			// coalesce a burst of changes into ONE full snapshot, never closer than TopologyMinGap
+			// to the previous one (the parent rate limits replacement snapshots)
+			if topoTimer == nil {
+				delay := u.opts.TopologyDebounce
+				if wait := u.opts.TopologyMinGap - time.Since(lastSnap); wait > delay {
+					delay = wait
+				}
+				topoTimer = time.NewTimer(delay)
+				topoC = topoTimer.C
+			}
+		case <-topoC:
+			topoTimer, topoC = nil, nil
+			if err := u.sendSnapshot(conn); err != nil {
+				return true, err
+			}
+			lastSnap = time.Now()
 		case <-u.changed():
 			if err := u.sendAgentList(conn); err != nil {
 				return true, err
@@ -192,6 +207,26 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 			}
 		}
 	}
+}
+
+func (u *Uplink) topologyChanged() <-chan struct{} { return u.opts.TopologyChanged }
+
+// sendSnapshot sends the full topology_snapshot (the truth about the subtree below this node).
+func (u *Uplink) sendSnapshot(conn *websocket.Conn) error {
+	snap := Snapshot{}
+	if u.opts.Snapshot != nil {
+		snap = u.opts.Snapshot()
+	}
+	if snap.Relays == nil {
+		snap.Relays = []TopoRelay{}
+	}
+	if snap.Agents == nil {
+		snap.Agents = []TopoAgent{}
+	}
+	if err := u.write(conn, snapshotMessage{Type: "topology_snapshot", Relays: snap.Relays, Agents: snap.Agents, GroupVars: u.opts.GroupVars}); err != nil {
+		return fmt.Errorf("send topology_snapshot: %w", err)
+	}
+	return nil
 }
 
 // changed/events return nil channels (block forever) when unset.
