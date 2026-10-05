@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -109,24 +110,25 @@ func SetRegisterStore(s *storage.Store) {
 }
 
 func init() {
-	// Minimal init: load admin token from env.
-	// RSA + JWT secrets are loaded from DB via InitServerState().
-	adminToken := os.Getenv("ADMIN_TOKEN")
-	if adminToken == "" {
-		log.Fatal("ADMIN_TOKEN environment variable not set")
-	}
-	secret := os.Getenv("JWT_SECRET_KEY")
-	if secret == "" {
-		log.Fatal("JWT_SECRET_KEY environment variable not set")
-	}
-
-	// Bootstrap server state with env-provided secret (overridden by DB in InitServerState).
-	// This allows tests that don't call InitServerState to still work.
+	// Bootstrap server state from the environment. Nothing is required here: local commands
+	// (`state init`, `--help`, ...) import this package and must not need the server secrets.
+	// server.Build / ConfigureServer install the validated values (server.ConfigFromEnv refuses a
+	// missing JWT_SECRET_KEY or ADMIN_TOKEN), and an empty admin token never authenticates
+	// (adminTokenMatches). RSA + JWT secrets are loaded from DB via InitServerState().
 	server = &ServerState{
-		JWTSecret:  secret,
-		AdminToken: adminToken,
+		JWTSecret:  os.Getenv("JWT_SECRET_KEY"),
+		AdminToken: os.Getenv("ADMIN_TOKEN"),
 		JWTttl:     time.Hour,
 	}
+}
+
+// adminTokenMatches reports whether tok is the configured admin token. An empty configured token
+// matches nothing (fail closed: a server that never received its ADMIN_TOKEN has no admin).
+func adminTokenMatches(tok string) bool {
+	server.mu.RLock()
+	want := server.AdminToken
+	server.mu.RUnlock()
+	return want != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(want)) == 1
 }
 
 // ConfigureServer sets the bootstrap JWT secret and the admin token from the server Config
@@ -686,7 +688,7 @@ func AdminAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tok := authHeader[7:]
-	if tok != server.AdminToken {
+	if !adminTokenMatches(tok) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_admin_token"})
 		return
 	}

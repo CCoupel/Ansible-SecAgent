@@ -33,6 +33,9 @@ const runMainEnv = "SECAGENT_TEST_RUN_MAIN"
 func TestMain(m *testing.M) {
 	if os.Getenv(runMainEnv) == "1" {
 		os.Args = []string{"secagent-server"}
+		if extra := os.Getenv("SECAGENT_TEST_ARGS"); extra != "" {
+			os.Args = append(os.Args, strings.Fields(extra)...)
+		}
 		main()
 		os.Exit(0) // main returned normally (graceful shutdown)
 	}
@@ -396,5 +399,31 @@ func TestMainProcess_SIGINTAlsoStopsCleanly(t *testing.T) {
 	}
 	if code := p.wait(t, 60*time.Second); code != 0 {
 		t.Errorf("exit code = %d after SIGINT, want 0; output:\n%s", code, p.out.String())
+	}
+}
+
+// `state init` is a LOCAL command: it must run without ADMIN_TOKEN nor JWT_SECRET_KEY in the
+// environment (#159b R2), creates the state, and refuses to run a second time.
+func TestStateInitNeedsNoServerSecretsInTheEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	run := func() (string, error) {
+		cmd := exec.Command(os.Args[0])
+		cmd.Env = []string{
+			"PATH=" + os.Getenv("PATH"),
+			runMainEnv + "=1",
+			"SECAGENT_TEST_ARGS=state init --state-dir " + dir,
+			"RSA_MASTER_KEY=process-test-master-key",
+		}
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	if out, err := run(); err != nil || !strings.Contains(out, "state initialized in "+dir) {
+		t.Fatalf("state init without ADMIN_TOKEN/JWT_SECRET_KEY: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "relay.state")); err != nil {
+		t.Fatalf("relay.state missing: %v", err)
+	}
+	if out, err := run(); err == nil || !strings.Contains(out, "refusing to initialize") {
+		t.Fatalf("a second init must be refused: %v\n%s", err, out)
 	}
 }

@@ -39,7 +39,7 @@ func requireAdminAuth(w http.ResponseWriter, r *http.Request) bool {
 	}
 
 	token := authHeader[7:]
-	if token != server.AdminToken {
+	if !adminTokenMatches(token) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_admin_token"})
 		return false
 	}
