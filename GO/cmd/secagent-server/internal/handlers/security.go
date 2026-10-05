@@ -168,14 +168,14 @@ func sendRekeyToAgent(ctx context.Context, hostname, jwtSecret string, jwtTTL ti
 	// Fetch agent's public key from DB
 	agent, err := adminStore.GetAgent(ctx, hostname)
 	if err != nil || agent == nil {
-		log.Printf("sendRekeyToAgent: GetAgent %s: err=%v found=%v", hostname, err, agent != nil)
+		log.Printf("sendRekeyToAgent: GetAgent %q: err=%v found=%v", hostname, err, agent != nil)
 		return false
 	}
 
 	// Sign new JWT with the new current secret
 	rawJWT, newJTI, err := signAgentJWT(hostname, jwtSecret, jwtTTL)
 	if err != nil {
-		log.Printf("sendRekeyToAgent: signAgentJWT %s: %v", hostname, err)
+		log.Printf("sendRekeyToAgent: signAgentJWT %q: %v", hostname, err)
 		return false
 	}
 

@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"testing"
 	"time"
@@ -657,4 +659,36 @@ func TestProxyRouter_RouteFetch_PullMode_ContextCancel(t *testing.T) {
 
 func containsStr(s, sub string) bool {
 	return strings.Contains(s, sub)
+}
+
+// A task_id coming from a plugin request is logged with %q: no forged log line.
+func TestProxyRouter_RouteExec_LogQuotesCallerIdentifiers(t *testing.T) {
+	s := newRouterTestStore(t)
+	evilHost := "h1"
+	_ = s.UpsertRelayNode(storage.RelayNode{ID: "uuid-q", RelayID: "dmz-q", Mode: "pull", Status: "connected", CreatedAt: time.Now().Unix()})
+	_ = s.BulkUpsertRelayRouting("dmz-q", []string{evilHost})
+	r := NewProxyRouter(s)
+	r.isRelayConnected = func(string) bool { return true }
+	r.dispatchToRelay = func(_ string, msg ws.RelayMessage) (chan ws.RelayTaskResult, error) {
+		ch := make(chan ws.RelayTaskResult, 1)
+		ch <- ws.RelayTaskResult{TaskID: msg.TaskID}
+		return ch, nil
+	}
+	r.unregisterRelayFuture = func(string) {}
+
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+	if _, err := r.RouteExec(context.Background(), evilHost, "t\nFAKE task", ExecRequest{Cmd: "ls", Timeout: 5}); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if strings.HasPrefix(l, "FAKE") {
+			t.Errorf("forged log line: %q", l)
+		}
+	}
+	if !strings.Contains(buf.String(), `task_id="t\nFAKE task"`) {
+		t.Errorf("task_id must be quoted: %q", buf.String())
+	}
 }

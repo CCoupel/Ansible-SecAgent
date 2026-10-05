@@ -109,12 +109,12 @@ func RegisterConnection(hostname string, conn *AgentConnection) {
 
 	// Close any existing connection for this hostname
 	if oldConn, exists := wsConnections[hostname]; exists {
-		log.Printf("Replacing stale WS for hostname: %s", hostname)
+		log.Printf("Replacing stale WS for hostname: %q", hostname)
 		_ = oldConn.Conn.Close()
 	}
 
 	wsConnections[hostname] = conn
-	log.Printf("Agent connected: hostname=%s", hostname)
+	log.Printf("Agent connected: hostname=%q", hostname)
 
 	if DispatchFunc != nil {
 		go DispatchFunc("host.up", hostname, "connected", "")
@@ -127,7 +127,7 @@ func UnregisterConnection(hostname string) {
 	defer connectionsMu.Unlock()
 
 	delete(wsConnections, hostname)
-	log.Printf("Agent disconnected: hostname=%s", hostname)
+	log.Printf("Agent disconnected: hostname=%q", hostname)
 
 	if DispatchFunc != nil {
 		go DispatchFunc("host.down", hostname, "disconnected", "")
@@ -201,7 +201,7 @@ func ResolveFuturesForHostname(hostname string, errorMsg string) {
 			default:
 				// Channel already has a result or is closed
 			}
-			log.Printf("Future resolved with error on disconnect: task_id=%s error=%s hostname=%s",
+			log.Printf("Future resolved with error on disconnect: task_id=%q error=%s hostname=%q",
 				taskID, errorMsg, hostname)
 		}
 
@@ -246,14 +246,14 @@ func HandleMessage(msg Message, hostname string) {
 	msgType := msg.Type
 
 	if taskID == "" || msgType == "" {
-		log.Printf("WS message missing task_id or type: hostname=%s msg=%+v", hostname, msg)
+		log.Printf("WS message missing task_id or type: hostname=%q task_id=%q type=%q", hostname, taskID, msgType)
 		return
 	}
 
 	switch msgType {
 	case "ack":
 		// Subprocess started — just log
-		log.Printf("Task ack received: task_id=%s hostname=%s", taskID, hostname)
+		log.Printf("Task ack received: task_id=%q hostname=%q", taskID, hostname)
 
 	case "stdout":
 		// Accumulate stdout, enforce 5 MB cap
@@ -267,7 +267,7 @@ func HandleMessage(msg Message, hostname string) {
 				runes = runes[:len(runes)-1]
 			}
 			combined = string(runes)
-			log.Printf("Stdout buffer truncated: task_id=%s hostname=%s", taskID, hostname)
+			log.Printf("Stdout buffer truncated: task_id=%q hostname=%q", taskID, hostname)
 		}
 		stdoutBuffers[taskID] = combined
 		buffersMu.Unlock()
@@ -289,12 +289,12 @@ func HandleMessage(msg Message, hostname string) {
 		if exists {
 			select {
 			case resultChan <- msg:
-				log.Printf("Task result received: task_id=%s rc=%d hostname=%s", taskID, msg.RC, hostname)
+				log.Printf("Task result received: task_id=%q rc=%d hostname=%q", taskID, msg.RC, hostname)
 			default:
-				log.Printf("Result channel full or closed: task_id=%s hostname=%s", taskID, hostname)
+				log.Printf("Result channel full or closed: task_id=%q hostname=%q", taskID, hostname)
 			}
 		} else {
-			log.Printf("Result received but no pending future: task_id=%s hostname=%s", taskID, hostname)
+			log.Printf("Result received but no pending future: task_id=%q hostname=%q", taskID, hostname)
 		}
 
 		// Cleanup
@@ -311,7 +311,7 @@ func HandleMessage(msg Message, hostname string) {
 		taskHostMu.Unlock()
 
 	default:
-		log.Printf("Unknown WS message type: type=%s task_id=%s hostname=%s", msgType, taskID, hostname)
+		log.Printf("Unknown WS message type: type=%q task_id=%q hostname=%q", msgType, taskID, hostname)
 	}
 }
 
@@ -419,7 +419,7 @@ func authenticateAgentRequest(r *http.Request) (agentIdentity, error) {
 func AgentHandler(w http.ResponseWriter, r *http.Request) {
 	id, err := authenticateAgentRequest(r)
 	if err != nil {
-		log.Printf("WS auth rejected: %v", err)
+		log.Printf("WS auth rejected: %q", err.Error())
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
@@ -459,11 +459,11 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 			// Fallback: plain rekey signal (agent should re-enroll)
 			agentConn.mu.Lock()
 			if err := conn.WriteJSON(map[string]interface{}{"type": "rekey"}); err != nil {
-				log.Printf("rekey WriteJSON: hostname=%s err=%v", hostname, err)
+				log.Printf("rekey WriteJSON: hostname=%q err=%v", hostname, err)
 			}
 			agentConn.mu.Unlock()
 		}
-		log.Printf("Rekey sent to agent: hostname=%s encrypted=%v", hostname, sent)
+		log.Printf("Rekey sent to agent: hostname=%q encrypted=%v", hostname, sent)
 	}
 
 	defer func() {
@@ -476,7 +476,7 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 		err := conn.ReadJSON(&msg)
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("WebSocket error: %v for hostname: %s", err, hostname)
+				log.Printf("WebSocket error: %v for hostname: %q", err, hostname)
 			}
 			break
 		}
@@ -499,7 +499,7 @@ func CloseAgent(hostname string, code int, reason string) bool {
 	conn.mu.Lock()
 	closeMsg := websocket.FormatCloseMessage(code, reason)
 	if err := conn.Conn.WriteMessage(websocket.CloseMessage, closeMsg); err != nil {
-		log.Printf("CloseAgent WriteMessage: hostname=%s code=%d err=%v", hostname, code, err)
+		log.Printf("CloseAgent WriteMessage: hostname=%q code=%d err=%v", hostname, code, err)
 	}
 	_ = conn.Conn.Close()
 	conn.mu.Unlock()
@@ -507,7 +507,7 @@ func CloseAgent(hostname string, code int, reason string) bool {
 	// Resolve any pending futures for this hostname
 	ResolveFuturesForHostname(hostname, "agent_revoked")
 
-	log.Printf("Agent force-closed: hostname=%s code=%d reason=%s", hostname, code, reason)
+	log.Printf("Agent force-closed: hostname=%q code=%d reason=%q", hostname, code, reason)
 	return true
 }
 

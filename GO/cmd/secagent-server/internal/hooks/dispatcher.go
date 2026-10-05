@@ -228,7 +228,7 @@ func (d *Dispatcher) DispatchChain(event, hostname, status, enrolledAt string, r
 	select {
 	case d.queue <- job:
 	default:
-		log.Printf("[WARN] hooks queue full, dropping event=%s hostname=%s", event, hostname)
+		log.Printf("[WARN] hooks queue full, dropping event=%q hostname=%q", event, hostname)
 	}
 }
 
@@ -283,7 +283,7 @@ func (d *Dispatcher) executeAction(ctx context.Context, job dispatchJob, action 
 	case "api":
 		ex = d.apiExec
 	default:
-		log.Printf("[WARN] hooks: unknown action type %q for event %s hostname=%s", action.Type, job.event, job.hostname)
+		log.Printf("[WARN] hooks: unknown action type %q for event %q hostname=%q", action.Type, job.event, job.hostname)
 		return
 	}
 

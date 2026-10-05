@@ -206,7 +206,7 @@ func AdminCreateToken(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 			return
 		}
-		log.Printf("Enrollment token created by admin: id=%s pattern=%s reusable=%v", id, req.HostnamePattern, tok.Reusable)
+		log.Printf("Enrollment token created by admin: id=%q pattern=%q reusable=%v", id, req.HostnamePattern, tok.Reusable)
 
 	case "plugin":
 		if req.AllowedHostnamePattern != "" {

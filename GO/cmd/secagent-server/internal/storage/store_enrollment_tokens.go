@@ -49,7 +49,7 @@ func (s *Store) CreateEnrollmentToken(ctx context.Context, t EnrollmentToken) er
 		return fmt.Errorf("CreateEnrollmentToken: %w", err)
 	}
 
-	log.Printf("Enrollment token created: id=%s pattern=%s reusable=%v", t.ID, t.HostnamePattern, t.Reusable)
+	log.Printf("Enrollment token created: id=%q pattern=%q reusable=%v", t.ID, t.HostnamePattern, t.Reusable)
 	return nil
 }
 
