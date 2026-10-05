@@ -241,6 +241,9 @@ func RunInstance(ctx context.Context, cfg Config) (int, error) {
 	select {
 	case <-node.Ready():
 		setState(localstatus.StateReady, "")
+		if cfg.OnReady != nil {
+			cfg.OnReady(node)
+		}
 	case lerr := <-lostCh:
 		return lost(lerr)
 	case rerr := <-runDone: // Run ended before serving: a port conflict, or a stop request

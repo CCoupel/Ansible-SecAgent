@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"secagent-server/cmd/secagent-server/internal/lock"
 	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/server"
 	"secagent-server/cmd/secagent-server/internal/ws"
@@ -36,6 +37,7 @@ const (
 	envNodeCert    = "NODE_CERT"
 	envNodeKey     = "NODE_KEY"
 	readyMarker    = "NODE_READY "
+	startedMarker  = "NODE_STARTED"
 )
 
 // nodeReady is the one line a child prints once its node serves.
@@ -46,7 +48,20 @@ type nodeReady struct {
 	Control string `json:"control"` // http://host:port of the test control server
 }
 
-// TestNodeProcess runs ONE node until its stdin is closed (the parent test process exits).
+// lockProfileFast is the lock calibration of the harness' children (the production values are
+// minutes: DefaultParams). It keeps every invariant of Params.Validate. NODE_LOCK_PROFILE=default
+// selects the production values.
+func lockProfileFast() lock.Params {
+	return lock.Params{
+		Beat: 400 * time.Millisecond, Check: 200 * time.Millisecond, SelfRetire: 3 * time.Second, MasterStale: 4 * time.Second,
+		CandidateStale: 1500 * time.Millisecond, PauseMin: 350 * time.Millisecond, PauseMax: 600 * time.Millisecond,
+		MaxWriteLatency: 250 * time.Millisecond,
+	}
+}
+
+// TestNodeProcess runs ONE instance of a node (through the real active/passive entry point,
+// server.RunInstance) until its stdin is closed (the parent test process exits) or the instance
+// exits by itself (lock lost: code 75, start refused: 1).
 func TestNodeProcess(t *testing.T) {
 	if os.Getenv(envNodeProcess) != "1" {
 		t.Skip("child process of the integration harness only")
@@ -62,15 +77,17 @@ func TestNodeProcess(t *testing.T) {
 		log.Fatalf("test certificate: %v", err)
 	}
 	tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
-	// ephemeral loopback ports, unless the harness restarts the node on its previous addresses
-	for p, env := range map[*net.Listener]string{&cfg.APIListener: "NODE_API_ADDR", &cfg.AdminListener: "NODE_ADMIN_ADDR", &cfg.WSListener: "NODE_WS_ADDR"} {
+	// The listeners are bound when the instance is PROMOTED (cfg.Listen): a secondary has none.
+	// Ephemeral loopback ports, unless the harness restarts the node on its previous addresses.
+	cfg.Listen = func(name string) (net.Listener, error) {
+		env := map[string]string{"api": "NODE_API_ADDR", "admin": "NODE_ADMIN_ADDR", "ws": "NODE_WS_ADDR"}[name]
 		addr := os.Getenv(env)
 		var ln net.Listener
 		var err error
 		if addr == "" {
 			ln, err = listenOutsideEphemeralRange()
 		} else {
-			for i := 0; i < 50; i++ { // the previous process may still be releasing its port
+			for i := 0; i < 300; i++ { // the previous process (or a loopback self-connect of a redialing peer) may still hold it
 				if ln, err = net.Listen("tcp", addr); err == nil {
 					break
 				}
@@ -78,64 +95,69 @@ func TestNodeProcess(t *testing.T) {
 			}
 		}
 		if err != nil {
-			log.Fatalf("listen %q: %v", addr, err)
+			return nil, err
 		}
-		*p = tls.NewListener(ln, tlsCfg)
+		return tls.NewListener(ln, tlsCfg), nil
 	}
 	applyTuning(&cfg)
-	// the lock of #163 is not part of the harness: this child is the only instance of its state
-	cfg.WriteGuard = func() error { return nil }
-
-	node, err := server.Build(cfg)
-	if err != nil {
-		log.Fatalf("Build: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- node.Run(ctx) }()
-	select {
-	case <-node.Ready():
-	case err := <-done:
-		log.Fatalf("node stopped before being ready: %v", err)
-	case <-time.After(60 * time.Second):
-		log.Fatal("node not ready")
+	if os.Getenv("NODE_LOCK_PROFILE") != "default" {
+		cfg.LockParams = lockProfileFast()
 	}
 
-	ctl := http.NewServeMux()
-	ctl.HandleFunc("POST /close-relay", func(w http.ResponseWriter, r *http.Request) {
-		code, _ := strconv.Atoi(r.URL.Query().Get("code"))
-		ok := ws.CloseRelay(r.URL.Query().Get("id"), code, "test-induced")
-		_ = json.NewEncoder(w).Encode(map[string]bool{"closed": ok})
-	})
-	// SIGHUP stand-in: main() calls node.ReloadHooks() on SIGHUP (covered by the real-process test of
-	// internal/server); here the harness triggers the same method.
-	ctl.HandleFunc("POST /reload-hooks", func(w http.ResponseWriter, r *http.Request) {
-		node.ReloadHooks()
-		_ = json.NewEncoder(w).Encode(map[string]bool{"reloaded": true})
-	})
-	ctlLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		log.Fatalf("control listen: %v", err)
-	}
-	go func() { _ = http.Serve(ctlLn, ctl) }()
-
-	api, admin, wsAddr := node.Addrs()
-	line, _ := json.Marshal(nodeReady{API: api, Admin: admin, WS: wsAddr, Control: "http://" + ctlLn.Addr().String()})
-	fmt.Println(readyMarker + string(line))
-	_ = os.Stdout.Sync()
-
-	buf := make([]byte, 1)
-	for {
-		if _, err := os.Stdin.Read(buf); err != nil {
-			break
+	var ctlLn net.Listener
+	cfg.OnReady = func(node *server.Node) {
+		ctl := http.NewServeMux()
+		ctl.HandleFunc("POST /close-relay", func(w http.ResponseWriter, r *http.Request) {
+			code, _ := strconv.Atoi(r.URL.Query().Get("code"))
+			ok := ws.CloseRelay(r.URL.Query().Get("id"), code, "test-induced")
+			_ = json.NewEncoder(w).Encode(map[string]bool{"closed": ok})
+		})
+		// SIGHUP stand-in: main() calls the hooks reload on SIGHUP (covered by the real-process test
+		// of internal/server); here the harness triggers the same method.
+		ctl.HandleFunc("POST /reload-hooks", func(w http.ResponseWriter, r *http.Request) {
+			node.ReloadHooks()
+			_ = json.NewEncoder(w).Encode(map[string]bool{"reloaded": true})
+		})
+		var err error
+		if ctlLn, err = net.Listen("tcp", "127.0.0.1:0"); err != nil {
+			log.Fatalf("control listen: %v", err)
 		}
+		go func() { _ = http.Serve(ctlLn, ctl) }()
+		api, admin, wsAddr := node.Addrs()
+		line, _ := json.Marshal(nodeReady{API: api, Admin: admin, WS: wsAddr, Control: "http://" + ctlLn.Addr().String()})
+		fmt.Println(readyMarker + string(line))
+		_ = os.Stdout.Sync()
 	}
-	cancel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { // the parent closes our stdin to stop us
+		buf := make([]byte, 1)
+		for {
+			if _, err := os.Stdin.Read(buf); err != nil {
+				break
+			}
+		}
+		cancel()
+	}()
+	fmt.Println(startedMarker)
+	_ = os.Stdout.Sync()
+	done := make(chan int, 1)
+	go func() {
+		code, err := server.RunInstance(ctx, cfg)
+		if err != nil {
+			log.Printf("RunInstance: %v", err)
+		}
+		done <- code
+	}()
 	select {
-	case <-done:
-	case <-time.After(35 * time.Second):
+	case code := <-done:
+		if ctlLn != nil {
+			_ = ctlLn.Close()
+		}
+		os.Exit(code) // 0 clean stop, 75 lock lost, 1 refused: the harness reads it
+	case <-time.After(10 * time.Minute):
+		log.Fatal("node instance did not end")
 	}
-	_ = ctlLn.Close()
 }
 
 // applyTuning is the single place where the child adjusts the real configuration for tests: ONLY

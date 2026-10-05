@@ -112,6 +112,8 @@ type Config struct {
 	LockParams lock.Params
 	LockHooks  lock.Hooks
 	Listen     func(name string) (net.Listener, error)
+	// OnReady is called once the promoted node serves (all listeners up). Test seam.
+	OnReady func(*Node)
 
 	// set by RunInstance (the promoted master), not by callers
 	certs        *certStore       // certificates validated before the lock loop

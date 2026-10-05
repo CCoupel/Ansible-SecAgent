@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -123,6 +124,10 @@ type node struct {
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
 	plugin    string
+
+	statusPath string        // RELAY_STATUS_FILE of this instance (local, outside STATE_DIR)
+	exited     chan struct{} // closed when the current process ended
+	exitCode   int           // its exit code (valid once exited is closed)
 }
 
 // ── shared test material: TLS certificate and RSA key ────────────────────────
@@ -279,6 +284,7 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 	}
 	seedState(t, stateDir, masterKey)
 
+	n.statusPath = filepath.Join(t.TempDir(), "status.json")
 	n.env = append(append(os.Environ(),
 		envNodeProcess+"=1",
 		"TLS_DISABLE=true",       // the harness wraps the listeners in TLS itself (injected listeners)
@@ -291,6 +297,7 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 		"STATE_DIR="+stateDir,
 		"RELAY_ACTION_LOG="+filepath.Join(filepath.Dir(stateDir), "actions.log"),
 		"RELAY_HOOKS_CONFIG="+n.hooksPath, // absent unless spec.Hooks: 0 hooks active
+		"RELAY_STATUS_FILE="+n.statusPath, // local health file, outside STATE_DIR
 		"REPEATER_ID="+spec.ID,
 		"REPEATER_UPSTREAM_URL="+spec.ParentURL,
 		"REPEATER_UPSTREAM_TOKEN="+spec.ParentToken,
@@ -464,6 +471,36 @@ func (n *node) runExpectingExit() (code int, output string) {
 
 // launch starts the node process with n.env (+ extra) and waits until it serves.
 func (n *node) launch(extra []string) {
+	n.t.Helper()
+	ready, _ := n.startProcess(extra)
+	select {
+	case n.ready = <-ready:
+	case <-n.exited:
+		n.t.Fatalf("node %s exited with code %d before serving; logs:\n%s", n.id, n.exitCode, n.logs.String())
+	case <-time.After(waitLimit):
+		_ = n.cmd.Process.Kill()
+		n.t.Fatalf("node %s did not start; logs:\n%s", n.id, n.logs.String())
+	}
+}
+
+// launchSecondary starts an instance that is expected to WAIT for the lock (no port): it returns once
+// the process runs its lock loop.
+func (n *node) launchSecondary(extra []string) {
+	n.t.Helper()
+	_, started := n.startProcess(extra)
+	select {
+	case <-started:
+	case <-n.exited:
+		n.t.Fatalf("instance %s exited with code %d; logs:\n%s", n.id, n.exitCode, n.logs.String())
+	case <-time.After(waitLimit):
+		_ = n.cmd.Process.Kill()
+		n.t.Fatalf("instance %s did not start; logs:\n%s", n.id, n.logs.String())
+	}
+}
+
+// startProcess runs the child; ready receives the serving addresses (once promoted), started is
+// closed at the first line the child prints (its lock loop is about to run).
+func (n *node) startProcess(extra []string) (ready chan nodeReady, started chan struct{}) {
 	t := n.t
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestNodeProcess$", "-test.v")
@@ -481,12 +518,22 @@ func (n *node) launch(extra []string) {
 		t.Fatal(err)
 	}
 	n.cmd, n.stdin = cmd, stdin
-	ready := make(chan nodeReady, 1)
+	n.exited = make(chan struct{})
+	exited := n.exited
+	ready = make(chan nodeReady, 1)
+	started = make(chan struct{})
+	scanDone := make(chan struct{})
 	go func() {
+		defer close(scanDone)
 		sc := bufio.NewScanner(stdout)
-		sent := false
+		sent, startedSent := false, false
 		for sc.Scan() {
 			line := sc.Text()
+			if line == startedMarker && !startedSent {
+				startedSent = true
+				close(started)
+				continue
+			}
 			if strings.HasPrefix(line, readyMarker) && !sent {
 				var r nodeReady
 				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, readyMarker)), &r); err == nil {
@@ -498,12 +545,35 @@ func (n *node) launch(extra []string) {
 			_, _ = n.logs.Write([]byte(line + "\n"))
 		}
 	}()
+	go func() {
+		<-scanDone // every read of the pipe is done before Wait closes it
+		_ = cmd.Wait()
+		n.exitCode = cmd.ProcessState.ExitCode()
+		close(exited)
+	}()
+	return ready, started
+}
+
+// waitExit waits for the process to end by itself and returns its exit code.
+func (n *node) waitExit(d time.Duration) (code int, ok bool) {
 	select {
-	case n.ready = <-ready:
-	case <-time.After(waitLimit):
-		_ = cmd.Process.Kill()
-		t.Fatalf("node %s did not start; logs:\n%s", n.id, n.logs.String())
+	case <-n.exited:
+		return n.exitCode, true
+	case <-time.After(d):
+		return 0, false
 	}
+}
+
+// sibling is a SECOND instance of the same node: same identity, secrets, configuration and the SAME
+// STATE_DIR (shared storage), its own logs, local status file and process.
+func (n *node) sibling() *node {
+	s := *n
+	s.logs = &syncBuf{}
+	s.cmd, s.stdin, s.exited, s.exitCode, s.ready = nil, nil, nil, 0, nodeReady{}
+	s.env = append([]string(nil), n.env...)
+	s.statusPath = filepath.Join(n.t.TempDir(), "status.json")
+	s.setEnv("RELAY_STATUS_FILE", s.statusPath)
+	return &s
 }
 
 // restart stops the node and starts it again on the SAME database file, the same identity, secrets,
@@ -516,32 +586,41 @@ func (n *node) restart() {
 }
 
 // kill9 stops the node like a crash (SIGKILL, no graceful shutdown) and restarts it on its previous
-// addresses and its persistent state.
+// addresses and its persistent state. The crashed master leaves its lock behind: the new process
+// waits for it to go stale (the fast calibration of the children: a few seconds).
 func (n *node) kill9() {
 	n.t.Helper()
 	prev := n.ready
-	if n.cmd == nil || n.cmd.Process == nil {
-		n.t.Fatal("kill9: node not running")
-	}
-	_ = n.cmd.Process.Kill()
-	_ = n.cmd.Wait()
-	_ = n.stdin.Close()
-	n.cmd = nil
+	n.killNow()
 	n.launch([]string{"NODE_API_ADDR=" + prev.API, "NODE_ADMIN_ADDR=" + prev.Admin, "NODE_WS_ADDR=" + prev.WS})
 }
+
+// killNow SIGKILLs the process and waits for it to be gone (no restart).
+func (n *node) killNow() {
+	n.t.Helper()
+	if n.cmd == nil || n.cmd.Process == nil {
+		n.t.Fatal("kill: node not running")
+	}
+	_ = n.cmd.Process.Kill()
+	<-n.exited
+	_ = n.stdin.Close()
+	n.cmd = nil
+}
+
+// freeze / thaw: SIGSTOP / SIGCONT (a frozen process: VM pause, storage stall).
+func (n *node) freeze() { n.t.Helper(); _ = n.cmd.Process.Signal(syscall.SIGSTOP) }
+func (n *node) thaw()   { n.t.Helper(); _ = n.cmd.Process.Signal(syscall.SIGCONT) }
 
 func (n *node) stop() {
 	if n.cmd == nil || n.cmd.Process == nil {
 		return
 	}
 	_ = n.stdin.Close()
-	done := make(chan struct{})
-	go func() { _ = n.cmd.Wait(); close(done) }()
 	select {
-	case <-done:
+	case <-n.exited:
 	case <-time.After(40 * time.Second):
 		_ = n.cmd.Process.Kill()
-		<-done
+		<-n.exited
 	}
 	n.cmd = nil
 }
