@@ -41,11 +41,15 @@ type codec struct {
 	insecure  bool   // InsecureTestMode (never with a master key): clear secrets allowed
 }
 
-// macInput is what the HMAC covers: schema version, sequence, timestamp, writer and payload, so
-// none of them can be altered or moved between files without the key.
+// macInput is what the HMAC covers: schema version, sequence, timestamp, writer, the checksum
+// field AS STORED and the payload, so none of them can be altered or moved between files without
+// the key. Every variable-length field except the last (the payload, which runs to the end) is
+// length-prefixed, so two different envelopes can never produce the same input. The checksum is
+// covered on purpose: otherwise corrupting that field alone (HMAC still valid) would be read as an
+// accidental corruption and silently fall back on relay.state.prev.
 func macInput(e *envelope) []byte {
 	var b bytes.Buffer
-	b.WriteString("secagent-state-v1\n")
+	b.WriteString("secagent-state-v2\n")
 	b.WriteString(strconv.Itoa(e.SchemaVersion))
 	b.WriteByte('\n')
 	b.WriteString(strconv.FormatUint(e.WriteSeq, 10))
@@ -55,6 +59,10 @@ func macInput(e *envelope) []byte {
 	b.WriteString(strconv.Itoa(len(e.WriterInstance)))
 	b.WriteByte(':')
 	b.WriteString(e.WriterInstance)
+	b.WriteByte('\n')
+	b.WriteString(strconv.Itoa(len(e.SHA256)))
+	b.WriteByte(':')
+	b.WriteString(e.SHA256)
 	b.WriteByte('\n')
 	b.Write(e.Payload)
 	return b.Bytes()
@@ -262,6 +270,7 @@ func load(fs FS, dir string, now time.Time, c codec, maxBytes int64) (*loaded, e
 			return &loaded{m: m, env: env}, nil
 		}
 		if isFinal(derr) {
+			slog.Warn("[SECURITY WARNING] relay.state refused, NOT falling back on relay.state.prev", "path", statePath, "error", derr)
 			return nil, fmt.Errorf("state: %s: %w", statePath, derr)
 		}
 		slog.Warn("[SECURITY WARNING] relay.state is invalid, trying relay.state.prev", "path", statePath, "error", derr)
@@ -285,6 +294,7 @@ func loadPrev(fs FS, prevPath string, now time.Time, c codec, maxBytes int64, ca
 	m, env, derr := c.decode(data, now)
 	if isFinal(derr) {
 		// relay.state.prev follows the same rules as relay.state: no fallback on a security refusal.
+		slog.Warn("[SECURITY WARNING] relay.state.prev refused", "path", prevPath, "error", derr)
 		return nil, fmt.Errorf("state: relay.state.prev: %w", derr)
 	}
 	if derr != nil {

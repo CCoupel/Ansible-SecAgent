@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -414,5 +415,86 @@ func TestPullRelayWithoutTokenHashIsLogged(t *testing.T) {
 	mustMutate(t, e, func(tx *Tx) error { return tx.PutRelayNode(n) })
 	if !strings.Contains(buf.String(), `pull relay \"pull-1\" registered without token_hash`) {
 		t.Errorf("INFO log missing: %s", buf.String())
+	}
+}
+
+// #159c: the checksum field is part of the HMAC input. Corrupting ONLY that field used to leave the
+// HMAC valid and was read as an accidental corruption: silent fallback on an older, authentic
+// .prev (e.g. from before a revocation).
+func TestHMAC_CoversTheChecksumField(t *testing.T) {
+	dir := t.TempDir()
+	keyedState(t, dir)
+	e, _ := openKeyed(dir)
+	mustMutate(t, e, addAgent("a"))
+	mustMutate(t, e, func(tx *Tx) error {
+		return tx.PutBlacklist(BlacklistEntry{JTI: "revoked", Hostname: "a", ExpiresAt: time.Now().Add(time.Hour)})
+	}) // relay.state holds the revocation, the valid .prev does not
+	logs := captureSlog(t)
+	replaceChecksumOnly(t, filepath.Join(dir, StateFile), strings.Repeat("0", 64))
+	if _, err := openKeyed(dir); !errors.Is(err, ErrSecurityInvariant) {
+		t.Fatalf("sha256-only tampering: %v, want ErrSecurityInvariant (no fallback on the valid .prev)", err)
+	}
+	if !strings.Contains(logs.String(), "[SECURITY WARNING]") {
+		t.Errorf("a security warning is expected: %s", logs.String())
+	}
+}
+
+func TestHMAC_PrevWithAFalsifiedChecksumIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	keyedState(t, dir)
+	e, _ := openKeyed(dir)
+	mustMutate(t, e, addAgent("a"))
+	if err := os.WriteFile(filepath.Join(dir, StateFile), []byte("{truncated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replaceChecksumOnly(t, filepath.Join(dir, PrevFile), strings.Repeat("f", 64))
+	if _, err := openKeyed(dir); !errors.Is(err, ErrSecurityInvariant) {
+		t.Fatalf(".prev with a falsified sha256: %v", err)
+	}
+}
+
+// Without a master key (test mode) a wrong checksum is still a plain corruption (fallback .prev).
+func TestChecksumMismatchWithoutMasterKeyStaysACorruption(t *testing.T) {
+	dir := t.TempDir()
+	seedState(t, dir)
+	e := openEngine(t, dir, nil)
+	mustMutate(t, e, addAgent("a"))
+	replaceChecksumOnly(t, filepath.Join(dir, StateFile), strings.Repeat("0", 64))
+	if _, err := Open(Options{Dir: dir}); err != nil {
+		t.Fatalf("test mode keeps the .prev fallback on a corrupt checksum: %v", err)
+	}
+}
+
+// macInput is unambiguous: moving bytes between the length-prefixed fields changes the input.
+func TestMacInputIsUnambiguous(t *testing.T) {
+	base := envelope{SchemaVersion: 1, WriteSeq: 2, WriterInstance: "ab", SHA256: "cd", Payload: []byte("{}")}
+	variants := []envelope{
+		{SchemaVersion: 1, WriteSeq: 2, WriterInstance: "a", SHA256: "bcd", Payload: []byte("{}")},
+		{SchemaVersion: 1, WriteSeq: 2, WriterInstance: "abc", SHA256: "d", Payload: []byte("{}")},
+		{SchemaVersion: 1, WriteSeq: 2, WriterInstance: "ab", SHA256: "cd", Payload: []byte("{} ")},
+		{SchemaVersion: 1, WriteSeq: 2, WriterInstance: "ab", SHA256: "ce", Payload: []byte("{}")},
+	}
+	for i := range variants {
+		if string(macInput(&base)) == string(macInput(&variants[i])) {
+			t.Errorf("variant %d collides with the base envelope", i)
+		}
+	}
+}
+
+// replaceChecksumOnly rewrites the sha256 value in the raw file, byte for byte everywhere else
+// (payload and HMAC stay exactly as written, unlike rewriteEnvelope which re-serializes).
+func replaceChecksumOnly(t *testing.T, path, newSum string) {
+	t.Helper()
+	raw := string(mustFile(t, path))
+	re := regexp.MustCompile(`"sha256":"[0-9a-f]{64}"`)
+	if !re.MatchString(raw) {
+		t.Fatal("sha256 field not found")
+	}
+	out := re.ReplaceAllString(raw, `"sha256":"`+newSum+`"`)
+	if out == raw {
+		t.Fatal("the checksum was not changed")
+	}
+	if err := os.WriteFile(path, []byte(out), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
