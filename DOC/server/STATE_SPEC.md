@@ -63,3 +63,30 @@ Fichier ≈ 10 Mio ; chargement ≈ 150 ms ; écriture complète ≈ 150 ms ; 10
 Tokens de relay : `token_hash` (pull, SHA-256 du JWT) et `token_secret` (push : jeton scellé `enc:` lié au relay par AAD, `relay_nodes/<id>/token_secret`) sont deux champs distincts. Un relay révoqué sans JTI (déclaré automatiquement à sa connexion) reçoit un JTI synthétique `no-token:<relay_id>`, blacklisté dans la même mutation (le drapeau `revoked` seul refuse ses connexions).
 
 **Sans garde d'écriture** (`Config.WriteGuard` nul : l'instance n'est pas encore le maître confirmé, #163), le serveur démarre en **lecture seule**, sauf si l'opérateur déclare `RELAY_SINGLE_INSTANCE=true` (« une seule instance sur ce `STATE_DIR`, pas de verrou » : la garde laisse alors passer toutes les écritures ; jamais avec deux instances sur le même répertoire) : toute écriture échoue (`storage.ErrReadOnly`), aucun fichier n'est créé. Le serveur ne crée jamais l'état : `relay.state` absent = `FATAL: relay.state not found in STATE_DIR=<dir> — run 'secagent-server state init' to initialize`. `DATABASE_URL` définie = erreur de démarrage.
+
+## Reprise : `state verify` et `state restore --from` (#187)
+
+Le serveur refuse de démarrer, sans bascule sur `.prev`, devant un HMAC ou un `sha256` faux, un schéma inconnu ou un invariant violé. Deux commandes locales (sans API, sans port, sans verrou pris) servent à diagnostiquer et à reprendre.
+
+### `secagent-server state verify <fichier> [--min-write-seq N]`
+Applique toutes les vérifications du serveur (schéma, HMAC avec la clé dérivée de `RSA_MASTER_KEY` lue dans l'environnement, `sha256`, invariants, secrets `enc:` et liaison AAD) **sans rien écrire**. Sortie : `schema_version`, `write_seq`, `written_at`, `writer_instance`, nombre d'entités par type, verdict et motif — jamais de valeur `enc:`, de hash de token ni de clé.
+
+| Code | Signification |
+|---|---|
+| 0 | authentique et valide |
+| 2 | HMAC invalide (« clé maître incorrecte ou fichier falsifié ») ou `sha256` falsifié |
+| 3 | `schema_version` inconnu |
+| 4 | invariant violé (structure, secret sans `enc:`, liaison AAD) |
+| 5 | fichier illisible, absent ou qui n'est pas un état |
+| 6 | `RSA_MASTER_KEY` absente |
+| 7 | `write_seq` inférieur à `--min-write-seq` (copie trop ancienne) |
+
+### `secagent-server state restore --from <fichier> [--state-dir D] [--min-write-seq N] [--i-know-no-instance-is-running]`
+1. `verify` d'abord : un fichier inauthentique ou invalide est refusé, rien n'est modifié (mêmes codes 2 à 7).
+2. **Aucune instance active** : `relay.lock` est observé sans jamais être écrit, avec la règle de fraîcheur du verrou (contenu inchangé pendant la limite de son rôle, sur l'horloge monotone locale : 10 s pour un candidat, 5 min pour un maître ; tout changement du compteur de battement = instance vivante ; observation interrompue = refus). Verrou frais → code **8**, rien n'est modifié. `--i-know-no-instance-is-running` passe outre un verrou orphelin (stockage figé) : `[SECURITY WARNING]` et trace dans le journal.
+3. **Sauvegarde** de `relay.state` et `relay.state.prev` en `relay.state.bak-<UTC>` / `relay.state.prev.bak-<UTC>` (0600, jamais relus par le serveur).
+4. **Remplacement atomique par le code du moteur** (`atomicWrite` : fichier temporaire, `fsync`, `link`/`rename`, `fsync` du répertoire), avec les octets du fichier vérifié (HMAC intact, rien n'est ré-encodé) ; `relay.state.prev` est conservé tel quel ; 0600.
+5. **Journal** `state-restore.log` dans `STATE_DIR` (une ligne JSON par intervention, sans secret, jamais lu par le serveur) : date, opérateur (utilisateur système), fichier source, `write_seq` avant/après, noms des sauvegardes, `lock_override` le cas échéant.
+
+Redémarrer ensuite les instances. La garde `write_seq` en mémoire des secondaires (#163) peut refuser un état restauré plus ancien que ce qu'elles ont observé : c'est voulu, d'où **l'arrêt de toutes les instances avant la restauration**. Il n'y a pas de `state init --force` : la réinitialisation complète déplace `STATE_DIR` puis relance `state init` (nouvelle identité, ré-enrôlement de tous les agents).
+

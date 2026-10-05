@@ -478,3 +478,34 @@ func TestMainProcess_RefusesToStartWithoutTLS(t *testing.T) {
 		t.Error("nothing may listen when the start-up is refused")
 	}
 }
+
+// #187: the real process exits with the documented status of `state verify` / `state restore`.
+func TestStateVerifyProcessExitCodes(t *testing.T) {
+	dir := t.TempDir()
+	run := func(masterKey string, args ...string) (int, string) {
+		cmd := exec.Command(os.Args[0])
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), runMainEnv + "=1", "SECAGENT_TEST_ARGS=" + strings.Join(args, " "), "RSA_MASTER_KEY=" + masterKey}
+		out, err := cmd.CombinedOutput()
+		return exitCode(err), string(out)
+	}
+	if code, out := run("process-key", "state", "init", "--state-dir", dir); code != 0 {
+		t.Fatalf("init: %d\n%s", code, out)
+	}
+	state := filepath.Join(dir, "relay.state")
+	if code, out := run("process-key", "state", "verify", state); code != 0 || !strings.Contains(out, "verdict: OK") {
+		t.Fatalf("verify: %d\n%s", code, out)
+	}
+	if code, out := run("wrong-key", "state", "verify", state); code != 2 || !strings.Contains(out, "REFUSED") {
+		t.Fatalf("wrong key: %d (want 2)\n%s", code, out)
+	}
+	if code, _ := run("", "state", "verify", state); code != 6 {
+		t.Fatalf("no key: %d (want 6)", code)
+	}
+	if code, _ := run("process-key", "state", "verify", filepath.Join(dir, "absent")); code != 5 {
+		t.Fatalf("absent: %d (want 5)", code)
+	}
+	// restore from itself into the same directory: no lock, authentic source
+	if code, out := run("process-key", "state", "restore", "--from", state, "--state-dir", dir); code != 0 || !strings.Contains(out, "state restored") {
+		t.Fatalf("restore: %d\n%s", code, out)
+	}
+}

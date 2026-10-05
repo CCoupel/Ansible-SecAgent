@@ -123,12 +123,12 @@ func (c codec) decode(data []byte, now time.Time) (*model, envelope, error) {
 		// from bit rot, and a valid relay.state.prev must never mask it, so this is final.
 		got, err := hex.DecodeString(env.HMAC)
 		if env.HMAC == "" || err != nil || !hmac.Equal(got, mustDecodeHex(computeMAC(c.macKey, &env))) {
-			return nil, env, fmt.Errorf("%w: state file authentication (HMAC) is missing or invalid: tampered, written with another master key, or written without one", ErrSecurityInvariant)
+			return nil, env, fmt.Errorf("%w: %w: state file authentication (HMAC) is missing or invalid: tampered, written with another master key, or written without one", ErrSecurityInvariant, ErrAuthentication)
 		}
 	}
 	sum := sha256.Sum256(env.Payload)
 	if hex.EncodeToString(sum[:]) != env.SHA256 {
-		return nil, env, fmt.Errorf("%w: sha256 mismatch", ErrCorrupt)
+		return nil, env, fmt.Errorf("%w: %w: sha256 mismatch", ErrCorrupt, ErrChecksum)
 	}
 	p := newPayload()
 	dec := json.NewDecoder(bytes.NewReader(env.Payload))
@@ -170,7 +170,7 @@ func (c codec) decode(data []byte, now time.Time) (*model, envelope, error) {
 		if errors.Is(err, ErrSecurityInvariant) {
 			return nil, env, err
 		}
-		return nil, env, fmt.Errorf("%w: %v", ErrCorrupt, err)
+		return nil, env, fmt.Errorf("%w: %w: %v", ErrCorrupt, ErrStructure, err)
 	}
 	if err := c.checkSecrets(m); err != nil {
 		return nil, env, err

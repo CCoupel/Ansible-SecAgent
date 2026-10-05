@@ -37,6 +37,14 @@ var (
 	// ErrSecurityInvariant: a security invariant of the file is violated (e.g. a clear-text
 	// token_secret). It is NOT a corruption: no silent fallback on relay.state.prev.
 	ErrSecurityInvariant = errors.New("state: security invariant violated")
+	// ErrAuthentication: the HMAC of the file is missing or invalid (tampered, another master key, or
+	// written without one). Always wrapped together with ErrSecurityInvariant.
+	ErrAuthentication = errors.New("state: file authentication failed")
+	// ErrChecksum: the stored sha256 does not match the payload (always wrapped with ErrCorrupt).
+	ErrChecksum = errors.New("state: checksum mismatch")
+	// ErrStructure: the payload breaks an invariant of the model (duplicates, dangling references,
+	// revoked relay not blacklisted...); always wrapped with ErrCorrupt.
+	ErrStructure = errors.New("state: invariant of the model violated")
 	// ErrCorrupt: unreadable, truncated or invalid-checksum state file.
 	ErrCorrupt = errors.New("state: corrupt state file")
 	// ErrInvalid: a mutation violates an invariant of the model; the mutation is rejected.
