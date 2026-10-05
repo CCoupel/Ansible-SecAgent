@@ -206,3 +206,73 @@ func TestLegacyMigration_InheritedRowsStayUsable(t *testing.T) {
 		t.Errorf("UpsertRelayRoute on a migrated database: %v", err)
 	}
 }
+
+// State written AFTER the first migration must survive every later start-up: the migration runs
+// again at each open of an already-migrated database and must never reset what it did not create
+// (revoked flags, JTI / expiry, blacklist, group vars, relay chains, routes with their chains).
+func TestLegacyMigration_StateWrittenAfterTheFirstMigrationSurvivesReplays(t *testing.T) {
+	path := legacyDatabase(t)
+	ctx := context.Background()
+
+	s, err := NewStore(path) // first migration of the v3.0.0 file
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := s.RevokeRelayNode(ctx, "legacy-pull", "revoked after the first migration"); err != nil || !found {
+		t.Fatalf("revoke: found=%v err=%v", found, err)
+	}
+	if err := s.SetRelayTokenInfo("legacy-push", "jti-after-migration", 4102444800); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BlacklistJTI(ctx, "jti-blacklisted-after-migration", "legacy-idle", "test", 4102444800); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.SetRelayGroupVars("legacy-idle", `{"env":"staging"}`); err != nil || !ok {
+		t.Fatalf("group vars: %v %v", ok, err)
+	}
+	if ok, err := s.SetRelayChain("legacy-idle", []string{"legacy-pull", "legacy-idle"}); err != nil || !ok {
+		t.Fatalf("relay chain: %v %v", ok, err)
+	}
+	if _, err := s.UpsertRelayRoute("host-deep", "legacy-idle", []string{"legacy-pull", "legacy-idle"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for open := 2; open <= 4; open++ { // the migration is replayed at every start-up
+		s, err := NewStore(path)
+		if err != nil {
+			t.Fatalf("open #%d: %v", open, err)
+		}
+		if info, err := s.GetRelayTokenInfo("legacy-pull"); err != nil || !info.Revoked {
+			t.Errorf("open #%d: the revoked flag of legacy-pull was reset by the migration: %+v %v", open, info, err)
+		}
+		if info, err := s.GetRelayTokenInfo("legacy-push"); err != nil || info.JTI != "jti-after-migration" || info.Exp != 4102444800 || info.Revoked {
+			t.Errorf("open #%d: jti / token_exp of legacy-push changed by the migration: %+v %v", open, info, err)
+		}
+		for _, jti := range []string{"jti-blacklisted-after-migration", "jti-old-revoked"} {
+			if bl, err := s.IsJTIBlacklisted(ctx, jti); err != nil || !bl {
+				t.Errorf("open #%d: blacklist entry %s lost: %v %v", open, jti, bl, err)
+			}
+		}
+		if vars, err := s.ListRelayGroupVars(); err != nil || vars["legacy-idle"] != `{"env":"staging"}` {
+			t.Errorf("open #%d: group vars changed by the migration: %v %v", open, vars, err)
+		}
+		if chains, err := s.ListRelayChains(); err != nil || len(chains["legacy-idle"]) != 2 || chains["legacy-idle"][0] != "legacy-pull" {
+			t.Errorf("open #%d: relay chain changed by the migration: %v %v", open, chains, err)
+		}
+		if r, err := s.GetRelayRoute("host-deep"); err != nil || r == nil || len(r.RelayChain) != 2 || r.NextHop() != "legacy-pull" {
+			t.Errorf("open #%d: the route chain written after the migration changed: %+v %v", open, r, err)
+		}
+		// rows of the original fixture still there
+		for table, want := range map[string]int{"agents": 2, "relay_nodes": 3} {
+			if got := countRows(t, path, table); got != want {
+				t.Errorf("open #%d: %s has %d rows, want %d", open, table, got, want)
+			}
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
