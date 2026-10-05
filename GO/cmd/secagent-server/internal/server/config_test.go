@@ -93,3 +93,14 @@ func TestConfigFromEnv_ValidRepeaterConfig(t *testing.T) {
 		t.Fatalf("cfg = %+v err = %v", cfg.Repeater, err)
 	}
 }
+
+func TestConfigFromEnv_NeverSetsTheTuneSeam(t *testing.T) {
+	setServerEnv(t)
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Tune != nil {
+		t.Error("Config.Tune is a test seam: ConfigFromEnv must never set it")
+	}
+}

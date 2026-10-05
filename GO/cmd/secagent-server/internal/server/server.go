@@ -201,6 +201,14 @@ func Build(cfg Config) (node *Node, err error) {
 		Events:       upEvents,
 		OnTask:       forwarder.Handle,
 	}
+	dialerOpts := repeater.DialerOptions{
+		Identity:  ws.RelayIdentity,
+		WouldLoop: ws.RelayWouldLoop,
+		Serve:     ws.ServeDialedRelay,
+	}
+	if cfg.Tune != nil { // test seam: durations only, applied before anything is created
+		cfg.Tune(&upOpts, &dialerOpts)
+	}
 	if repeaterCfg != nil {
 		n.rc = repeater.New(*repeaterCfg, upOpts)
 		n.uplink = n.rc.Uplink()
@@ -246,11 +254,7 @@ func Build(cfg Config) (node *Node, err error) {
 	})
 
 	// Push mode (#140): the parent dials its push children (relay_nodes.mode=push).
-	n.dialers = repeater.NewDialerManager(dispatchCtx, repeater.DialerOptions{
-		Identity:  ws.RelayIdentity,
-		WouldLoop: ws.RelayWouldLoop,
-		Serve:     ws.ServeDialedRelay,
-	})
+	n.dialers = repeater.NewDialerManager(dispatchCtx, dialerOpts)
 	handlers.SetRelayPushHooks(
 		func(relayID, url, token string) error {
 			return n.dialers.Start(repeater.DialTarget{RelayID: relayID, URL: url, Token: token})

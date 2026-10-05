@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"secagent-server/cmd/secagent-server/internal/config"
+	"secagent-server/cmd/secagent-server/internal/repeater"
 )
 
 // Default listen addresses (unchanged since v1).
@@ -43,6 +44,12 @@ type Config struct {
 	APIListener   net.Listener
 	AdminListener net.Listener
 	WSListener    net.Listener
+
+	// Tune adjusts the repeater timing options (MinBackoff, MaxBackoff, AgentListInterval,
+	// PingInterval, HandshakeTimeout) of the uplink / pull client and of the push dialers before
+	// they are created. It is a TEST SEAM: ConfigFromEnv never sets it (no operator knob, no remote
+	// surface: a too short backoff would hammer the parent). TLS settings are not exposed.
+	Tune func(*repeater.Options, *repeater.DialerOptions)
 
 	// Repeater is the validated child-relay configuration (REPEATER_UPSTREAM_*); nil = no pull parent.
 	Repeater *config.RepeaterConfig
