@@ -194,7 +194,7 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// wss:// only, no userinfo, valid id (the error never echoes url userinfo or the token).
-		if err := repeater.ValidateDialTarget(repeater.DialTarget{RelayID: req.RelayID, URLs: req.URLs, Token: req.Token}); err != nil {
+		if err := repeater.ValidateNewDialTarget(repeater.DialTarget{RelayID: req.RelayID, URLs: req.URLs, Token: req.Token}); err != nil {
 			log.Printf("AdminCreateRelay push target rejected: relay_id=%q: %v", req.RelayID, err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_push_target"})
 			return

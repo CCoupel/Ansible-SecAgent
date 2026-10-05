@@ -46,7 +46,7 @@ func dialWS(ctx context.Context, u *url.URL, path string, tlsCfg *tls.Config, hd
 	d := websocket.Dialer{
 		HandshakeTimeout: handshakeTimeout,
 		NetDialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			raw, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+			raw, err := guardedDial(ctx, network, addr)
 			if err != nil {
 				return nil, err
 			}

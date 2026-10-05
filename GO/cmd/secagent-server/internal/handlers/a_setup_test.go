@@ -5,16 +5,27 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"log"
+	"net"
 	"os"
 	"testing"
 	"time"
 
+	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/storage"
 )
 
 // TestMain sets required env vars and bootstraps server state for all handler tests.
 // Usage: JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./...
 func TestMain(m *testing.M) {
+	// Push targets are registered with fake host names: resolve them to a public documentation
+	// address (the registration refuses names it cannot resolve, #151a).
+	repeater.SetResolverForTests(func(_ context.Context, host string) ([]net.IP, error) {
+		switch host {
+		case "localhost":
+			return []net.IP{net.ParseIP("127.0.0.1")}, nil
+		}
+		return []net.IP{net.ParseIP("203.0.113.10")}, nil
+	})
 	if os.Getenv("JWT_SECRET_KEY") == "" {
 		if err := os.Setenv("JWT_SECRET_KEY", "test-secret-key-for-unit-tests"); err != nil {
 			log.Fatalf("os.Setenv JWT_SECRET_KEY: %v", err)

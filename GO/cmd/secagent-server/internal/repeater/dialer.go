@@ -92,11 +92,19 @@ func (t DialTarget) addresses() []string {
 // no userinfo and NOT an internal destination (loopback, link-local, cloud metadata, non routable;
 // RFC 1918 stays allowed), token set. One forbidden address refuses the whole list.
 // Errors never contain the token or a URL.
-func ValidateDialTarget(t DialTarget) error {
+func ValidateDialTarget(t DialTarget) error { return validateDialTarget(t, false) }
+
+// ValidateNewDialTarget is ValidateDialTarget for the REGISTRATION of a target by an operator: a
+// host name that cannot be resolved is refused ("cannot resolve the target host") so that no
+// unverifiable name enters the table. Booting with stored targets uses the lenient form (a DNS
+// outage must not disable the dialers); the dial-time guard covers both.
+func ValidateNewDialTarget(t DialTarget) error { return validateDialTarget(t, true) }
+
+func validateDialTarget(t DialTarget, strict bool) error {
 	if !relayIDPattern.MatchString(t.RelayID) {
 		return fmt.Errorf("invalid relay_id %q", t.RelayID)
 	}
-	if _, err := ParseTargetURLs(t.addresses()); err != nil {
+	if _, err := parseTargetURLs(t.addresses(), strict); err != nil {
 		return err
 	}
 	if strings.TrimSpace(t.Token) == "" {
