@@ -63,6 +63,7 @@ type Node struct {
 	// shutdown and without draining the hooks queue.
 	abort      chan struct{}
 	abortOnce  sync.Once
+	abortDone  chan struct{} // closed when Abort has finished closing everything
 	instMu     sync.Mutex
 	instRole   string
 	instID     string
@@ -78,7 +79,7 @@ type Node struct {
 // On error everything already opened is released.
 func Build(cfg Config) (node *Node, err error) {
 	logsafe.Install() // one log call = one line, whatever a peer or a legacy row put in a value
-	n := &Node{cfg: cfg, ready: make(chan struct{}), abort: make(chan struct{})}
+	n := &Node{cfg: cfg, ready: make(chan struct{}), abort: make(chan struct{}), abortDone: make(chan struct{})}
 	defer func() {
 		if err != nil {
 			n.Close()
@@ -440,6 +441,7 @@ func (n *Node) Run(ctx context.Context) error {
 	defer n.Close()
 	select {
 	case <-n.abort: // the lock was lost before we served anything
+		<-n.abortDone
 		return ErrLockLost
 	default:
 	}
@@ -555,6 +557,7 @@ func (n *Node) Run(ctx context.Context) error {
 	case <-n.abort:
 		// the lock is lost: nothing graceful, nothing that could act on behalf of a master that is
 		// no longer one (Abort already closed the listeners, the links and stopped the hooks)
+		<-n.abortDone // the process must not exit before the close frames are out
 		log.Println("[SHUTDOWN] aborted: the master lock was lost")
 		return ErrLockLost
 	}
@@ -571,6 +574,7 @@ func (n *Node) Run(ctx context.Context) error {
 				log.Printf("[SHUTDOWN] hooks: %d event(s) still pending after %s — they are lost", left, hooks.DefaultDrainTimeout)
 			}
 		case <-n.abort: // the lock was lost during the drain: stop executing actions at once
+			<-n.abortDone
 			log.Println("[SHUTDOWN] aborted during the hooks drain: the master lock was lost")
 			return ErrLockLost
 		}
@@ -597,7 +601,9 @@ func (n *Node) Abort() {
 		}
 		closed := ws.CloseAllLinks(1001, "master lock lost")
 		log.Printf("[SHUTDOWN] lock lost: listeners closed, %d WebSocket link(s) closed with 1001", closed)
+		close(n.abortDone)
 	})
+	<-n.abortDone // a second caller waits for the first to finish
 }
 
 // SetInstance records the role and instance id shown by /health.

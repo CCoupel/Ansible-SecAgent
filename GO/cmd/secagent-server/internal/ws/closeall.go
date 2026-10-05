@@ -2,6 +2,7 @@ package ws
 
 import (
 	"log"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -50,9 +51,29 @@ func CloseAllLinks(code int, reason string) int {
 	parentLinksMu.Unlock()
 
 	frame := websocket.FormatCloseMessage(code, reason)
+	var wg sync.WaitGroup
 	for _, c := range conns {
-		_ = c.WriteControl(websocket.CloseMessage, frame, time.Now().Add(250*time.Millisecond))
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// a loaded machine (or a writer holding the connection) must not make us give up after 250 ms
+			_ = c.WriteControl(websocket.CloseMessage, frame, time.Now().Add(closeFrameDeadline))
+		}()
+	}
+	wg.Wait()
+	// Closing a socket that still holds unread data makes the kernel send an RST, which can discard
+	// the close frame the peer has not read yet (it would then see 1006 instead of 1001). The read
+	// loops of these connections consume the peer's close reply and end by themselves: give them a
+	// moment before the forced close.
+	time.Sleep(closeGrace)
+	for _, c := range conns {
 		_ = c.Close()
 	}
 	return len(conns)
 }
+
+// closeFrameDeadline bounds the write of one close frame; closeGrace is the pause before the forced close.
+var (
+	closeFrameDeadline = 2 * time.Second
+	closeGrace         = 300 * time.Millisecond
+)
