@@ -269,3 +269,31 @@ func TestMulti_A401DoesNotRotateTheHead(t *testing.T) {
 		t.Errorf("a 401 must neither rotate the head (%d) nor try the other address (%d)", r.Head(), other.reqs.Load())
 	}
 }
+
+// The instance that answered on one side is the first tried on the other (pairing by position).
+func TestMulti_ConnectionSyncsTheEnrollmentRotor(t *testing.T) {
+	captureLog(t)
+	a, b := newRelayNode(t, false), newRelayNode(t, true)
+	enroll := rotorOf(t, "https://a.invalid:7770", "https://b.invalid:7770")
+	d, _, _ := fastDispatcher(t, rotorOf(t, a.wsURL(), b.wsURL()), enroll)
+	_ = d
+	waitFor(t, "the WebSocket on B", func() bool { return b.conns.Load() == 1 })
+	waitFor(t, "the enrollment rotor to follow the WebSocket instance", func() bool { return enroll.Head() == 1 })
+}
+
+func TestMulti_ReEnrollmentSyncsTheWebSocketRotor(t *testing.T) {
+	enroll := rotorOf(t, "https://a.invalid:7770", "https://b.invalid:7770")
+	wsr := rotorOf(t, "wss://a.invalid:7772/ws/agent", "wss://b.invalid:7772/ws/agent")
+	d := NewDispatcher(ConnConfig{Endpoints: wsr, JWT: "old"}, nil).
+		WithEnrollConfig(EnrollConfig{Rotor: enroll, Hostname: "h", PrivateKey: generateTestKey2048(t), EnrollmentToken: "tok"})
+	mockReEnroll(t, func(_ context.Context, ec EnrollConfig, _ string) (string, error) {
+		ec.Rotor.Success(1) // the enrollment was served by instance 2
+		return "new", nil
+	})
+	if _, err := d.handleUnauthorized(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if wsr.Head() != 1 {
+		t.Fatalf("after a re-enrollment through instance 2 the WebSocket must try instance 2 first, head %d", wsr.Head())
+	}
+}
