@@ -135,7 +135,7 @@ SECAGENT_STATUS=disconnected
 SECAGENT_ENROLLED_AT=2026-05-22T14:30:00Z   ← host.new uniquement
 ```
 
-**Succès** : code de retour 0. Toute autre valeur → success=false, stderr capturé dans le log.
+**Succès** : code de retour 0. Toute autre valeur → success=false ; seul le statut de sortie (`exit status N`) est journalisé : le stderr est ignoré (il peut citer des secrets, #161).
 
 ---
 

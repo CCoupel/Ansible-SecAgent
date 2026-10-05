@@ -239,3 +239,49 @@ func TestDispatcher_ServerLogNeverContainsSecrets(t *testing.T) {
 		}
 	}
 }
+
+// #161c: the stderr of a shell command (it may print rendered arguments, tokens…) reaches neither
+// the journal nor the server log: only the exit status does.
+func TestDispatcher_ShellStderrNeverReachesJournalOrLog(t *testing.T) {
+	const leak = "STDERR-SECRET-TOKEN"
+	var logs bytes.Buffer
+	var mu sync.Mutex
+	prev := log.Writer()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) { mu.Lock(); defer mu.Unlock(); return logs.Write(p) }))
+	defer log.SetOutput(prev)
+
+	journalPath := filepath.Join(t.TempDir(), "actions.log")
+	j, err := actionlog.Open(actionlog.Options{Path: journalPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	d := NewDispatcher(j, 10)
+	d.SetConfig(&HooksConfig{Hooks: []HookDef{{Event: "host.new", Actions: []ActionDef{
+		{Type: "shell", Cmd: "/bin/sh", Args: []string{"-c", "echo $0 >&2; exit 3", leak}, TimeoutSeconds: 3},
+	}}}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.Start(ctx)
+	d.Dispatch("host.new", "h1", "x", "")
+	deadline := time.Now().Add(5 * time.Second)
+	var got []actionlog.Entry
+	for len(got) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("no journal line")
+		}
+		time.Sleep(10 * time.Millisecond)
+		got, _ = j.List(actionlog.Filter{})
+	}
+	time.Sleep(50 * time.Millisecond) // the log line follows the append
+	raw, _ := os.ReadFile(journalPath)
+	mu.Lock()
+	out := logs.String()
+	mu.Unlock()
+	if bytes.Contains(raw, []byte(leak)) || strings.Contains(out, leak) {
+		t.Errorf("stderr leaked:\njournal: %s\nlog: %s", raw, out)
+	}
+	if got[0].Success || !strings.Contains(got[0].Error, "exit status 3") {
+		t.Errorf("the exit status must be reported: %+v", got[0])
+	}
+}

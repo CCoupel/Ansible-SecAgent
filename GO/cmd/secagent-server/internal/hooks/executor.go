@@ -224,19 +224,15 @@ func (e *ShellExecutor) Execute(ctx context.Context, action ActionDef, vars map[
 		cmd.Env = append(cmd.Env, "SECAGENT_RELAY_CHAIN="+rc, "SECAGENT_RELAY_ORIGIN="+vars["relay_origin"])
 	}
 
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-
+	// stderr is deliberately discarded (cmd.Stderr nil → /dev/null): a script may print anything,
+	// rendered arguments, environment values, tokens, and no sanitising is reliable. The journal
+	// and the server log get the exit status only.
 	t0 := time.Now()
 	runErr := cmd.Run()
 	dur := time.Since(t0).Milliseconds()
 
 	if runErr != nil {
-		msg := runErr.Error()
-		if s := strings.TrimSpace(stderr.String()); s != "" {
-			msg = s
-		}
-		return false, msg, dur
+		return false, "shell: " + runErr.Error(), dur // "exit status N", "signal: killed"…
 	}
 	return true, "", dur
 }
