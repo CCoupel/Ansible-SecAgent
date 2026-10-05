@@ -88,6 +88,12 @@ func TestNodeProcess(t *testing.T) {
 		ok := ws.CloseRelay(r.URL.Query().Get("id"), code, "test-induced")
 		_ = json.NewEncoder(w).Encode(map[string]bool{"closed": ok})
 	})
+	// SIGHUP stand-in: main() calls node.ReloadHooks() on SIGHUP (covered by the real-process test of
+	// internal/server); here the harness triggers the same method.
+	ctl.HandleFunc("POST /reload-hooks", func(w http.ResponseWriter, r *http.Request) {
+		node.ReloadHooks()
+		_ = json.NewEncoder(w).Encode(map[string]bool{"reloaded": true})
+	})
 	ctlLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		log.Fatalf("control listen: %v", err)

@@ -84,6 +84,9 @@ type nodeSpec struct {
 	ParentURL   string // pull: this node dials its parent (wss://…)
 	ParentToken string
 	Env         []string
+	// Hooks builds the node's hooks configuration (JSON) from the file its file-actions append to;
+	// nil = no hooks file (the node starts with 0 hooks).
+	Hooks func(out string) string
 }
 
 type node struct {
@@ -92,6 +95,8 @@ type node struct {
 	ready     nodeReady // listeners of the node (host:port) and control URL
 	adminTok  string
 	jwtSecret string
+	hooksPath string // RELAY_HOOKS_CONFIG of the node
+	hookOut   string // file the hooks' file-actions append to
 	logs      *syncBuf
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
@@ -215,6 +220,13 @@ func startNode(t *testing.T, spec nodeSpec) *node {
 	n := &node{t: t, id: spec.ID, adminTok: "admin-" + spec.ID + "-secret-token", jwtSecret: "jwt-signing-secret-of-" + spec.ID + "-0123456789", logs: &syncBuf{}}
 	masterKey := "integration-master-key-" + spec.ID
 	dbPath := filepath.Join(t.TempDir(), "relay.db")
+	n.hooksPath = filepath.Join(t.TempDir(), "hooks.json")
+	n.hookOut = filepath.Join(t.TempDir(), "hooks.out")
+	if spec.Hooks != nil {
+		if err := os.WriteFile(n.hooksPath, []byte(spec.Hooks(n.hookOut)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	seedDatabase(t, dbPath, masterKey)
 
 	cmd := exec.Command(os.Args[0], "-test.run=^TestNodeProcess$", "-test.v")
@@ -226,8 +238,8 @@ func startNode(t *testing.T, spec nodeSpec) *node {
 		"JWT_SECRET_KEY="+n.jwtSecret,
 		"RSA_MASTER_KEY="+masterKey,
 		"DATABASE_URL=sqlite:///"+dbPath,
-		"NATS_URL=nats://127.0.0.1:1", // unreachable: degraded mode, like production without NATS
-		"RELAY_HOOKS_CONFIG="+filepath.Join(t.TempDir(), "absent-hooks.json"),
+		"NATS_URL=nats://127.0.0.1:1",     // unreachable: degraded mode, like production without NATS
+		"RELAY_HOOKS_CONFIG="+n.hooksPath, // absent unless spec.Hooks: 0 hooks active
 		"REPEATER_ID="+spec.ID,
 		"REPEATER_UPSTREAM_URL="+spec.ParentURL,
 		"REPEATER_UPSTREAM_TOKEN="+spec.ParentToken,
@@ -287,6 +299,55 @@ func (n *node) stop() {
 		<-done
 	}
 	n.cmd = nil
+}
+
+// setHooks rewrites the node's hooks file (the node only reads it at start-up and on reloadHooks).
+func (n *node) setHooks(content string) {
+	n.t.Helper()
+	if err := os.WriteFile(n.hooksPath, []byte(content), 0o600); err != nil {
+		n.t.Fatal(err)
+	}
+}
+
+// reloadHooks makes the node re-read its hooks file, like a SIGHUP does.
+func (n *node) reloadHooks() {
+	n.t.Helper()
+	resp, err := http.Post(n.ready.Control+"/reload-hooks", "text/plain", nil)
+	if err != nil {
+		n.t.Fatalf("reload hooks on %s: %v", n.id, err)
+	}
+	_ = resp.Body.Close()
+}
+
+// hookLines returns what the node's hooks wrote so far, one entry per line.
+func (n *node) hookLines() []string {
+	b, _ := os.ReadFile(n.hookOut)
+	var out []string
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(l) != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func (n *node) hookHas(prefix string) bool {
+	for _, l := range n.hookLines() {
+		if strings.HasPrefix(l, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (n *node) hookCount(prefix string) int {
+	c := 0
+	for _, l := range n.hookLines() {
+		if strings.HasPrefix(l, prefix) {
+			c++
+		}
+	}
+	return c
 }
 
 // Listeners of the node. Each one is a SEPARATE TLS listener, like the production ports.

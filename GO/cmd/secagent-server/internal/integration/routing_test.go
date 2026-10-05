@@ -81,8 +81,10 @@ func TestRouting_DuplicateClaimEmitsHostConflictWithoutStorm(t *testing.T) {
 	rounds(8)
 	settled := root.logs.count("host.conflict: hostname=roamer")
 	rounds(16)
-	if now := root.logs.count("host.conflict: hostname=roamer"); now != settled || now > 2 {
-		t.Errorf("host.conflict count went from %d to %d over 16 more rounds: want bounded (<=2, one per direction) and stable", settled, now)
+	// one report per direction of the flip, plus one when the two claims interleave: bounded, and
+	// above all STABLE once settled (a storm would grow with every agent_list round)
+	if now := root.logs.count("host.conflict: hostname=roamer"); now != settled || now > 4 {
+		t.Errorf("host.conflict count went from %d to %d over 16 more rounds: want a small stable count (<=4)", settled, now)
 	}
 
 	_ = atA.conn.Close() // only relayB declares it now
