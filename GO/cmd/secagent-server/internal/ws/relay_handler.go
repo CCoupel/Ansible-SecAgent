@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 
@@ -52,6 +53,8 @@ type RelayConnection struct {
 	descendants  map[string]struct{} // relays declared in the validated topology_snapshot
 	helloDone    bool                // relay_hello accepted: required before topology_snapshot / event_forward
 	snapshotDone bool
+	snapWindow   time.Time // replacement-snapshot rate limit window start
+	snapCount    int
 	reject       *relayRejection // set by a handler to make the read loop close the link
 	evWindow     time.Time       // event_forward rate limit window start
 	evCount      int
@@ -66,6 +69,16 @@ type relayRejection struct {
 
 // maxRelayChainLen bounds relay_chain length (tree depth) in snapshots and events.
 const maxRelayChainLen = 32
+
+// Replacement topology_snapshot rate limit, per link: each snapshot rewrites routing in the DB, so
+// a child cannot saturate it by repeating snapshots. A well-behaved child coalesces its changes
+// (min gap 2 s => <= 30/min). Over the limit the link is closed with the correctable code 4012:
+// the child reconnects with backoff and its first snapshot restores a consistent state.
+// Variables (not constants) so that tests can tighten them.
+var (
+	snapshotReplaceLimit  = 40
+	snapshotReplaceWindow = time.Minute
+)
 
 // maxEventsPerSecond bounds event_forward from a single relay (flood protection).
 const maxEventsPerSecond = 200
@@ -190,6 +203,7 @@ var (
 	relayAncestorsFn    func() []string
 	relayNodeRegisterFn func(relayID string) error
 	relayEventUpstream  func(ev RelayMessage)
+	relayTopoChangedFn  func()
 	relayJTIBlacklistFn func(jti string) (bool, error)
 	relayRevokedFn      func(relayID string) (bool, error)
 	relayHostRouteFn    func(hostname string) (string, error)
@@ -229,6 +243,25 @@ func SetRelayEventUpstreamFunc(fn func(ev RelayMessage)) {
 	treeHooksMu.Lock()
 	relayEventUpstream = fn
 	treeHooksMu.Unlock()
+}
+
+// SetRelayTopologyChangedFunc sets the callback fired when the set of relays below this node (or
+// their hosts) changed: a child link accepted a topology_snapshot (first or replacement) or ended.
+// The node then re-sends a full topology_snapshot to its own parent ("snapshot = truth of the
+// subtree"). The callback must not block.
+func SetRelayTopologyChangedFunc(fn func()) {
+	treeHooksMu.Lock()
+	relayTopoChangedFn = fn
+	treeHooksMu.Unlock()
+}
+
+func notifyTopologyChanged() {
+	treeHooksMu.RLock()
+	fn := relayTopoChangedFn
+	treeHooksMu.RUnlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // SetRelayJTIBlacklistFunc sets the revocation check used at /ws/relay upgrade.
@@ -585,14 +618,30 @@ func loopedWith(childID string) bool {
 // protocol error, conflict): the peer may fix the cause and reconnect with backoff.
 func reject(conn *RelayConnection, reason string) {
 	log.Printf("[RELAY] link refused (retryable): relay_id=%s reason=%q", conn.RelayID, reason)
-	conn.reject = &relayRejection{code: WSRelayCloseRetry, reason: reason}
+	conn.reject = &relayRejection{code: WSRelayCloseRetry, reason: closeReason(reason)}
+}
+
+// closeReason makes a refusal reason fit a WebSocket close frame: the payload is limited to 123
+// bytes (code included), longer text (it can quote peer-controlled values) makes the frame
+// invalid and the peer would see an abnormal closure (1006) instead of the close code.
+func closeReason(reason string) string {
+	const maxReason = 100
+	reason = strings.ToValidUTF8(reason, "?")
+	if len(reason) <= maxReason {
+		return reason
+	}
+	cut := maxReason
+	for cut > 0 && !utf8.RuneStart(reason[cut]) {
+		cut--
+	}
+	return reason[:cut] + "..."
 }
 
 // rejectPermanent closes the link with 4010: the refusal cannot be fixed by retrying
 // (identity not authorized, loop). The client stops instead of reconnecting.
 func rejectPermanent(conn *RelayConnection, reason string) {
 	log.Printf("[SECURITY WARNING] link refused (permanent): relay_id=%s reason=%q", conn.RelayID, reason)
-	conn.reject = &relayRejection{code: WSRelayCloseRevoked, reason: reason}
+	conn.reject = &relayRejection{code: WSRelayCloseRevoked, reason: closeReason(reason)}
 }
 
 // ── Public accessors ─────────────────────────────────────────────────────────
@@ -1036,6 +1085,7 @@ func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) error {
 		releaseDescendants(relayID, relayConn.descendants)
 		unregisterRelayConnection(relayID)
 		_ = conn.Close()
+		notifyTopologyChanged() // the subtree below this node changed: tell our own parent
 	}()
 
 	// Set read deadline for heartbeat monitoring
@@ -1323,6 +1373,11 @@ func validateSnapshot(conn *RelayConnection, msg RelayMessage) (map[string]struc
 		if len(chain) > maxRelayChainLen {
 			return fmt.Errorf("relay_chain too long (%d > %d)", len(chain), maxRelayChainLen)
 		}
+		for _, id := range chain {
+			if !relayIDShape.MatchString(id) {
+				return fmt.Errorf("invalid relay id %q in relay_chain", id)
+			}
+		}
 		if len(chain) == 0 || chain[0] != conn.RelayID || chain[len(chain)-1] != owner {
 			return fmt.Errorf("invalid relay_chain %q for %q", chain, owner)
 		}
@@ -1341,7 +1396,7 @@ func validateSnapshot(conn *RelayConnection, msg RelayMessage) (map[string]struc
 
 	relays := make(map[string]struct{}, len(msg.Relays))
 	for _, r := range msg.Relays {
-		if r.RelayID == "" || r.RelayID == conn.RelayID {
+		if !relayIDShape.MatchString(r.RelayID) || r.RelayID == conn.RelayID {
 			return nil, nil, fmt.Errorf("invalid descendant relay_id %q", r.RelayID)
 		}
 		if _, dup := relays[r.RelayID]; dup {
@@ -1356,8 +1411,11 @@ func validateSnapshot(conn *RelayConnection, msg RelayMessage) (map[string]struc
 	byRelay := make(map[string][]string)
 	seenHosts := make(map[string]struct{}, len(msg.Agents))
 	for _, a := range msg.Agents {
-		if a.Hostname == "" {
-			return nil, nil, fmt.Errorf("agent without hostname")
+		if !hostnameShape.MatchString(a.Hostname) {
+			return nil, nil, fmt.Errorf("invalid hostname %q", a.Hostname)
+		}
+		if !relayIDShape.MatchString(a.RelayID) {
+			return nil, nil, fmt.Errorf("agent %q has invalid relay_id %q", a.Hostname, a.RelayID)
 		}
 		if _, dup := seenHosts[a.Hostname]; dup {
 			return nil, nil, fmt.Errorf("duplicate hostname %q", a.Hostname)
@@ -1382,9 +1440,20 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 		reject(conn, "topology_snapshot before relay_hello")
 		return
 	}
-	if conn.snapshotDone {
-		reject(conn, "topology_snapshot already received")
-		return
+	replacing := conn.snapshotDone
+	if replacing {
+		// A later snapshot REPLACES the subtree atomically (late-joining relays, lost links), but
+		// is rate limited per link: every replacement rewrites routing.
+		now := time.Now()
+		if now.Sub(conn.snapWindow) >= snapshotReplaceWindow {
+			conn.snapWindow, conn.snapCount = now, 0
+		}
+		conn.snapCount++
+		if conn.snapCount > snapshotReplaceLimit {
+			log.Printf("[SECURITY WARNING] topology_snapshot rate limit exceeded: relay_id=%s (> %d per %s)", conn.RelayID, snapshotReplaceLimit, snapshotReplaceWindow)
+			reject(conn, "topology_snapshot rate limit exceeded")
+			return
+		}
 	}
 	relays, byRelay, err := validateSnapshot(conn, msg)
 	if err != nil {
@@ -1403,8 +1472,16 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 		reject(conn, "topology_snapshot conflicts with an existing relay")
 		return
 	}
+	// Only the relays claimed by THIS snapshot are given back on refusal: the ones already owned
+	// by the previous snapshot stay owned (the link close then cleans them as usual).
+	fresh := make(map[string]struct{})
+	for id := range relays {
+		if _, had := conn.descendants[id]; !had {
+			fresh[id] = struct{}{}
+		}
+	}
 	if cerr := checkHostConflicts(conn, relays, byRelay); cerr != nil {
-		releaseDescendants(conn.RelayID, relays)
+		releaseDescendants(conn.RelayID, fresh)
 		log.Printf("[SECURITY WARNING] topology_snapshot refused: relay_id=%s: %v", conn.RelayID, cerr)
 		reject(conn, "topology_snapshot conflicts with existing routing")
 		return
@@ -1416,11 +1493,34 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 		}
 	}
 	if RelayRoutingBulkUpsertFunc != nil {
-		for id, hosts := range byRelay {
-			if uerr := RelayRoutingBulkUpsertFunc(id, hosts); uerr != nil {
+		// BulkUpsert REPLACES a relay's routes: every relay of the snapshot (and the peer itself) is
+		// rewritten, with an empty list when it no longer has hosts; relays that left the subtree
+		// are cleared.
+		write := func(id string) {
+			if uerr := RelayRoutingBulkUpsertFunc(id, byRelay[id]); uerr != nil {
 				log.Printf("topology_snapshot: routing update relay=%s: %v", id, uerr)
 			}
 		}
+		write(conn.RelayID)
+		for id := range relays {
+			write(id)
+		}
+		for id := range conn.descendants {
+			if _, still := relays[id]; !still {
+				if uerr := RelayRoutingBulkUpsertFunc(id, nil); uerr != nil {
+					log.Printf("topology_snapshot: routing clear relay=%s: %v", id, uerr)
+				}
+			}
+		}
+	}
+	if replacing {
+		gone := make(map[string]struct{})
+		for id := range conn.descendants {
+			if _, still := relays[id]; !still {
+				gone[id] = struct{}{}
+			}
+		}
+		releaseDescendants(conn.RelayID, gone)
 	}
 	if fn := routeChainsHook(); fn != nil {
 		var entries []RouteChainEntry
@@ -1441,7 +1541,8 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 		log.Printf("topology_ack write error: relay_id=%s err=%v", conn.RelayID, werr)
 	}
 	conn.mu.Unlock()
-	log.Printf("topology_snapshot: relay_id=%s relays=%d agents=%d", conn.RelayID, len(msg.Relays), len(msg.Agents))
+	log.Printf("topology_snapshot: relay_id=%s relays=%d agents=%d replaced=%t", conn.RelayID, len(msg.Relays), len(msg.Agents), replacing)
+	notifyTopologyChanged()
 }
 
 // handleEventForward validates an ascending event (HAUT-1) and propagates it upstream.

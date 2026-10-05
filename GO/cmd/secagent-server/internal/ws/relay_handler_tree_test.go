@@ -298,22 +298,6 @@ func TestTree_SnapshotLimits(t *testing.T) {
 	})
 }
 
-func TestTree_SecondSnapshotRefused(t *testing.T) {
-	setTreeHooks(t, "central", nil, nil, nil)
-	srv := setupRelayTestServer(t)
-	defer srv.Close()
-	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
-	handshake(t, c, "dmz1")
-	sendSnapshot(t, c, nil, nil)
-	if m := readMsg(t, c); m.Type != "topology_ack" {
-		t.Fatalf("got %+v", m)
-	}
-	sendSnapshot(t, c, nil, nil)
-	if code := expectClose(t, c); code != WSRelayCloseRetry {
-		t.Errorf("close code = %d", code)
-	}
-}
-
 func TestTree_RoutingClearedForDescendantsOnDisconnect(t *testing.T) {
 	var mu sync.Mutex
 	cleared := map[string]bool{}
