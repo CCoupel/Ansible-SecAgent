@@ -80,6 +80,11 @@ func main() {
 	// --- Étape 3 : JWT — reload ou enrollment ---
 	jwt, err := loadOrEnroll(cfg, hostname, privKey)
 	if err != nil {
+		if enrollment.IsForbidden(err) {
+			// token invalid, expired or consumed: restarting cannot fix it
+			log.Printf("[FATAL] Enrollment refused by the server (403): %v", err)
+			os.Exit(ws.ExitEnrollmentRefused)
+		}
 		log.Fatalf("[FATAL] Enrollment failed: %v", err)
 	}
 	log.Printf("[OK] JWT obtained (len=%d)", len(jwt))
@@ -121,6 +126,12 @@ func main() {
 	log.Printf("[INIT] Connecting to %s", cfg.wsURL)
 	if err := dispatcher.Run(ctx); err != nil {
 		log.Printf("[SHUTDOWN] Dispatcher stopped: %v", err)
+		// Permanent stops (revocation 77, enrollment refused 78) exit with a distinct status:
+		// systemd RestartPreventExitStatus=77 78 must not restart-loop a revoked/refused minion.
+		if code := ws.ExitCode(err); code != 1 {
+			log.Printf("[SHUTDOWN] permanent stop, exit status %d (do not restart)", code)
+			os.Exit(code)
+		}
 	}
 
 	log.Printf("[OK] Agent shutdown complete")

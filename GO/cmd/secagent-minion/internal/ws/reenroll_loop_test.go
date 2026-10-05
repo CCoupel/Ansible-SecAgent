@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -231,6 +232,9 @@ func TestRun_Forbidden403IsPermanentAndExplicit(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "enrollment refused") {
 		t.Fatalf("403 must stop the minion with an explicit error, got %v", err)
 	}
+	if ExitCode(err) != ExitEnrollmentRefused || ExitEnrollmentRefused != 78 {
+		t.Errorf("exit status after a 403 = %d, want 78 (systemd RestartPreventExitStatus)", ExitCode(err))
+	}
 	if calls.Load() != 1 || len(rec.got()) != 0 {
 		t.Errorf("attempts %d, waits %v: a 403 must not be retried", calls.Load(), rec.got())
 	}
@@ -274,7 +278,22 @@ func TestRun_Close4001StopsWithoutReenrollment(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "revoked") {
 		t.Fatalf("4001 must stop the dispatcher, got %v", err)
 	}
+	if ExitCode(err) != ExitRevoked || ExitRevoked != 77 {
+		t.Errorf("exit status after a revocation = %d, want 77", ExitCode(err))
+	}
 	if enrolls.Load() != 0 || len(rec.got()) != 0 {
 		t.Errorf("re-enrollments %d, waits %v after a revocation", enrolls.Load(), rec.got())
+	}
+}
+
+func TestExitCode(t *testing.T) {
+	if ExitCode(errors.New("boom")) != 1 || ExitCode(nil) != 1 {
+		t.Error("an ordinary error exits 1")
+	}
+	if ExitCode(&permanentError{err: errors.New("x")}) != ExitEnrollmentRefused {
+		t.Error("a permanent error without code exits 78")
+	}
+	if ExitCode(fmt.Errorf("wrapped: %w", &permanentError{err: errors.New("x"), code: ExitRevoked})) != ExitRevoked {
+		t.Error("the code survives wrapping")
 	}
 }

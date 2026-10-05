@@ -311,8 +311,19 @@ func parseKeyValue(lines []string) map[string]string {
 	return kv
 }
 
+// factsPath is the PATH of the fact-collection commands (the minion's, else a standard one).
+func factsPath() string {
+	if p := os.Getenv("PATH"); p != "" {
+		return p
+	}
+	return "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+}
+
 func runCmd(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
+	// Minimal environment (#186): fixed minion commands need neither the minion's secrets nor
+	// its locale: PATH and the C locale (stable output).
+	cmd.Env = []string{"PATH=" + factsPath(), "LANG=C", "LC_ALL=C"}
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

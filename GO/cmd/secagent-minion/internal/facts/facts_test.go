@@ -297,3 +297,23 @@ func TestNetworkIfaceStruct(t *testing.T) {
 		t.Errorf("IPv4: got %d addresses, want 2", len(iface.IPv4))
 	}
 }
+
+// #186: the fixed fact commands run with a minimal environment, not the minion's.
+func TestRunCmd_MinimalEnvironment(t *testing.T) {
+	t.Setenv("FOO_TOKEN", "FACTS-SECRET")
+	t.Setenv("RELAY_ENROLLMENT_TOKEN", "FACTS-ENROLL")
+	out, err := runCmd("env")
+	if err != nil {
+		t.Skipf("env not available: %v", err)
+	}
+	for _, leak := range []string{"FACTS-SECRET", "FACTS-ENROLL", "RELAY_", "FOO_TOKEN"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("the fact command sees %q:\n%s", leak, out)
+		}
+	}
+	for _, want := range []string{"PATH=", "LANG=C", "LC_ALL=C"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s in:\n%s", want, out)
+		}
+	}
+}

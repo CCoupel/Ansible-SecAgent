@@ -247,10 +247,36 @@ type Dispatcher struct {
 
 // permanentError marque une erreur de ré-enrôlement qui ne se corrige pas en réessayant (token
 // d'enrôlement refusé : 403, ou aucune configuration d'enrôlement) : le minion s'arrête.
-type permanentError struct{ err error }
+type permanentError struct {
+	err  error
+	code int // exit status of the minion (0 = ExitEnrollmentRefused)
+}
 
 func (e *permanentError) Error() string { return e.err.Error() }
 func (e *permanentError) Unwrap() error { return e.err }
+
+// Exit statuses of the minion after a PERMANENT stop, so that the service manager does not restart
+// it in a loop (systemd: RestartPreventExitStatus=77 78). sysexits.h values.
+const (
+	// ExitRevoked: the server revoked this agent (WebSocket close 4001).
+	ExitRevoked = 77 // EX_NOPERM
+	// ExitEnrollmentRefused: the enrollment token is invalid, expired or consumed (HTTP 403), or
+	// re-enrollment is impossible (no enrollment configuration / token).
+	ExitEnrollmentRefused = 78 // EX_CONFIG
+)
+
+// ExitCode returns the process exit status for the error that ended Dispatcher.Run: 77 after a
+// revocation, 78 after a permanent enrollment refusal, 1 for anything else.
+func ExitCode(err error) int {
+	var pe *permanentError
+	if errors.As(err, &pe) {
+		if pe.code != 0 {
+			return pe.code
+		}
+		return ExitEnrollmentRefused
+	}
+	return 1
+}
 
 func sleepCtx(ctx context.Context, delay time.Duration) error {
 	if delay <= 0 {
@@ -366,7 +392,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		// Vérification révocation (code WS 4001)
 		var closeErr *websocket.CloseError
 		if isClose(err, &closeErr) && !reconnect.ShouldReconnect(closeErr.Code) {
-			return fmt.Errorf("ws: agent revoked by server (code %d)", closeErr.Code)
+			return &permanentError{err: fmt.Errorf("ws: agent revoked by server (code %d)", closeErr.Code), code: ExitRevoked}
 		}
 
 		// Gestion du 401 : ré-enrôlement automatique
@@ -421,10 +447,10 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 func (d *Dispatcher) handleUnauthorized(ctx context.Context) (string, error) {
 	ec := d.enrollCfg
 	if (ec.RegisterURL == "" && ec.Rotor == nil) || ec.PrivateKey == nil {
-		return "", &permanentError{fmt.Errorf("401 received but no enrollment config — cannot re-enroll")}
+		return "", &permanentError{err: fmt.Errorf("401 received but no enrollment config — cannot re-enroll")}
 	}
 	if ec.EnrollmentToken == "" {
-		return "", &permanentError{fmt.Errorf("401 received but RELAY_ENROLLMENT_TOKEN is not set — cannot re-enroll")}
+		return "", &permanentError{err: fmt.Errorf("401 received but RELAY_ENROLLMENT_TOKEN is not set — cannot re-enroll")}
 	}
 
 	// Supprimer le JWT local invalide
@@ -436,7 +462,7 @@ func (d *Dispatcher) handleUnauthorized(ctx context.Context) (string, error) {
 
 	pubPEM, err := publicKeyPEMFromPrivate(ec.PrivateKey)
 	if err != nil {
-		return "", &permanentError{fmt.Errorf("re-enrollment: compute public key: %w", err)}
+		return "", &permanentError{err: fmt.Errorf("re-enrollment: compute public key: %w", err)}
 	}
 
 	enrollCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -449,7 +475,7 @@ func (d *Dispatcher) handleUnauthorized(ctx context.Context) (string, error) {
 	// 403 : token d'enrôlement refusé — inutile de boucler
 	if isForbiddenErr(enrollErr) {
 		log.Printf("[SECURITY] enrollment refused (403) — enrollment token invalid, expired or already used, stopping")
-		return "", &permanentError{fmt.Errorf("enrollment refused by server (403): %w", enrollErr)}
+		return "", &permanentError{err: fmt.Errorf("enrollment refused by server (403): %w", enrollErr)}
 	}
 	return "", enrollErr
 }
