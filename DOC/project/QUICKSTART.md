@@ -113,21 +113,9 @@ docker logs secagent-minion-03 | grep "WebSocket connecté"
 
 ---
 
-## Déploiement Qualif Multi-Zones (192.168.1.218)
+## Déploiement Qualif Multi-Zones (v3.0.2+) (192.168.1.218)
 
-> ⚠️ **LIMITATION — topologie multi-zones non fonctionnelle en v3.0.0**
->
-> La connexion relay→proxy (mode pull, repeater-client) n'est pas encore implémentée
-> (issues #124, #125, #140). En conséquence :
-> - Les relay nodes relay-dmz1 et relay-dmz2 s'enregistrent dans la DB de relay-proxy
->   mais restent en état **`disconnected`** (attendu).
-> - Les tâches envoyées via le plugin Ansible **ne sont pas routées** vers les agents DMZ.
-> - Des checks de `smoke-proxy.sh` sont attendus en échec jusqu'à la résolution de #124/#125.
->
-> Pour le détail complet de la topologie et les contournements actuels,
-> voir **`DEPLOYMENT/qualif/README.md`**.
-
-Pour la topologie multi-zones (relay-proxy + relay-dmz1 + relay-dmz2) :
+Pour la topologie multi-zones (relay-central + relay-dmz1 + relay-dmz2 avec topologie arbre) :
 
 ### 1. Lancer les services
 

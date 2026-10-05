@@ -2326,3 +2326,71 @@ services:
 | **CLI** | `secagent-server relays list|get|status|add` |
 | **Infra** | `DEPLOYMENT/qualif/docker-compose.yml` : multi-relay avec variables simples (pas de YAML) |
 
+
+---
+
+## 24. Améliorations v3.0.2 — Events, Inventaire Hiérarchique, Group Vars
+
+### 24.1 Topologie Dynamique et Re-snapshot
+
+**Before v3.0.2** : topology_snapshot était envoyé une seule fois au handshake.
+**After v3.0.2** : topology_snapshot peut être renvoyé comme **remplacement atomique** quand la topologie du sous-arbre change.
+
+**Propriétés du remplacement** :
+- **Atomique** : validation complète (chaînes, noms, conflits) AVANT tout commit
+- **Coalescé** : rafales 200ms coalesced, min gap 2s (evite trop de snapshots)
+- **Rate-limited** : 40 remplacements/60s par lien (close 4012 si dépassé)
+- **Chaînes réelles** : chaque relay stocke sa vraie chaîne dans `relay_nodes.relay_chain` (pas d'aplatissement)
+
+**Stockage** : `relay_nodes.relay_chain` persisté en JSON, utilisé par `buildSnapshot` pour envoyer les chaînes exactes aux ancêtres.
+
+### 24.2 Host.Conflict Exact
+
+**Anciennement** : host.conflict pouvait être émis plusieurs fois si la même paire d'événements se répétait.
+**Maintenant** : host.conflict est émis exactement UNE FOIS par changement de propriétaire (relay X → relay Y). La mémoire « événement déjà signalé » est effacée uniquement quand le relay cesse de revendiquer l'hôte.
+
+**Impact** : chaque événement de détournement est visible exactement une fois (audit, alerting).
+
+### 24.3 Event Propagation avec Relay_chain Origin-First
+
+**Chaîne d'événement** : toujours origin-first (relay le plus proche de la source d'abord).
+
+Exemple : hôte connecté à zone-a (enfant de dmz1, enfant de central) se reconnecte :
+```
+zone-a: host.up → relay_chain=["zone-a"]
+dmz1 reçoit ["zone-a"] → ajoute son id → forward ["zone-a", "dmz1"]
+central reçoit ["zone-a", "dmz1"] → hooks voient la chaîne origin-first
+```
+
+**Validation parent** :
+- chain[-1] == peer ID (dernier élément = ID du pair qui l'envoie)
+- chain[0..n-2] ⊆ descendants (intermédiaires = relays enregistrés)
+- anti-boucle : parentID ∉ chain
+
+### 24.4 Group Vars et Variables d'Hook
+
+**RELAY_GROUP_VARS** : JSON optionnel validé et persisté dans `relay_nodes.group_vars`.
+
+**Validation** :
+- JSON valide (reject snapshot/hello si invalide)
+- `ansible_*` interdit (sauf `ansible_python_interpreter` sans `..`)
+- `secagent_*` réservé
+- Jinja markers interdits (`{{}}`, `{%%}`)
+- Bornes : max 8KB total, 100 clefs, 128 char par clef
+
+**Variables hook** :
+- `{{relay_chain}}` : JSON array origin-first (ex: `["zone-a","dmz1"]`)
+- `{{relay_origin}}` : premier élément (relay source)
+
+### 24.5 Relay_id Validation Partout
+
+Format : `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$` (1-63 alphanumeric/underscore/hyphen)
+
+| Context | Validation | Error |
+|---------|-----------|-------|
+| `POST /api/admin/relays` | relayIDShape check | 400 invalid_relay_id |
+| `/ws/relay` upgrade | == jwt.sub | 401 / 4010 |
+| topology_snapshot | chainOK validates all IDs | 4012 |
+| event_forward | relayIDShape per chain elem | dropped silently |
+
+---

@@ -607,15 +607,67 @@ sequenceDiagram
 
 Après établissement, chaque changement (host.up/down/new, relay.up/relay.down/relay.updated) remonte via `event_forward`.
 
-### Flux event_forward — Changements du sous-arbre
+### Flux event_forward — Changements du sous-arbre (v3.0.2)
 
-Host-X (connecté au relay-zone-a) se reconnecte → génère `event.host.up` :
-- **Zone-a** reçoit → ajoute `relay_id="zone-a"` à `relay_chain=["zone-a"]` → envoie vers parent (DMZ1)
-- **DMZ1** reçoit `["zone-a"]` → ajoute `relay_id="dmz1"` → `relay_chain=["zone-a","dmz1"]` → envoie vers parent (Central)
-- **Central** reçoit `["zone-a","dmz1"]` → déclenche les hooks
-- **Pas de doublon** : topologie arbre = UN SEUL chemin par hôte → UN SEUL event
+**Types d'événements** : `host.up`, `host.down`, `host.new`, `host.conflict`, `relay.up`, `relay.down`, `relay.updated`
 
-Même logique pour `relay.up/relay.down` quand un relay enfant rejoint ou quitte la topologie.
+**Chaîne d'événement (origin-first)** : le relais le plus proche de la source figure en première position.
+
+Exemple : Host-X (connecté au relay-zone-a) se reconnecte → génère `host.up` :
+
+```
+Zone-A: host-X up → event_forward(host: host-X, relay_chain: ["zone-a"], origin: zone-a)
+  ↓
+DMZ1: reçoit → valide chain[-1]==zone-a ✓, zone-a ∈ descendants ✓
+      → hooks locaux reçoivent ["zone-a"]
+      → forward vers parent en ajoutant son id: ["zone-a", "dmz1"]
+  ↓
+Central: reçoit → valide chain[-1]==dmz1 ✓, zone-a/dmz1 ∈ descendants ✓
+         → hooks locaux reçoivent ["zone-a", "dmz1"]
+         → pas de parent : événement terminal
+```
+
+**Validation chaîne côté parent** :
+- Dernier élément = ID du peer qui l'envoie
+- Tous les intermédiaires = relays déclarés dans `topology_snapshot` précédent (`descendants`)
+- Anti-boucle : refuse si l'ID du parent est dans la chaîne
+- Rejet silencieux si invalide (événement dropé, pas de fermeture WS)
+
+**Pas de doublon** : topologie arbre = UN SEUL chemin par hôte → UN SEUL événement
+
+**Host.conflict** : exact (1 événement par changement de propriétaire). Ancien propriétaire perd la route, nouveau la gagne.
+
+### Re-snapshot et topologie dynamique (v3.0.2)
+
+Quand la topologie d'un sous-arbre change (relay arrive, part, ou ses hôtes changent), l'enfant envoie un **nouveau `topology_snapshot`** :
+
+```mermaid
+sequenceDiagram
+    participant Child as Relay-B<br/>(enfant)
+    participant Parent as Relay-A<br/>(parent)
+    
+    Note over Child: Topology changes<br/>(new host, host leaves, etc.)
+    Child->>Child: Coalesce 200ms<br/>(TopologyDebounce)
+    Note over Child: No more changes<br/>for 2s<br/>(TopologyMinGap)
+    Child->>Parent: topology_snapshot (replacement)
+    Parent->>Parent: Atomic validation<br/> + claim + checkConflicts
+    Parent->>Parent: Rate limit check<br/>(40/60s per link)
+    alt Success
+        Parent->>Child: ack
+        Parent->>Parent: relay_nodes updated<br/>relay_chains persisted
+    else Validation fails
+        Parent->>Child: close 4012<br/>(corrigible refusal)
+        Child->>Child: Reconnect with backoff
+    else Rate limit exceeded
+        Parent->>Child: close 4012<br/>(corrigible refusal)
+    end
+```
+
+**Propriétés** :
+- **Coalescé** : rafales de changements = 1 snapshot (debounce 200ms, min gap 2s)
+- **Atomique** : validation complète avant tout commit en DB
+- **Rate-limited** : 40 remplacements/60s par lien (close 4012 si dépassé)
+- **Chaînes réelles** : chaque relay emporte la chaîne réelle jusqu'à ses descendants (pas d'aplatissement à 2 niveaux)
 
 ### Sécurité — Rejet de cycle
 
