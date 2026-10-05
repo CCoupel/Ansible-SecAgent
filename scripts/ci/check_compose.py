@@ -17,8 +17,23 @@ import json
 import sys
 
 ACK = "i-understand-the-risk"
-LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+LOOPBACK_NAMES = {"localhost", "::1"}  # + 127.0.0.0/8 (is_loopback)
 WILDCARD = {"", "0.0.0.0", "::", "[::]"}
+
+
+def is_loopback(host: str) -> bool:
+    """Meme regle que le serveur : 127.0.0.0/8, ::1, localhost ; ':7771', 0.0.0.0, [::] = non loopback."""
+    h = host.strip().strip("[]")
+    return h == "localhost" or h == "::1" or h.startswith("127.") and h.count(".") == 3 and all(
+        p.isdigit() and int(p) < 256 for p in h.split("."))
+
+
+def strict_bool(env: dict, name: str, where: str, errs: list) -> bool:
+    """Booleen strict du serveur : seuls "", "true", "false" sont acceptes ; `1`/`yes`/`TRUE`/`on` = refus au demarrage."""
+    v = env.get(name, "")
+    if v not in ("", "true", "false"):
+        errs.append(f"{where}: {name}={v!r} invalide (seuls 'true' et 'false' exacts sont acceptes, le serveur refuse de demarrer)")
+    return v == "true"
 
 
 def admin_host(addr: str) -> str:
@@ -49,15 +64,19 @@ def check(doc: dict, allow_build: bool, require_mem: bool = False) -> list:
                 ip = ":".join(parts[:-2]) if len(parts) > 2 else ""
             if target == 7771 and (ip in WILDCARD or ip is None):
                 errs.append(f"{where}: port admin 7771 publie sans host_ip ou sur 0.0.0.0/:: (host_ip={ip!r})")
-            elif target == 7771 and ip not in LOOPBACK:
+            elif target == 7771 and not is_loopback(ip):
                 print(f"INFO {where}: 7771 publie sur {ip} (reseau d'administration, a valider)", file=sys.stderr)
         admin = env.get("ADMIN_ADDR", ":7771")
-        if admin_host(admin) not in LOOPBACK:
-            tls = env.get("ADMIN_TLS", "").lower() == "true"
-            derog = env.get("ADMIN_INSECURE_HTTP", "").lower() == "true" and env.get("ADMIN_INSECURE_HTTP_ACK") == ACK
+        tls = strict_bool(env, "ADMIN_TLS", where, errs)
+        insecure = strict_bool(env, "ADMIN_INSECURE_HTTP", where, errs)
+        tls_disable = strict_bool(env, "TLS_DISABLE", where, errs)
+        if tls and not (env.get("TLS_CERT") and env.get("TLS_KEY")):
+            errs.append(f"{where}: ADMIN_TLS=true exige TLS_CERT et TLS_KEY")
+        if not is_loopback(admin_host(admin)):
+            derog = insecure and env.get("ADMIN_INSECURE_HTTP_ACK") == ACK
             if not (tls or derog):
                 errs.append(f"{where}: ADMIN_ADDR={admin!r} non loopback sans ADMIN_TLS=true ni derogation complete")
-        if env.get("TLS_DISABLE", "").lower() in ("1", "true", "yes"):
+        if tls_disable:
             errs.append(f"{where}: TLS_DISABLE interdit")
         image = svc.get("image", "")
         if image:

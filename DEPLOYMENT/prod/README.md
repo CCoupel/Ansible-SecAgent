@@ -20,6 +20,8 @@ Nom de projet : `docker compose -p secagent-prod-<relay_id> …`.
 
 ## Réseau et sécurité
 
+Booléens du serveur **stricts** : `ADMIN_TLS`, `ADMIN_INSECURE_HTTP`, `TLS_DISABLE` n'acceptent que `true` ou `false` exacts (`1`, `yes`, `TRUE`, `on` = refus de démarrer). Dérogation admin (déconseillée, uniquement si 7771 n'est publié que sur la boucle locale) : `ADMIN_INSECURE_HTTP=true` **et** `ADMIN_INSECURE_HTTP_ACK=i-understand-the-risk` exact ; une dérogation partielle est refusée.
+
 - TLS natif : `tls.crt` (chaîne complète) et `tls.key` dans `TLS_CERT_DIR`, montés en lecture seule ; pas de reverse proxy ; `TLS_DISABLE` ne doit jamais être défini.
 - 7770 et 7772 sont publiés. **7771 (admin)** : le serveur y écoute sur `0.0.0.0` *dans le conteneur* avec `ADMIN_TLS=true` ;
   l'hôte ne le publie que sur `ADMIN_PUBLISH_ADDR` (boucle locale par défaut, ou réseau d'administration), **jamais** sur `0.0.0.0`
