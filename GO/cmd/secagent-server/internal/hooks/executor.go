@@ -86,12 +86,19 @@ type webhookPayload struct {
 	Event     string      `json:"event"`
 	Timestamp string      `json:"timestamp"`
 	Host      webhookHost `json:"host"`
+	webhookRelay
 }
 
 type webhookHost struct {
 	Hostname   string `json:"hostname"`
 	Status     string `json:"status,omitempty"`
 	EnrolledAt string `json:"enrolled_at,omitempty"`
+}
+
+// webhookRelay carries the relay path of a propagated event (omitted for local events).
+type webhookRelay struct {
+	Chain  []string `json:"relay_chain,omitempty"`
+	Origin string   `json:"relay_origin,omitempty"`
 }
 
 func (e *WebhookExecutor) Execute(ctx context.Context, action ActionDef, vars map[string]string) (bool, string, int64) {
@@ -103,6 +110,10 @@ func (e *WebhookExecutor) Execute(ctx context.Context, action ActionDef, vars ma
 			Status:     vars["status"],
 			EnrolledAt: vars["enrolled_at"],
 		},
+	}
+	if rc := vars["relay_chain"]; rc != "" {
+		payload.Chain = strings.Split(rc, ",")
+		payload.Origin = vars["relay_origin"]
 	}
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -208,6 +219,9 @@ func (e *ShellExecutor) Execute(ctx context.Context, action ActionDef, vars map[
 	)
 	if ea := vars["enrolled_at"]; ea != "" {
 		cmd.Env = append(cmd.Env, "SECAGENT_ENROLLED_AT="+ea)
+	}
+	if rc := vars["relay_chain"]; rc != "" {
+		cmd.Env = append(cmd.Env, "SECAGENT_RELAY_CHAIN="+rc, "SECAGENT_RELAY_ORIGIN="+vars["relay_origin"])
 	}
 
 	var stderr strings.Builder

@@ -5,7 +5,9 @@ package hooks
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"regexp"
 )
 
 // HooksConfig is the root of the hooks JSON configuration file.
@@ -14,9 +16,53 @@ type HooksConfig struct {
 }
 
 // HookDef maps an event type to a list of actions to execute.
+// An optional Filter restricts the hook to events that travelled through a given relay (#126).
 type HookDef struct {
 	Event   string      `json:"event"`
+	Filter  *HookFilter `json:"filter,omitempty"`
 	Actions []ActionDef `json:"actions"`
+}
+
+// HookFilter restricts a hook. A nil filter always matches. RelayChainContains, when set, matches
+// only events whose relay_chain (relays traversed since the origin) contains that relay id.
+// An empty filter object is refused at load time (it would silently behave like "no filter").
+type HookFilter struct {
+	RelayChainContains string `json:"relay_chain_contains,omitempty"`
+}
+
+// relayIDPattern is the shape of a REPEATER_ID: also a safe value for templates and environment.
+var relayIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
+
+// Matches reports whether the filter accepts an event with the given relay_chain.
+func (f *HookFilter) Matches(relayChain []string) bool {
+	if f == nil || f.RelayChainContains == "" {
+		return true
+	}
+	for _, id := range relayChain {
+		if id == f.RelayChainContains {
+			return true
+		}
+	}
+	return false
+}
+
+// Validate checks the configuration. LoadConfig calls it: a configuration that does not validate
+// is rejected as a whole (fail closed: the previous configuration, or none, stays in force).
+func (c *HooksConfig) Validate() error {
+	for i, h := range c.Hooks {
+		if h.Event == "" {
+			return fmt.Errorf("hook[%d]: missing event", i)
+		}
+		if h.Filter != nil {
+			if h.Filter.RelayChainContains == "" {
+				return fmt.Errorf("hook[%d] (%s): empty filter: set relay_chain_contains or remove the filter", i, h.Event)
+			}
+			if !relayIDPattern.MatchString(h.Filter.RelayChainContains) {
+				return fmt.Errorf("hook[%d] (%s): relay_chain_contains %q is not a valid relay id", i, h.Event, h.Filter.RelayChainContains)
+			}
+		}
+	}
+	return nil
 }
 
 // ActionDef configures a single hook action.
@@ -66,6 +112,9 @@ func LoadConfig(path string) (*HooksConfig, error) {
 	}
 	var cfg HooksConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil

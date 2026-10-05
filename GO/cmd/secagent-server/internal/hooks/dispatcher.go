@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,8 +20,9 @@ type dispatchJob struct {
 	event      string
 	hostname   string
 	status     string
-	enrolledAt string // only set for host.new
-	timestamp  string // RFC3339 — captured at Dispatch time
+	enrolledAt string   // only set for host.new
+	timestamp  string   // RFC3339 — captured at Dispatch time
+	relayChain []string // relays traversed since the origin; empty for an event of this node
 }
 
 // ── ActionLogger interface ─────────────────────────────────────────────────────
@@ -31,13 +33,19 @@ type ActionLogger interface {
 }
 
 // buildVars constructs the template variable map from a dispatch job's fields.
-func buildVars(event, hostname, status, timestamp, enrolledAt string) map[string]string {
+func buildVars(event, hostname, status, timestamp, enrolledAt string, relayChain []string) map[string]string {
+	origin := ""
+	if len(relayChain) > 0 {
+		origin = relayChain[0]
+	}
 	return map[string]string{
-		"event":       event,
-		"hostname":    hostname,
-		"status":      status,
-		"timestamp":   timestamp,
-		"enrolled_at": enrolledAt,
+		"event":        event,
+		"hostname":     hostname,
+		"status":       status,
+		"timestamp":    timestamp,
+		"enrolled_at":  enrolledAt,
+		"relay_chain":  strings.Join(relayChain, ","),
+		"relay_origin": origin,
 	}
 }
 
@@ -50,6 +58,11 @@ type Dispatcher struct {
 
 	queue chan dispatchJob
 	store ActionLogger
+
+	// upstream, when set, receives every LOCAL event of a propagated kind (see Propagated) so that
+	// it can be forwarded to the parent. Events received from a child (DispatchChain) are never
+	// handed to it: a received event is never forwarded back up from here.
+	upstream func(event, hostname, status, enrolledAt string)
 
 	webhookExec *WebhookExecutor
 	shellExec   *ShellExecutor
@@ -111,16 +124,49 @@ func (d *Dispatcher) Start(ctx context.Context) {
 	}()
 }
 
-// Dispatch enqueues an event for asynchronous hook execution.
+// Propagated reports whether an event kind is propagated upstream through the relay tree.
+func Propagated(event string) bool {
+	switch event {
+	case "host.up", "host.down", "host.new":
+		return true
+	}
+	return false
+}
+
+// SetUpstream installs the forwarder of local events to the parent (nil = none). Thread-safe.
+func (d *Dispatcher) SetUpstream(fn func(event, hostname, status, enrolledAt string)) {
+	d.mu.Lock()
+	d.upstream = fn
+	d.mu.Unlock()
+}
+
+// Dispatch enqueues a LOCAL event (relay_chain empty) for asynchronous hook execution and, for
+// propagated kinds, hands it to the upstream forwarder.
 // Never blocks: events are silently dropped when the queue is full.
 // enrolledAt is only non-empty for host.new events.
 func (d *Dispatcher) Dispatch(event, hostname, status, enrolledAt string) {
+	d.DispatchChain(event, hostname, status, enrolledAt, nil)
+	if !Propagated(event) {
+		return
+	}
+	d.mu.RLock()
+	fwd := d.upstream
+	d.mu.RUnlock()
+	if fwd != nil {
+		fwd(event, hostname, status, enrolledAt)
+	}
+}
+
+// DispatchChain enqueues an event that travelled through the given relays (origin first) for hook
+// execution on THIS node only: it never forwards (the caller forwards a received event itself).
+func (d *Dispatcher) DispatchChain(event, hostname, status, enrolledAt string, relayChain []string) {
 	job := dispatchJob{
 		event:      event,
 		hostname:   hostname,
 		status:     status,
 		enrolledAt: enrolledAt,
 		timestamp:  time.Now().UTC().Format(time.RFC3339),
+		relayChain: append([]string(nil), relayChain...),
 	}
 	select {
 	case d.queue <- job:
@@ -139,10 +185,10 @@ func (d *Dispatcher) processJob(ctx context.Context, job dispatchJob) {
 		return
 	}
 
-	vars := buildVars(job.event, job.hostname, job.status, job.timestamp, job.enrolledAt)
+	vars := buildVars(job.event, job.hostname, job.status, job.timestamp, job.enrolledAt, job.relayChain)
 
 	for _, hookDef := range cfg.Hooks {
-		if hookDef.Event != job.event {
+		if hookDef.Event != job.event || !hookDef.Filter.Matches(job.relayChain) {
 			continue
 		}
 		for idx, action := range hookDef.Actions {
