@@ -358,9 +358,6 @@ func TestDefaults(t *testing.T) {
 	if c.opts.MinBackoff != 5*time.Second || c.opts.MaxBackoff != 60*time.Second {
 		t.Errorf("backoff defaults = %v..%v, want 5s..60s", c.opts.MinBackoff, c.opts.MaxBackoff)
 	}
-	if got := c.endpoint(); got != "wss://x/ws/relay" {
-		t.Errorf("endpoint = %s", got)
-	}
 }
 
 func TestBackoffGrowsAndCaps(t *testing.T) {

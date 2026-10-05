@@ -20,6 +20,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"secagent-server/cmd/secagent-server/internal/config"
+	"secagent-server/internal/endpoints"
 )
 
 // Protocol constants.
@@ -174,6 +175,7 @@ type Client struct {
 	terminal error  // set when a permanent refusal stopped the client
 	done     chan struct{}
 	conn     *websocket.Conn
+	rotor    *endpoints.Rotor // the parent's addresses, last good one first
 }
 
 // New builds a Client from the validated repeater config.
@@ -226,9 +228,19 @@ func (c *Client) Ancestors() []string { return c.up.Ancestors() }
 // immediately and the goroutine stops when ctx is cancelled. A second call is
 // an error (one connection to one parent).
 func (c *Client) Start(ctx context.Context) error {
-	// Defense in depth: config already enforces wss://, never dial anything else.
-	if u, err := url.Parse(c.cfg.UpstreamURL); err != nil || u.Scheme != "wss" || u.Host == "" || u.User != nil {
-		return errors.New("repeater client: upstream URL must be a wss:// URL without userinfo")
+	// Defense in depth: config already enforces wss://, never dial anything else. Every address of
+	// the list is checked again (the config may have been built by hand).
+	list := c.cfg.UpstreamURLs
+	if len(list) == 0 {
+		list = []string{c.cfg.UpstreamURL}
+	}
+	urls, perr := endpoints.ParseSchemes(strings.Join(list, ","), "wss")
+	if perr != nil {
+		return errors.New("repeater client: upstream URLs must be wss:// URLs without userinfo")
+	}
+	rotor, rerr := endpoints.NewRotor(urls, endpoints.Backoff{Min: c.opts.MinBackoff, Max: c.opts.MaxBackoff})
+	if rerr != nil {
+		return rerr
 	}
 	c.mu.Lock()
 	if c.started {
@@ -236,6 +248,7 @@ func (c *Client) Start(ctx context.Context) error {
 		return errors.New("repeater client already started")
 	}
 	c.started = true
+	c.rotor = rotor
 	c.mu.Unlock()
 	go c.run(ctx)
 	return nil
@@ -276,24 +289,28 @@ type refusedError struct {
 
 func (e *refusedError) Error() string { return e.reason }
 
-// endpoint builds <upstream>/ws/relay (never logs the token).
-func (c *Client) endpoint() string {
-	return strings.TrimRight(c.cfg.UpstreamURL, "/") + "/ws/relay"
-}
-
 func (c *Client) write(conn *websocket.Conn, v any) error { return c.up.write(conn, v) }
 
 // session runs one connection until it ends. established=true once the
 // handshake (hello, ack, snapshot) completed.
 func (c *Client) session(ctx context.Context) (established bool, err error) {
-	dialer := websocket.Dialer{TLSClientConfig: tlsOrDefault(c.opts.TLSConfig), HandshakeTimeout: c.opts.HandshakeTimeout}
 	hdr := http.Header{}
 	hdr.Set("Authorization", "Bearer "+c.cfg.UpstreamToken)
-	conn, _, derr := dialer.DialContext(ctx, c.endpoint(), hdr)
+	// The addresses are tried in order (last good first). A failure BEFORE the upgrade request left
+	// moves to the next address; a timeout after it left is never replayed elsewhere (dialWS marks
+	// the send), the next round simply starts on another address.
+	conn, used, derr := endpoints.DialFirst(ctx, c.rotor, c.opts.HandshakeTimeout,
+		func(actx context.Context, u *url.URL) (*websocket.Conn, error) {
+			return dialWS(actx, u, "/ws/relay", c.opts.TLSConfig, hdr, c.opts.HandshakeTimeout)
+		})
 	if derr != nil {
-		// DialContext errors do not include request headers; still, only url host is shown.
+		if i, after := endpoints.AfterSendIndex(derr); after {
+			c.rotor.Rotate(i)
+		}
+		// DialFirst errors never include request headers nor URLs (host only in its own logs).
 		return false, fmt.Errorf("dial parent: %w", derr)
 	}
+	log.Printf("[REPEATER] parent connected through %s", used.Host)
 	c.mu.Lock()
 	c.conn = conn
 	c.mu.Unlock()

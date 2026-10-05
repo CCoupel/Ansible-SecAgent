@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"regexp"
 	"strings"
+
+	"secagent-server/internal/endpoints"
 )
 
 // Environment variables describing the (single) parent of a child relay.
@@ -28,8 +29,11 @@ var ErrInvalidRepeaterConfig = errors.New("invalid repeater configuration")
 // RepeaterConfig is the configuration of a child relay opening a WSS link
 // to its parent.
 type RepeaterConfig struct {
-	ID            string // REPEATER_ID (== jwt.sub, relay_chain element, Ansible group)
-	UpstreamURL   string // REPEATER_UPSTREAM_URL (wss://...)
+	ID          string // REPEATER_ID (== jwt.sub, relay_chain element, Ansible group)
+	UpstreamURL string // REPEATER_UPSTREAM_URL as given (wss://..., comma separated list accepted)
+	// UpstreamURLs are the validated, normalized addresses of UpstreamURL (one per parent instance,
+	// same token for all: the instances share their state, hence their secrets).
+	UpstreamURLs  []string
 	UpstreamToken string // REPEATER_UPSTREAM_TOKEN (secret, never logged)
 }
 
@@ -81,19 +85,24 @@ func loadRepeaterConfig(getenv func(string) string) (*RepeaterConfig, error) {
 	if token == "" {
 		return nil, fmt.Errorf("%w: %s is required when %s is set", ErrInvalidRepeaterConfig, EnvRepeaterUpstreamToken, EnvRepeaterUpstreamURL)
 	}
-	u, err := url.Parse(upstream)
-	if err != nil || u.Host == "" {
-		return nil, fmt.Errorf("%w: %s is not a valid URL", ErrInvalidRepeaterConfig, EnvRepeaterUpstreamURL)
+	// A list of addresses (one per instance of the parent, #165): each one is validated alone.
+	// The errors never echo an address: it may carry credentials.
+	urls, err := endpoints.ParseSchemes(upstream, "wss")
+	if err != nil {
+		switch {
+		case errors.Is(err, endpoints.ErrUserinfo):
+			return nil, fmt.Errorf("%w: %s must not contain userinfo (credentials belong in %s)", ErrInvalidRepeaterConfig, EnvRepeaterUpstreamURL, EnvRepeaterUpstreamToken)
+		case errors.Is(err, endpoints.ErrScheme):
+			return nil, fmt.Errorf("%w: %s must use the wss:// scheme (TLS required)", ErrInvalidRepeaterConfig, EnvRepeaterUpstreamURL)
+		default:
+			return nil, fmt.Errorf("%w: %s is not a valid address list (%s)", ErrInvalidRepeaterConfig, EnvRepeaterUpstreamURL, strings.TrimPrefix(err.Error(), "endpoints: "))
+		}
 	}
-	if u.User != nil {
-		// Never echo the userinfo: it may hold credentials.
-		return nil, fmt.Errorf("%w: %s must not contain userinfo (credentials belong in %s)", ErrInvalidRepeaterConfig, EnvRepeaterUpstreamURL, EnvRepeaterUpstreamToken)
+	list := make([]string, len(urls))
+	for i, u := range urls {
+		list[i] = u.String()
 	}
-	if u.Scheme != "wss" {
-		return nil, fmt.Errorf("%w: %s must use the wss:// scheme (TLS required)", ErrInvalidRepeaterConfig, EnvRepeaterUpstreamURL)
-	}
-
-	return &RepeaterConfig{ID: id, UpstreamURL: upstream, UpstreamToken: token}, nil
+	return &RepeaterConfig{ID: id, UpstreamURL: upstream, UpstreamURLs: list, UpstreamToken: token}, nil
 }
 
 // IsRepeaterClientMode reports whether this node must open a link to a parent,

@@ -99,3 +99,35 @@ func TestLoadRepeaterConfig_UserinfoNotInError(t *testing.T) {
 		t.Errorf("userinfo leaked in error: %v", err)
 	}
 }
+
+func TestLoadRepeaterConfig_AddressList(t *testing.T) {
+	base := func(v string) map[string]string {
+		return map[string]string{"REPEATER_ID": "dmz1", "REPEATER_UPSTREAM_URL": v, "REPEATER_UPSTREAM_TOKEN": "tok"}
+	}
+	cfg, err := loadRepeaterConfig(env(base("wss://a:7772, wss://b:7772")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.UpstreamURLs) != 2 || cfg.UpstreamURLs[0] != "wss://a:7772" || cfg.UpstreamURLs[1] != "wss://b:7772" {
+		t.Errorf("UpstreamURLs = %v", cfg.UpstreamURLs)
+	}
+	// a single value: same behaviour as before (one address)
+	cfg, err = loadRepeaterConfig(env(base("wss://central:7772")))
+	if err != nil || len(cfg.UpstreamURLs) != 1 || cfg.UpstreamURLs[0] != "wss://central:7772" || cfg.UpstreamURL != "wss://central:7772" {
+		t.Errorf("single value: cfg=%+v err=%v", cfg, err)
+	}
+	for name, v := range map[string]string{
+		"one bad scheme in the list": "wss://a:7772,ws://b:7772",
+		"one userinfo in the list":   "wss://a:7772,wss://u:pw@b:7772",
+		"duplicate":                  "wss://a:7772,wss://a:7772",
+		"empty element":              "wss://a:7772,,wss://b:7772",
+	} {
+		_, err := loadRepeaterConfig(env(base(v)))
+		if err == nil || !errors.Is(err, ErrInvalidRepeaterConfig) {
+			t.Errorf("%s: want ErrInvalidRepeaterConfig, got %v", name, err)
+		}
+		if err != nil && (strings.Contains(err.Error(), "pw") || strings.Contains(err.Error(), "b:7772")) {
+			t.Errorf("%s: the error echoes an address: %v", name, err)
+		}
+	}
+}
