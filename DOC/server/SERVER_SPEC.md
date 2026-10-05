@@ -299,10 +299,9 @@ secagent-server server stats
 |---|---|---|
 | `JWT_SECRET_KEY` | ✅ | Secret HMAC-HS256 pour signer les JWT agents |
 | `ADMIN_TOKEN` | ✅ | Token admin (port 7771) |
-| `NATS_URL` | ✅ | URL NATS JetStream (`nats://nats:4222`) |
-| `DATABASE_URL` | — | SQLite path (`relay.db`) ou PostgreSQL URL |
-| `RSA_MASTER_KEY` | ✅ | Clef AES-256-GCM pour chiffrer les secrets en DB (tokens push relay) |
-| `RELAY_PLUGIN_TOKEN` | ✅ | Token statique pour les plugins Ansible |
+| `NATS_URL` | — | URL NATS JetStream (défaut `nats://localhost:4222`) — le serveur démarre en mode dégradé si NATS n'est pas accessible |
+| `DATABASE_URL` | — | SQLite path (`./relay.db`) ou PostgreSQL URL (défaut `sqlite:///./relay.db`) |
+| `RSA_MASTER_KEY` | — | Clef AES-256-GCM pour chiffrer les secrets en DB (tokens push relay) — obligatoire seulement pour enregistrer un relay en mode push |
 | `REPEATER_ID` | — | Identifiant du relay (ex: `dmz1`) — requis en mode enfant |
 | `REPEATER_UPSTREAM_URL` | — | URL WSS du parent (ex: `wss://central:7772`) — requis en mode enfant pull |
 | `REPEATER_UPSTREAM_TOKEN` | — | Token JWT relay-child du relay enfant — requis en mode enfant pull |
@@ -661,8 +660,9 @@ GET /api/inventory  (sur relay central)
 ```
 
 **Groupes** : nommés exactement du relay (ex: `dmz1`, `zone-a`, pas de préfixe ni de transformation). Un groupe par relay dans la descendance, hiérarchie récursive. 
-- **À la racine** : `all.children` = relays enfants directs ; chaque groupe `g` a `.children` = relays enfants du relay `g`.
-- **Depuis un relay avec REPEATER_ID** (via scoping `?relay=<id>`) : `all.children` = `[<id>]` (le relay lui-même) ; ses enfants relays se trouvent sous `<id>.children`.
+- **Nœud sans REPEATER_ID** (racine) : `all.children` = relays enfants directs (ex: `["dmz1"]`) ; chaque groupe `g` a `.children` = relays enfants du relay `g`.
+- **Nœud avec REPEATER_ID** (même sans paramètre `?relay=`) : `all.children` = `[<id_du_nœud>]` (le relay lui-même) ; ses enfants relays se trouvent sous `<id_du_nœud>.children`.
+- **Paramètre `?relay=<id>`** : limite l'inventaire à la descendance du relay `<id>` ; `all.children` = `[<id>]`.
 - **Noms de groupes contenant des tirets** (ex: `zone-a`) déclenchent un avertissement Ansible (« Invalid characters in group names ») — voir §9.5b ci-dessous.
 
 **Chaîne `secagent_relay_chain`** : ordre **origine en premier** (relay le plus proche de l'agent en premier). Exemple :

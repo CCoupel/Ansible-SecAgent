@@ -62,11 +62,12 @@ ansible-secagent/
 │   ├── Dockerfile               - Image Docker server
 │   └── requirements.txt          - Dépendances Python
 │
-├── ansible_plugins/             # Plugins Ansible
-│   ├── connection_plugins/
-│   │   └── secagent.py             - ConnectionBase (remplace SSH)
-│   └── inventory_plugins/
-│       └── secagent_inventory.py   - InventoryModule dynamique
+├── SECAGENT-PYTHON/             # Plugin Ansible (Python)
+│   ├── ansible_plugins/
+│   │   └── connection_plugins/
+│   │       └── relay.py            - ConnectionBase (remplace SSH)
+│   ├── README.md
+│   └── ansible.cfg
 │
 ├── tests/                       # Tests & qualification
 │   ├── unit/                    - Tests unitaires

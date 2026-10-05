@@ -24,7 +24,7 @@ All notable changes to this project will be documented in this file.
   - `host.conflict` : exact (1 événement par changement de propriétaire), ancien propriétaire cède au nouveau
 - **Inventaire hiérarchique (#128, #139)** :
   - Groupes Ansible = noms exacts des relays (ex: `dmz1`, `zone-a`) — pas de transformation
-  - Hiérarchie récursive : à la racine, `all.children` = relays enfants directs, chaque groupe `g.children` = relays enfants du relay `g` ; depuis un relay avec REPEATER_ID (scoping `?relay=<id>`), `all.children` = `[<id>]` (le relay lui-même)
+  - Hiérarchie récursive : nœud sans REPEATER_ID, `all.children` = relays enfants directs, chaque groupe `g.children` = relays enfants du relay `g` ; nœud avec REPEATER_ID (même sans `?relay=`), `all.children` = `[<id_du_nœud>]` ; paramètre `?relay=<id>`, `all.children` = `[<id>]`
   - Chaîne `secagent_relay_chain` : ordre origine-first (ex: `["zone-a", "dmz1"]`)
   - Variable `secagent_next_hop` : relay enfant direct vers lequel router
   - Paramètre `?relay=<id>` : limite l'inventaire à la descendance du relay spécifié

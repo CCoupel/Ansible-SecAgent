@@ -184,7 +184,7 @@ ENROLLMENT_ENDPOINT = f"{RELAY_SERVER_URL}/api/register"
 WS_ENDPOINT = f"{RELAY_SERVER_URL}/ws/agent"
 ```
 
-### Côté plugin Ansible (ansible_plugins/connection_plugins/secagent.py)
+### Côté plugin Ansible (SECAGENT-PYTHON/ansible_plugins/connection_plugins/relay.py)
 
 ```python
 # Configuration du plugin
@@ -193,13 +193,13 @@ RELAY_API_URL = os.getenv("ANSIBLE_RELAY_API_URL",
 ADMIN_TOKEN = os.getenv("ANSIBLE_RELAY_ADMIN_TOKEN")
 ```
 
-### Côté inventaire (ansible_plugins/inventory_plugins/secagent_inventory.py)
+### Côté inventaire (binaire GO secagent-inventory)
 
-```python
-# Configuration de l'inventaire
-RELAY_INVENTORY_URL = os.getenv("ANSIBLE_RELAY_INVENTORY_URL",
-                                "http://192.168.1.218:7772")
-ADMIN_TOKEN = os.getenv("ANSIBLE_RELAY_ADMIN_TOKEN")
+```bash
+# Configuration de l'inventaire (binaire GO, v3.0.2+)
+RELAY_SERVER_URL=https://192.168.1.218:7770
+RELAY_TOKEN=secagent_plugin_xxxxx
+secagent-inventory --list
 ```
 
 ---
