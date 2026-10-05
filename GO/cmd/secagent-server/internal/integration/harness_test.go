@@ -95,8 +95,9 @@ type node struct {
 	ready     nodeReady // listeners of the node (host:port) and control URL
 	adminTok  string
 	jwtSecret string
-	hooksPath string // RELAY_HOOKS_CONFIG of the node
-	hookOut   string // file the hooks' file-actions append to
+	env       []string // environment of the node process (restart reuses it)
+	hooksPath string   // RELAY_HOOKS_CONFIG of the node
+	hookOut   string   // file the hooks' file-actions append to
 	logs      *syncBuf
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
@@ -229,8 +230,7 @@ func startNode(t *testing.T, spec nodeSpec) *node {
 	}
 	seedDatabase(t, dbPath, masterKey)
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestNodeProcess$", "-test.v")
-	env := append(os.Environ(),
+	n.env = append(append(os.Environ(),
 		envNodeProcess+"=1",
 		envNodeCert+"="+certPath, envNodeKey+"="+keyPath,
 		"SSL_CERT_FILE="+certPath, // the node trusts the test certificate: real TLS verification
@@ -243,8 +243,18 @@ func startNode(t *testing.T, spec nodeSpec) *node {
 		"REPEATER_ID="+spec.ID,
 		"REPEATER_UPSTREAM_URL="+spec.ParentURL,
 		"REPEATER_UPSTREAM_TOKEN="+spec.ParentToken,
-	)
-	cmd.Env = append(env, spec.Env...)
+	), spec.Env...)
+	n.launch(nil)
+	t.Cleanup(n.stop)
+	return n
+}
+
+// launch starts the node process with n.env (+ extra) and waits until it serves.
+func (n *node) launch(extra []string) {
+	t := n.t
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestNodeProcess$", "-test.v")
+	cmd.Env = append(append([]string(nil), n.env...), extra...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -279,10 +289,17 @@ func startNode(t *testing.T, spec nodeSpec) *node {
 	case n.ready = <-ready:
 	case <-time.After(waitLimit):
 		_ = cmd.Process.Kill()
-		t.Fatalf("node %s did not start; logs:\n%s", spec.ID, n.logs.String())
+		t.Fatalf("node %s did not start; logs:\n%s", n.id, n.logs.String())
 	}
-	t.Cleanup(n.stop)
-	return n
+}
+
+// restart stops the node and starts it again on the SAME database file, the same identity, secrets,
+// configuration and the SAME listening addresses (so that peers configured with its URL find it).
+func (n *node) restart() {
+	n.t.Helper()
+	prev := n.ready
+	n.stop()
+	n.launch([]string{"NODE_API_ADDR=" + prev.API, "NODE_ADMIN_ADDR=" + prev.Admin, "NODE_WS_ADDR=" + prev.WS})
 }
 
 func (n *node) stop() {

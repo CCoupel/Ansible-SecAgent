@@ -58,10 +58,22 @@ func TestNodeProcess(t *testing.T) {
 		log.Fatalf("test certificate: %v", err)
 	}
 	tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
-	for _, p := range []*net.Listener{&cfg.APIListener, &cfg.AdminListener, &cfg.WSListener} {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
+	// ephemeral loopback ports, unless the harness restarts the node on its previous addresses
+	for p, env := range map[*net.Listener]string{&cfg.APIListener: "NODE_API_ADDR", &cfg.AdminListener: "NODE_ADMIN_ADDR", &cfg.WSListener: "NODE_WS_ADDR"} {
+		addr := os.Getenv(env)
+		if addr == "" {
+			addr = "127.0.0.1:0"
+		}
+		var ln net.Listener
+		var err error
+		for i := 0; i < 50; i++ { // the previous process may still be releasing its port
+			if ln, err = net.Listen("tcp", addr); err == nil {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 		if err != nil {
-			log.Fatalf("listen: %v", err)
+			log.Fatalf("listen %s: %v", addr, err)
 		}
 		*p = tls.NewListener(ln, tlsCfg)
 	}
