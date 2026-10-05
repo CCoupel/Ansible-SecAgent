@@ -158,6 +158,8 @@ func TestConfig_TrustedProxyCIDRsPrefixZeroRefusesToStart(t *testing.T) {
 		t.Setenv("JWT_SECRET_KEY", "s")
 		t.Setenv("ADMIN_TOKEN", "a")
 		t.Setenv("TLS_DISABLE", "true")
+		t.Setenv("ADMIN_INSECURE_HTTP", "true")
+		t.Setenv("ADMIN_INSECURE_HTTP_ACK", AdminInsecureHTTPAckValue)
 		t.Setenv("TRUSTED_PROXY_CIDRS", bad)
 		if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "TRUSTED_PROXY_CIDRS") {
 			t.Errorf("ConfigFromEnv(%q) error = %v, want a TRUSTED_PROXY_CIDRS error", bad, err)

@@ -15,7 +15,7 @@ func TestBuild_AppliesTuneToUplinkAndDialerOptions(t *testing.T) {
 	var gotDial repeater.DialerOptions
 	called := 0
 	n, err := Build(Config{
-		TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites,
+		TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites,
 		Tune: func(o *repeater.Options, d *repeater.DialerOptions) {
 			called++
 			o.MinBackoff, o.MaxBackoff = 11*time.Millisecond, 22*time.Millisecond
