@@ -59,7 +59,12 @@ var (
 	ErrUserinfo  = errors.New("endpoints: userinfo not allowed in address")
 	ErrDuplicate = errors.New("endpoints: duplicate address")
 	ErrScheme    = errors.New("endpoints: unsupported scheme")
+	ErrTooMany   = errors.New("endpoints: too many addresses")
 )
+
+// MaxAddresses is the maximum number of addresses accepted in a list (bounds
+// the work and memory driven by configuration).
+const MaxAddresses = 16
 
 // Parse splits a comma separated list of absolute URLs (spaces around items are
 // ignored) and validates it. A single value is a valid list of one. Any scheme
@@ -84,6 +89,9 @@ func ParseSchemes(value string, schemes ...string) ([]*url.URL, error) {
 		allowed[strings.ToLower(s)] = true
 	}
 	items := strings.Split(value, ",")
+	if len(items) > MaxAddresses {
+		return nil, fmt.Errorf("%w: %d addresses, maximum is %d", ErrTooMany, len(items), MaxAddresses)
+	}
 	out := make([]*url.URL, 0, len(items))
 	seen := make(map[string]int, len(items))
 	for i, raw := range items {

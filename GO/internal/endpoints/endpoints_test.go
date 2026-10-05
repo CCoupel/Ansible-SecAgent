@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -597,5 +598,43 @@ func TestDialFirst_MarkSentKeepsTimeoutAfterSend(t *testing.T) {
 	})
 	if !errors.Is(err, ErrAfterSend) || calls != 1 {
 		t.Fatalf("err=%v calls=%d", err, calls)
+	}
+}
+
+func TestParse_TooMany(t *testing.T) {
+	mk := func(n int) string {
+		l := make([]string, n)
+		for i := range l {
+			l[i] = "https://h" + strconv.Itoa(i) + ".example"
+		}
+		return strings.Join(l, ",")
+	}
+	if got, err := Parse(mk(MaxAddresses)); err != nil || len(got) != MaxAddresses {
+		t.Fatalf("exactly MaxAddresses must be accepted: %v", err)
+	}
+	if _, err := Parse(mk(MaxAddresses + 1)); !errors.Is(err, ErrTooMany) {
+		t.Fatalf("MaxAddresses+1 must be rejected, err = %v", err)
+	}
+	_, err := Parse(mk(MaxAddresses+1) + ",https://user:s3cret@x.example")
+	if !errors.Is(err, ErrTooMany) {
+		t.Fatalf("err = %v, want ErrTooMany", err)
+	}
+	if strings.Contains(err.Error(), "example") || strings.Contains(err.Error(), "s3cret") {
+		t.Fatalf("error echoes addresses: %v", err)
+	}
+}
+
+func TestDialFirst_AttemptContextReleasedOnPanic(t *testing.T) {
+	r := mustRotor(t, "https://a.invalid", Backoff{})
+	var captured context.Context
+	func() {
+		defer func() { _ = recover() }()
+		_, _, _ = DialFirst(context.Background(), r, time.Hour, func(ctx context.Context, _ *url.URL) (int, error) {
+			captured = ctx
+			panic("boom")
+		})
+	}()
+	if captured == nil || captured.Err() == nil {
+		t.Fatal("attempt context must be cancelled even when dial panics")
 	}
 }

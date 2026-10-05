@@ -169,13 +169,7 @@ func DialFirst[T any](ctx context.Context, r *Rotor, timeout time.Duration,
 			return zero, nil, err
 		}
 		u := r.URL(i)
-		var sent atomic.Bool
-		actx, cancel := context.WithTimeout(context.WithValue(ctx, sentKey{}, &sent), timeout)
-		actx = httptrace.WithClientTrace(actx, &httptrace.ClientTrace{
-			WroteHeaderField: func(string, []string) { sent.Store(true) },
-		})
-		res, err := dial(actx, u)
-		cancel()
+		res, sent, err := attempt(ctx, timeout, u, dial)
 		if err == nil {
 			r.Success(i)
 			return res, u, nil
@@ -185,7 +179,7 @@ func DialFirst[T any](ctx context.Context, r *Rotor, timeout time.Duration,
 		}
 		// Timeouts (frozen master: TCP accepted, TLS/handshake never answered)
 		// are before-send as long as no request byte left.
-		if !IsBeforeSend(err) && (sent.Load() || !isTimeout(err)) {
+		if !IsBeforeSend(err) && (sent || !isTimeout(err)) {
 			return zero, nil, &afterSendError{index: i, err: err}
 		}
 		r.Failure(i)
@@ -194,6 +188,21 @@ func DialFirst[T any](ctx context.Context, r *Rotor, timeout time.Duration,
 		msgs = append(msgs, fmt.Sprintf("#%d: %s", i+1, redact(err)))
 	}
 	return zero, nil, &allFailedError{msgs: msgs}
+}
+
+// attempt runs one dial with its own timeout; cancel is deferred so the
+// attempt context is released even if dial panics. sent reports whether a
+// request byte left (httptrace or MarkSent).
+func attempt[T any](ctx context.Context, timeout time.Duration, u *url.URL,
+	dial func(context.Context, *url.URL) (T, error)) (res T, sent bool, err error) {
+	var flag atomic.Bool
+	actx, cancel := context.WithTimeout(context.WithValue(ctx, sentKey{}, &flag), timeout)
+	defer cancel()
+	actx = httptrace.WithClientTrace(actx, &httptrace.ClientTrace{
+		WroteHeaderField: func(string, []string) { flag.Store(true) },
+	})
+	res, err = dial(actx, u)
+	return res, flag.Load(), err
 }
 
 func isTLS(err error) bool {
