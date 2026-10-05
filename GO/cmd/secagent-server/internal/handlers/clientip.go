@@ -31,8 +31,13 @@ func ParseTrustedProxyCIDRs(list string) ([]*net.IPNet, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: invalid CIDR %q: %w", EnvTrustedProxyCIDRs, part, err)
 		}
-		if ones, bits := n.Mask.Size(); ones == 0 || (bits == 128 && n.IP.To4() != nil && ones <= 96) {
+		ones, bits := n.Mask.Size()
+		if ones == 0 {
 			return nil, fmt.Errorf("%s: entry #%d trusts every address (prefix length 0), refused", EnvTrustedProxyCIDRs, len(out)+1)
+		}
+		if bits == 128 && n.IP.To4() != nil && ones <= 96 {
+			// IPv4-mapped range (::ffff:0:0/96 and wider): every IPv4 address, whatever the prefix length written
+			return nil, fmt.Errorf("%s: entry #%d trusts every IPv4 address, refused", EnvTrustedProxyCIDRs, len(out)+1)
 		}
 		out = append(out, n)
 	}

@@ -89,6 +89,13 @@ func TestParseTrustedProxyCIDRs_RefusesPrefixZero(t *testing.T) {
 			t.Errorf("%q: error should name the variable: %v", bad, err)
 		}
 	}
+	// the message is exact for each case and never echoes the value
+	for in, want := range map[string]string{"0.0.0.0/0": "prefix length 0", "::/0": "prefix length 0", "::ffff:0:0/96": "every IPv4 address"} {
+		_, err := ParseTrustedProxyCIDRs(in)
+		if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), in) {
+			t.Errorf("%q: error %v, want it to say %q without echoing the value", in, err, want)
+		}
+	}
 	// the widest legitimate ranges stay accepted
 	for _, ok := range []string{"0.0.0.0/1", "::/1", "10.0.0.0/8", "::ffff:10.0.0.0/104", "2001:db8::/32"} {
 		if _, err := ParseTrustedProxyCIDRs(ok); err != nil {
