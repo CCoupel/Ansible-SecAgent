@@ -405,6 +405,12 @@ func TestDialFirst_NoRetryAfterSend_ServerStatusIsResult(t *testing.T) {
 	if !errors.Is(err, ErrAfterSend) || calls != 1 {
 		t.Fatalf("err=%v calls=%d", err, calls)
 	}
+	if i, ok := AfterSendIndex(err); !ok || i != 0 {
+		t.Errorf("AfterSendIndex = %d, %v", i, ok)
+	}
+	if _, ok := AfterSendIndex(errors.New("x")); ok {
+		t.Error("AfterSendIndex must be false for an unrelated error")
+	}
 }
 
 func TestDialFirst_ContextCancelled(t *testing.T) {
@@ -636,5 +642,33 @@ func TestDialFirst_AttemptContextReleasedOnPanic(t *testing.T) {
 	}()
 	if captured == nil || captured.Err() == nil {
 		t.Fatal("attempt context must be cancelled even when dial panics")
+	}
+}
+
+func TestRotor_HeadAndRotate(t *testing.T) {
+	r := mustRotor(t, "https://a,https://b,https://c", Backoff{})
+	if r.Head() != 0 {
+		t.Fatalf("initial head %d", r.Head())
+	}
+	r.Success(1)
+	if r.Head() != 1 {
+		t.Fatalf("head after Success(1) = %d", r.Head())
+	}
+	r.Rotate(0) // not the head: ignored
+	r.Rotate(-1)
+	r.Rotate(9)
+	if r.Head() != 1 {
+		t.Fatalf("Rotate of a non-head index must be ignored, head %d", r.Head())
+	}
+	r.Rotate(1)
+	if r.Head() != 2 || !eqInts(r.Order(), []int{2, 0, 1}) {
+		t.Fatalf("after Rotate(head): head %d order %v", r.Head(), r.Order())
+	}
+	r.Rotate(2)
+	if r.Head() != 0 { // wraps around
+		t.Fatalf("head after wrap = %d", r.Head())
+	}
+	if d := r.Backoff(); d != 0 {
+		t.Errorf("Rotate must not count as a failure, backoff %v", d)
 	}
 }

@@ -26,6 +26,7 @@ func defaultDecryptAndSaveToken(tokenEncryptedB64 string, privKey *rsa.PrivateKe
 func defaultReEnrollOnce(ctx context.Context, ec EnrollConfig, pubPEM string) (string, error) {
 	return enrollment.ReEnroll(ctx, enrollment.Config{
 		RegisterURL:     ec.RegisterURL,
+		Rotor:           ec.Rotor,
 		Hostname:        ec.Hostname,
 		PublicKeyPEM:    pubPEM,
 		PrivateKey:      ec.PrivateKey,

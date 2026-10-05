@@ -26,7 +26,9 @@ import (
 	"log"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -35,6 +37,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"secagent-server/cmd/secagent-minion/internal/enrollment"
+	"secagent-server/internal/endpoints"
 )
 
 const (
@@ -172,8 +175,12 @@ type ReEnroller interface {
 
 // ConnConfig regroupe les paramètres de connexion WebSocket.
 type ConnConfig struct {
-	// ServerURL est l'URL WSS du relay server (wss://relay.example.com/ws/agent).
+	// ServerURL est l'URL WSS du relay server (wss://relay.example.com/ws/agent). Valeur unique,
+	// ignorée si Endpoints est défini.
 	ServerURL string
+	// Endpoints est la liste des adresses WSS (RELAY_WS_URL en liste), appariées par position avec
+	// celles de EnrollConfig.Rotor : essayées par endpoints.DialFirst, dernière bonne en tête.
+	Endpoints *endpoints.Rotor
 	// JWT est le token d'authentification Bearer.
 	JWT string
 	// CABundle est le chemin vers un CA bundle PEM custom (vide = store système).
@@ -181,6 +188,9 @@ type ConnConfig struct {
 	// Insecure désactive la vérification TLS (tests uniquement).
 	Insecure bool
 }
+
+// wsAttemptTimeout borne la connexion + la poignée de main WebSocket sur UNE adresse.
+const wsAttemptTimeout = 20 * time.Second
 
 // EnrollConfig regroupe les paramètres nécessaires au ré-enrôlement sur 401.
 // Stocké dans le Dispatcher pour être utilisé dans la boucle de reconnexion.
@@ -198,6 +208,10 @@ type EnrollConfig struct {
 	EnrollmentToken string
 	// CABundle est le chemin vers un CA bundle PEM custom (vide = store système).
 	CABundle string
+	// Rotor, quand il est défini, remplace RegisterURL : adresses des serveurs (URL de base),
+	// appariées par position avec ConnConfig.Endpoints (même instance). Le ré-enrôlement ne change
+	// d'adresse que si la connexion échoue avant l'envoi.
+	Rotor *endpoints.Rotor
 	// Insecure désactive la vérification TLS (tests uniquement).
 	Insecure bool
 }
@@ -223,6 +237,12 @@ type Dispatcher struct {
 	reconnectBase, reconnectMax float64
 	// connected est vrai quand la dernière connexion a abouti (handshake WS réussi).
 	connected atomic.Bool
+
+	// wsRotor ordonne les adresses WS ; enrollRotor (EnrollConfig.Rotor) celles d'enrôlement. Les
+	// deux listes sont appariées par position : la dernière bonne instance est partagée.
+	wsRotor *endpoints.Rotor
+	// attemptTimeout borne connexion + poignée de main sur une adresse (0 = wsAttemptTimeout).
+	attemptTimeout time.Duration
 }
 
 // permanentError marque une erreur de ré-enrôlement qui ne se corrige pas en réessayant (token
@@ -257,12 +277,27 @@ func NewDispatcher(cfg ConnConfig, handler MessageHandler, maxConcurrent ...int)
 	if len(maxConcurrent) > 0 && maxConcurrent[0] > 0 {
 		max = maxConcurrent[0]
 	}
-	return &Dispatcher{
+	d := &Dispatcher{
 		cfg:           cfg,
 		handler:       handler,
 		tasks:         make(map[string]context.CancelFunc),
 		maxConcurrent: max,
 		jwt:           cfg.JWT,
+		wsRotor:       cfg.Endpoints,
+	}
+	if d.wsRotor == nil && cfg.ServerURL != "" {
+		// valeur unique (compatibilité) : liste d'une adresse
+		if u, err := url.Parse(cfg.ServerURL); err == nil {
+			d.wsRotor, _ = endpoints.NewRotor([]*url.URL{u}, endpoints.Backoff{})
+		}
+	}
+	return d
+}
+
+// syncPair propage la dernière bonne instance d'une liste à l'autre (appariement par position).
+func syncPair(from, to *endpoints.Rotor) {
+	if from != nil && to != nil && from.Len() == to.Len() {
+		to.Success(from.Head())
 	}
 }
 
@@ -385,7 +420,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 // Rien de secret n'est journalisé (ni JWT, ni token, ni challenge).
 func (d *Dispatcher) handleUnauthorized(ctx context.Context) (string, error) {
 	ec := d.enrollCfg
-	if ec.RegisterURL == "" || ec.PrivateKey == nil {
+	if (ec.RegisterURL == "" && ec.Rotor == nil) || ec.PrivateKey == nil {
 		return "", &permanentError{fmt.Errorf("401 received but no enrollment config — cannot re-enroll")}
 	}
 	if ec.EnrollmentToken == "" {
@@ -408,6 +443,7 @@ func (d *Dispatcher) handleUnauthorized(ctx context.Context) (string, error) {
 	defer cancel()
 	newJWT, enrollErr := reEnrollOnce(enrollCtx, ec, pubPEM)
 	if enrollErr == nil {
+		syncPair(ec.Rotor, d.wsRotor) // the instance that enrolled us is the first one the WS tries
 		return newJWT, nil
 	}
 	// 403 : token d'enrôlement refusé — inutile de boucler
@@ -425,25 +461,99 @@ func (d *Dispatcher) connect(ctx context.Context, reconnect *ReconnectManager) e
 		return fmt.Errorf("ws: build TLS config: %w", err)
 	}
 
-	dialer := websocket.Dialer{
-		TLSClientConfig:  tlsCfg,
-		HandshakeTimeout: 15 * time.Second,
+	if d.wsRotor == nil {
+		return errors.New("ws: no server address configured")
 	}
-
-	headers := http.Header{}
-	headers.Set("Authorization", "Bearer "+d.currentJWT())
-
-	conn, resp, err := dialer.DialContext(ctx, d.cfg.ServerURL, headers)
+	jwt := d.currentJWT()
+	attempt := d.attemptTimeout
+	if attempt <= 0 {
+		attempt = wsAttemptTimeout
+	}
+	conn, u, err := endpoints.DialFirst(ctx, d.wsRotor, attempt,
+		func(actx context.Context, u *url.URL) (*websocket.Conn, error) {
+			return d.dialOne(actx, u, tlsCfg, jwt)
+		})
 	if err != nil {
-		// Détecter le 401 HTTP lors du handshake WS
+		var hs *httpStatusError
+		if errors.Is(err, endpoints.ErrAfterSend) && !errors.As(err, &hs) {
+			// the handshake was sent and failed (cut, silence): no other address in this round
+			// (the request is not replayed), but the next round must not start on the same
+			// silent address. A 401/403 answer is a verdict, not a silent host: no rotation.
+			if i, ok := endpoints.AfterSendIndex(err); ok {
+				d.wsRotor.Rotate(i)
+			}
+		}
+		return err
+	}
+	syncPair(d.wsRotor, d.enrollCfg.Rotor)
+	return d.serve(ctx, conn, u.Host, reconnect)
+}
+
+// dialOne opens ONE WebSocket on u. The Upgrade request is written by gorilla itself, so the
+// connection wrapper calls endpoints.MarkSent right before the first application byte: a timeout
+// or cut after that point is an "after send" failure and DialFirst will not try another address.
+// TLS (wss) is done here so that its own writes (ClientHello) do NOT count as "sent".
+func (d *Dispatcher) dialOne(ctx context.Context, u *url.URL, tlsCfg *tls.Config, jwt string) (*websocket.Conn, error) {
+	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second}
+	nd := &net.Dialer{}
+	switch u.Scheme {
+	case "wss":
+		dialer.NetDialTLSContext = func(c context.Context, network, addr string) (net.Conn, error) {
+			raw, err := nd.DialContext(c, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			cfg := tlsCfg.Clone()
+			if cfg.ServerName == "" {
+				cfg.ServerName = u.Hostname()
+			}
+			tc := tls.Client(raw, cfg)
+			if err := tc.HandshakeContext(c); err != nil {
+				_ = raw.Close()
+				return nil, err
+			}
+			return &markingConn{Conn: tc, ctx: c}, nil
+		}
+	default:
+		dialer.NetDialContext = func(c context.Context, network, addr string) (net.Conn, error) {
+			raw, err := nd.DialContext(c, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			return &markingConn{Conn: raw, ctx: c}, nil
+		}
+	}
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+jwt)
+	conn, resp, err := dialer.DialContext(ctx, u.String(), headers)
+	if err != nil {
+		// Détecter le 401/403 HTTP lors du handshake WS
 		if resp != nil && resp.StatusCode == http.StatusUnauthorized {
-			return &httpStatusError{code: http.StatusUnauthorized, msg: "ws handshake rejected (401 Unauthorized)"}
+			return nil, &httpStatusError{code: http.StatusUnauthorized, msg: "ws handshake rejected (401 Unauthorized)"}
 		}
 		if resp != nil && resp.StatusCode == http.StatusForbidden {
-			return &httpStatusError{code: http.StatusForbidden, msg: "ws handshake rejected (403 Forbidden)"}
+			return nil, &httpStatusError{code: http.StatusForbidden, msg: "ws handshake rejected (403 Forbidden)"}
 		}
-		return fmt.Errorf("ws: dial %s: %w", d.cfg.ServerURL, err)
+		return nil, fmt.Errorf("ws: dial %s: %w", u.Host, err)
 	}
+	return conn, nil
+}
+
+// markingConn marks the attempt as "request sent" at the first write on the established
+// (and, for wss, TLS-secured) connection: that write is the HTTP Upgrade request.
+type markingConn struct {
+	net.Conn
+	ctx  context.Context
+	once sync.Once
+}
+
+func (m *markingConn) Write(p []byte) (int, error) {
+	m.once.Do(func() { endpoints.MarkSent(m.ctx) })
+	return m.Conn.Write(p)
+}
+
+// serve runs the read loop of an established connection.
+func (d *Dispatcher) serve(ctx context.Context, conn *websocket.Conn, host string, reconnect *ReconnectManager) error {
 	defer func() {
 		if err := conn.Close(); err != nil {
 			slog.Debug("[WS] close connection", "err", err)
@@ -464,7 +574,7 @@ func (d *Dispatcher) connect(ctx context.Context, reconnect *ReconnectManager) e
 
 	reconnect.Reset()
 	d.connected.Store(true)
-	log.Printf("[WS] Connected to %s", d.cfg.ServerURL)
+	log.Printf("[WS] Connected to %s", host)
 
 	// Heartbeat : répond automatiquement aux pings du serveur avec un pong.
 	// gorilla/websocket envoie les pongs via le handler enregistré.
@@ -690,7 +800,8 @@ func asHTTPStatusError(err error, target **httpStatusError) bool {
 	if err == nil {
 		return false
 	}
-	e, ok := err.(*httpStatusError)
+	var e *httpStatusError
+	ok := errors.As(err, &e) // DialFirst wraps handshake verdicts in an after-send error
 	if ok && target != nil {
 		*target = e
 	}

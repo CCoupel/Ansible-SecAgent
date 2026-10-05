@@ -21,6 +21,9 @@
 //
 //	RELAY_SERVER_URL         URL HTTPS du relay server    (défaut: https://localhost:7770)
 //	RELAY_WS_URL             URL WSS du relay server      (défaut: wss://localhost:7772/ws/agent)
+//	                         Les deux acceptent une LISTE séparée par des virgules (relay actif/passif) :
+//	                         mêmes longueurs, appariées par position (https://h1:7770 ↔ wss://h1:7772/ws/agent).
+//	                         Longueurs différentes : refus de démarrer.
 //	RELAY_AGENT_HOSTNAME     Hostname de l'agent          (défaut: os.Hostname())
 //	RELAY_PRIVATE_KEY        Chemin clef privée RSA       (défaut: /etc/secagent-minion/id_rsa)
 //	RELAY_JWT_PATH           Chemin JWT persisté          (défaut: /etc/secagent-minion/token.jwt)
@@ -35,6 +38,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -48,6 +52,7 @@ import (
 	"secagent-server/cmd/secagent-minion/internal/files"
 	"secagent-server/cmd/secagent-minion/internal/registry"
 	"secagent-server/cmd/secagent-minion/internal/ws"
+	"secagent-server/internal/endpoints"
 )
 
 func main() {
@@ -95,12 +100,12 @@ func main() {
 	}
 
 	dispatcher := ws.NewDispatcher(ws.ConnConfig{
-		ServerURL: cfg.wsURL,
+		Endpoints: cfg.wsRotor,
 		JWT:       jwt,
 		CABundle:  cfg.caBundle,
 		Insecure:  cfg.insecure,
 	}, handler, cfg.maxConcurrentTasks).WithEnrollConfig(ws.EnrollConfig{
-		RegisterURL:     cfg.serverURL + "/api/register",
+		Rotor:           cfg.serverRotor,
 		Hostname:        hostname,
 		PrivateKey:      privKey,
 		JWTPath:         cfg.jwtPath,
@@ -178,7 +183,7 @@ func loadOrEnroll(cfg agentConfig, hostname string, privKey *rsa.PrivateKey) (st
 	defer cancel()
 
 	return enrollment.Enroll(ctx, enrollment.Config{
-		RegisterURL:     cfg.serverURL + "/api/register",
+		Rotor:           cfg.serverRotor,
 		Hostname:        hostname,
 		PublicKeyPEM:    pubPEM,
 		PrivateKey:      privKey,
@@ -292,6 +297,36 @@ type agentConfig struct {
 	asyncDir           string
 	insecure           bool // TESTS UNIQUEMENT — désactive TLS verification
 	maxConcurrentTasks int
+
+	// Listes d'adresses appariées par position (valeur unique = liste d'une adresse).
+	serverRotor *endpoints.Rotor // enrôlement (URL de base HTTPS)
+	wsRotor     *endpoints.Rotor // WebSocket (wss://…/ws/agent)
+}
+
+// buildEndpoints parse RELAY_SERVER_URL et RELAY_WS_URL (listes séparées par des virgules) et
+// impose des longueurs égales : l'adresse i d'une liste et l'adresse i de l'autre désignent la
+// même instance du relay. Aucune erreur ne reproduit une URL.
+func buildEndpoints(serverList, wsList string) (srv, wsr *endpoints.Rotor, err error) {
+	srvURLs, err := endpoints.ParseSchemes(serverList, "https", "http")
+	if err != nil {
+		return nil, nil, fmt.Errorf("RELAY_SERVER_URL: %w", err)
+	}
+	wsURLs, err := endpoints.ParseSchemes(wsList, "wss", "ws")
+	if err != nil {
+		return nil, nil, fmt.Errorf("RELAY_WS_URL: %w", err)
+	}
+	if len(srvURLs) != len(wsURLs) {
+		return nil, nil, fmt.Errorf("RELAY_SERVER_URL has %d address(es) but RELAY_WS_URL has %d: the two lists are paired by position (the same relay instance at the same index) and must have the same length",
+			len(srvURLs), len(wsURLs))
+	}
+	bo := endpoints.Backoff{Min: time.Second, Max: time.Minute}
+	if srv, err = endpoints.NewRotor(srvURLs, bo); err != nil {
+		return nil, nil, err
+	}
+	if wsr, err = endpoints.NewRotor(wsURLs, bo); err != nil {
+		return nil, nil, err
+	}
+	return srv, wsr, nil
 }
 
 func loadConfig() agentConfig {
@@ -312,6 +347,10 @@ func loadConfig() agentConfig {
 		asyncDir:           getenv("RELAY_ASYNC_DIR", "/var/lib/secagent-minion/async"),
 		insecure:           getenv("RELAY_INSECURE_TLS", "") == "true",
 		maxConcurrentTasks: maxTasks,
+	}
+	var err error
+	if cfg.serverRotor, cfg.wsRotor, err = buildEndpoints(cfg.serverURL, cfg.wsURL); err != nil {
+		log.Fatalf("[FATAL] %v", err)
 	}
 	if cfg.insecure {
 		log.Printf("[WARN] RELAY_INSECURE_TLS=true — TLS verification disabled (tests only)")

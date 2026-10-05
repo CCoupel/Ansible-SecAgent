@@ -144,12 +144,11 @@ func TestRun_BackoffResetsAfterASuccessfulWebSocket(t *testing.T) {
 				_ = c.Close()
 			}
 		default:
-			cancel() // 5th connect: stop the test
 			w.WriteHeader(http.StatusUnauthorized)
 		}
 	}))
 	defer srv.Close()
-	rec := &recorder{cancel: cancel}
+	rec := &recorder{max: 3, cancel: cancel} // the test ends at the third wait
 	d := newLoopDispatcher(t, srv.URL, rec)
 	mockReEnroll(t, func(context.Context, EnrollConfig, string) (string, error) { return "j", nil })
 

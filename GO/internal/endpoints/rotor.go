@@ -77,6 +77,29 @@ func (r *Rotor) Order() []int {
 	return out
 }
 
+// Head returns the index tried first: the last address that answered (initially 0).
+func (r *Rotor) Head() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.last
+}
+
+// Rotate moves the head away from address i when i is the current head (it becomes the next
+// address of the list), without recording a failure. Used by callers whose operation failed
+// AFTER send on i (so DialFirst did not try another address): the next round must not start
+// again on an address that accepted the connection and then froze. Out-of-range or non-head
+// indices are ignored.
+func (r *Rotor) Rotate(i int) {
+	if i < 0 || i >= len(r.urls) {
+		return
+	}
+	r.mu.Lock()
+	if r.last == i {
+		r.last = (i + 1) % len(r.urls)
+	}
+	r.mu.Unlock()
+}
+
 // Success records that address i answered: it becomes the first choice and the
 // backoff is reset. Out-of-range indices are ignored.
 func (r *Rotor) Success(i int) {

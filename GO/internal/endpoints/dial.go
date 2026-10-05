@@ -105,6 +105,16 @@ func (e *afterSendError) Error() string {
 }
 func (e *afterSendError) Unwrap() []error { return []error{ErrAfterSend, e.err} }
 
+// AfterSendIndex returns the index of the address on which DialFirst stopped with an after-send
+// failure (errors.Is(err, ErrAfterSend)), so the caller can Rotor.Rotate it away.
+func AfterSendIndex(err error) (int, bool) {
+	var ae *afterSendError
+	if errors.As(err, &ae) {
+		return ae.index, true
+	}
+	return 0, false
+}
+
 // allFailedError aggregates the per-address failures of a round.
 type allFailedError struct{ msgs []string }
 
