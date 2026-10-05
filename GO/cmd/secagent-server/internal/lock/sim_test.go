@@ -286,6 +286,13 @@ func (h *memHandle) Chmod(mode os.FileMode) error {
 	return nil
 }
 
+// setRaw publishes an intermediate (torn) state of the file content.
+func (h *memHandle) setRaw(b []byte) {
+	h.fs.mu.Lock()
+	h.ino.data = append([]byte(nil), b...)
+	h.fs.mu.Unlock()
+}
+
 func (h *memHandle) ID() (FileID, error) { return FileID{Dev: 1, Ino: h.ino.id}, nil }
 func (h *memHandle) Close() error        { return nil }
 

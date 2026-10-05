@@ -20,6 +20,7 @@ type knobs struct {
 	longFreeze float64 // among freezes: longer than the master staleness
 	crashProb  float64 // per file operation: the process never runs again
 	meanFreeze time.Duration
+	torn       bool // a write is visible half done (NFS): empty, then a third, then complete
 }
 
 // delayFS freezes the calling actor (a process stopped by the scheduler or by a slow mount)
@@ -64,7 +65,17 @@ type delayHandle struct {
 	d *delayFS
 }
 
-func (h *delayHandle) Rewrite(b []byte) error    { h.d.freeze(); return h.h.Rewrite(b) }
+func (h *delayHandle) Rewrite(b []byte) error {
+	h.d.freeze()
+	if mh, ok := h.h.(*memHandle); ok && h.d.k.torn {
+		// a write seen half done by other processes: empty, then a third, then complete
+		mh.setRaw(nil)
+		_ = h.d.clk.Sleep(h.d.ctx, time.Duration(h.d.r.Int63n(int64(250*time.Millisecond))))
+		mh.setRaw(b[:20])
+		_ = h.d.clk.Sleep(h.d.ctx, time.Duration(h.d.r.Int63n(int64(250*time.Millisecond))))
+	}
+	return h.h.Rewrite(b)
+}
 func (h *delayHandle) Chmod(m os.FileMode) error { h.d.freeze(); return h.h.Chmod(m) }
 func (h *delayHandle) ID() (FileID, error)       { return h.h.ID() }
 func (h *delayHandle) Close() error              { return h.h.Close() }
@@ -209,6 +220,8 @@ func TestProperty_NeverTwoMastersWriting(t *testing.T) {
 		{"heavy freezes", knobs{freezeProb: 0.15, meanFreeze: 4 * time.Second}},
 		{"long freezes (beyond the staleness)", knobs{freezeProb: 0.03, longFreeze: 0.4, meanFreeze: 3 * time.Second}},
 		{"crashes", knobs{freezeProb: 0.05, crashProb: 0.004, meanFreeze: 2 * time.Second}},
+		{"torn writes (NFS)", knobs{freezeProb: 0.02, meanFreeze: 2 * time.Second, torn: true}},
+		{"torn writes and long freezes", knobs{freezeProb: 0.03, longFreeze: 0.4, meanFreeze: 3 * time.Second, torn: true}},
 	}
 	for _, sc := range scenarios {
 		for _, reuse := range []bool{false, true} {

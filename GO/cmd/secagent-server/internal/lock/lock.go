@@ -82,6 +82,8 @@ type Lock struct {
 	lostErr    error
 	beat       uint64
 	lastBeatOK time.Time
+	// uncertainSince: since when the content could not be read COMPLETE (guard); zero = certain.
+	uncertainSince time.Time
 
 	// observation of the lock content by this secondary (monotonic local clock)
 	obsRaw   string
@@ -139,9 +141,26 @@ func (l *Lock) warn(msg string, args ...any) {
 	slog.Warn("lock: "+msg, append([]any{"instance_id", l.id, "host", l.cfg.Host}, args...)...)
 }
 
+// contentSize is the FIXED size of the lock content: it is rewritten in place by ONE write of the
+// same length, never truncated, so that a reader never sees an empty or partial file produced by
+// our own heartbeat (JSON tolerates the trailing spaces).
+const contentSize = 256
+
 func encodeContent(c content) []byte {
+	if len(c.Host) > 64 {
+		c.Host = c.Host[:64]
+	}
 	b, _ := json.Marshal(c)
-	return b
+	if len(b) > contentSize {
+		c.Host = ""
+		b, _ = json.Marshal(c)
+	}
+	out := make([]byte, contentSize)
+	copy(out, b)
+	for i := len(b); i < contentSize; i++ {
+		out[i] = ' '
+	}
+	return out
 }
 
 func parseContent(raw []byte) (content, bool) {
@@ -352,18 +371,58 @@ func (l *Lock) CheckOwnership() error {
 	if onPath != mine {
 		return l.lose(errors.New("lock: the lock path designates another file"))
 	}
-	raw, err := l.cfg.FS.ReadFile(l.path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return l.lose(errors.New("lock: the lock file is gone"))
+	return l.confirmContent()
+}
+
+// Short bounded re-reads of an unreadable content before the guard gives up for this call.
+const (
+	inconclusiveRetries = 3
+	inconclusivePause   = 20 * time.Millisecond
+)
+
+// confirmContent reads the lock content (last step of the guard). A content that is missing,
+// empty or partial is INCONCLUSIVE (another process, or a slow mount, may be in the middle of a
+// write): the write is refused for this call but the lock is NOT lost, and the content is read
+// again after a short pause. The lock is lost only when a COMPLETE content belongs to another
+// instance, or when the uncertainty lasts longer than SelfRetire/2 (< self-retire).
+func (l *Lock) confirmContent() error {
+	var lastErr error
+	for attempt := 0; attempt <= inconclusiveRetries; attempt++ {
+		if attempt > 0 {
+			_ = l.cfg.Clock.Sleep(context.Background(), inconclusivePause)
 		}
-		return fmt.Errorf("lock: cannot confirm ownership (write refused): %w", err) // fail closed, not final
+		raw, err := l.cfg.FS.ReadFile(l.path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return l.lose(errors.New("lock: the lock file is gone"))
+			}
+			lastErr = err
+			continue
+		}
+		c, ok := parseContent(raw)
+		if !ok {
+			lastErr = errors.New("content empty or partial")
+			continue
+		}
+		if c.InstanceID != l.id || c.Role != RoleMaster {
+			return l.lose(fmt.Errorf("lock: the lock now belongs to instance %q", c.InstanceID))
+		}
+		l.mu.Lock()
+		l.uncertainSince = time.Time{}
+		l.mu.Unlock()
+		return nil
 	}
-	c, ok := parseContent(raw)
-	if !ok || c.InstanceID != l.id || c.Role != RoleMaster {
-		return l.lose(fmt.Errorf("lock: the lock now belongs to instance %q", c.InstanceID))
+	now := l.cfg.Clock.Now()
+	l.mu.Lock()
+	if l.uncertainSince.IsZero() {
+		l.uncertainSince = now
 	}
-	return nil
+	for_ := now.Sub(l.uncertainSince)
+	l.mu.Unlock()
+	if for_ >= l.p.SelfRetire/2 {
+		return l.lose(fmt.Errorf("lock: ownership could not be confirmed for %v (%v)", for_.Round(time.Second), lastErr))
+	}
+	return fmt.Errorf("lock: cannot confirm ownership (write refused, inconclusive read: %v)", lastErr)
 }
 
 // lose records the loss (once), closes the descriptor WITHOUT touching the file, and notifies.

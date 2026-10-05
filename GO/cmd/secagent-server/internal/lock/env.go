@@ -71,9 +71,21 @@ func (OSFS) CreateExclusive(path string, perm os.FileMode) (Handle, error) {
 	return &osHandle{f: f}, nil
 }
 
-func (OSFS) ReadFile(path string) ([]byte, error) { return os.ReadFile(path) }
-func (OSFS) Remove(path string) error             { return os.Remove(path) }
-func (OSFS) MkdirAll(dir string) error            { return os.MkdirAll(dir, 0o755) }
+// maxLockRead bounds what is read from the lock path (the content is 256 bytes).
+const maxLockRead = 4096
+
+// ReadFile REOPENS the path with O_NOFOLLOW: a symbolic link planted at relay.lock is refused
+// (ELOOP) instead of being followed to an arbitrary file.
+func (OSFS) ReadFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(io.LimitReader(f, maxLockRead))
+}
+func (OSFS) Remove(path string) error  { return os.Remove(path) }
+func (OSFS) MkdirAll(dir string) error { return os.MkdirAll(dir, 0o755) }
 
 func (OSFS) StatPath(path string) (FileID, error) {
 	fi, err := os.Lstat(path)
@@ -92,9 +104,7 @@ func idOf(fi os.FileInfo) (FileID, error) {
 }
 
 func (h *osHandle) Rewrite(content []byte) error {
-	if err := h.f.Truncate(0); err != nil {
-		return err
-	}
+	// no truncation: the content has a fixed size and is replaced by ONE write
 	if _, err := h.f.WriteAt(content, 0); err != nil {
 		return err
 	}
