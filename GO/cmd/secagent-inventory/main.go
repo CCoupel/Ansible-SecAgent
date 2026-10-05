@@ -10,7 +10,10 @@
 //	RELAY_SERVER_URL      URL HTTPS du relay server   (défaut: https://localhost:7770)
 //	RELAY_TOKEN           Bearer token (ADMIN_TOKEN)  (optionnel)
 //	RELAY_CA_BUNDLE       CA bundle PEM custom         (optionnel)
-//	RELAY_INSECURE_TLS    "true" pour désactiver TLS  (TESTS UNIQUEMENT)
+//	RELAY_INSECURE_TLS    "true" pour désactiver la vérification TLS (TESTS UNIQUEMENT) :
+//	                      avertissement sur stderr à chaque exécution ; refusé si l'URL n'est pas
+//	                      une adresse de bouclage, sauf RELAY_INSECURE_TLS_ACK=i-understand-the-risk
+//	RELAY_INSECURE_TLS_ACK  confirmation explicite pour désactiver TLS vers un serveur non-bouclage
 //	RELAY_ONLY_CONNECTED  "true" pour filtrer hôtes connectés uniquement (défaut: false)
 //	RELAY_SCOPE           id d'un relay : limite l'inventaire à sa descendance (optionnel)
 //
@@ -26,6 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -143,6 +147,7 @@ type config struct {
 	token         string
 	caBundle      string
 	insecure      bool
+	insecureAck   string // RELAY_INSECURE_TLS_ACK : doit valoir insecureAckValue pour un serveur non-bouclage
 	onlyConnected bool
 	scopeRelay    string // optional: only the subtree of this relay (RELAY_SCOPE)
 }
@@ -156,6 +161,12 @@ func main() {
 	}
 
 	cfg := loadConfig()
+
+	// Garde TLS : avant toute requête, pour --list comme pour --host (qui masque les erreurs réseau).
+	if err := checkInsecureTLS(cfg, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	switch args[0] {
 	case "--list":
@@ -178,6 +189,39 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Unknown flag: %s\nUsage: secagent-inventory --list | --host <hostname>\n", args[0])
 		os.Exit(1)
 	}
+}
+
+// insecureAckValue est la valeur exigée dans RELAY_INSECURE_TLS_ACK pour désactiver la vérification
+// TLS vers un serveur qui n'est pas en bouclage.
+const insecureAckValue = "i-understand-the-risk"
+
+// isLoopbackURL indique si l'URL pointe vers localhost, 127.0.0.0/8 ou ::1.
+func isLoopbackURL(raw string) bool {
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// checkInsecureTLS applique la garde de RELAY_INSECURE_TLS. Sans RELAY_INSECURE_TLS elle ne fait rien.
+// Sinon : refus si l'URL n'est pas en bouclage et que l'ACK explicite manque ; avertissement sur w
+// (stderr — stdout reste du JSON pur) dans les autres cas. Le token n'est jamais écrit.
+func checkInsecureTLS(cfg config, w io.Writer) error {
+	if !cfg.insecure {
+		return nil
+	}
+	if !isLoopbackURL(cfg.serverURL) && cfg.insecureAck != insecureAckValue {
+		return fmt.Errorf("RELAY_INSECURE_TLS=true refused: server URL %q is not a loopback address "+
+			"(localhost, 127.0.0.0/8, ::1); set RELAY_INSECURE_TLS_ACK=%s to confirm", cfg.serverURL, insecureAckValue)
+	}
+	_, err := fmt.Fprintf(w, "[SECURITY WARNING] TLS verification disabled (RELAY_INSECURE_TLS=true) for %s\n", cfg.serverURL)
+	return err
 }
 
 // cmdList implémente --list : GET /api/inventory → JSON Ansible complet
@@ -324,6 +368,7 @@ func loadConfig() config {
 		token:         getenv("RELAY_TOKEN", ""),
 		caBundle:      getenv("RELAY_CA_BUNDLE", ""),
 		insecure:      getenv("RELAY_INSECURE_TLS", "") == "true",
+		insecureAck:   getenv("RELAY_INSECURE_TLS_ACK", ""),
 		onlyConnected: getenv("RELAY_ONLY_CONNECTED", "") == "true",
 		scopeRelay:    getenv("RELAY_SCOPE", ""),
 	}

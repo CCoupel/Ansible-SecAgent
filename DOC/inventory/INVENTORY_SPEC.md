@@ -40,9 +40,20 @@ secagent-inventory --host my-host
 RELAY_SERVER_URL=https://relay.example.com    # défaut: https://localhost:7770
 RELAY_TOKEN=secagent_plugin_xxxxx                # Bearer token (PLUGIN_TOKEN)
 RELAY_CA_BUNDLE=/path/to/ca.pem               # CA custom (optionnel)
-RELAY_INSECURE_TLS=false                      # true = désactiver vérif TLS (TESTS)
+RELAY_INSECURE_TLS=false                      # true = désactiver vérif TLS (TESTS UNIQUEMENT, voir ci-dessous)
+RELAY_INSECURE_TLS_ACK=                       # i-understand-the-risk = confirmation pour un serveur non-bouclage
 RELAY_ONLY_CONNECTED=false                    # true = hôtes connectés uniquement
 ```
+
+**Garde `RELAY_INSECURE_TLS`** (vérifiée avant toute requête, pour `--list` comme `--host`) :
+
+- À chaque exécution avec `RELAY_INSECURE_TLS=true`, le binaire écrit sur **stderr**
+  `[SECURITY WARNING] TLS verification disabled …` ; stdout reste du JSON pur.
+- Si `RELAY_SERVER_URL` n'est pas une adresse de bouclage (`localhost`, `127.0.0.0/8`, `::1`), le binaire
+  **refuse** (message explicite sur stderr, code de sortie 1) sauf si
+  `RELAY_INSECURE_TLS_ACK=i-understand-the-risk`. Un seul oubli de variable ne désactive donc jamais la
+  vérification vers un serveur distant.
+- Le token n'apparaît jamais dans ces messages.
 
 ---
 
