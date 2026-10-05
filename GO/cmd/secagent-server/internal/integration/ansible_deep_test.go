@@ -52,3 +52,62 @@ func TestAnsibleInventory_DeepChainAndScopeOnAnIntermediateRelay(t *testing.T) {
 		t.Errorf("scoped on an intermediate relay not conform:\n  %s\n%s", strings.Join(p, "\n  "), scoped.Stdout)
 	}
 }
+
+// Five levels with push and pull links mixed, agents at several levels: exact chains, nested
+// groups, and RELAY_SCOPE on an intermediate relay and on a leaf — through the real Ansible.
+func TestAnsibleInventory_FiveLevelsMixedLinksScopeOnIntermediateAndLeaf(t *testing.T) {
+	tool := ansibleInventoryTool(t)
+	bin := inventoryBinary(t)
+	root, r1, r2, r3, r4 := mixedFiveLevels(t)
+	_ = r3
+	connectMinion(t, r1, "a-r1")
+	connectMinion(t, r2, "a-r2")
+	connectMinion(t, r4, "a-r4")
+	waitFor(t, "the root's inventory is complete", func() bool {
+		return root.hasHost("a-r1") && root.hasHost("a-r2") && root.hasHost("a-r4")
+	})
+
+	env := []string{"RELAY_SERVER_URL=" + root.apiURL(), "RELAY_TOKEN=" + root.pluginToken(), "SSL_CERT_FILE=" + certPath}
+	full := expectation{
+		hostGroup: map[string]string{"a-r1": "r1", "a-r2": "r2", "a-r4": "r4"},
+		children:  map[string][]string{"root": {"r1"}, "r1": {"r2"}, "r2": {"r3"}, "r3": {"r4"}, "r4": nil},
+		chain:     map[string][]string{"a-r1": {"r1"}, "a-r2": {"r2", "r1"}, "a-r4": {"r4", "r3", "r2", "r1"}},
+		nextHop:   map[string]string{"a-r1": "r1", "a-r2": "r1", "a-r4": "r1"},
+	}
+	for _, mode := range []string{"--list", "--graph"} {
+		res := runAnsible(t, tool, bin, env, mode)
+		if p := parseProblems(res); len(p) > 0 {
+			t.Fatalf("%s: %v\n%s", mode, p, res.Stderr)
+		}
+		if mode == "--list" {
+			if p := inventoryProblems(res.Stdout, full); len(p) > 0 {
+				t.Errorf("five-level inventory not conform:\n  %s\n%s", strings.Join(p, "\n  "), res.Stdout)
+			}
+		}
+	}
+
+	scope := func(relay string, e expectation) {
+		t.Helper()
+		res := runAnsible(t, tool, bin, append(env, "RELAY_SCOPE="+relay), "--list")
+		if p := parseProblems(res); len(p) > 0 {
+			t.Fatalf("scope %s: %v\n%s", relay, p, res.Stderr)
+		}
+		if p := inventoryProblems(res.Stdout, e); len(p) > 0 {
+			t.Errorf("scope %s not conform:\n  %s\n%s", relay, strings.Join(p, "\n  "), res.Stdout)
+		}
+	}
+	scope("r2", expectation{ // intermediate relay: r2's own host and everything below it
+		hostGroup: map[string]string{"a-r2": "r2", "a-r4": "r4"},
+		children:  map[string][]string{"r2": {"r3"}, "r3": {"r4"}, "r4": nil},
+		chain:     map[string][]string{"a-r2": {"r2", "r1"}, "a-r4": {"r4", "r3", "r2", "r1"}},
+		nextHop:   map[string]string{"a-r2": "r1", "a-r4": "r1"},
+		absent:    []string{"root", "r1", "a-r1"},
+	})
+	scope("r4", expectation{ // a leaf: only its own host
+		hostGroup: map[string]string{"a-r4": "r4"},
+		children:  map[string][]string{"r4": nil},
+		chain:     map[string][]string{"a-r4": {"r4", "r3", "r2", "r1"}},
+		nextHop:   map[string]string{"a-r4": "r1"},
+		absent:    []string{"root", "r1", "r2", "r3", "a-r1", "a-r2"},
+	})
+}

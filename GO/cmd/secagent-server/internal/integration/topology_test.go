@@ -246,3 +246,65 @@ func relaysOf(m map[string]any) []map[string]any {
 	}
 	return out
 }
+
+// mixedFiveLevels builds root → r1 → r2 → r3 → r4 with BOTH link directions mixed:
+//
+//	root ──push──▶ r1 ◀──pull── r2 ──push──▶ r3 ◀──pull── r4
+//
+// Every node runs the standard hooks. Nodes are started in an order that makes some links late
+// (the dynamic-topology re-snapshots must carry the subtree up).
+func mixedFiveLevels(t *testing.T) (root, r1, r2, r3, r4 *node) {
+	t.Helper()
+	root = startNode(t, nodeSpec{ID: "root", Hooks: standardHooks})
+	r1 = startNode(t, nodeSpec{ID: "r1", Hooks: standardHooks})
+	r2 = startNode(t, nodeSpec{ID: "r2", ParentURL: r1.wssURL(), ParentToken: r1.registerChild("r2"), Hooks: standardHooks})
+	r3 = startNode(t, nodeSpec{ID: "r3", Hooks: standardHooks})
+	waitFor(t, "r2 linked to r1 (pull)", func() bool { return r2.upstreamState() == "connected" })
+	r4 = startNode(t, nodeSpec{ID: "r4", ParentURL: r3.wssURL(), ParentToken: r3.registerChild("r4"), Hooks: standardHooks})
+	waitFor(t, "r4 linked to r3 (pull)", func() bool { return r4.upstreamState() == "connected" })
+	linkPush(t, r2, r3)   // r2 dials r3
+	linkPush(t, root, r1) // root dials r1
+	return
+}
+
+// A host.up three relays deep climbs to the root with the exact chain, and every node on the way
+// runs its hooks with the chain it received (origin first, the sending relay last).
+func TestTopology_DeepHostUpClimbsFiveLevelsWithTheExactChain(t *testing.T) {
+	parallel(t)
+	root, r1, r2, r3, r4 := mixedFiveLevels(t)
+	// the whole tree is declared at the root (replacement snapshots carried the subtree up)
+	waitFor(t, "the root's view includes r4", func() bool {
+		return strings.Contains(inventoryRaw(root), "r4") || root.logs.count("topology_snapshot: relay_id=r1") >= 2
+	})
+	waitFor(t, "r1 knows r4 as a descendant", func() bool { return r1.logs.count("topology_snapshot: relay_id=r2") >= 1 })
+	// let the re-snapshot chain settle: a probe event only counts once every hop declares its child
+	connectMinion(t, r4, "probe-host")
+	waitFor(t, "the probe reached the root", func() bool { return root.hookHas("UP probe-host") })
+
+	m := connectMinion(t, r4, "ev-deep")
+	want := map[*node]string{
+		r4:   "UP ev-deep status=connected chain= origin= enrolled=",
+		r3:   "UP ev-deep status=connected chain=r4 origin=r4 enrolled=",
+		r2:   "UP ev-deep status=connected chain=r4,r3 origin=r4 enrolled=",
+		r1:   "UP ev-deep status=connected chain=r4,r3,r2 origin=r4 enrolled=",
+		root: "UP ev-deep status=connected chain=r4,r3,r2,r1 origin=r4 enrolled=",
+	}
+	for n, line := range want {
+		n := n
+		waitFor(t, n.id+"'s hook ran for the deep host.up", func() bool { return n.hookHas("UP ev-deep") })
+		var got string
+		for _, l := range n.hookLines() {
+			if strings.HasPrefix(l, "UP ev-deep") {
+				got = l
+			}
+		}
+		if got != line {
+			t.Errorf("%s hook = %q, want %q", n.id, got, line)
+		}
+	}
+	waitFor(t, "the root routes the deep host", func() bool { return root.hasHost("ev-deep") })
+	if r := root.exec("ev-deep", execBody("id")); r.Code != http.StatusOK || len(m.received()) != 1 {
+		t.Errorf("exec down the five-level chain = %d %v", r.Code, r.Body)
+	}
+	assertNoSecrets(t, allLogs(root, r1, r2, r3, r4), nodeSecrets(root, r1, r2, r3, r4)...)
+}
