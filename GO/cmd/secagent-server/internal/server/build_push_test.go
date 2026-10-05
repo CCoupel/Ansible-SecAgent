@@ -60,7 +60,7 @@ func seedDB(t *testing.T, seed func(st *storage.Store)) string {
 func buildWith(t *testing.T, dbPath string, tune func(*Config)) *Node {
 	t.Helper()
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
-	cfg := Config{JWTSecret: "s", AdminToken: "a", NATSURL: "nats://127.0.0.1:1", DatabaseURL: dbPath}
+	cfg := Config{JWTSecret: "s", AdminToken: "a", DatabaseURL: dbPath}
 	if tune != nil {
 		tune(&cfg)
 	}

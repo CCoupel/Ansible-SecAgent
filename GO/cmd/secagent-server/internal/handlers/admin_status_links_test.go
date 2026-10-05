@@ -35,7 +35,7 @@ func TestAdminStatus_NoLinksWhenNotWired(t *testing.T) {
 	if _, ok := m["links"]; ok {
 		t.Errorf("unexpected links: %v", m["links"])
 	}
-	if m["db"] == nil || m["nats"] == nil {
+	if m["db"] == nil || m["ws_connections"] == nil {
 		t.Errorf("existing fields must stay: %v", m)
 	}
 }

@@ -172,7 +172,6 @@ func startMain(t *testing.T, env map[string]string) *serverProc {
 		"ADMIN_TOKEN":        "proc-test-admin",
 		"RSA_MASTER_KEY":     "proc-test-master-key",
 		"DATABASE_URL":       dbPath,
-		"NATS_URL":           "nats://127.0.0.1:1",
 		"RELAY_HOOKS_CONFIG": filepath.Join(dir, "absent-hooks.json"),
 		"PATH":               os.Getenv("PATH"),
 		"HOME":               dir,

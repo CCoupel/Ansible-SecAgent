@@ -42,7 +42,7 @@ func TestNode_RunReturnsOnPortConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = busy.Close() }()
-	n, err := Build(Config{JWTSecret: "s", AdminToken: "a", NATSURL: "nats://127.0.0.1:1", DatabaseURL: ":memory:",
+	n, err := Build(Config{JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:",
 		APIAddr: busy.Addr().String(), AdminAddr: "127.0.0.1:0", WSAddr: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ func TestNode_RunReturnsOnPortConflict(t *testing.T) {
 }
 
 func TestBuild_ReleasesEverythingOnError(t *testing.T) {
-	_, err := Build(Config{JWTSecret: "s", AdminToken: "a", NATSURL: "nats://127.0.0.1:1",
+	_, err := Build(Config{JWTSecret: "s", AdminToken: "a",
 		DatabaseURL: "/nonexistent-dir-for-secagent-test/\x00/relay.db"})
 	if err == nil {
 		t.Fatal("expected a database error")
@@ -64,7 +64,7 @@ func TestBuild_ReleasesEverythingOnError(t *testing.T) {
 
 func TestNode_CloseIsIdempotent(t *testing.T) {
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
-	n, err := Build(Config{JWTSecret: "s", AdminToken: "a", NATSURL: "nats://127.0.0.1:1", DatabaseURL: ":memory:"})
+	n, err := Build(Config{JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:"})
 	if err != nil {
 		t.Fatal(err)
 	}

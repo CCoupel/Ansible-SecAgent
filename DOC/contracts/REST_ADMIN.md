@@ -336,7 +336,6 @@ Format de réponse identique à `GET /api/inventory` (voir `DOC/contracts/REST_P
   "status": "healthy",
   "uptime_seconds": 86400,
   "connected_agents": 3,
-  "nats_connected": true,
   "db_ok": true,
   "version": "1.1.0"
 }

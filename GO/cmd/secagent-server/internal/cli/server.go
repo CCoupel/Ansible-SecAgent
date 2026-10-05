@@ -22,7 +22,7 @@ func init() {
 
 var serverStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show server health (NATS, DB, WS connections, uptime)",
+	Short: "Show server health (DB, WS connections, uptime)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		data, status, err := apiRequest("GET", "/api/admin/status", nil)
 		if err != nil {
@@ -41,7 +41,6 @@ var serverStatusCmd = &cobra.Command{
 			m := v.(map[string]interface{})
 			tp := newTabPrinter()
 			tp.println("COMPONENT\tSTATUS")
-			tp.printf("nats\t%v\n", m["nats"])
 			tp.printf("db\t%v\n", m["db"])
 			tp.printf("ws_connections\t%v\n", m["ws_connections"])
 			tp.printf("uptime\t%v\n", m["uptime"])

@@ -6,8 +6,8 @@
 #
 # Réseaux :
 #   proxy-net  : accès externe → relay-proxy uniquement
-#   dmz1-net   : relay-proxy ↔ relay-dmz1 + nats-dmz1 + agent-dmz1
-#   dmz2-net   : relay-proxy ↔ relay-dmz2 + nats-dmz2 + agent-dmz2
+#   dmz1-net   : relay-proxy ↔ relay-dmz1 + agent-dmz1
+#   dmz2-net   : relay-proxy ↔ relay-dmz2 + agent-dmz2
 #   → relay-dmz1 et relay-dmz2 ne partagent aucun réseau commun (isolation totale)
 #
 # Déploiement :
@@ -28,58 +28,6 @@
 services:
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # NATS — un broker par zone (isolation des streams JetStream)
-  # ─────────────────────────────────────────────────────────────────────────────
-
-  nats-proxy:
-    image: nats:2-alpine
-    container_name: nats-proxy
-    restart: unless-stopped
-    command: ["-js", "-sd", "/data", "-m", "8222"]
-    volumes:
-      - nats_proxy_data:/data
-    networks:
-      - proxy-net
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
-
-  nats-dmz1:
-    image: nats:2-alpine
-    container_name: nats-dmz1
-    restart: unless-stopped
-    command: ["-js", "-sd", "/data", "-m", "8222"]
-    volumes:
-      - nats_dmz1_data:/data
-    networks:
-      - dmz1-net
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
-
-  nats-dmz2:
-    image: nats:2-alpine
-    container_name: nats-dmz2
-    restart: unless-stopped
-    command: ["-js", "-sd", "/data", "-m", "8222"]
-    volumes:
-      - nats_dmz2_data:/data
-    networks:
-      - dmz2-net
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
-
-  # ─────────────────────────────────────────────────────────────────────────────
   # relay-proxy — relay principal en mode proxy/gateway
   # Connecté aux 3 réseaux : peut joindre relay-dmz1 et relay-dmz2
   # ─────────────────────────────────────────────────────────────────────────────
@@ -92,11 +40,7 @@ services:
     container_name: relay-proxy
     user: "0:0"    # root pour qualif — volume /data owned by root
     restart: unless-stopped
-    depends_on:
-      nats-proxy:
-        condition: service_healthy
     environment:
-      NATS_URL: "nats://nats-proxy:4222"
       DATABASE_URL: "/data/relay-proxy.db"
       JWT_SECRET_KEY: "${JWT_SECRET_KEY}"
       ADMIN_TOKEN: "${ADMIN_TOKEN}"
@@ -131,11 +75,7 @@ services:
     container_name: relay-dmz1
     user: "0:0"    # root pour qualif — volume /data owned by root
     restart: unless-stopped
-    depends_on:
-      nats-dmz1:
-        condition: service_healthy
     environment:
-      NATS_URL: "nats://nats-dmz1:4222"
       DATABASE_URL: "/data/relay-dmz1.db"
       JWT_SECRET_KEY: "${JWT_SECRET_KEY}"
       ADMIN_TOKEN: "${ADMIN_TOKEN}"
@@ -166,11 +106,7 @@ services:
     container_name: relay-dmz2
     user: "0:0"    # root pour qualif — volume /data owned by root
     restart: unless-stopped
-    depends_on:
-      nats-dmz2:
-        condition: service_healthy
     environment:
-      NATS_URL: "nats://nats-dmz2:4222"
       DATABASE_URL: "/data/relay-dmz2.db"
       JWT_SECRET_KEY: "${JWT_SECRET_KEY}"
       ADMIN_TOKEN: "${ADMIN_TOKEN}"
@@ -260,9 +196,6 @@ networks:
     name: qualif-dmz2-net
 
 volumes:
-  nats_proxy_data:
-  nats_dmz1_data:
-  nats_dmz2_data:
   relay_proxy_data:
   relay_dmz1_data:
   relay_dmz2_data:

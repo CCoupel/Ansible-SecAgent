@@ -18,7 +18,6 @@ func startNode(t *testing.T, mutate func(*Config)) (n *Node, api, admin, wsAddr 
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent-hooks.json")
 	cfg := Config{
 		JWTSecret: "node-test-secret", AdminToken: "node-test-admin",
-		NATSURL:     "nats://127.0.0.1:1", // unreachable: degraded mode, like production without NATS
 		DatabaseURL: ":memory:",
 		LogLevel:    "INFO",
 	}

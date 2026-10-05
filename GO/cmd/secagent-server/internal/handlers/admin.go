@@ -499,9 +499,6 @@ func AdminRevokeMinion(w http.ResponseWriter, r *http.Request) {
 // GET /api/admin/stats
 // ========================================================================
 
-// NATSStatus is used internally to check broker health (injected from main).
-var NATSHealthCheck func() bool
-
 var (
 	linkStatusMu sync.RWMutex
 	linkStatusFn func() interface{}
@@ -514,16 +511,11 @@ func SetLinkStatusFunc(fn func() interface{}) {
 	linkStatusMu.Unlock()
 }
 
-// AdminStatus returns server health: nats, db, ws_connections, uptime.
+// AdminStatus returns server health: db, ws_connections, uptime.
 // GET /api/admin/status
 func AdminStatus(w http.ResponseWriter, r *http.Request) {
 	if !requireAdminAuth(w, r) {
 		return
-	}
-
-	natsStatus := "unreachable"
-	if NATSHealthCheck != nil && NATSHealthCheck() {
-		natsStatus = "ok"
 	}
 
 	dbStatus := "ok"
@@ -540,7 +532,6 @@ func AdminStatus(w http.ResponseWriter, r *http.Request) {
 	uptimeSec := int(time.Since(serverStartTime).Seconds())
 
 	body := map[string]interface{}{
-		"nats":           natsStatus,
 		"db":             dbStatus,
 		"ws_connections": ws.GetConnectedCount(),
 		"uptime":         fmt.Sprintf("%ds", uptimeSec),

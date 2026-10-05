@@ -10,7 +10,7 @@ func setServerEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("JWT_SECRET_KEY", "s")
 	t.Setenv("ADMIN_TOKEN", "a")
-	for _, k := range []string{EnvAPIAddr, EnvAdminAddr, EnvWSAddr, "NATS_URL", "DATABASE_URL", "LOG_LEVEL",
+	for _, k := range []string{EnvAPIAddr, EnvAdminAddr, EnvWSAddr, "DATABASE_URL", "LOG_LEVEL",
 		"REPEATER_ID", "REPEATER_UPSTREAM_URL", "REPEATER_UPSTREAM_TOKEN"} {
 		t.Setenv(k, "")
 	}
@@ -25,7 +25,7 @@ func TestConfigFromEnv_DefaultsAreTheHistoricalPorts(t *testing.T) {
 	if cfg.APIAddr != ":7770" || cfg.AdminAddr != ":7771" || cfg.WSAddr != ":7772" {
 		t.Errorf("addresses = %q %q %q, want :7770 :7771 :7772", cfg.APIAddr, cfg.AdminAddr, cfg.WSAddr)
 	}
-	if cfg.NATSURL != "nats://localhost:4222" || cfg.DatabaseURL != "sqlite:///./relay.db" || cfg.LogLevel != "INFO" {
+	if cfg.DatabaseURL != "sqlite:///./relay.db" || cfg.LogLevel != "INFO" {
 		t.Errorf("defaults = %+v", cfg)
 	}
 	if cfg.Repeater != nil {

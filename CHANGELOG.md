@@ -9,6 +9,16 @@ All notable changes to this project will be documented in this file.
 ### Added
 - (future features for next milestone)
 
+### Removed
+- **NATS JetStream retiré du serveur et du déploiement (#178)** : aucun usage fonctionnel (l'exec passe par WebSocket direct), aucune perte. Suppression de `internal/broker`, de `GO/nats.conf`, des services/volumes `nats*` des Compose hors prod, des dépendances `nats-io` du `go.mod`. `NATS_URL` encore définie : un seul `[WARN] NATS_URL is obsolete and ignored`, démarrage normal.
+- **[BREAKING]** `GET /api/admin/status` et `secagent-server server status` ne renvoient plus le champ `nats`.
+
+### Security
+- **#176** : suppression de `completedResults` et de `GET /api/async_status/{task_id}` (map sans mutex, non bornée, sans appelant en production).
+- **#169** : `/ws/agent` refuse (401, avant l'upgrade) un JTI blacklisté, remplacé ou un agent inconnu ; fail closed.
+- **#177** : `X-Forwarded-For` n'est pris en compte que derrière `TRUSTED_PROXY_CIDRS` (vide par défaut = ignoré).
+- **#173** : `agents.suspended` appliqué à exec/upload/fetch (503 `agent_suspended`, relayé par les parents).
+
 ---
 
 ## [v3.0.2] — 2026-10-05 — Events et Inventaire Hiérarchique

@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"secagent-server/cmd/secagent-server/internal/broker"
 	"secagent-server/cmd/secagent-server/internal/config"
 	"secagent-server/cmd/secagent-server/internal/forward"
 	"secagent-server/cmd/secagent-server/internal/handlers"
@@ -33,7 +32,6 @@ type Node struct {
 	cfg Config
 
 	store       *storage.Store
-	natsClient  *broker.Client
 	dispatcher  *hooks.Dispatcher
 	hooksPath   string
 	dispatchCtx context.Context
@@ -72,7 +70,11 @@ func Build(cfg Config) (node *Node, err error) {
 
 	repeaterCfg := cfg.Repeater
 	log.Printf("[INIT] Ansible-SecAgent GO Server v1.0")
-	log.Printf("[INIT] NATS_URL: %s", cfg.NATSURL)
+	if os.Getenv("NATS_URL") != "" {
+		// NATS was never on the dispatch path (WebSocket direct): ignoring the variable has no
+		// functional effect, so this is a warning, not an error (unlike DATABASE_URL, #160).
+		log.Printf("[WARN] NATS_URL is obsolete and ignored (NATS removed in v3.0.3)")
+	}
 	log.Printf("[INIT] DATABASE_URL: %s", cfg.DatabaseURL)
 	log.Printf("[INIT] LOG_LEVEL: %s", cfg.LogLevel)
 	if repeaterCfg != nil {
@@ -125,22 +127,6 @@ func Build(cfg Config) (node *Node, err error) {
 
 	// Inject rekey function into WS handler (used when agent connects with previous key)
 	ws.SetRekeyFunc(handlers.RekeyAgent)
-
-	// Initialize NATS client (optional — server starts without NATS in degraded mode)
-	log.Println("[INIT] Connecting to NATS JetStream...")
-	natsClient, nerr := broker.NewClient(cfg.NATSURL)
-	if nerr != nil {
-		log.Printf("[WARN] NATS unavailable, running in degraded mode: %v", nerr)
-		natsClient = nil
-	} else {
-		log.Println("[OK] NATS connected")
-	}
-	n.natsClient = natsClient
-
-	// Wire NATS health check into admin status handler
-	handlers.NATSHealthCheck = func() bool {
-		return natsClient != nil && natsClient.IsConnected()
-	}
 
 	// Initialize hooks dispatcher (async event delivery)
 	n.dispatchCtx, n.cancel = context.WithCancel(context.Background())
@@ -343,17 +329,12 @@ func (n *Node) ReloadHooks() {
 	n.dispatcher.SetConfig(cfg)
 }
 
-// Close releases everything Build opened (dialers and repeater client, hooks dispatcher, NATS,
+// Close releases everything Build opened (dialers and repeater client, hooks dispatcher,
 // store). It is idempotent and also called by Run on exit.
 func (n *Node) Close() {
 	n.closeOnce.Do(func() {
 		if n.cancel != nil {
 			n.cancel()
-		}
-		if n.natsClient != nil {
-			if err := n.natsClient.Close(); err != nil {
-				log.Printf("natsClient.Close: %v", err)
-			}
 		}
 		if n.store != nil {
 			if err := n.store.Close(); err != nil {

@@ -33,7 +33,6 @@ const (
 type Config struct {
 	JWTSecret   string
 	AdminToken  string
-	NATSURL     string
 	DatabaseURL string
 	LogLevel    string
 
@@ -75,7 +74,6 @@ func ConfigFromEnv() (Config, error) {
 	cfg := Config{
 		JWTSecret:         os.Getenv("JWT_SECRET_KEY"),
 		AdminToken:        os.Getenv("ADMIN_TOKEN"),
-		NATSURL:           envOr("NATS_URL", "nats://localhost:4222"),
 		DatabaseURL:       envOr("DATABASE_URL", "sqlite:///./relay.db"),
 		LogLevel:          envOr("LOG_LEVEL", "INFO"),
 		TrustedProxyCIDRs: os.Getenv(handlers.EnvTrustedProxyCIDRs),

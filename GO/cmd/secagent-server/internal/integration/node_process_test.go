@@ -9,7 +9,7 @@ package integration
 //   - the three listeners are bound by the child on ephemeral loopback ports and wrapped in TLS
 //     (test certificate, trusted through SSL_CERT_FILE: the nodes really verify each other);
 //   - a tiny plain-HTTP control server (ws.CloseRelay) lets a test cut a link with a close code;
-//   - the NATS URL is unreachable (degraded mode, like production without NATS).
+//   - (no message broker: NATS was removed in v3.0.3).
 
 import (
 	"context"
