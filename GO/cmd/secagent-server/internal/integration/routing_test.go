@@ -8,7 +8,7 @@ import (
 // (d) a live local agent always wins over a relay declaring the same hostname: the task, its
 // stdin and the files go to the local minion, never down the tree.
 func TestRouting_LiveLocalAgentBeatsRelayClaim(t *testing.T) {
-	t.Parallel()
+	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
 	relay1 := startNode(t, nodeSpec{ID: "relay1", ParentURL: root.wssURL(), ParentToken: root.registerChild("relay1")})
 	waitFor(t, "relay1 linked", func() bool { return relay1.upstreamState() == "connected" })
@@ -55,7 +55,7 @@ func TestRouting_LiveLocalAgentBeatsRelayClaim(t *testing.T) {
 // owners) a bounded number of times — NOT at every agent_list round — and once only one relay
 // still claims the host, tasks follow it.
 func TestRouting_DuplicateClaimEmitsHostConflictWithoutStorm(t *testing.T) {
-	t.Parallel()
+	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
 	relayA := startNode(t, nodeSpec{ID: "relayA", ParentURL: root.wssURL(), ParentToken: root.registerChild("relayA")})
 	relayB := startNode(t, nodeSpec{ID: "relayB", ParentURL: root.wssURL(), ParentToken: root.registerChild("relayB")})
@@ -94,4 +94,21 @@ func TestRouting_DuplicateClaimEmitsHostConflictWithoutStorm(t *testing.T) {
 	if len(atB.received()) != 1 || len(atA.received()) != 0 {
 		t.Errorf("the task must go to relayB's minion only: A=%v B=%v", atA.received(), atB.received())
 	}
+}
+
+// (d) a conflict detected BELOW the root travels up the tree as an event: the root reports it too
+// (hooks fire at every level), without the root ever seeing the two claimants.
+func TestRouting_ConflictDetectedBelowIsReportedAtTheRoot(t *testing.T) {
+	parallel(t)
+	root := startNode(t, nodeSpec{ID: "root"})
+	mid := startNode(t, nodeSpec{ID: "mid", ParentURL: root.wssURL(), ParentToken: root.registerChild("mid")})
+	waitFor(t, "mid linked", func() bool { return mid.upstreamState() == "connected" })
+	leafA := startNode(t, nodeSpec{ID: "leafA", ParentURL: mid.wssURL(), ParentToken: mid.registerChild("leafA")})
+	leafB := startNode(t, nodeSpec{ID: "leafB", ParentURL: mid.wssURL(), ParentToken: mid.registerChild("leafB")})
+	waitFor(t, "leaves linked", func() bool { return leafA.upstreamState() == "connected" && leafB.upstreamState() == "connected" })
+
+	connectMinion(t, leafA, "twin")
+	connectMinion(t, leafB, "twin") // the same host is declared by two leaves under mid
+	waitFor(t, "mid detects the conflict", func() bool { return mid.logs.count("host.conflict: hostname=twin") >= 1 })
+	waitFor(t, "the root is told about the conflict that happened below", func() bool { return root.logs.count("host.conflict: hostname=twin") >= 1 })
 }

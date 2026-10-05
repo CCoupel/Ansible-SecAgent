@@ -9,7 +9,7 @@ import (
 // (b) push direction: the PARENT opens the link (dial-out). Mixed tree: root ──push──▶ relay1
 // ◀──pull── relay2 (relay1 accepts its parent and is itself the parent of a relay that dials it).
 func TestPush_ParentDialsChild_ExecReachesDeepAgent(t *testing.T) {
-	t.Parallel()
+	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
 	relay1 := startNode(t, nodeSpec{ID: "relay1"}) // no REPEATER_UPSTREAM_*: its parent will dial it
 	relay2 := startNode(t, nodeSpec{ID: "relay2", ParentURL: relay1.wssURL(), ParentToken: relay1.registerChild("relay2")})

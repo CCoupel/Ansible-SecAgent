@@ -19,7 +19,7 @@ func waitRefusedPermanent(t *testing.T, n *node) {
 
 // (c) identity usurpation: a valid token issued for "relay1" presented by a node announcing another id.
 func TestRefusal_ImpersonationIsPermanent(t *testing.T) {
-	t.Parallel()
+	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
 	tokForRelay1 := root.registerChild("relay1")
 	imposter := startNode(t, nodeSpec{ID: "imposter", ParentURL: root.wssURL(), ParentToken: tokForRelay1})
@@ -38,7 +38,7 @@ func TestRefusal_ImpersonationIsPermanent(t *testing.T) {
 
 // (c) loops: a child announcing the id of its parent, or of an ancestor, is refused for good.
 func TestRefusal_LoopIsPermanent(t *testing.T) {
-	t.Parallel()
+	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
 	relay1 := startNode(t, nodeSpec{ID: "relay1", ParentURL: root.wssURL(), ParentToken: root.registerChild("relay1")})
 	waitFor(t, "relay1 linked", func() bool { return relay1.upstreamState() == "connected" })
@@ -62,7 +62,7 @@ func TestRefusal_LoopIsPermanent(t *testing.T) {
 
 // (c) push side: the parent never dials itself nor one of its ancestors.
 func TestRefusal_PushDialOutLoopIsRejected(t *testing.T) {
-	t.Parallel()
+	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
 	relay1 := startNode(t, nodeSpec{ID: "relay1", ParentURL: root.wssURL(), ParentToken: root.registerChild("relay1")})
 	waitFor(t, "relay1 linked", func() bool { return relay1.upstreamState() == "connected" })
@@ -88,7 +88,7 @@ func TestRefusal_PushDialOutLoopIsRejected(t *testing.T) {
 
 // A node refuses to mint a relay-parent token for itself or for one of its own ancestors.
 func TestRefusal_MintingParentTokenForAnAncestorIsRejected(t *testing.T) {
-	t.Parallel()
+	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
 	relay1 := startNode(t, nodeSpec{ID: "relay1", ParentURL: root.wssURL(), ParentToken: root.registerChild("relay1")})
 	waitFor(t, "relay1 linked", func() bool { return relay1.upstreamState() == "connected" })

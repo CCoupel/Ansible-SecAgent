@@ -1,18 +1,30 @@
 package integration
 
-// Parent side of the harness: starts nodes (one OS process each), drives them through their
-// public HTTP / WebSocket surface and captures every node's logs.
+// Parent side of the harness: starts nodes (one OS process each, through the real entry point
+// internal/server), drives them through their public / admin HTTPS and WebSocket surface and
+// captures every node's logs.
 
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +32,9 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+
+	"secagent-server/cmd/secagent-server/internal/crypto"
+	"secagent-server/cmd/secagent-server/internal/storage"
 )
 
 const waitLimit = 30 * time.Second // generous: only reached on failure, avoids flakes on a loaded CI runner
@@ -74,7 +89,7 @@ type nodeSpec struct {
 type node struct {
 	t         *testing.T
 	id        string
-	url       string // https://127.0.0.1:port
+	ready     nodeReady // listeners of the node (host:port) and control URL
 	adminTok  string
 	jwtSecret string
 	logs      *syncBuf
@@ -83,21 +98,136 @@ type node struct {
 	plugin    string
 }
 
-var httpc = &http.Client{
-	Timeout:   10 * time.Second,
-	Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // self-signed test certificate
+// ── shared test material: TLS certificate and RSA key ────────────────────────
+//
+// Every node serves the same self-signed certificate (SAN 127.0.0.1) and trusts it through
+// SSL_CERT_FILE, so node-to-node and client-to-node verification is REAL. The RSA key pre-seeds
+// each node's database so the real InitServerState loads it instead of generating a 4096-bit key.
+
+var (
+	sharedOnce sync.Once
+	sharedErr  error
+	sharedDir  string
+	certPath   string
+	keyPath    string
+	tlsPool    *x509.CertPool
+	rsaKeyPEM  string
+	httpc      *http.Client
+)
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if sharedDir != "" {
+		_ = os.RemoveAll(sharedDir)
+	}
+	os.Exit(code)
+}
+
+// slots bounds the number of scenarios running at once: every scenario starts 2-3 real nodes
+// (each a race-instrumented process with its own database), 14 at a time starve even a big runner.
+var slots = make(chan struct{}, 5)
+
+// parallel runs the test concurrently with the others, within the slot limit.
+func parallel(t *testing.T) {
+	t.Helper()
+	t.Parallel()
+	slots <- struct{}{}
+	t.Cleanup(func() { <-slots })
+}
+
+func initShared() error {
+	dir, err := os.MkdirTemp("", "secagent-integration-")
+	if err != nil {
+		return err
+	}
+	sharedDir = dir
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "secagent-integration"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true, IsCA: true,
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}, DNSNames: []string{"localhost"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return err
+	}
+	certPath, keyPath = filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		return err
+	}
+	tlsPool = x509.NewCertPool()
+	tlsPool.AppendCertsFromPEM(certPEM)
+	httpc = &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{TLSClientConfig: tlsClientConfig()}}
+
+	rk, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return err
+	}
+	rkDER, err := x509.MarshalPKCS8PrivateKey(rk)
+	if err != nil {
+		return err
+	}
+	rsaKeyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: rkDER}))
+	return nil
+}
+
+func tlsClientConfig() *tls.Config {
+	return &tls.Config{RootCAs: tlsPool, MinVersion: tls.VersionTLS12}
+}
+
+// seedDatabase pre-creates the node's database with its RSA key (encrypted like in production).
+func seedDatabase(t *testing.T, dbPath, masterKey string) {
+	t.Helper()
+	st, err := storage.NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := crypto.EncryptAESGCM(rsaKeyPEM, masterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ConfigSet(context.Background(), "rsa_key_current", "enc:"+enc); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func startNode(t *testing.T, spec nodeSpec) *node {
 	t.Helper()
+	if err := func() error { sharedOnce.Do(func() { sharedErr = initShared() }); return sharedErr }(); err != nil {
+		t.Fatalf("shared test material: %v", err)
+	}
 	n := &node{t: t, id: spec.ID, adminTok: "admin-" + spec.ID + "-secret-token", jwtSecret: "jwt-signing-secret-of-" + spec.ID + "-0123456789", logs: &syncBuf{}}
+	masterKey := "integration-master-key-" + spec.ID
+	dbPath := filepath.Join(t.TempDir(), "relay.db")
+	seedDatabase(t, dbPath, masterKey)
+
 	cmd := exec.Command(os.Args[0], "-test.run=^TestNodeProcess$", "-test.v")
 	env := append(os.Environ(),
 		envNodeProcess+"=1",
+		envNodeCert+"="+certPath, envNodeKey+"="+keyPath,
+		"SSL_CERT_FILE="+certPath, // the node trusts the test certificate: real TLS verification
 		"ADMIN_TOKEN="+n.adminTok,
 		"JWT_SECRET_KEY="+n.jwtSecret,
-		"RSA_MASTER_KEY=integration-master-key-"+spec.ID,
-		"DATABASE_URL=sqlite:///"+t.TempDir()+"/relay.db",
+		"RSA_MASTER_KEY="+masterKey,
+		"DATABASE_URL=sqlite:///"+dbPath,
+		"NATS_URL=nats://127.0.0.1:1", // unreachable: degraded mode, like production without NATS
+		"RELAY_HOOKS_CONFIG="+filepath.Join(t.TempDir(), "absent-hooks.json"),
 		"REPEATER_ID="+spec.ID,
 		"REPEATER_UPSTREAM_URL="+spec.ParentURL,
 		"REPEATER_UPSTREAM_TOKEN="+spec.ParentToken,
@@ -116,22 +246,25 @@ func startNode(t *testing.T, spec nodeSpec) *node {
 		t.Fatal(err)
 	}
 	n.cmd, n.stdin = cmd, stdin
-	ready := make(chan string, 1)
+	ready := make(chan nodeReady, 1)
 	go func() {
 		sc := bufio.NewScanner(stdout)
 		sent := false
 		for sc.Scan() {
 			line := sc.Text()
-			if strings.HasPrefix(line, nodeReadyMarkerLine) && !sent {
-				ready <- strings.TrimPrefix(line, nodeReadyMarkerLine)
-				sent = true
-				continue
+			if strings.HasPrefix(line, readyMarker) && !sent {
+				var r nodeReady
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, readyMarker)), &r); err == nil {
+					ready <- r
+					sent = true
+					continue
+				}
 			}
 			_, _ = n.logs.Write([]byte(line + "\n"))
 		}
 	}()
 	select {
-	case n.url = <-ready:
+	case n.ready = <-ready:
 	case <-time.After(waitLimit):
 		_ = cmd.Process.Kill()
 		t.Fatalf("node %s did not start; logs:\n%s", spec.ID, n.logs.String())
@@ -149,24 +282,30 @@ func (n *node) stop() {
 	go func() { _ = n.cmd.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(40 * time.Second):
 		_ = n.cmd.Process.Kill()
 		<-done
 	}
 	n.cmd = nil
 }
 
-func (n *node) wssURL() string { return "wss" + strings.TrimPrefix(n.url, "https") }
+// Listeners of the node. Each one is a SEPARATE TLS listener, like the production ports.
+func (n *node) apiURL() string   { return "https://" + n.ready.API }
+func (n *node) adminURL() string { return "https://" + n.ready.Admin }
+func (n *node) wsURL() string    { return "https://" + n.ready.WS }
 
-// call issues an HTTP request on the node; bearer is the Authorization token.
-func (n *node) call(method, path, bearer string, body any) (int, []byte) {
+// wssURL is where relays and minions connect (the WebSocket listener).
+func (n *node) wssURL() string { return "wss://" + n.ready.WS }
+
+// callOn issues an HTTPS request on the given base URL; bearer is the Authorization token.
+func (n *node) callOn(base, method, path, bearer string, body any) (int, []byte) {
 	n.t.Helper()
 	var rd io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
 		rd = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, n.url+path, rd)
+	req, err := http.NewRequest(method, base+path, rd)
 	if err != nil {
 		n.t.Fatal(err)
 	}
@@ -178,16 +317,23 @@ func (n *node) call(method, path, bearer string, body any) (int, []byte) {
 	}
 	resp, err := httpc.Do(req)
 	if err != nil {
-		n.t.Fatalf("%s %s on %s: %v", method, path, n.id, err)
+		n.t.Fatalf("%s %s%s on %s: %v", method, base, path, n.id, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	out, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, out
 }
 
+// call is a request on the PUBLIC API listener.
+func (n *node) call(method, path, bearer string, body any) (int, []byte) {
+	n.t.Helper()
+	return n.callOn(n.apiURL(), method, path, bearer, body)
+}
+
+// admin is a request on the ADMIN listener with the node's admin token.
 func (n *node) admin(method, path string, body any) (int, map[string]any) {
 	n.t.Helper()
-	code, raw := n.call(method, path, n.adminTok, body)
+	code, raw := n.callOn(n.adminURL(), method, path, n.adminTok, body)
 	var m map[string]any
 	_ = json.Unmarshal(raw, &m)
 	return code, m
@@ -288,7 +434,7 @@ type health struct {
 // only exposes the degraded flag, see publicHealth).
 func (n *node) health() health {
 	n.t.Helper()
-	code, raw := n.call("GET", "/api/admin/status", n.adminTok, nil)
+	code, raw := n.callOn(n.adminURL(), "GET", "/api/admin/status", n.adminTok, nil)
 	if code != http.StatusOK {
 		n.t.Fatalf("admin status on %s: %d %s", n.id, code, raw)
 	}
@@ -346,9 +492,14 @@ func (n *node) pushState(child string) string {
 // closeRelay makes this node cut its link with the child relay using the given close code.
 func (n *node) closeRelay(child string, code int) {
 	n.t.Helper()
-	status, raw := n.call("POST", fmt.Sprintf("/__test/close-relay?id=%s&code=%d", child, code), "", nil)
-	if status != http.StatusOK || !strings.Contains(string(raw), "true") {
-		n.t.Fatalf("close-relay %s on %s: %d %s", child, n.id, status, raw)
+	resp, err := http.Post(fmt.Sprintf("%s/close-relay?id=%s&code=%d", n.ready.Control, child, code), "text/plain", nil)
+	if err != nil {
+		n.t.Fatalf("close-relay %s on %s: %v", child, n.id, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(raw), "true") {
+		n.t.Fatalf("close-relay %s on %s: %d %s", child, n.id, resp.StatusCode, raw)
 	}
 }
 
@@ -379,7 +530,7 @@ func connectMinion(t *testing.T, n *node, host string) *minion {
 	}
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+tok)
-	d := websocket.Dialer{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, HandshakeTimeout: 5 * time.Second} //nolint:gosec // test cert
+	d := websocket.Dialer{TLSClientConfig: tlsClientConfig(), HandshakeTimeout: 5 * time.Second}
 	conn, resp, err := d.Dial(n.wssURL()+"/ws/agent", h)
 	if err != nil {
 		t.Fatalf("minion %s dial %s: %v (resp %v)", host, n.id, err, resp)

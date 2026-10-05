@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"crypto/tls"
 	"net/http"
 	"strings"
 	"testing"
@@ -16,7 +15,7 @@ func dialRelayWith(t *testing.T, n *node, token string) int {
 	t.Helper()
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+token)
-	d := websocket.Dialer{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, HandshakeTimeout: 5 * time.Second} //nolint:gosec // test cert
+	d := websocket.Dialer{TLSClientConfig: tlsClientConfig(), HandshakeTimeout: 5 * time.Second}
 	conn, resp, err := d.Dial(n.wssURL()+"/ws/relay", h)
 	if err == nil {
 		_ = conn.Close()
@@ -31,7 +30,7 @@ func dialRelayWith(t *testing.T, n *node, token string) int {
 // (e) pull child: revoking its relay token cuts the ACTIVE link in 4010, the child stops for good
 // (refused_permanent in /health) and any new connection with that token is refused in 401.
 func TestRevocation_PullRelayToken_CutsLinkAndBlocksReconnection(t *testing.T) {
-	t.Parallel()
+	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
 	tok, relayRowID := root.registerChildWithID("relay1")
 	relay1 := startNode(t, nodeSpec{ID: "relay1", ParentURL: root.wssURL(), ParentToken: tok})
@@ -90,7 +89,7 @@ func pushRevocationSetup(t *testing.T) (root, relay1 *node, tok string) {
 // (e) push child: revoking the relay-parent token on the CHILD cuts the dialed link in 4010 and
 // every new dial with the token is refused in 401.
 func TestRevocation_RelayParentToken_CutsDialedLinkAndRefusesRedial(t *testing.T) {
-	t.Parallel()
+	parallel(t)
 	root, relay1, tok := pushRevocationSetup(t)
 	waitFor(t, "the parent's link is cut", func() bool { return root.pushState("relay1") != "connected" })
 	if got := dialRelayWith(t, relay1, tok); got != http.StatusUnauthorized {
@@ -112,7 +111,7 @@ func TestRevocation_RelayParentToken_CutsDialedLinkAndRefusesRedial(t *testing.T
 // (refused_permanent + degraded in the parent's /health, log ERROR). Found by this suite: the
 // 4010 close frame used to be swallowed by ws.ServeDialedRelay (dialer stuck in "retrying").
 func TestRevocation_RelayParentToken_DialerStopsForGood(t *testing.T) {
-	t.Parallel()
+	parallel(t)
 	root, _, _ := pushRevocationSetup(t)
 	waitFor(t, "root's dialer stopped for good", func() bool { return root.pushState("relay1") == "refused_permanent" })
 	if !root.health().Degraded {
@@ -126,7 +125,7 @@ func TestRevocation_RelayParentToken_DialerStopsForGood(t *testing.T) {
 // (e) 4012 is a CORRECTABLE refusal: the child reconnects with backoff, every time, and never
 // becomes terminal.
 func TestRevocation_Code4012IsRetried(t *testing.T) {
-	t.Parallel()
+	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
 	relay1 := startNode(t, nodeSpec{ID: "relay1", ParentURL: root.wssURL(), ParentToken: root.registerChild("relay1")})
 	waitFor(t, "relay1 linked", func() bool { return relay1.upstreamState() == "connected" })
@@ -149,7 +148,7 @@ func TestRevocation_Code4012IsRetried(t *testing.T) {
 // DELETE of a relay whose token cannot be blacklisted (push) is refused with 409 unless it was
 // revoked first (#153); a revoked one can be deleted and its dialer stops.
 func TestRevocation_DeletingAPushRelayRequiresRevocationFirst(t *testing.T) {
-	t.Parallel()
+	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
 	relay1 := startNode(t, nodeSpec{ID: "relay1"})
 	tok, _ := relay1.mintParentToken("root")

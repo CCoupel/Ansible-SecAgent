@@ -29,7 +29,7 @@ func threeLevels(t *testing.T) (root, relay1, relay2 *node) {
 // (a) three levels: agents at every level, topology/agent_list propagation, an exec descending to
 // the deepest agent and the result coming back up.
 func TestChain_ThreeLevels_ExecDescendsAndResultAscends(t *testing.T) {
-	t.Parallel()
+	parallel(t)
 	root, relay1, relay2 := threeLevels(t)
 	mA := connectMinion(t, root, "host-root")
 	mB := connectMinion(t, relay1, "host-l1")
@@ -85,7 +85,7 @@ func TestChain_ThreeLevels_ExecDescendsAndResultAscends(t *testing.T) {
 // Scenario 5 of #129: after a cut the child reconnects by itself and the parent's view is
 // re-synchronised, including agents that appeared while the link was down.
 func TestChain_ReconnectResyncsInventory(t *testing.T) {
-	t.Parallel()
+	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
 	relay1 := startNode(t, nodeSpec{ID: "relay1", ParentURL: root.wssURL(), ParentToken: root.registerChild("relay1")})
 	waitFor(t, "relay1 linked", func() bool { return relay1.upstreamState() == "connected" })
