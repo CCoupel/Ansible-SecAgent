@@ -76,8 +76,9 @@ func linkPush(t *testing.T, parent, child *node) {
 // ── a fake child relay: speaks the protocol by hand so that hostile messages can be sent ────────
 
 type fakeChild struct {
-	t    *testing.T
-	conn *websocket.Conn
+	t      *testing.T
+	conn   *websocket.Conn
+	closed chan error // the error that ended the reader (a *websocket.CloseError for a close frame)
 }
 
 func newFakeChild(t *testing.T, parent *node, id string, declared ...[]string) *fakeChild {
@@ -91,7 +92,7 @@ func newFakeChild(t *testing.T, parent *node, id string, declared ...[]string) *
 		t.Fatalf("fake child %s: %v", id, err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	f := &fakeChild{t: t, conn: conn}
+	f := &fakeChild{t: t, conn: conn, closed: make(chan error, 1)}
 	f.send(map[string]any{"type": "relay_hello", "relay_id": id, "node_type": "relay", "mode": "pull", "version": "3.0", "ancestors": []string{}})
 	f.expect("relay_ack")
 	relays := []map[string]any{}
@@ -100,10 +101,11 @@ func newFakeChild(t *testing.T, parent *node, id string, declared ...[]string) *
 	}
 	f.send(map[string]any{"type": "topology_snapshot", "relays": relays, "agents": []any{}})
 	f.expect("topology_ack")
-	// keep reading so that pings are answered and the link stays up
+	// keep reading so that pings are answered and the link stays up; remember how it ended
 	go func() {
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
+				f.closed <- err
 				return
 			}
 		}
@@ -130,6 +132,33 @@ func (f *fakeChild) expect(typ string) {
 			_ = f.conn.SetReadDeadline(time.Time{})
 			return
 		}
+	}
+}
+
+// snapshot sends a topology_snapshot (the first one, or a replacement).
+func (f *fakeChild) snapshot(relays, agents []map[string]any) {
+	f.t.Helper()
+	if relays == nil {
+		relays = []map[string]any{}
+	}
+	if agents == nil {
+		agents = []map[string]any{}
+	}
+	f.send(map[string]any{"type": "topology_snapshot", "relays": relays, "agents": agents})
+}
+
+// waitClosed waits for the parent to end the link and returns the close code (0 if it was not a close frame).
+func (f *fakeChild) waitClosed() int {
+	f.t.Helper()
+	select {
+	case err := <-f.closed:
+		if ce, ok := err.(*websocket.CloseError); ok {
+			return ce.Code
+		}
+		return 0
+	case <-time.After(waitLimit):
+		f.t.Fatal("the parent did not end the link")
+		return -1
 	}
 }
 
@@ -456,8 +485,8 @@ func TestEvents_EventWithoutParentLinkIsDroppedNotReplayed(t *testing.T) {
 	}
 }
 
-// #137-6: a conflict detected below climbs as host.conflict and is reported a small, stable number
-// of times, not at every agent_list round.
+// #137-6: a conflict detected below climbs as host.conflict, reported an EXACT number of times (once
+// per direction), not at every agent_list round.
 func TestEvents_HostConflictClimbsWithoutStorm(t *testing.T) {
 	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root", Hooks: standardHooks})
@@ -469,19 +498,30 @@ func TestEvents_HostConflictClimbsWithoutStorm(t *testing.T) {
 
 	connectMinion(t, leafA, "twin")
 	connectMinion(t, leafB, "twin")
-	waitFor(t, "the root's hook saw the conflict", func() bool { return root.hookHas("CONFLICT twin") })
+	// mid detects the change of owner in BOTH directions (leafA→leafB, then leafB→leafA) and reports
+	// each ONCE; both travel up and run the root's hook: exactly 2 lines, one per direction, and
+	// no more however many agent_list rounds follow
+	waitFor(t, "the root's hooks saw both conflicts", func() bool { return root.hookCount("CONFLICT twin") >= 2 })
 	rounds := func(n int) {
 		base := mid.logs.count("agent_list: relay_id=leafA") + mid.logs.count("agent_list: relay_id=leafB")
 		waitFor(t, "more agent_list rounds", func() bool {
 			return mid.logs.count("agent_list: relay_id=leafA")+mid.logs.count("agent_list: relay_id=leafB") >= base+n
 		})
 	}
-	rounds(8)
-	settled := root.hookCount("CONFLICT twin")
-	rounds(16)
-	// one report per direction of the flip, plus one when the two claims interleave: bounded, and above
-	// all STABLE once the claims have settled (a storm would grow with every agent_list round)
-	if now := root.hookCount("CONFLICT twin"); now != settled || now < 1 || now > 4 {
-		t.Errorf("host.conflict hooks at the root went from %d to %d over 16 more rounds: want a small stable count (1..4)", settled, now)
+	rounds(24)
+	got := root.hookLines()
+	ab := 0
+	ba := 0
+	for _, l := range got {
+		switch {
+		case strings.HasPrefix(l, "CONFLICT twin status=leafA->leafB"):
+			ab++
+		case strings.HasPrefix(l, "CONFLICT twin status=leafB->leafA"):
+			ba++
+		}
+	}
+	if ab != 1 || ba != 1 || root.hookCount("CONFLICT twin") != 2 {
+		t.Errorf("root host.conflict hooks: leafA->leafB x%d, leafB->leafA x%d (total %d), want exactly one of each and 2 in all: %q",
+			ab, ba, root.hookCount("CONFLICT twin"), got)
 	}
 }

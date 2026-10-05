@@ -39,23 +39,13 @@ func TestChain_ThreeLevels_ExecDescendsAndResultAscends(t *testing.T) {
 	waitFor(t, "relay1 learns host-l2 (agent_list from relay2)", func() bool { return relay1.hasHost("host-l2") })
 	waitFor(t, "root learns host-l1 (agent_list from relay1)", func() bool { return root.hasHost("host-l1") })
 
-	// (g) LIMIT, as it is today: relay2 joined AFTER relay1's link to the root, and nothing announces a
-	// new descendant relay upwards (no snapshot, relay.* events do not travel). The root therefore
-	// REJECTS the host.up of the deep host ("unknown descendant") and cannot route it yet.
-	waitFor(t, "the root rejects host-l2's host.up: relay2 is not a declared descendant", func() bool {
-		return root.logs.has("event_forward rejected: relay_id=relay1 unknown descendant relay2 in relay_chain")
-	})
-	if root.hasHost("host-l2") {
-		t.Fatal("known limit changed (late-joining relay now announced upwards?): update this test, see TestChain_LateJoiningRelay_DeepHostIsRoutableFromItsHostUp")
+	// (g) relay2 joined AFTER relay1's link to the root: relay1 re-sends a full snapshot that declares
+	// it (a replacement), so the deep host becomes routable at the root with NO link cut. The
+	// expected state is deterministic: wait for it by condition.
+	waitFor(t, "the root routes host-l2 (late relay announced by a replacement snapshot)", func() bool { return root.hasHost("host-l2") })
+	if n := root.logs.count("Relay connected: relay_id=relay1"); n != 1 {
+		t.Errorf("relay1 reconnected %d times: the late relay must be learned without any link cut", n)
 	}
-	if r := root.exec("host-l2", execBody("id")); r.Code == http.StatusOK {
-		t.Fatalf("exec on a deep host unknown to the root must fail, got %v", r)
-	}
-
-	// A new snapshot (link re-established) declares relay2 and routes the deep host.
-	root.closeRelay("relay1", 4012)
-	waitFor(t, "root routes host-l2 after relay1's new topology_snapshot", func() bool { return root.hasHost("host-l2") })
-	waitFor(t, "relay1 linked again", func() bool { return relay1.upstreamState() == "connected" })
 
 	// exec: root → relay1 → relay2 → minion, result back up the same path.
 	r := root.exec("host-l2", execBody("whoami"))
@@ -101,38 +91,4 @@ func TestChain_ReconnectResyncsInventory(t *testing.T) {
 	connectMinion(t, relay1, "during-cut") // may or may not be announced before the link is back
 	waitFor(t, "relay1 reconnected", func() bool { return root.logs.count("Relay connected: relay_id=relay1") > before })
 	waitFor(t, "inventory re-synchronised with both agents", func() bool { return root.hasHost("before-cut") && root.hasHost("during-cut") })
-}
-
-// WANTED (reported with #126, awaiting the fix): a relay that joins below an already-linked relay is
-// announced upwards, so the host.up of its agents is accepted and routes the deep host at the root
-// at once — no new snapshot, no link cut. Remove the Skip when the ancestors learn late descendants.
-func TestChain_LateJoiningRelay_DeepHostIsRoutableFromItsHostUp(t *testing.T) {
-	t.Skip("known gap (#126): a relay joining below a linked relay is unknown to the ancestors until the next snapshot; its events are rejected")
-	parallel(t)
-	root, relay1, relay2 := threeLevels(t)
-	_ = relay2
-	connectMinion(t, relay2, "late-deep")
-	waitFor(t, "root routes the deep host from its host.up", func() bool { return root.hasHost("late-deep") })
-	if n := root.logs.count("Relay connected: relay_id=relay1"); n != 1 {
-		t.Errorf("relay1 reconnected %d times: no link cut allowed", n)
-	}
-	_ = relay1
-}
-
-// WANTED (reported with #126, awaiting the dynamic-topology fix): when a descendant relay UNLINKS,
-// the ancestors drop its subtree — its hosts are no longer routable and their routes are cleaned
-// up (today the ancestors keep routing hosts of a relay that is gone until their own link is
-// recreated). Remove the Skip when a link loss below triggers a replacement snapshot upwards.
-func TestChain_UnlinkingRelay_ItsHostsAreNoLongerRoutableAtTheAncestors(t *testing.T) {
-	t.Skip("awaiting the dynamic-topology fix (#126 follow-up): a full snapshot is re-sent upwards when a child relay link is lost")
-	parallel(t)
-	root, mid, leaf := pushChain(t)
-	connectMinion(t, leaf, "leaf-host")
-	waitFor(t, "root routes the leaf's host", func() bool { return root.hasHost("leaf-host") })
-	leaf.stop() // the leaf relay goes away
-	waitFor(t, "mid no longer routes the leaf's host", func() bool { return !mid.hasHost("leaf-host") })
-	waitFor(t, "root drops the unlinked relay's subtree and cleans its routes", func() bool { return !root.hasHost("leaf-host") })
-	if r := root.exec("leaf-host", execBody("id")); r.Code == http.StatusOK {
-		t.Errorf("exec on a host whose relay is gone must fail, got %v", r)
-	}
 }
