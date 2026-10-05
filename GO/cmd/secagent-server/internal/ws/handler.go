@@ -1,8 +1,6 @@
 package ws
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -355,9 +353,11 @@ func truncateJTI(jti string) string {
 	return jti
 }
 
+// agentRole is the JWT "role" claim carried by every token issued to a minion (SECURITY.md §2).
+const agentRole = "agent"
+
 // extractHostnameFromRequest validates the JWT Bearer token using dual-key validation
-// and extracts the "sub" claim as hostname. Falls back to ?hostname= query param
-// only when JWTSecretsFunc is not configured (e.g. tests without DB).
+// and extracts the "sub" claim as hostname. There is no unsigned fallback.
 // Returns (hostname, usedPreviousKey, error).
 func extractHostnameFromRequest(r *http.Request) (hostname string, usedPrevious bool, err error) {
 	id, err := authenticateAgentRequest(r)
@@ -367,80 +367,44 @@ func extractHostnameFromRequest(r *http.Request) (hostname string, usedPrevious 
 	return id.Hostname, id.UsedPrevious, nil
 }
 
-// agentIdentity is what the /ws/agent handshake established about the caller.
+// agentIdentity is what the /ws/agent handshake established about the caller. It always comes
+// from a JWT whose signature was verified.
 type agentIdentity struct {
 	Hostname     string
 	JTI          string
 	UsedPrevious bool
-	// Verified is true when the identity comes from a JWT whose signature was checked (the
-	// production path). Only verified identities go through the revocation check.
-	Verified bool
 }
 
 // authenticateAgentRequest validates the Bearer token (dual-key) and returns the identity.
+//
+// Fail closed (same model as extractRelayAuth on /ws/relay): the ONLY accepted credential is a
+// Bearer JWT signed with the server secret, carrying role "agent" and a non-empty sub. No
+// verifier configured, no/empty/non-Bearer Authorization header, a bad signature, another role,
+// or a bare ?hostname= are all refused. Nothing the client sends unsigned is ever trusted.
 func authenticateAgentRequest(r *http.Request) (agentIdentity, error) {
+	if JWTSecretsFunc == nil {
+		log.Printf("[SECURITY WARNING] agent connection refused: JWTSecretsFunc is not configured (fail closed)")
+		return agentIdentity{}, fmt.Errorf("jwt_not_configured")
+	}
 	authHeader := r.Header.Get("Authorization")
-
-	// If JWT validation is configured, use it (production path)
-	if JWTSecretsFunc != nil && strings.HasPrefix(authHeader, "Bearer ") {
-		claims, prev, valErr := ExtractJWTClaims(authHeader)
-		if valErr != nil {
-			return agentIdentity{}, fmt.Errorf("jwt_invalid: %w", valErr)
-		}
-		sub, _ := claims["sub"].(string)
-		if sub == "" {
-			return agentIdentity{}, fmt.Errorf("jwt_missing_sub")
-		}
-		jti, _ := claims["jti"].(string)
-		return agentIdentity{Hostname: sub, JTI: jti, UsedPrevious: prev, Verified: true}, nil
+	if !strings.HasPrefix(authHeader, "Bearer ") || len(authHeader) <= len("Bearer ") {
+		log.Printf("[SECURITY WARNING] agent connection refused: missing bearer token")
+		return agentIdentity{}, fmt.Errorf("missing_agent_credentials")
 	}
-
-	// Fallback: extract sub from JWT payload without verification (tests / no-DB mode)
-	log.Printf("[SECURITY WARNING] JWT verification bypassed — JWTSecretsFunc is nil")
-	if strings.HasPrefix(authHeader, "Bearer ") && len(authHeader) > 7 {
-		sub := extractSubFromJWTUnsafe(authHeader[7:])
-		if sub != "" {
-			return agentIdentity{Hostname: sub}, nil
-		}
+	claims, prev, valErr := ExtractJWTClaims(authHeader)
+	if valErr != nil {
+		return agentIdentity{}, fmt.Errorf("jwt_invalid: %w", valErr)
 	}
-
-	// Last resort: query param (legacy / tests)
-	if h := r.URL.Query().Get("hostname"); h != "" {
-		return agentIdentity{Hostname: h}, nil
+	if role, _ := claims["role"].(string); role != agentRole {
+		log.Printf("[SECURITY WARNING] agent connection refused: wrong JWT role %q", role)
+		return agentIdentity{}, fmt.Errorf("jwt_wrong_role")
 	}
-
-	return agentIdentity{}, fmt.Errorf("missing_hostname")
-}
-
-// extractSubFromJWTUnsafe decodes the JWT payload without signature verification.
-// Used only when JWTSecretsFunc is not configured (tests, degraded mode).
-func extractSubFromJWTUnsafe(tokenStr string) string {
-	parts := strings.Split(tokenStr, ".")
-	if len(parts) != 3 {
-		return ""
+	sub, _ := claims["sub"].(string)
+	if sub == "" {
+		return agentIdentity{}, fmt.Errorf("jwt_missing_sub")
 	}
-	// JWT uses base64url without padding
-	padded := parts[1]
-	switch len(padded) % 4 {
-	case 2:
-		padded += "=="
-	case 3:
-		padded += "="
-	}
-	decoded, err := base64.StdEncoding.DecodeString(padded)
-	if err != nil {
-		// Try RawStdEncoding as fallback (no padding)
-		decoded, err = base64.RawStdEncoding.DecodeString(parts[1])
-		if err != nil {
-			return ""
-		}
-	}
-	var payload map[string]interface{}
-	if err := json.Unmarshal(decoded, &payload); err != nil {
-		return ""
-	}
-	sub, _ := payload["sub"].(string)
-	return sub
+	jti, _ := claims["jti"].(string)
+	return agentIdentity{Hostname: sub, JTI: jti, UsedPrevious: prev}, nil
 }
 
 // AgentHandler manages WebSocket connections from secagent-minions.
@@ -462,14 +426,12 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 	hostname, usedPrevious := id.Hostname, id.UsedPrevious
 
 	// Revocation / token-replacement check BEFORE the upgrade (401, no close code, SECURITY.md §4).
-	// Fail closed: a verified token is only accepted when the check is configured and passes.
-	if id.Verified {
-		if err := checkAgentJTI(hostname, id.JTI, usedPrevious); err != nil {
-			log.Printf("[SECURITY WARNING] agent connection refused: hostname=%q jti=%q: %v",
-				hostname, truncateJTI(id.JTI), err)
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-			return
-		}
+	// Fail closed: a token is only accepted when the check is configured and passes.
+	if err := checkAgentJTI(hostname, id.JTI, usedPrevious); err != nil {
+		log.Printf("[SECURITY WARNING] agent connection refused: hostname=%q jti=%q: %v",
+			hostname, truncateJTI(id.JTI), err)
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
 	}
 
 	// Upgrade HTTP → WebSocket
