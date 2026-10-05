@@ -413,6 +413,22 @@ EXECUTED_AT           EVENT       HOSTNAME       TYPE     SUCCESS  DURATION  ERR
 | Variable | Défaut | Description |
 |----------|--------|-------------|
 | `RELAY_HOOKS_CONFIG` | `/etc/secagent-server/hooks.json` | Chemin du fichier de configuration des hooks |
+| `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` | `64` | Nombre de workers (événements traités en parallèle) |
+| `RELAY_HOOKS_QUEUE_SIZE` | `10000` | Nombre d'événements en file, tous workers confondus (voir §9b) |
+
+### 9b. Traitement des événements : file, ordre, contre-pression (#183)
+
+Le dispatcher est un **pool de workers** (`RELAY_HOOKS_MAX_CONCURRENT_ACTIONS`, défaut 64), chacun avec sa file FIFO bornée.
+Un événement est confié au worker désigné par un **hachage du hostname** ; ce worker exécute les actions de l'événement **l'une après l'autre**.
+
+- **Contre-pression, pas de perte** : une action n'est plus abandonnée parce que « trop d'actions tournent » : elle attend dans la file.
+- **Ordre** : FIFO par hostname (`host.up` puis `host.down` d'un même hôte ne s'inversent jamais) ; **aucune garantie d'ordre entre hôtes**.
+- **Isolation** : un webhook lent ne bloque que son worker (borné par `timeout_seconds`, défaut 10 s, plus les retries) ; les hôtes des autres workers progressent. Les hôtes du même worker attendent.
+- **Dimensionnement** : la file contient `RELAY_HOOKS_QUEUE_SIZE` événements (défaut 10 000, réparti sur les workers : `ceil(taille/workers)` chacun, au moins 1) pour absorber plusieurs événements par hôte d'un parc de plus de 3 000 hôtes qui se reconnecte (bascule actif/passif, redémarrage). Mémoire : environ 200 octets + chaînes par événement, soit quelques Mo au défaut. Budget de débit : avec 64 workers et le pire timeout (10 s), 3 000 actions lentes se rattrapent en environ 470 s, toutes conservées.
+- **Au-delà de la file** : l'événement est rejeté et **compté** (`hooks_dropped_events`) ; un seul `[WARN] hooks: N event(s) …` agrégé par minute, et une entrée **`dropped`** agrégée dans le journal des actions (`action_type:"dropped"`, `event:"*"`, le message donne les comptes). Jamais une ligne par événement.
+- **Compteurs** (`GET /api/admin/status`, `secagent-server server status`) : `hooks_queue_depth` (+ `hooks_queue_capacity`), `hooks_inflight`, `hooks_dropped_events`, `hooks_dropped_actions` (actions perdues avec des événements en file lors d'un arrêt brutal : doit rester 0 en marche).
+- **Arrêt propre** (signal d'arrêt) : les serveurs HTTP s'arrêtent, puis la file est vidée pendant 10 s au plus ; le reste est compté et loggué (`[SHUTDOWN] hooks: N event(s) still pending`). **Arrêt brutal** (perte du verrou actif/passif, #163) : sortie immédiate, les événements en file sont perdus, comptés et loggués (`Dispatcher stopped: N queued event(s) not processed`). Le nouveau maître reçoit de toute façon les `host.up` des reconnexions.
+- **Budgets séparés avec #179** : les actions de hook ne consomment pas de slot de tâche `exec` ; une action `api` qui appellerait l'API exec du serveur serait soumise à #179 comme n'importe quel client.
 
 ---
 
@@ -422,7 +438,7 @@ EXECUTED_AT           EVENT       HOSTNAME       TYPE     SUCCESS  DURATION  ERR
 |-----------|-------------|
 | Fichier absent | Démarrage normal, log info `hooks config not found`, 0 hook actif |
 | JSON invalide au chargement | Log error, config précédente conservée (ou vide si premier chargement) |
-| Queue pleine (1000 jobs) | Drop event + log `WARN webhook queue full` |
+| Queue pleine (`RELAY_HOOKS_QUEUE_SIZE`, 10 000 par défaut) | Événement rejeté et compté (`hooks_dropped_events`), un `[WARN]` agrégé par minute + entrée `dropped` dans le journal (§9b) |
 | Type d'action inconnu | Log `WARN unknown action type`, action ignorée |
 | `shell` : commande introuvable | success=false, erreur dans action_log |
 | `file` : permissions insuffisantes | success=false, erreur OS dans action_log |

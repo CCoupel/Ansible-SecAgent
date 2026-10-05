@@ -42,7 +42,7 @@ func TestDispatcher_JournalNeverContainsSecrets(t *testing.T) {
 	}
 	defer func() { _ = j.Close() }()
 
-	d := NewDispatcher(j, 10)
+	d := NewDispatcher(j, 100)
 	d.SetConfig(&HooksConfig{Hooks: []HookDef{{Event: "host.new", Actions: []ActionDef{
 		{Type: "api", Method: "POST", URL: ok.URL + "/notify?token=" + urlToken,
 			Headers: map[string]string{"Authorization": authSecret}, Body: map[string]string{"pw": bodySecret}, TimeoutSeconds: 3},
@@ -122,7 +122,7 @@ func TestDispatcher_JournalFailureDoesNotBlockTheDispatch(t *testing.T) {
 	dir := t.TempDir()
 	f1, f2 := filepath.Join(dir, "one.log"), filepath.Join(dir, "two.log")
 	fl := &failingLogger{}
-	d := NewDispatcher(fl, 10)
+	d := NewDispatcher(fl, 100)
 	d.SetConfig(&HooksConfig{Hooks: []HookDef{
 		{Event: "host.new", Actions: []ActionDef{{Type: "file", Path: f1, Append: "x\n"}}},
 		{Event: "host.up", Actions: []ActionDef{{Type: "file", Path: f2, Append: "y\n"}}},
@@ -206,7 +206,7 @@ func TestDispatcher_ServerLogNeverContainsSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = j.Close() }()
-	d := NewDispatcher(j, 10)
+	d := NewDispatcher(j, 100)
 	d.SetConfig(&HooksConfig{Hooks: []HookDef{{Event: "host.new", Actions: []ActionDef{
 		{Type: "webhook", URL: strings.Replace(deadURL, "http://", "http://admin:"+userinfo+"@", 1) + "/services/T0/B0/" + pathSecret + "?access_token=" + urlToken, Secret: hmacSecret, TimeoutSeconds: 2},
 		{Type: "api", Method: "POST", URL: deadURL + "/x?token=" + urlToken, Headers: map[string]string{"Authorization": "Bearer " + authSecret}, TimeoutSeconds: 2},
@@ -256,7 +256,7 @@ func TestDispatcher_ShellStderrNeverReachesJournalOrLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = j.Close() }()
-	d := NewDispatcher(j, 10)
+	d := NewDispatcher(j, 100)
 	d.SetConfig(&HooksConfig{Hooks: []HookDef{{Event: "host.new", Actions: []ActionDef{
 		{Type: "shell", Cmd: "/bin/sh", Args: []string{"-c", "echo $0 >&2; exit 3", leak}, TimeoutSeconds: 3},
 	}}}})

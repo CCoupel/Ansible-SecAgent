@@ -149,7 +149,7 @@ func Build(cfg Config) (node *Node, err error) {
 	}
 	n.journal = journal
 	handlers.SetActionJournal(journal)
-	dispatcher := hooks.NewDispatcher(journal, 1000)
+	dispatcher := hooks.NewDispatcher(journal, hooks.QueueSizeFromEnv())
 	dispatcher.Start(dispatchCtx)
 	hooks.GlobalDispatcher = dispatcher
 	n.dispatcher = dispatcher
@@ -490,6 +490,11 @@ func (n *Node) Run(ctx context.Context) error {
 
 	log.Println("[SHUTDOWN] Shutting down servers...")
 	n.shutdownServers()
+	if runErr == nil && n.dispatcher != nil { // clean stop: flush the hooks queue (bounded), then count what is left
+		if left := n.dispatcher.Drain(hooks.DefaultDrainTimeout); left > 0 {
+			log.Printf("[SHUTDOWN] hooks: %d event(s) still pending after %s — they are lost", left, hooks.DefaultDrainTimeout)
+		}
+	}
 	log.Println("[OK] Shutdown complete")
 	return runErr
 }

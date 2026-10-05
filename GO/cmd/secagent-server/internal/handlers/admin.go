@@ -512,7 +512,8 @@ func SetLinkStatusFunc(fn func() interface{}) {
 	linkStatusMu.Unlock()
 }
 
-// AdminStatus returns server health: db, ws_connections, uptime.
+// AdminStatus returns server health: db, ws_connections, uptime, links and the hooks queue counters
+// (hooks_queue_depth, hooks_queue_capacity, hooks_inflight, hooks_dropped_events, hooks_dropped_actions).
 // GET /api/admin/status
 func AdminStatus(w http.ResponseWriter, r *http.Request) {
 	if !requireAdminAuth(w, r) {
@@ -536,6 +537,14 @@ func AdminStatus(w http.ResponseWriter, r *http.Request) {
 		"db":             dbStatus,
 		"ws_connections": ws.GetConnectedCount(),
 		"uptime":         fmt.Sprintf("%ds", uptimeSec),
+	}
+	if d := hooks.GlobalDispatcher; d != nil { // hooks queue (#183): a loss is never silent
+		st := d.Stats()
+		body["hooks_queue_depth"] = st.QueueDepth
+		body["hooks_queue_capacity"] = st.QueueCapacity
+		body["hooks_inflight"] = st.Inflight
+		body["hooks_dropped_events"] = st.DroppedEvents
+		body["hooks_dropped_actions"] = st.DroppedActions
 	}
 	linkStatusMu.RLock()
 	links := linkStatusFn

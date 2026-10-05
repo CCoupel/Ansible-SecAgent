@@ -314,7 +314,8 @@ secagent-server server stats
 | `MAX_SNAPSHOT_HOSTS` | — | Limite nombre hôtes dans topology_snapshot (défaut 10000) |
 | `MAX_AGENT_LIST_HOSTS` | — | Limite nombre hôtes dans agent_list par appel (défaut = MAX_SNAPSHOT_HOSTS = 10 000) |
 | `MAX_WS_MESSAGE_SIZE_RELAY` | — | Taille maximale message WebSocket relay (défaut 10MB) |
-| `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` | — | Limite goroutines simultanées pour exécution des hooks (défaut `64`) — voir §9.7a |
+| `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` | — | Nombre de workers des hooks (défaut `64`) — voir §9.7a |
+| `RELAY_HOOKS_QUEUE_SIZE` | — | Taille de la file des hooks (défaut `10000`) — voir §9.7a |
 | `RELAY_INSECURE_TLS` | — | Utilisé par le binaire `secagent-inventory` (v3.0.2+) : accepter certificats TLS auto-signés. Requiert `RELAY_INSECURE_TLS_ACK=i-understand-the-risk` pour éviter les acceptations accidentelles (fail-closed) |
 
 ---
@@ -812,18 +813,16 @@ Le filtre est validé au chargement de la config (fichier rejeté en bloc si mal
 
 ---
 
-### 9.7a Sémaphore hooks et concurrence (`RELAY_HOOKS_MAX_CONCURRENT_ACTIONS`)
+### 9.7a Workers hooks et file (`RELAY_HOOKS_MAX_CONCURRENT_ACTIONS`, `RELAY_HOOKS_QUEUE_SIZE`)
 
-**Limite** : le nombre d'actions (commandes, webhooks) exécutées en parallèle par relay pour éviter un débordement de goroutines ou d'I/O en cas de tempête d'événements.
+**Pool de workers** (#183) : `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` (défaut `64`) workers, chacun avec sa file FIFO ; un événement va au worker désigné par le hachage de son hostname (ordre préservé par hôte).
 
 | Variable | Défaut | Description |
 |---|---|---|
-| `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` | `64` | Max goroutines simultanées pour les hooks (tous types confondus : commandes, webhooks) |
+| `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` | `64` | Nombre de workers = événements traités en parallèle |
+| `RELAY_HOOKS_QUEUE_SIZE` | `10000` | Événements en file, tous workers confondus |
 
-**Comportement au-delà de la limite** :
-- Action rejetée silencieusement (ne bloque pas le dispatcher)
-- Compteur `DroppedActions()` incrémenté
-- Log `[SECURITY WARNING]` (1 fois sur 100 pour éviter la saturation log) : hostname en format sûr, ID relay
+**Comportement** : contre-pression (les actions attendent dans la file, aucune n'est abandonnée tant que la file n'est pas pleine) ; au-delà de la file, rejet **compté** (`hooks_dropped_events`) avec un `[WARN]` agrégé par minute. Détails, ordre, compteurs, arrêt : `DOC/server/HOOKS_SPEC.md` §9b.
 
 ---
 

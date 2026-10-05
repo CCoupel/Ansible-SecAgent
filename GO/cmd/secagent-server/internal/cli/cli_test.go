@@ -1517,3 +1517,21 @@ func TestSecurityKeysStatus(t *testing.T) {
 		t.Error("expected rotation_active=false")
 	}
 }
+
+// #183: server status shows the hooks queue counters when the server reports them.
+func TestServerStatusShowsHooksCounters(t *testing.T) {
+	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"db":"ok","ws_connections":3,"uptime":"2h","hooks_queue_depth":4,"hooks_queue_capacity":10000,"hooks_inflight":2,"hooks_dropped_events":7,"hooks_dropped_actions":0}`))
+	})
+	out := captureStdout(t, func() {
+		if err := serverStatusCmd.RunE(serverStatusCmd, nil); err != nil {
+			t.Errorf("RunE: %v", err)
+		}
+	})
+	for _, want := range []string{"hooks_queue_depth", "4 / 10000", "hooks_inflight", "hooks_dropped_events", "7", "hooks_dropped_actions"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q missing from:\n%s", want, out)
+		}
+	}
+}

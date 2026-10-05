@@ -346,6 +346,20 @@ Lu dans le journal append-only `actions.log` (#161). `limit` : 1–200 (défaut 
 
 ## 6. Statut serveur
 
+### `GET /api/admin/status`
+
+**Réponse 200 :** `db`, `ws_connections`, `uptime`, `links` (relay hiérarchique, si câblé) et, depuis #183, la file des hooks :
+
+```json
+{ "db": "ok", "ws_connections": 3, "uptime": "7200s",
+  "hooks_queue_depth": 4, "hooks_queue_capacity": 10000, "hooks_inflight": 2,
+  "hooks_dropped_events": 0, "hooks_dropped_actions": 0 }
+```
+
+`hooks_dropped_events` : événements rejetés (file pleine ou arrêt) ; `hooks_dropped_actions` : actions perdues avec des événements en file lors d'un arrêt brutal (doit rester 0). `secagent-server server status` les affiche.
+
+---
+
 ### `GET /api/admin/server/status`
 
 **Réponse 200 :**
