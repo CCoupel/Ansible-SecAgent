@@ -18,7 +18,6 @@
   reverse_proxy /api/upload relay-api:7770
   reverse_proxy /api/fetch relay-api:7770
   reverse_proxy /api/inventory relay-api:7770
-  reverse_proxy /api/async_status relay-api:7770
   reverse_proxy /health relay-api:7770
 
   # WebSocket connections (7772)

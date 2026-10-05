@@ -58,8 +58,6 @@ GO/
 - `FetchFile()`: POST /api/fetch/{hostname}
   - Remote file retrieval
   - Base64 encoding
-  - Task polling
-  - Result caching
 
 **inventory.go** (140 LOC)
 - `GetInventory()`: GET /api/inventory

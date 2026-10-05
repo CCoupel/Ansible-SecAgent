@@ -223,7 +223,7 @@ func AdminSuspendMinion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Minion suspended: hostname=%s", hostname)
+	log.Printf("Minion suspended: hostname=%q", hostname)
 	writeJSON(w, http.StatusOK, map[string]string{"hostname": hostname, "status": "suspended"})
 }
 
@@ -256,7 +256,7 @@ func AdminResumeMinion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Minion resumed: hostname=%s", hostname)
+	log.Printf("Minion resumed: hostname=%q", hostname)
 	writeJSON(w, http.StatusOK, map[string]string{"hostname": hostname, "status": "active"})
 }
 
@@ -304,7 +304,7 @@ func AdminSetMinionState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Minion state forced: hostname=%s status=%s", hostname, req.Status)
+	log.Printf("Minion state forced: hostname=%q status=%s", hostname, req.Status)
 	writeJSON(w, http.StatusOK, map[string]string{"hostname": hostname, "status": req.Status})
 }
 
@@ -388,7 +388,7 @@ func AdminSetMinionVars(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("Minion vars updated: hostname=%s keys=%d", hostname, len(kvPairs))
+	log.Printf("Minion vars updated: hostname=%q keys=%d", hostname, len(kvPairs))
 	writeJSON(w, http.StatusOK, map[string]string{"hostname": hostname, "status": "updated"})
 }
 
@@ -487,7 +487,7 @@ func AdminRevokeMinion(w http.ResponseWriter, r *http.Request) {
 		hooks.GlobalDispatcher.Dispatch("host.revoked", hostname, "revoked", "")
 	}
 
-	log.Printf("Minion revoked: hostname=%s ws_disconnected=%v", hostname, wsDisconnected)
+	log.Printf("Minion revoked: hostname=%q ws_disconnected=%v", hostname, wsDisconnected)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"hostname":        hostname,
 		"status":          "revoked",
@@ -627,7 +627,7 @@ func AdminDeleteMinion(w http.ResponseWriter, r *http.Request) {
 		hooks.GlobalDispatcher.Dispatch("host.deleted", hostname, "deleted", "")
 	}
 
-	log.Printf("Minion deleted: hostname=%s ws_disconnected=%v", hostname, wsDisconnected)
+	log.Printf("Minion deleted: hostname=%q ws_disconnected=%v", hostname, wsDisconnected)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"hostname":        hostname,
 		"status":          "deleted",

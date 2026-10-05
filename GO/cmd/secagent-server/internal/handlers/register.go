@@ -526,7 +526,7 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 		// Expected payload: nonce (16 bytes) + token (plain text)
 		expected := append(pendingNonce, []byte(pendingToken)...)
 		if string(decrypted) != string(expected) {
-			log.Printf("RegisterAgent challenge mismatch: hostname=%s", req.Hostname)
+			log.Printf("RegisterAgent challenge mismatch: hostname=%q", req.Hostname)
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "challenge_response_mismatch"})
 			return
 		}
@@ -570,7 +570,7 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 			return
 		}
 
-		log.Printf("RegisterAgent enrollment complete: hostname=%s token_id=%s", req.Hostname, tok.ID)
+		log.Printf("RegisterAgent enrollment complete: hostname=%q token_id=%s", req.Hostname, tok.ID)
 
 		// Dispatch host.new event (async, nil-safe during tests)
 		if hooks.GlobalDispatcher != nil {
@@ -605,7 +605,7 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 	// Store nonce for phase-2 verification
 	storePendingNonce(req.Hostname, nonce, req.EnrollmentToken)
 
-	log.Printf("RegisterAgent challenge issued: hostname=%s token_id=%s", req.Hostname, tok.ID)
+	log.Printf("RegisterAgent challenge issued: hostname=%q token_id=%s", req.Hostname, tok.ID)
 
 	writeJSON(w, http.StatusOK, ChallengeResponse{
 		Challenge:       challengeEncrypted,

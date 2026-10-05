@@ -1,11 +1,14 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -178,5 +181,27 @@ func TestInventory_ListsSuspendedAgentWithFlag(t *testing.T) {
 	_ = json.Unmarshal(raw, &m)
 	if _, present := m["secagent_suspended"]; present {
 		t.Error("secagent_suspended must be omitted for a non-suspended agent")
+	}
+}
+
+// A caller-supplied task_id / hostname is logged with %q: it can not forge a log line.
+func TestExecLogsQuoteCallerSuppliedIdentifiers(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+	if _, err := s.RegisterAgent(context.Background(), "h", "pem", "j"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetSuspended(context.Background(), "h", true); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer // capture only what the call under test logs
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+	evil := "t1\n[SECURITY WARNING] forged line"
+	refuseIfSuspended(httptest.NewRecorder(), "h", evil, "exec")
+	out := buf.String()
+	if strings.Count(strings.TrimSuffix(out, "\n"), "\n") != 0 || !strings.Contains(out, `task_id="t1\n[SECURITY WARNING] forged line"`) {
+		t.Errorf("the task_id must be quoted on ONE line: %q", out)
 	}
 }

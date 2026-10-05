@@ -202,7 +202,7 @@ func sendRekeyToAgent(ctx context.Context, hostname, jwtSecret string, jwtTTL ti
 		return false
 	}
 
-	log.Printf("Rekey sent to agent: hostname=%s jti=%s", hostname, newJTI)
+	log.Printf("Rekey sent to agent: hostname=%q jti=%s", hostname, newJTI)
 	return true
 }
 
