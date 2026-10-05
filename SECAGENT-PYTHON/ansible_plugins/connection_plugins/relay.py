@@ -36,7 +36,13 @@ version_added: "1.0"
 options:
   secagent_server:
     description:
-      - Base URL of the Ansible-SecAgent FastAPI server (HTTP or HTTPS).
+      - Base URL of the Ansible-SecAgent server (HTTP or HTTPS), or a
+        comma-separated list of URLs (active/passive relay).
+      - Addresses are tried in order, the last good one first. The plugin
+        moves to the next address ONLY when the connection fails before the
+        request is sent (connect error, connect timeout, TLS failure). Any
+        failure after the request was sent (read timeout, protocol error,
+        HTTP 5xx) raises an error WITHOUT replaying the request elsewhere.
     default: http://localhost:7770
     ini:
       - section: secagent_connection
@@ -79,6 +85,18 @@ options:
       - name: RELAY_TIMEOUT
     vars:
       - name: ansible_secagent_timeout
+  secagent_connect_timeout:
+    description:
+      - Seconds to wait for the connection to each address to be established.
+    default: 5
+    type: integer
+    ini:
+      - section: secagent_connection
+        key: connect_timeout
+    env:
+      - name: RELAY_CONNECT_TIMEOUT
+    vars:
+      - name: ansible_secagent_connect_timeout
 """
 
 import base64
@@ -96,6 +114,33 @@ from ansible.plugins.connection import ConnectionBase
 from ansible.utils.display import Display
 
 display = Display()
+
+# Last address that answered, kept for the lifetime of the Ansible run
+# (module level: shared by every Connection instance of the process).
+_LAST_GOOD_URL = None
+
+
+def _parse_urls(raw):
+    """Split a comma-separated server option into a list of base URLs."""
+    return [u.strip().rstrip("/") for u in str(raw).split(",") if u.strip()]
+
+
+def _order_urls(urls):
+    """Return urls with the last good one first (if it is in the list)."""
+    last = _LAST_GOOD_URL
+    if last in urls:
+        return [last] + [u for u in urls if u != last]
+    return list(urls)
+
+
+def _host_port(url):
+    """Return 'host:port' of a URL, without scheme, userinfo or path."""
+    try:
+        u = httpx.URL(url)
+        port = u.port or (443 if u.scheme == "https" else 80)
+        return f"{u.host}:{port}"
+    except Exception:
+        return "<invalid-address>"
 
 
 class ConnectionPlugin(ConnectionBase):
@@ -124,8 +169,16 @@ class ConnectionPlugin(ConnectionBase):
             pass
         return os.environ.get(env_var, default)
 
+    def _secagent_servers(self):
+        """Return the configured server base URLs (list, at least one)."""
+        urls = _parse_urls(
+            self._get_opt("secagent_server", "RELAY_SERVER_URL", "http://localhost:7770")
+        )
+        return urls or ["http://localhost:7770"]
+
     def _secagent_server(self):
-        return self._get_opt("secagent_server", "RELAY_SERVER_URL", "http://localhost:7770").rstrip("/")
+        """Return the first configured server URL (single-address compatibility)."""
+        return self._secagent_servers()[0]
 
     def _secagent_token_file(self):
         return self._get_opt("secagent_token_file", "RELAY_TOKEN_FILE", "/tmp/secagent_token.jwt")
@@ -142,6 +195,9 @@ class ConnectionPlugin(ConnectionBase):
 
     def _timeout(self):
         return int(self._get_opt("secagent_timeout", "RELAY_TIMEOUT", "30"))
+
+    def _connect_timeout(self):
+        return int(self._get_opt("secagent_connect_timeout", "RELAY_CONNECT_TIMEOUT", "5"))
 
     def _hostname(self):
         return self._play_context.remote_addr
@@ -165,7 +221,10 @@ class ConnectionPlugin(ConnectionBase):
         if ca_bundle:
             verify = ca_bundle
 
-        return httpx.Client(verify=verify, timeout=self._timeout())
+        return httpx.Client(
+            verify=verify,
+            timeout=httpx.Timeout(self._timeout(), connect=self._connect_timeout()),
+        )
 
     def _post_relay(self, endpoint: str, payload: dict) -> dict:
         """POST a task to relay server and parse result."""
@@ -174,24 +233,59 @@ class ConnectionPlugin(ConnectionBase):
                 "httpx library is required. Install with: pip install httpx"
             )
 
+        global _LAST_GOOD_URL
         hostname = self._hostname()
-        url = f"{self._secagent_server()}{endpoint}"
+        headers = self._headers()
+        servers = _order_urls(self._secagent_servers())
 
         display.vvv(f"RELAY: POST {endpoint} (host={hostname})", host=hostname)
 
+        resp = None
+        failed = []
         client = self._get_client()
         try:
-            resp = client.post(url, headers=self._headers(), json=payload)
-        except httpx.TimeoutException:
-            raise AnsibleConnectionFailure(
-                f"Relay timeout ({self._timeout()}s) waiting for host '{hostname}'"
-            )
-        except httpx.ConnectError as exc:
-            raise AnsibleConnectionFailure(
-                f"Cannot reach relay server at '{self._secagent_server()}': {exc}"
-            )
+            for base in servers:
+                addr = _host_port(base)
+                try:
+                    resp = client.post(f"{base}{endpoint}", headers=headers, json=payload)
+                except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                    # Failure BEFORE the request was sent (incl. TLS handshake):
+                    # safe to try the next address.
+                    display.vvv(
+                        f"RELAY: {addr} unreachable ({type(exc).__name__}), trying next",
+                        host=hostname,
+                    )
+                    failed.append(f"{addr} ({type(exc).__name__})")
+                    continue
+                except httpx.TimeoutException:
+                    # ReadTimeout / WriteTimeout / PoolTimeout: request may have been
+                    # sent — never replay on another address.
+                    raise AnsibleConnectionFailure(
+                        f"Relay timeout ({self._timeout()}s) waiting for host "
+                        f"'{hostname}' via {addr}; request not retried"
+                    )
+                except httpx.HTTPError as exc:
+                    # RemoteProtocolError, ReadError, ... after send: no replay.
+                    raise AnsibleConnectionFailure(
+                        f"Relay connection to {addr} failed after sending the request "
+                        f"({type(exc).__name__}); request not retried"
+                    )
+                _LAST_GOOD_URL = base
+                display.vvv(f"RELAY: using {addr}", host=hostname)
+                break
         finally:
             client.close()
+
+        if resp is None:
+            raise AnsibleConnectionFailure(
+                "Cannot reach any relay server address: " + ", ".join(failed)
+            )
+
+        if resp.status_code >= 500:
+            raise AnsibleConnectionFailure(
+                f"Relay server error {resp.status_code} from {_host_port(_LAST_GOOD_URL)}; "
+                "request not retried"
+            )
 
         if resp.status_code == 404:
             raise AnsibleConnectionFailure(
