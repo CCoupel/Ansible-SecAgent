@@ -43,6 +43,14 @@ options:
         request is sent (connect error, connect timeout, TLS failure). Any
         failure after the request was sent (read timeout, protocol error,
         HTTP 5xx) raises an error WITHOUT replaying the request elsewhere.
+      - Each entry must be http:// or https:// with a host and a valid port,
+        and must NOT contain credentials (user:pass@host is rejected).
+        Plain http:// outside loopback sends the token in clear text and
+        triggers a warning; use https:// (see SECURITY.md section 1).
+      - The "last good address" memory only lives inside one Ansible process.
+        Every fork starts again from the configured order, so a dead address
+        costs one connect timeout (secagent_connect_timeout) per fork. List
+        the most probable address first.
     default: http://localhost:7770
     ini:
       - section: secagent_connection
@@ -103,6 +111,7 @@ import base64
 import json
 import os
 import uuid
+from urllib.parse import urlsplit
 
 try:
     import httpx
@@ -117,12 +126,89 @@ display = Display()
 
 # Last address that answered, kept for the lifetime of the Ansible run
 # (module level: shared by every Connection instance of the process).
+# Limit: this memory is per process. Ansible forks workers, so each fork
+# starts again from the configured order (no file cache on purpose: it would
+# add an attack surface in a shared tmp). The cost of a dead address is one
+# connect timeout per fork, bounded by secagent_connect_timeout.
 _LAST_GOOD_URL = None
+
+_LOOPBACK_HOSTS = ("localhost", "::1")
+_WARNED_CLEARTEXT = set()
+
+
+def _is_loopback(host):
+    """Return True for localhost, 127.0.0.0/8 and ::1."""
+    host = (host or "").lower()
+    return host in _LOOPBACK_HOSTS or host.startswith("127.")
+
+
+def _validate_url(url, position):
+    """Validate one server URL; raise AnsibleError naming only its position.
+
+    The URL itself is never echoed: it could contain a secret.
+    """
+    def bad(cause):
+        return AnsibleError(f"secagent_server: invalid entry #{position}: {cause}")
+
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        parts.port  # noqa: B018 - raises ValueError on an invalid port
+    except ValueError:
+        raise bad("malformed URL or invalid port")
+    if parts.scheme not in ("http", "https"):
+        raise bad("scheme must be http or https")
+    if not host:
+        raise bad("missing host")
+    if "@" in parts.netloc:
+        raise bad("credentials (user:pass@host) are not allowed in the URL")
 
 
 def _parse_urls(raw):
-    """Split a comma-separated server option into a list of base URLs."""
-    return [u.strip().rstrip("/") for u in str(raw).split(",") if u.strip()]
+    """Split a comma-separated server option into validated base URLs.
+
+    Raises AnsibleError on any invalid entry (position and cause only).
+    """
+    urls = []
+    for pos, item in enumerate(str(raw).split(","), start=1):
+        item = item.strip()
+        if not item:
+            continue
+        _validate_url(item, pos)
+        urls.append(item.rstrip("/"))
+    return urls
+
+
+def _warn_if_cleartext(url):
+    """Warn once per address when http:// targets a non-loopback host."""
+    parts = urlsplit(url)
+    if parts.scheme == "http" and not _is_loopback(parts.hostname):
+        key = _host_port(url)
+        if key not in _WARNED_CLEARTEXT:
+            _WARNED_CLEARTEXT.add(key)
+            display.warning(
+                f"secagent_server {key} uses http://: the plugin token is sent in "
+                "clear text. WSS/HTTPS is required outside localhost (SECURITY.md section 1)."
+            )
+
+
+def _error_detail(resp):
+    """Extract a short, sanitized error field from a JSON server response.
+
+    Only a known field of a JSON object is used (never the raw body, which
+    could come from an intermediate proxy). Returns "" when none.
+    """
+    try:
+        data = resp.json()
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    for key in ("error", "detail", "message"):
+        val = data.get(key)
+        if isinstance(val, str) and val:
+            return "".join(c for c in val[:100] if c.isprintable())
+    return ""
 
 
 def _order_urls(urls):
@@ -174,7 +260,14 @@ class ConnectionPlugin(ConnectionBase):
         urls = _parse_urls(
             self._get_opt("secagent_server", "RELAY_SERVER_URL", "http://localhost:7770")
         )
-        return urls or ["http://localhost:7770"]
+        if not urls:
+            display.warning(
+                "secagent_server is empty: falling back to http://localhost:7770"
+            )
+            return ["http://localhost:7770"]
+        for url in urls:
+            _warn_if_cleartext(url)
+        return urls
 
     def _secagent_server(self):
         """Return the first configured server URL (single-address compatibility)."""
@@ -241,6 +334,7 @@ class ConnectionPlugin(ConnectionBase):
         display.vvv(f"RELAY: POST {endpoint} (host={hostname})", host=hostname)
 
         resp = None
+        used = None
         failed = []
         client = self._get_client()
         try:
@@ -270,7 +364,7 @@ class ConnectionPlugin(ConnectionBase):
                         f"Relay connection to {addr} failed after sending the request "
                         f"({type(exc).__name__}); request not retried"
                     )
-                _LAST_GOOD_URL = base
+                used = base
                 display.vvv(f"RELAY: using {addr}", host=hostname)
                 break
         finally:
@@ -283,9 +377,12 @@ class ConnectionPlugin(ConnectionBase):
 
         if resp.status_code >= 500:
             raise AnsibleConnectionFailure(
-                f"Relay server error {resp.status_code} from {_host_port(_LAST_GOOD_URL)}; "
+                f"Relay server error {resp.status_code} from {_host_port(used)}; "
                 "request not retried"
             )
+
+        # A server that answers (non-5xx) is a good address; a 5xx is not remembered.
+        _LAST_GOOD_URL = used
 
         if resp.status_code == 404:
             raise AnsibleConnectionFailure(
@@ -293,14 +390,15 @@ class ConnectionPlugin(ConnectionBase):
             )
 
         if resp.status_code != 200:
+            detail = _error_detail(resp)
             raise AnsibleError(
-                f"Relay server error {resp.status_code}: {resp.text[:200]}"
+                f"Relay server error {resp.status_code}" + (f": {detail}" if detail else "")
             )
 
         try:
             result = resp.json()
         except ValueError:
-            raise AnsibleError(f"Relay server returned non-JSON response: {resp.text[:200]}")
+            raise AnsibleError("Relay server returned a non-JSON response")
 
         display.vvv(
             f"RELAY: result rc={result.get('rc', '?')}",
