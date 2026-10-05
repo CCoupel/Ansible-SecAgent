@@ -104,6 +104,12 @@ func TestNodeProcess(t *testing.T) {
 		cfg.LockParams = lockProfileFast()
 	}
 
+	// NODE_LOCK_DELAY_REMOVE_MS: this instance sleeps between judging a lock stale and deleting it
+	// (case 5 of #162: a process frozen at that exact point erases a lock someone else just took).
+	if v, _ := strconv.Atoi(os.Getenv("NODE_LOCK_DELAY_REMOVE_MS")); v > 0 {
+		cfg.LockHooks.BeforeRemove = func() { time.Sleep(time.Duration(v) * time.Millisecond) }
+	}
+
 	var ctlLn net.Listener
 	cfg.OnReady = func(node *server.Node) {
 		ctl := http.NewServeMux()

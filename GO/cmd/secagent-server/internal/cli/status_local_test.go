@@ -3,8 +3,11 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,5 +81,23 @@ func TestCheckHTTPS_LoopbackOnly(t *testing.T) {
 		if err := checkHTTPS(bad); err == nil {
 			t.Errorf("%s must be refused (cleartext admin token)", bad)
 		}
+	}
+}
+
+// `status --local` opens no port and calls no API: a counting admin API receives nothing.
+func TestStatusLocal_DoesNoNetworkCall(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
+	t.Cleanup(srv.Close)
+	t.Setenv("RELAY_API_URL", srv.URL)
+	p := filepath.Join(t.TempDir(), "status.json")
+	t.Setenv(localstatus.EnvStatusFile, p)
+	now := time.UnixMilli(70_000_000)
+	_ = localstatus.Write(p, localstatus.File{Role: "secondary", InstanceID: "s", State: localstatus.StateWaiting, LastCheckAt: now.UnixMilli(), BeatPeriodMS: 30000, CheckPeriodMS: 5000, UpdatedAt: now.UnixMilli()})
+	if _, err := runStatusLocal(t, now, "--local"); err != nil {
+		t.Fatal(err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("status --local called the API %d time(s)", hits.Load())
 	}
 }

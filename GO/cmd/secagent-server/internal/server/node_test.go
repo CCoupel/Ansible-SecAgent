@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ func startNode(t *testing.T, mutate func(*Config)) (n *Node, api, admin, wsAddr 
 		cancel()
 		select {
 		case err := <-done:
-			if err != nil {
+			if err != nil && !errors.Is(err, ErrLockLost) {
 				t.Errorf("Run returned %v", err)
 			}
 		case <-time.After(35 * time.Second):

@@ -394,3 +394,166 @@ func TestReplay_OlderStateCopyIsRefusedByTheNewMaster(t *testing.T) {
 		})
 	}
 }
+
+// Case 5 of #162 with three real processes: the master crashes, B judges the lock stale but its
+// deletion is DELAYED (the seam) and lands on the lock C has meanwhile taken. During the overlap no
+// acknowledged write may be lost, the evicted C exits with 75 after one check cycle, and exactly one
+// instance (B) ends up listening.
+func TestFailover_DelayedStaleDeletionErasesAFreshLockNoWriteIsLost(t *testing.T) {
+	parallel(t)
+	a := startNode(t, nodeSpec{ID: "root"})
+	b := a.sibling()
+	b.launchSecondary([]string{"NODE_LOCK_DELAY_REMOVE_MS=3000"})
+	t.Cleanup(b.stop)
+	c := a.sibling()
+	c.launchSecondary(nil)
+	t.Cleanup(c.stop)
+	for _, n := range []*node{b, c} {
+		n := n
+		waitFor(t, "secondary polls", func() bool {
+			f, err := localstatus.Read(n.statusPath)
+			return err == nil && f.LastCheckAt > 0
+		})
+	}
+	a.killNow()
+
+	if !c.awaitPromotion(30 * time.Second) {
+		t.Fatalf("C never took over; logs:\n%s", c.logs.String())
+	}
+	// hammer C with writes (admin authorize) until it is evicted; remember what it acknowledged
+	acked := map[string]bool{}
+	deadline := time.Now().Add(8 * time.Second)
+	for i := 0; time.Now().Before(deadline); i++ {
+		if _, ok := c.waitExit(0); ok {
+			break
+		}
+		host := fmt.Sprintf("w%03d", i)
+		code, _, err := c.callErr("POST", c.adminURL(), "/api/admin/authorize", c.adminTok,
+			map[string]any{"hostname": host, "public_key_pem": "pem", "approved_by": "ci"})
+		if err == nil && code < 300 {
+			acked[host] = true
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if code, ok := c.waitExit(10 * time.Second); !ok || code != 75 {
+		t.Fatalf("C (evicted by B's delayed deletion) must exit 75, got %d (exited=%v); logs:\n%s", code, ok, c.logs.String())
+	}
+	if !b.awaitPromotion(20 * time.Second) {
+		t.Fatalf("B never became master; logs:\n%s", b.logs.String())
+	}
+	if len(acked) == 0 {
+		t.Fatal("setup: C acknowledged no write")
+	}
+	keys := b.stateSection("authorized_keys")
+	for host := range acked {
+		if _, ok := keys[host]; !ok {
+			t.Errorf("write %q was acknowledged by C then lost: it is not in the state of the new master", host)
+		}
+	}
+	if conn, err := net.DialTimeout("tcp", c.ready.API, time.Second); err == nil {
+		_ = conn.Close()
+		t.Error("the evicted instance still accepts connections")
+	}
+	if p := listeningPorts(t, b.cmd.Process.Pid); len(p) == 0 {
+		t.Error("exactly one instance (B) must be serving at the end")
+	}
+}
+
+// A pull child declared with BOTH addresses of the root (REPEATER_UPSTREAM_URL list, #165) follows the
+// master: when the active root dies and the passive one takes over, the child reconnects to it.
+func TestFailover_PullChildReconnectsToTheNewMasterThroughItsAddressList(t *testing.T) {
+	parallel(t)
+	addrA, addrB := freeAddr(t), freeAddr(t)
+	a := startNode(t, nodeSpec{ID: "root", Env: []string{"NODE_WS_ADDR=" + addrA}})
+	tok := a.registerChild("relay1")
+	b := a.sibling()
+	b.launchSecondary([]string{"NODE_WS_ADDR=" + addrB})
+	t.Cleanup(b.stop)
+	child := startNode(t, nodeSpec{ID: "relay1", ParentURL: "wss://" + addrA + ",wss://" + addrB, ParentToken: tok})
+	waitFor(t, "the child is linked to the active root", func() bool { return child.upstreamState() == "connected" })
+	connectMinion(t, child, "leaf-host")
+	waitFor(t, "the active root routes the leaf host", func() bool { return a.hasHost("leaf-host") })
+
+	a.killNow()
+	if !b.awaitPromotion(30 * time.Second) {
+		t.Fatalf("the passive root never took over; logs:\n%s", b.logs.String())
+	}
+	waitFor(t, "the child reconnected to the NEW master (second address)", func() bool {
+		return b.logs.has("Relay connected: relay_id=relay1") && child.upstreamState() == "connected"
+	})
+	waitFor(t, "the new master routes the leaf host again", func() bool { return b.hasHost("leaf-host") })
+}
+
+// A push child: the NEW master restarts the dialer from relay_nodes (it is in the shared state) and the
+// link is re-established without any manual action.
+func TestFailover_PushChildIsDialedByTheNewMaster(t *testing.T) {
+	parallel(t)
+	a := startNode(t, nodeSpec{ID: "root"})
+	child := startNode(t, nodeSpec{ID: "relay1"})
+	tok, _ := child.mintParentToken("root")
+	code, m := a.admin("POST", "/api/admin/relays", map[string]any{"relay_id": "relay1", "mode": "push", "urls": []string{child.wssURL()}, "token": tok})
+	if code != 201 {
+		t.Fatalf("register push child: %d %v", code, m)
+	}
+	waitFor(t, "root dialer connected", func() bool { return a.pushState("relay1") == "connected" })
+	b := a.sibling()
+	b.launchSecondary(nil)
+	t.Cleanup(b.stop)
+
+	a.killNow()
+	if !b.awaitPromotion(30 * time.Second) {
+		t.Fatalf("the passive root never took over; logs:\n%s", b.logs.String())
+	}
+	waitFor(t, "the new master dialed the push child", func() bool { return b.pushState("relay1") == "connected" })
+	waitFor(t, "the child sees its (new) parent", func() bool {
+		u := child.health().Links.Upstream
+		return u != nil && u.Mode == "push" && u.State == "connected"
+	})
+}
+
+// A state that does not load refuses the start: the lock the instance already holds is released (a
+// healthy instance can take over), the exit code is non-zero and no port was opened.
+func TestStart_InvalidStateReleasesTheLockAndOpensNoPort(t *testing.T) {
+	parallel(t)
+	n := prepareNode(t, nodeSpec{ID: "node"})
+	if err := os.WriteFile(filepath.Join(n.stateDir, "relay.state"), []byte(`{"not":"a state"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(filepath.Join(n.stateDir, "relay.state.prev"))
+	code, out := n.runExpectingExit()
+	if code == 0 || code == -1 {
+		t.Fatalf("an invalid state must refuse the start (exit %d): %s", code, out)
+	}
+	if strings.Contains(out, "[LISTEN]") {
+		t.Error("no port may open on an invalid state")
+	}
+	if _, present := readLock(n.stateDir); present {
+		t.Error("the lock must be released after the failed start")
+	}
+	if f, err := localstatus.Read(n.statusPath); err != nil || f.State != localstatus.StateFailed {
+		t.Errorf("status = %+v %v, want failed", f, err)
+	}
+}
+
+// The TLS certificates are validated BEFORE the lock loop: a broken pair never even becomes a
+// candidate (no relay.lock created) and nothing listens.
+func TestStart_InvalidCertificateFailsBeforeTheLockLoop(t *testing.T) {
+	parallel(t)
+	n := prepareNode(t, nodeSpec{ID: "node"})
+	bad := filepath.Join(t.TempDir(), "bad.pem")
+	if err := os.WriteFile(bad, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n.setEnv("TLS_CERT", bad)
+	n.setEnv("TLS_KEY", bad)
+	code, out := n.runExpectingExit()
+	if code == 0 || code == -1 {
+		t.Fatalf("an invalid certificate must refuse the start (exit %d): %s", code, out)
+	}
+	if _, present := readLock(n.stateDir); present {
+		t.Error("the certificates are validated before the lock: no lock may have been created")
+	}
+	if strings.Contains(out, "waiting for the master lock") {
+		t.Error("the lock loop must not start with an invalid certificate")
+	}
+}
