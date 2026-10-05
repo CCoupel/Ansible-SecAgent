@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -278,7 +279,11 @@ func (t *Tx) PutRelayNode(v RelayNode) error {
 			return fmt.Errorf("%w: relay token_hash already used by %q", ErrDuplicate, owner)
 		}
 	}
-	if old, had := t.m.RelayNodes[v.RelayID]; had {
+	old, had := t.m.RelayNodes[v.RelayID]
+	if !had && v.Mode == ModePull && v.TokenHash == "" {
+		slog.Info(fmt.Sprintf("pull relay %q registered without token_hash — JWT-only auth", v.RelayID))
+	}
+	if had {
 		if old.ID != v.ID {
 			idxDel(t, t.m.relayByID, old.ID)
 		}
@@ -308,14 +313,15 @@ func (t *Tx) DeleteRelayNode(relayID string) bool {
 
 func (t *Tx) Config(key string) (string, bool) { v, ok := t.m.ServerConfig[key]; return v, ok }
 
-// SetConfig stores a server_config value. When the engine knows a master key
-// (Options.RequireEncryptedSecrets), a secret key is refused unless its value is "enc:"-prefixed.
+// SetConfig stores a server_config value. A secret key is refused unless its value is
+// "enc:"-prefixed (clear values only in explicit test mode without a master key): the engine must
+// never write a file it would refuse to load.
 func (t *Tx) SetConfig(key, value string) error {
 	if key == "" {
 		return fmt.Errorf("%w: empty config key", ErrInvalid)
 	}
-	if t.opts.RequireEncryptedSecrets && secretConfigKeys[key] && value != "" && !strings.HasPrefix(value, EncPrefix) {
-		return fmt.Errorf("%w: refusing to write %q in clear while a master key is configured", ErrInvalid, key)
+	if !t.opts.clearSecretsAllowed() && secretConfigKeys[key] && value != "" && !strings.HasPrefix(value, EncPrefix) {
+		return fmt.Errorf("%w: refusing to write %q in clear (secrets are stored encrypted; clear only in explicit test mode without a master key)", ErrInvalid, key)
 	}
 	put(t, t.m.ServerConfig, key, value)
 	return nil

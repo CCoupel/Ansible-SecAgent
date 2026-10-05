@@ -11,8 +11,6 @@ import (
 	"log/slog"
 	"path/filepath"
 	"time"
-
-	"secagent-server/cmd/secagent-server/internal/crypto"
 )
 
 // InitOptions configures `secagent-server state init`.
@@ -49,6 +47,9 @@ func Init(o InitOptions) error {
 	if o.MasterKey == "" && !o.AllowPlaintext {
 		return errors.New("state init: RSA_MASTER_KEY is required (the RSA private key and the JWT secret are stored encrypted); it is only optional in test mode")
 	}
+	if o.MasterKey != "" && o.AllowPlaintext {
+		return errors.New("state init: --insecure-test-mode is refused while RSA_MASTER_KEY is set (a server holding a master key never accepts clear-text secrets): unset RSA_MASTER_KEY or drop the flag")
+	}
 	if err := o.FS.MkdirAll(o.Dir, 0o700); err != nil {
 		return fmt.Errorf("state init: create %s: %w", o.Dir, err)
 	}
@@ -79,11 +80,16 @@ func Init(o InitOptions) error {
 	jwtSecret := base64.RawURLEncoding.EncodeToString(secret)
 
 	rsaVal, jwtVal := privPEM, jwtSecret
+	var cdc codec
 	if o.MasterKey != "" {
-		if rsaVal, err = sealSecret(privPEM, o.MasterKey); err != nil {
+		if rsaVal, err = sealSecret(privPEM, o.MasterKey, "rsa_key_current"); err != nil {
 			return err
 		}
-		if jwtVal, err = sealSecret(jwtSecret, o.MasterKey); err != nil {
+		if jwtVal, err = sealSecret(jwtSecret, o.MasterKey, "jwt_secret_current"); err != nil {
+			return err
+		}
+		opts := Options{MasterKey: o.MasterKey}
+		if cdc, err = opts.codec(); err != nil {
 			return err
 		}
 	} else {
@@ -93,24 +99,28 @@ func Init(o InitOptions) error {
 	p := newPayload()
 	p.ServerConfig["rsa_key_current"] = rsaVal
 	p.ServerConfig["jwt_secret_current"] = jwtVal
-	data, err := encode(&p, 1, "state-init", now())
+	data, err := cdc.encode(&p, 1, "state-init", now())
 	if err != nil {
 		return err
 	}
 	if int64(len(data)) > DefaultMaxBytes {
 		return ErrTooLarge
 	}
-	if err := atomicWrite(o.FS, o.Dir, data, false); err != nil {
+	if err := atomicCreate(o.FS, o.Dir, data); err != nil {
+		if errors.Is(err, ErrAlreadyExists) {
+			return fmt.Errorf("state init: refusing to initialize: %s already exists in STATE_DIR=%s (a concurrent init won, or a state is already there)", StateFile, o.Dir)
+		}
 		return err
 	}
 	slog.Info("state initialized", "dir", o.Dir, "encrypted", o.MasterKey != "")
 	return nil
 }
 
-func sealSecret(plain, masterKey string) (string, error) {
-	enc, err := crypto.EncryptAESGCM(plain, masterKey)
+// sealSecret encrypts a server_config secret bound to its field name (AAD).
+func sealSecret(plain, masterKey, field string) (string, error) {
+	v, err := SealSecret(plain, masterKey, ConfigAAD(field))
 	if err != nil {
-		return "", fmt.Errorf("state init: encrypt secret: %w", err)
+		return "", fmt.Errorf("state init: %w", err)
 	}
-	return EncPrefix + enc, nil
+	return v, nil
 }

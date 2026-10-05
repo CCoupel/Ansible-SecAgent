@@ -131,7 +131,7 @@ func TestClearTokenSecretOnLoadRefusesWithoutFallingBackOnPrev(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicWrite(OSFS{}, dir, data, true); err != nil { // .prev = the valid generation
+	if err := atomicWrite(OSFS{}, dir, data, true, nil); err != nil { // .prev = the valid generation
 		t.Fatal(err)
 	}
 	_, err = Open(Options{Dir: dir})
@@ -179,7 +179,7 @@ func TestRevokedRelayMustBeBlacklistedAtomically(t *testing.T) {
 	p.RelayNodes["x"] = n
 	data, _ := encode(&p, 5, "t", time.Now())
 	d2 := t.TempDir()
-	if err := atomicWrite(OSFS{}, d2, data, false); err != nil {
+	if err := atomicWrite(OSFS{}, d2, data, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Open(Options{Dir: d2}); err == nil {
@@ -223,8 +223,15 @@ func TestSecretConfigIsRefusedInClearWhenAMasterKeyIsConfigured(t *testing.T) {
 	// without a master key (test mode) clear values are accepted
 	d2 := t.TempDir()
 	seedState(t, d2)
-	e2 := openEngine(t, d2, nil)
+	e2 := openEngine(t, d2, func(o *Options) { o.InsecureTestMode = true })
 	mustMutate(t, e2, func(tx *Tx) error { return tx.SetConfig("jwt_secret_current", "clear") })
+	// ... but only in the EXPLICIT test mode: a plain engine refuses them too
+	d3 := t.TempDir()
+	seedState(t, d3)
+	e3 := openEngine(t, d3, nil)
+	if err := e3.Mutate(func(tx *Tx) error { return tx.SetConfig("jwt_secret_current", "clear") }); !errors.Is(err, ErrInvalid) {
+		t.Errorf("clear secret outside the explicit test mode: %v", err)
+	}
 }
 
 func TestNoSecretInClearInTheFile(t *testing.T) {

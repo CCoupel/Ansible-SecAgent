@@ -120,7 +120,7 @@ func seedState(t testing.TB, dir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicWrite(OSFS{}, dir, data, false); err != nil {
+	if err := atomicWrite(OSFS{}, dir, data, false, nil); err != nil {
 		t.Fatal(err)
 	}
 }

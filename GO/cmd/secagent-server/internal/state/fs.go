@@ -2,10 +2,14 @@ package state
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"syscall"
 )
+
+// errTooBig: a state file larger than the configured ceiling.
+var errTooBig = errors.New("state file larger than the size ceiling")
 
 // File is the subset of *os.File the engine writes through.
 type File interface {
@@ -18,7 +22,9 @@ type File interface {
 // the atomic write); production uses OSFS.
 type FS interface {
 	MkdirAll(path string, perm os.FileMode) error
-	ReadFile(name string) ([]byte, error)
+	// ReadFileMax reads name without following a final symbolic link, refusing (errTooBig) a file
+	// larger than max bytes BEFORE reading it.
+	ReadFileMax(name string, max int64) ([]byte, error)
 	// CreateExclusive creates name (O_EXCL) with mode perm; an existing file is an error.
 	CreateExclusive(name string, perm os.FileMode) (File, error)
 	Rename(oldpath, newpath string) error
@@ -33,7 +39,29 @@ type FS interface {
 type OSFS struct{}
 
 func (OSFS) MkdirAll(p string, perm os.FileMode) error { return os.MkdirAll(p, perm) }
-func (OSFS) ReadFile(n string) ([]byte, error)         { return os.ReadFile(n) }
+func (OSFS) ReadFileMax(n string, max int64) ([]byte, error) {
+	f, err := os.OpenFile(n, os.O_RDONLY|oNoFollow, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	if fi, err := f.Stat(); err != nil {
+		return nil, err
+	} else if max > 0 && fi.Size() > max {
+		return nil, fmt.Errorf("%w: %d bytes > %d", errTooBig, fi.Size(), max)
+	}
+	if max <= 0 {
+		return io.ReadAll(f)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, max+1)) // the file may grow after the stat
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, fmt.Errorf("%w: more than %d bytes", errTooBig, max)
+	}
+	return data, nil
+}
 func (OSFS) CreateExclusive(n string, perm os.FileMode) (File, error) {
 	f, err := os.OpenFile(n, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 	if err != nil {

@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,7 +80,10 @@ func TestInitRequiresTheMasterKeyOutsideTestMode(t *testing.T) {
 	if err := Init(InitOptions{Dir: dir, AllowPlaintext: true, RSABits: 2048}); err != nil {
 		t.Fatalf("test mode: %v", err)
 	}
-	e, err := Open(Options{Dir: dir})
+	if _, err := Open(Options{Dir: dir}); !errors.Is(err, ErrSecurityInvariant) {
+		t.Fatalf("a clear-text state without the explicit test mode must be refused: %v", err)
+	}
+	e, err := Open(Options{Dir: dir, InsecureTestMode: true})
 	if err != nil {
 		t.Fatal(err)
 	}

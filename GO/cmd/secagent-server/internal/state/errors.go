@@ -41,6 +41,8 @@ var (
 	ErrCorrupt = errors.New("state: corrupt state file")
 	// ErrInvalid: a mutation violates an invariant of the model; the mutation is rejected.
 	ErrInvalid = errors.New("state: invalid mutation")
+	// ErrAlreadyExists: relay.state already exists (state init never replaces a state).
+	ErrAlreadyExists = errors.New("state: relay.state already exists")
 	// ErrDuplicate: a unique key (hostname, jti, token_hash, relay_id) is already used.
 	ErrDuplicate = errors.New("state: duplicate key")
 )

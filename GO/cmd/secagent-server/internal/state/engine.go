@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"secagent-server/cmd/secagent-server/internal/crypto"
 )
 
 // Options configures an Engine.
@@ -26,19 +28,48 @@ type Options struct {
 	MaxBytes int64
 	// Instance identifies the writer in the file (writer_instance).
 	Instance string
-	// BeforeWrite is the write guard, called under the writer before anything is created on disk:
-	// an error cancels the write. With NO guard the engine refuses every write (no file, not even
+	// BeforeWrite is the write guard, called under the writer before anything is created on disk
+	// and again just before the rename (the lock may be lost during the fsync): an error cancels
+	// the write. With NO guard the engine refuses every write (no file, not even
 	// relay.state.tmp), so two instances started together on one STATE_DIR can not both write.
 	// #163 connects the lock-identity check here; it can also be set later with SetBeforeWrite.
 	BeforeWrite func() error
 	// Piggyback is called on the batch about to be written, to merge volatile data (last_seen,
 	// last_used_*) into it: they are persisted only when the file is written anyway.
 	Piggyback func(p *Payload)
-	// RequireEncryptedSecrets: a master key is configured, so secret server_config values are
-	// only accepted "enc:"-prefixed.
+	// MasterKey is RSA_MASTER_KEY. With it the file is authenticated (HMAC-SHA-256 under a key
+	// derived from it: a state without a valid HMAC is refused, a state written by someone who
+	// does not hold the key can not be forged or rolled back by edition), and every secret of
+	// server_config / push relay token_secret must open with the binding of its own field (AAD).
+	// Without it (tests) no HMAC is written or checked.
+	MasterKey string
+	// InsecureTestMode explicitly allows a file whose server_config secrets are in clear (a state
+	// created with `state init --insecure-test-mode`). It is refused together with a MasterKey:
+	// a server holding a master key never accepts a clear-text secret.
+	InsecureTestMode bool
+	// RequireEncryptedSecrets is kept for compatibility: a clear secret is now refused at write
+	// and at load unless InsecureTestMode is set (and no MasterKey).
 	RequireEncryptedSecrets bool
 	// Now is the clock (tests).
 	Now func() time.Time
+}
+
+// clearSecretsAllowed: only the explicit test mode, without master key, accepts clear secrets.
+func (o *Options) clearSecretsAllowed() bool {
+	return o.InsecureTestMode && o.MasterKey == "" && !o.RequireEncryptedSecrets
+}
+
+// codec builds the codec of these options.
+func (o *Options) codec() (codec, error) {
+	c := codec{masterKey: o.MasterKey, insecure: o.clearSecretsAllowed()}
+	if o.MasterKey != "" {
+		k, err := crypto.DeriveStateHMACKey(o.MasterKey)
+		if err != nil {
+			return codec{}, fmt.Errorf("state: derive the HMAC key: %w", err)
+		}
+		c.macKey = k
+	}
+	return c, nil
 }
 
 func (o *Options) now() time.Time {
@@ -71,8 +102,9 @@ func DirFromEnv() string {
 
 // Engine holds the in-memory state and its single writer.
 type Engine struct {
-	opts Options
-	fs   FS
+	opts  Options
+	fs    FS
+	codec codec
 
 	cur atomic.Pointer[model]
 
@@ -112,11 +144,18 @@ func Open(opts Options) (*Engine, error) {
 		host, _ := os.Hostname()
 		opts.Instance = fmt.Sprintf("%s-%d", host, os.Getpid())
 	}
-	ld, err := load(opts.FS, opts.Dir, opts.now())
+	if opts.InsecureTestMode && opts.MasterKey != "" {
+		return nil, fmt.Errorf("%w: insecure test mode is refused when a master key (RSA_MASTER_KEY) is configured", ErrSecurityInvariant)
+	}
+	c, err := opts.codec()
 	if err != nil {
 		return nil, err
 	}
-	e := &Engine{opts: opts, fs: opts.FS, guard: opts.BeforeWrite, fromPrev: ld.fromPrev}
+	ld, err := load(opts.FS, opts.Dir, opts.now(), c, opts.MaxBytes)
+	if err != nil {
+		return nil, err
+	}
+	e := &Engine{opts: opts, fs: opts.FS, guard: opts.BeforeWrite, fromPrev: ld.fromPrev, codec: c}
 	e.cur.Store(ld.m)
 	slog.Info("state loaded", "dir", opts.Dir, "write_seq", ld.m.seq, "agents", len(ld.m.Agents), "from_prev", ld.fromPrev)
 	return e, nil
@@ -141,7 +180,7 @@ func (e *Engine) Writes() uint64 { return e.writes.Load() }
 func (e *Engine) Reload() error {
 	e.wmu.Lock()
 	defer e.wmu.Unlock()
-	ld, err := load(e.fs, e.opts.Dir, e.opts.now())
+	ld, err := load(e.fs, e.opts.Dir, e.opts.now(), e.codec, e.opts.MaxBytes)
 	if err != nil {
 		return err
 	}
@@ -271,7 +310,7 @@ func (e *Engine) commit(batch []*request) {
 		e.opts.Piggyback(&work.Payload)
 	}
 	work.seq++
-	data, err := encode(&work.Payload, work.seq, e.opts.Instance, e.opts.now())
+	data, err := e.codec.encode(&work.Payload, work.seq, e.opts.Instance, e.opts.now())
 	if err != nil {
 		failAllApplied(results, batch, err)
 		finish()
@@ -282,7 +321,7 @@ func (e *Engine) commit(batch []*request) {
 		finish()
 		return
 	}
-	if err := atomicWrite(e.fs, e.opts.Dir, data, !e.fromPrev); err != nil {
+	if err := atomicWrite(e.fs, e.opts.Dir, data, !e.fromPrev, guard); err != nil {
 		failAllApplied(results, batch, err)
 		finish()
 		return
