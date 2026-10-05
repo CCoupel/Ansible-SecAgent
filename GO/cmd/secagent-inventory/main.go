@@ -90,11 +90,37 @@ type AnsibleInventory struct {
 	Groups map[string]AnsibleGroup `json:"-"`
 }
 
-// MarshalJSON aplatit les groupes de relays à côté de "all" et "_meta".
+// normalizeGroup garantit qu'aucun champ du groupe n'est sérialisé en null : Ansible rejette tout
+// l'inventaire sur un `"hosts": null` (groupe sans hôte direct : racine d'arbre, relay intermédiaire).
+// hosts est toujours un tableau ; children et vars sont omis quand ils sont vides.
+func normalizeGroup(g AnsibleGroup) AnsibleGroup {
+	if g.Hosts == nil {
+		g.Hosts = []string{}
+	}
+	if len(g.Children) == 0 {
+		g.Children = nil
+	}
+	if len(g.Vars) == 0 {
+		g.Vars = nil
+	}
+	return g
+}
+
+// MarshalJSON aplatit les groupes de relays à côté de "all" et "_meta", en normalisant tous les groupes
+// (y compris ceux repassés tels quels depuis le serveur) et _meta.hostvars (objet, jamais null).
 func (a AnsibleInventory) MarshalJSON() ([]byte, error) {
-	doc := map[string]any{"_meta": a.Meta, "all": a.All}
+	meta := a.Meta
+	hv := make(map[string]json.RawMessage, len(meta.Hostvars))
+	for h, v := range meta.Hostvars {
+		if len(v) == 0 || string(v) == "null" {
+			v = json.RawMessage("{}")
+		}
+		hv[h] = v
+	}
+	meta.Hostvars = hv
+	doc := map[string]any{"_meta": meta, "all": normalizeGroup(a.All)}
 	for name, g := range a.Groups {
-		doc[name] = g
+		doc[name] = normalizeGroup(g)
 	}
 	return json.Marshal(doc)
 }
