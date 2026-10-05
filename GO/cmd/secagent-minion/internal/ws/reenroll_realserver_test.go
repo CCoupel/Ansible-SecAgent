@@ -89,7 +89,7 @@ func TestReEnrollAgainstARealServer(t *testing.T) {
 		"PATH=" + os.Getenv("PATH"), "HOME=" + dir,
 		"JWT_SECRET_KEY=realserver-jwt-secret", "ADMIN_TOKEN=" + adminToken,
 		"RSA_MASTER_KEY=realserver-master-key", "STATE_DIR=" + stateDir,
-		"RELAY_SINGLE_INSTANCE=true", // one instance, no lock (#163 not wired yet)
+		"RELAY_STATUS_FILE=" + filepath.Join(dir, "status.json"), // local health file, outside STATE_DIR
 		"RELAY_HOOKS_CONFIG=" + filepath.Join(dir, "absent-hooks.json"), "TLS_DISABLE=true",
 		"API_ADDR=" + api, "ADMIN_ADDR=" + adminAddr, "WS_ADDR=" + wsAddr,
 	}

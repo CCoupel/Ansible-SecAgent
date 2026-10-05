@@ -224,9 +224,12 @@ func (n *Node) prepareTLS() error {
 	if n.cfg.TLSDisable {
 		log.Printf("[SECURITY WARNING] TLS_DISABLE=true is ignored: a certificate pair is configured, TLS stays on")
 	}
-	cs, err := newCertStore(n.cfg.TLSCert, n.cfg.TLSKey, n.cfg.tlsNow)
-	if err != nil {
-		return err
+	cs := n.cfg.certs // already validated by RunInstance, before the lock loop
+	if cs == nil {
+		var err error
+		if cs, err = newCertStore(n.cfg.TLSCert, n.cfg.TLSKey, n.cfg.tlsNow); err != nil {
+			return err
+		}
 	}
 	n.certs = cs
 	return nil

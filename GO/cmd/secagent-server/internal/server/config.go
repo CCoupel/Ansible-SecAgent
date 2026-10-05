@@ -7,16 +7,19 @@ package server
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
-	"secagent-server/cmd/secagent-server/internal/tlsca"
 	"strings"
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/config"
 	"secagent-server/cmd/secagent-server/internal/handlers"
+	"secagent-server/cmd/secagent-server/internal/localstatus"
+	"secagent-server/cmd/secagent-server/internal/lock"
 	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/state"
+	"secagent-server/cmd/secagent-server/internal/tlsca"
 )
 
 // Default listen addresses (unchanged since v1).
@@ -48,11 +51,6 @@ type Config struct {
 	// is nil the instance is read-only (every write fails with storage.ErrReadOnly). Never set from
 	// the environment.
 	WriteGuard func() error
-	// SingleInstance (RELAY_SINGLE_INSTANCE=true) is the operator's explicit statement "exactly one
-	// instance runs on this STATE_DIR, there is no exclusivity lock": the write guard then allows
-	// every write. It exists until the active/passive lock is wired (#163) and stays the way to run
-	// a lone relay without shared storage. Never enable it with two instances on one STATE_DIR.
-	SingleInstance bool
 	// InsecureTestState accepts a state created with `state init --insecure-test-mode` (secrets in
 	// clear). TEST SEAM: never set by ConfigFromEnv, and refused when RSA_MASTER_KEY is set.
 	InsecureTestState bool
@@ -103,6 +101,23 @@ type Config struct {
 	// the start is refused. There is no skip-verify option (#147).
 	CAFile string
 
+	// StatusFile is RELAY_STATUS_FILE (default /run/secagent/status.json): the LOCAL health file read
+	// by `secagent-server status --local`. It must be outside STATE_DIR.
+	StatusFile string
+
+	// LockParams / LockHooks / Listen are TEST SEAMS, never set by ConfigFromEnv (no operator
+	// knob: a too aggressive lock calibration or an injected listener must not be deployable).
+	// LockParams zero = lock.DefaultParams(). Listen, when set, binds the "api", "admin" and "ws"
+	// listeners at the moment the node starts serving (after the promotion), instead of the addresses.
+	LockParams lock.Params
+	LockHooks  lock.Hooks
+	Listen     func(name string) (net.Listener, error)
+
+	// set by RunInstance (the promoted master), not by callers
+	certs        *certStore       // certificates validated before the lock loop
+	minWriteSeq  uint64           // lowest write_seq of a state this master may accept (anti-replay)
+	onStateWrite func(seq uint64) // publishes the state write_seq in relay.lock
+
 	// Repeater is the validated child-relay configuration (REPEATER_UPSTREAM_*); nil = no pull parent.
 	Repeater *config.RepeaterConfig
 }
@@ -139,8 +154,9 @@ func ConfigFromEnv() (Config, error) {
 	if cfg.AdminTLS, terr = envStrictBool(EnvAdminTLS); terr != nil {
 		return Config{}, terr
 	}
-	if cfg.SingleInstance, terr = envStrictBool("RELAY_SINGLE_INSTANCE"); terr != nil {
-		return Config{}, terr
+	if os.Getenv("RELAY_SINGLE_INSTANCE") != "" {
+		// the transitional opt-in of #160 is gone: the lock (#163) is always on, even for one instance
+		log.Printf("[WARN] RELAY_SINGLE_INSTANCE is obsolete and ignored: the exclusivity lock is always active (#163)")
 	}
 	if cfg.AdminInsecureHTTP, terr = envStrictBool(EnvAdminInsecureHTTP); terr != nil {
 		return Config{}, terr
@@ -162,6 +178,14 @@ func ConfigFromEnv() (Config, error) {
 		}
 	}
 	if _, err := handlers.ParseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs); err != nil {
+		return Config{}, err
+	}
+	cfg.StatusFile = localstatus.PathFromEnv()
+	stateDirForCheck := cfg.StateDir
+	if stateDirForCheck == "" {
+		stateDirForCheck = state.DefaultStateDir
+	}
+	if err := localstatus.CheckOutside(cfg.StatusFile, stateDirForCheck); err != nil {
 		return Config{}, err
 	}
 	if v := os.Getenv("DATABASE_URL"); v != "" {
@@ -232,3 +256,9 @@ func orDefault(v, def string) string {
 	}
 	return v
 }
+
+// ErrStateReplayed: the state file is older than the write_seq published by the previous master.
+var ErrStateReplayed = errors.New("state replay refused: relay.state is older than the previous master's last write (#163)")
+
+// ErrLockLost is returned by Run after Abort: the master lock was lost, the process must exit.
+var ErrLockLost = errors.New("master lock lost")

@@ -88,21 +88,3 @@ func TestBuild_PeriodicPurgeRemovesExpiredBlacklistEntriesAndHonoursTheGuard(t *
 	}
 	refuse = false
 }
-
-// With no lock wired (#163) a lone relay declares itself SingleInstance: writes then work, and are
-// durable; without that declaration the node stays read-only (previous test).
-func TestBuild_SingleInstanceAllowsTheWrites(t *testing.T) {
-	n, _, admin, _ := startNode(t, func(c *Config) { c.WriteGuard = nil; c.SingleInstance = true })
-	code, body := adminCall(t, admin, "POST", "/api/admin/authorize", map[string]any{"hostname": "h", "public_key_pem": "pem", "approved_by": "ci"})
-	if code >= 300 {
-		t.Fatalf("authorize on a single instance: %d %s", code, body)
-	}
-	k, err := n.store.GetAuthorizedKey(context.Background(), "h")
-	if err != nil || k == nil {
-		t.Fatalf("the key was not stored: %v %v", k, err)
-	}
-	raw, _ := os.ReadFile(filepath.Join(n.cfg.StateDir, state.StateFile))
-	if !strings.Contains(string(raw), `"h":{"hostname":"h"`) {
-		t.Error("the write did not reach relay.state")
-	}
-}

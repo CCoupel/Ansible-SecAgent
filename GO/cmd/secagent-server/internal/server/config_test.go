@@ -16,7 +16,7 @@ func setServerEnv(t *testing.T) {
 	t.Setenv("TLS_DISABLE", "true")
 	t.Setenv("ADMIN_INSECURE_HTTP", "true")
 	t.Setenv("ADMIN_INSECURE_HTTP_ACK", AdminInsecureHTTPAckValue) // these tests are not about the admin exposure
-	for _, k := range []string{EnvAPIAddr, EnvAdminAddr, EnvWSAddr, "DATABASE_URL", "STATE_DIR", "STATE_MAX_BYTES", "RELAY_SINGLE_INSTANCE", "LOG_LEVEL",
+	for _, k := range []string{EnvAPIAddr, EnvAdminAddr, EnvWSAddr, "DATABASE_URL", "STATE_DIR", "STATE_MAX_BYTES", "RELAY_SINGLE_INSTANCE", "RELAY_STATUS_FILE", "LOG_LEVEL",
 		"REPEATER_ID", "REPEATER_UPSTREAM_URL", "REPEATER_UPSTREAM_TOKEN"} {
 		t.Setenv(k, "")
 	}
@@ -196,22 +196,31 @@ func TestConfigFromEnv_StateSettings(t *testing.T) {
 	}
 }
 
-// RELAY_SINGLE_INSTANCE is an explicit opt-in: "true", "false" or unset; anything else is an error
-// (like TLS_DISABLE: "1" or "yes" must never silently mean something else).
-func TestConfigFromEnv_SingleInstanceIsAnExplicitOptIn(t *testing.T) {
+// RELAY_SINGLE_INSTANCE (the transitional opt-in of #160) is gone: the lock is always on. The variable
+// is ignored with a warning, whatever its value, and no Config field reflects it.
+func TestConfigFromEnv_SingleInstanceIsObsoleteAndIgnored(t *testing.T) {
 	setServerEnv(t)
-	for value, want := range map[string]bool{"": false, "false": false, "true": true} {
-		t.Setenv("RELAY_SINGLE_INSTANCE", value)
-		cfg, err := ConfigFromEnv()
-		if err != nil || cfg.SingleInstance != want {
-			t.Errorf("RELAY_SINGLE_INSTANCE=%q: SingleInstance=%v err=%v, want %v", value, cfg.SingleInstance, err, want)
+	for _, v := range []string{"true", "false", "1", "garbage"} {
+		t.Setenv("RELAY_SINGLE_INSTANCE", v)
+		if _, err := ConfigFromEnv(); err != nil {
+			t.Errorf("RELAY_SINGLE_INSTANCE=%q must be ignored, got %v", v, err)
 		}
 	}
-	for _, bad := range []string{"1", "yes", "TRUE", "on"} {
-		t.Setenv("RELAY_SINGLE_INSTANCE", bad)
-		if _, err := ConfigFromEnv(); err == nil {
-			t.Errorf("RELAY_SINGLE_INSTANCE=%q must be refused", bad)
-		}
+}
+
+// The local status file must stay out of the shared STATE_DIR.
+func TestConfigFromEnv_StatusFileMustBeOutsideStateDir(t *testing.T) {
+	setServerEnv(t)
+	dir := t.TempDir()
+	t.Setenv("STATE_DIR", dir)
+	t.Setenv("RELAY_STATUS_FILE", filepath.Join(dir, "status.json"))
+	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "outside STATE_DIR") {
+		t.Fatalf("status file inside STATE_DIR must be refused, got %v", err)
+	}
+	t.Setenv("RELAY_STATUS_FILE", filepath.Join(t.TempDir(), "status.json"))
+	cfg, err := ConfigFromEnv()
+	if err != nil || cfg.StatusFile == "" {
+		t.Fatalf("outside is accepted: %v %q", err, cfg.StatusFile)
 	}
 }
 

@@ -57,6 +57,14 @@ type Node struct {
 
 	closeOnce sync.Once
 	ready     chan struct{}
+
+	// abort is closed by Abort (loss of the lock): Run then stops at once, without graceful
+	// shutdown and without draining the hooks queue.
+	abort     chan struct{}
+	abortOnce sync.Once
+	instMu    sync.Mutex
+	instRole  string
+	instID    string
 	apiAddr   string // effective addresses once listening
 	adminAddr string
 	wsAddr    string
@@ -68,7 +76,7 @@ type Node struct {
 // On error everything already opened is released.
 func Build(cfg Config) (node *Node, err error) {
 	logsafe.Install() // one log call = one line, whatever a peer or a legacy row put in a value
-	n := &Node{cfg: cfg, ready: make(chan struct{})}
+	n := &Node{cfg: cfg, ready: make(chan struct{}), abort: make(chan struct{})}
 	defer func() {
 		if err != nil {
 			n.Close()
@@ -112,11 +120,7 @@ func Build(cfg Config) (node *Node, err error) {
 		stateDir = state.DefaultStateDir
 	}
 	masterKey := os.Getenv("RSA_MASTER_KEY")
-	writeGuard := cfg.WriteGuard
-	if writeGuard == nil && cfg.SingleInstance {
-		log.Println("[WARN] RELAY_SINGLE_INSTANCE: no exclusivity lock, every write is allowed — run exactly ONE instance on this STATE_DIR")
-		writeGuard = func() error { return nil }
-	}
+	writeGuard := cfg.WriteGuard // the lock identity check (RunInstance); nil = read-only
 	store, err := storage.Open(state.Options{
 		Dir:       stateDir,
 		MaxBytes:  cfg.StateMaxBytes,
@@ -129,6 +133,16 @@ func Build(cfg Config) (node *Node, err error) {
 		return nil, fmt.Errorf("failed to load the state: %w", err)
 	}
 	n.store = store
+	// Anti-replay (#163): a state older than what the previous master published in relay.lock is a
+	// replayed copy (or a fallback on an older .prev): fail closed.
+	if seq := store.WriteSeq(); cfg.minWriteSeq > 0 && seq < cfg.minWriteSeq {
+		log.Printf("[SECURITY WARNING] the state file has write_seq %d, below the %d published by the previous master in relay.lock: an older copy of relay.state was put back (or relay.state is missing and relay.state.prev is older): refusing to start", seq, cfg.minWriteSeq)
+		return nil, fmt.Errorf("%w: write_seq %d < %d", ErrStateReplayed, seq, cfg.minWriteSeq)
+	}
+	if cfg.onStateWrite != nil {
+		store.SetOnWrite(cfg.onStateWrite)
+		cfg.onStateWrite(store.WriteSeq())
+	}
 	if writeGuard == nil {
 		log.Println("[WARN] no write guard connected: the state is READ-ONLY until this instance is the confirmed master (#163)")
 	}
@@ -421,6 +435,11 @@ func (n *Node) Addrs() (api, admin, wsAddr string) {
 // shuts down gracefully and releases the node. It returns nil on a requested shutdown.
 func (n *Node) Run(ctx context.Context) error {
 	defer n.Close()
+	select {
+	case <-n.abort: // the lock was lost before we served anything
+		return ErrLockLost
+	default:
+	}
 
 	type srvSpec struct {
 		name  string
@@ -434,6 +453,20 @@ func (n *Node) Run(ctx context.Context) error {
 		{name: "API server", srv: n.apiSrv, ln: n.cfg.APIListener, addr: n.cfg.apiAddr()},
 		{name: "Admin server", srv: n.adminSrv, ln: n.cfg.AdminListener, addr: n.cfg.adminAddr()},
 		{name: "WebSocket server", srv: n.wsSrv, ln: n.cfg.WSListener, addr: n.cfg.wsAddr()},
+	}
+	if n.cfg.Listen != nil { // test seam: bound now (after the promotion), not before
+		for i, name := range []string{"api", "admin", "ws"} {
+			ln, err := n.cfg.Listen(name)
+			if err != nil {
+				for _, o := range specs {
+					if o.ln != nil {
+						_ = o.ln.Close()
+					}
+				}
+				return fmt.Errorf("failed to start all servers: listen %s: %w", name, err)
+			}
+			specs[i].ln = ln
+		}
 	}
 	for i, s := range specs {
 		s.tls = n.applyTLS(s.srv, i == 1)
@@ -516,9 +549,15 @@ func (n *Node) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 	case runErr = <-errCh:
+	case <-n.abort:
+		// the lock is lost: nothing graceful, nothing that could act on behalf of a master that is
+		// no longer one (Abort already closed the listeners, the links and stopped the hooks)
+		log.Println("[SHUTDOWN] aborted: the master lock was lost")
+		return ErrLockLost
 	}
 
 	log.Println("[SHUTDOWN] Shutting down servers...")
+	ws.CloseAllLinks(1001, "server shutting down") // Going Away: peers reconnect (never 4001)
 	n.shutdownServers()
 	if runErr == nil && n.dispatcher != nil { // clean stop: flush the hooks queue (bounded), then count what is left
 		if left := n.dispatcher.Drain(hooks.DefaultDrainTimeout); left > 0 {
@@ -527,6 +566,34 @@ func (n *Node) Run(ctx context.Context) error {
 	}
 	log.Println("[OK] Shutdown complete")
 	return runErr
+}
+
+// Abort stops the node IMMEDIATELY after the loss of the master lock (#163): the hooks dispatcher
+// and every link maker are cancelled first (no action may run on behalf of a former master), the
+// three listeners are closed, and every WebSocket gets the close code 1001 (Going Away) so that
+// minions and relays reconnect to the new master (4001 would forbid it). There is no graceful
+// phase and no drain. Idempotent and safe to call before Run (Run then returns ErrLockLost).
+func (n *Node) Abort() {
+	n.abortOnce.Do(func() {
+		close(n.abort)
+		if n.cancel != nil {
+			n.cancel() // dispatcher (queued events are dropped, not run), dialers, pull client, purge
+		}
+		for _, s := range []*http.Server{n.apiSrv, n.adminSrv, n.wsSrv} {
+			if s != nil {
+				_ = s.Close() // closes the listeners and the plain connections now
+			}
+		}
+		closed := ws.CloseAllLinks(1001, "master lock lost")
+		log.Printf("[SHUTDOWN] lock lost: listeners closed, %d WebSocket link(s) closed with 1001", closed)
+	})
+}
+
+// SetInstance records the role and instance id shown by /health.
+func (n *Node) SetInstance(role, id string) {
+	n.instMu.Lock()
+	n.instRole, n.instID = role, id
+	n.instMu.Unlock()
 }
 
 func (n *Node) shutdownServers() {

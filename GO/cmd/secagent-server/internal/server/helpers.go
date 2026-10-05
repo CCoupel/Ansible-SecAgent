@@ -25,6 +25,11 @@ import (
 // agents and descendants: it must not be restarted by a liveness probe).
 func (n *Node) handleHealth(w http.ResponseWriter, r *http.Request) {
 	body := map[string]interface{}{"status": "ok", "timestamp": time.Now().Unix()}
+	n.instMu.Lock()
+	if n.instRole != "" {
+		body["role"], body["instance_id"] = n.instRole, n.instID
+	}
+	n.instMu.Unlock()
 	if n.healthLinks != nil {
 		if l := n.healthLinks(); !l.Empty() {
 			body["degraded"] = l.Degraded
