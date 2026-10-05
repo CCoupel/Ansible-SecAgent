@@ -65,7 +65,11 @@ type content struct {
 	InstanceID string `json:"instance_id"`
 	Role       string `json:"role"`
 	Beat       uint64 `json:"beat"`
-	Host       string `json:"host,omitempty"`
+	// Seq is the write_seq of relay.state as last published by the master (#163, anti-replay):
+	// every secondary remembers the highest value it ever read here, and a master that promotes
+	// refuses a state older than it.
+	Seq  uint64 `json:"write_seq,omitempty"`
+	Host string `json:"host,omitempty"`
 }
 
 // Lock is one instance's view of the lease.
@@ -89,6 +93,18 @@ type Lock struct {
 	obsRaw   string
 	obsSince time.Time
 	observed bool
+
+	// minSeq is the highest write_seq ever read in a lock content (stale ones included, read just
+	// before they are deleted); notedSeq the master's last state write_seq (NoteSeq) and
+	// publishedSeq what the lock content carries.
+	minSeq       uint64
+	notedSeq     uint64
+	publishedSeq uint64
+	// wmu serializes the writes of the content (heartbeat and seq publication)
+	wmu sync.Mutex
+	// for Status
+	lastCheck time.Time
+	phase     string
 }
 
 // ErrNotMaster is returned by CheckOwnership when this instance does not hold the lock.
@@ -199,6 +215,11 @@ func (l *Lock) fresh(raw []byte) (isFresh bool, age time.Duration, owner content
 	role := RoleCandidate // an unreadable or half-written file is a candidate that did not finish
 	if ok {
 		role = c.Role
+		l.mu.Lock()
+		if c.Seq > l.minSeq {
+			l.minSeq = c.Seq
+		}
+		l.mu.Unlock()
 	}
 	if !l.observed || l.obsRaw != string(raw) {
 		l.observed, l.obsRaw, l.obsSince = true, string(raw), now
@@ -214,6 +235,9 @@ func (l *Lock) fresh(raw []byte) (isFresh bool, age time.Duration, owner content
 
 // step is one iteration of the secondary loop. It returns true once promoted to master.
 func (l *Lock) step(ctx context.Context) (bool, error) {
+	l.mu.Lock()
+	l.lastCheck, l.phase = l.cfg.Clock.Now(), PhaseSecondary
+	l.mu.Unlock()
 	raw, err := l.cfg.FS.ReadFile(l.path)
 	switch {
 	case err == nil:
@@ -253,6 +277,9 @@ func (l *Lock) step(ctx context.Context) (bool, error) {
 		l.abandon(h, fmt.Sprintf("creation took %v (> %v)", took, l.p.MaxWriteLatency))
 		return false, nil
 	}
+	l.mu.Lock()
+	l.phase = PhaseCandidate
+	l.mu.Unlock()
 	l.log("candidate")
 
 	if err := l.cfg.Clock.Sleep(ctx, l.cfg.Rand.Duration(l.p.PauseMin, l.p.PauseMax)); err != nil {
@@ -295,8 +322,11 @@ func (l *Lock) step(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	start = l.cfg.Clock.Now()
+	l.mu.Lock()
 	l.beat = 1
-	if err := h.Rewrite(encodeContent(content{InstanceID: l.id, Role: RoleMaster, Beat: l.beat, Host: l.cfg.Host})); err != nil {
+	first := content{InstanceID: l.id, Role: RoleMaster, Beat: l.beat, Seq: l.minSeq, Host: l.cfg.Host}
+	l.mu.Unlock()
+	if err := h.Rewrite(encodeContent(first)); err != nil {
 		l.abandon(h, "first beat failed")
 		return false, fmt.Errorf("first beat: %w", err)
 	}
@@ -314,6 +344,7 @@ func (l *Lock) step(ctx context.Context) (bool, error) {
 	}
 	l.mu.Lock()
 	l.h, l.master, l.lastBeatOK = h, true, l.cfg.Clock.Now()
+	l.publishedSeq, l.phase = first.Seq, PhaseMaster
 	l.mu.Unlock()
 	l.log("promoted to master")
 	return true, nil
@@ -433,7 +464,7 @@ func (l *Lock) lose(err error) error {
 		l.mu.Unlock()
 		return e
 	}
-	l.lost, l.lostErr, l.master = true, err, false
+	l.lost, l.lostErr, l.master, l.phase = true, err, false, PhaseLost
 	h := l.h
 	l.h = nil
 	cb := l.cfg.OnLost
@@ -448,24 +479,106 @@ func (l *Lock) lose(err error) error {
 	return err
 }
 
-// doBeat increments the counter in place (write + fsync).
-func (l *Lock) doBeat() error {
+// writeContent rewrites the lock content in place (write + fsync). With nextBeat the counter is
+// incremented (the heartbeat); without, the current counter is kept (a seq publication). Either
+// way a success proves the storage answers, so it counts as a successful beat for the self-retire.
+func (l *Lock) writeContent(nextBeat bool) error {
+	l.wmu.Lock()
+	defer l.wmu.Unlock()
 	l.mu.Lock()
 	if !l.master || l.h == nil || l.lost {
 		l.mu.Unlock()
 		return ErrNotMaster
 	}
 	h := l.h
-	l.beat++
-	c := content{InstanceID: l.id, Role: RoleMaster, Beat: l.beat, Host: l.cfg.Host}
+	if nextBeat {
+		l.beat++
+	}
+	seq := l.notedSeq
+	if l.minSeq > seq {
+		seq = l.minSeq // never publish less than what this instance saw before it was master
+	}
+	c := content{InstanceID: l.id, Role: RoleMaster, Beat: l.beat, Seq: seq, Host: l.cfg.Host}
 	l.mu.Unlock()
 	if err := h.Rewrite(encodeContent(c)); err != nil {
 		return err
 	}
 	l.mu.Lock()
 	l.lastBeatOK = l.cfg.Clock.Now()
+	l.publishedSeq = seq
 	l.mu.Unlock()
 	return nil
+}
+
+func (l *Lock) doBeat() error { return l.writeContent(true) }
+
+// NoteSeq tells the lock the write_seq of the state file (called after every state write, and once
+// after the state was loaded). The master publishes it in the lock content at its next check or
+// beat (never lower than before). Safe for concurrent use; a no-op unless master.
+func (l *Lock) NoteSeq(seq uint64) {
+	l.mu.Lock()
+	if seq > l.notedSeq {
+		l.notedSeq = seq
+	}
+	l.mu.Unlock()
+}
+
+// MinSeq is the highest write_seq this instance ever read in the lock (the floor below which a
+// state file is a replay). Valid at any time; read it once promoted, before loading the state.
+func (l *Lock) MinSeq() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.minSeq
+}
+
+// publishSeqIfNeeded writes the content when the noted write_seq is ahead of the published one.
+func (l *Lock) publishSeqIfNeeded() {
+	l.mu.Lock()
+	need := l.master && !l.lost && l.notedSeq > l.publishedSeq
+	l.mu.Unlock()
+	if !need {
+		return
+	}
+	if err := l.writeContent(false); err != nil && !errors.Is(err, ErrNotMaster) {
+		l.warn("seq publication failed", "error", err)
+	}
+}
+
+// Phases reported by Status.
+const (
+	PhaseSecondary = "secondary"
+	PhaseCandidate = "candidate"
+	PhaseMaster    = "master"
+	PhaseLost      = "lost"
+)
+
+// Status is the observable state of the lock (the local status file, #163).
+type Status struct {
+	Phase      string
+	InstanceID string
+	Beat       uint64
+	// LastBeatOK: last successful write of the master's content (zero before promotion).
+	LastBeatOK time.Time
+	// LastCheck: last secondary poll or master identity check (zero before the first one).
+	LastCheck  time.Time
+	LostReason string
+	MinSeq     uint64
+	Params     Params
+}
+
+// Status returns a consistent copy.
+func (l *Lock) Status() Status {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	phase := l.phase
+	if phase == "" {
+		phase = PhaseSecondary
+	}
+	st := Status{Phase: phase, InstanceID: l.id, Beat: l.beat, LastBeatOK: l.lastBeatOK, LastCheck: l.lastCheck, MinSeq: l.minSeq, Params: l.p}
+	if l.lost && l.lostErr != nil {
+		st.LostReason = l.lostErr.Error()
+	}
+	return st
 }
 
 // Maintain runs the heartbeat and the identity check until ctx ends or the lock is lost (then
@@ -495,7 +608,14 @@ func (l *Lock) Maintain(ctx context.Context) error {
 		if err := l.cfg.Clock.Sleep(ctx, l.p.Check); err != nil {
 			break
 		}
-		if err := l.CheckOwnership(); err != nil {
+		err := l.CheckOwnership()
+		l.mu.Lock()
+		l.lastCheck = l.cfg.Clock.Now()
+		l.mu.Unlock()
+		if err == nil {
+			l.publishSeqIfNeeded()
+		}
+		if err != nil {
 			l.mu.Lock()
 			final := l.lost
 			l.mu.Unlock()
