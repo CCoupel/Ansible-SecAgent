@@ -20,7 +20,7 @@ func TestRedactActionClassifiesEveryActionField(t *testing.T) {
 	)
 	classes := map[string]string{
 		"type": kept, "method": kept, "cmd": kept, "path": kept, "max_retries": kept, "timeout_seconds": kept,
-		"url": special, "headers": special, "args": special,
+		"url": special, "headers": special, "env": special, "args": special,
 		"secret": masked, "body": masked, "append": masked,
 	}
 

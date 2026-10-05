@@ -125,15 +125,29 @@ X-Signature:   sha256=<hex(HMAC-SHA256(secret, body))>   ← si secret défini
 | `cmd` | ✅ | — | Chemin absolu de la commande ou script |
 | `args` | ❌ | `[]` | Arguments (template supporté) |
 | `timeout_seconds` | ❌ | `30` | Timeout d'exécution |
+| `env` | ❌ | `{}` | Variables supplémentaires (nom → valeur, template supporté, 64 max) ; valeurs masquées dans le journal |
 
-**Variables d'environnement injectées** :
+**Environnement du processus (liste blanche, #185)** : le processus **n'hérite jamais** de l'environnement du serveur
+(`ADMIN_TOKEN`, `JWT_SECRET_KEY`, `RSA_MASTER_KEY`, `REPEATER_UPSTREAM_TOKEN`… ne lui sont pas visibles). Il reçoit uniquement :
+
+- `PATH` fixe (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`) ;
+- `HOME` (celui du serveur, sinon `/nonexistent`), `LANG`, `LC_*`, `TZ` (valeurs du serveur, si définies) ;
+- les variables déclarées dans `env` de l'action ;
+- les variables d'événement, qui l'emportent sur tout le reste :
 ```
 SECAGENT_EVENT=host.new
 SECAGENT_HOSTNAME=my-server-01
 SECAGENT_TIMESTAMP=2026-05-22T14:30:00Z
 SECAGENT_STATUS=disconnected
 SECAGENT_ENROLLED_AT=2026-05-22T14:30:00Z   ← host.new uniquement
+SECAGENT_RELAY_CHAIN / SECAGENT_RELAY_ORIGIN ← événement venu d'un relay enfant
 ```
+
+Règles de validation de `env` (la configuration entière est refusée sinon) : réservé à `type: "shell"` ; noms
+`[A-Za-z_][A-Za-z0-9_]*` ; préfixe `SECAGENT_` réservé ; **`ADMIN_TOKEN`, `JWT_SECRET_KEY`, `RSA_MASTER_KEY`,
+`REPEATER_UPSTREAM_TOKEN` et `RELAY_ENROLLMENT_TOKEN` interdits** (insensible à la casse). Une valeur sensible dans `env`
+(ex. jeton d'une API tierce) doit être un secret **propre au hook**, jamais une copie d'un secret du serveur. Aucun réglage
+ne permet de désactiver la liste blanche.
 
 **Succès** : code de retour 0. Toute autre valeur → success=false ; seul le statut de sortie (`exit status N`) est journalisé : le stderr est ignoré (il peut citer des secrets, #161).
 

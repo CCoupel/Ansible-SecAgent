@@ -297,7 +297,7 @@ func KeptActionFields() []string {
 
 // RedactAction renders a hook action definition for the journal. Secure by default: only the
 // fields of keptActionFields are kept as they are; the url keeps scheme, host and port only (see
-// RedactURL); the header names are kept with masked values and the shell arguments become a list
+// RedactURL); the header and env variable names are kept with masked values and the shell arguments become a list
 // of masks; every other
 // field — the webhook HMAC secret, the body, shell arguments, the append template, and any field
 // added later — is masked. raw is the JSON of the action definition.
@@ -315,7 +315,7 @@ func RedactAction(raw []byte) string {
 			} else {
 				m[k] = Mask
 			}
-		case k == "headers":
+		case k == "headers", k == "env": // names stay, values are masked
 			if h, ok := v.(map[string]any); ok {
 				for hk := range h {
 					h[hk] = Mask

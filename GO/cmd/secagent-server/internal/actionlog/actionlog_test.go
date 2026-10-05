@@ -414,3 +414,16 @@ func TestListRefusesASymbolicLinkWithoutReadingTheTarget(t *testing.T) {
 		_ = os.Remove(path)
 	}
 }
+
+func TestRedactActionMasksEnvValuesAndKeepsNames(t *testing.T) {
+	out := RedactAction([]byte(`{"type":"shell","cmd":"/x","env":{"HOOK_API_KEY":"ENV-SECRET-VALUE","LANG":"C"}}`))
+	if strings.Contains(out, "ENV-SECRET-VALUE") || strings.Contains(out, `"LANG":"C"`) {
+		t.Errorf("env values must be masked: %s", out)
+	}
+	var m map[string]any
+	_ = json.Unmarshal([]byte(out), &m)
+	env, _ := m["env"].(map[string]any)
+	if env["HOOK_API_KEY"] != Mask || env["LANG"] != Mask {
+		t.Errorf("env names must stay with masked values: %v", env)
+	}
+}
