@@ -105,8 +105,8 @@ func main() {
 		PrivateKey:      privKey,
 		JWTPath:         cfg.jwtPath,
 		EnrollmentToken: cfg.enrollmentToken,
+		CABundle:        cfg.caBundle,
 		Insecure:        cfg.insecure,
-		MaxRetries:      3,
 	})
 
 	// --- Étape 6 : Signal handling + run loop ---

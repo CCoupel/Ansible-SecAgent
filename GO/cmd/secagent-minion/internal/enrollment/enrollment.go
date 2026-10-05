@@ -85,6 +85,26 @@ type step2Response struct {
 	JWTEncrypted string `json:"jwt_encrypted"` // base64(OAEP(jwt, agent_pubkey))
 }
 
+// HTTPError est retournée quand le serveur rejette une étape de l'enrôlement (statut != 200).
+// Les appelants la distinguent avec errors.As : 403 (token d'enrôlement invalide, expiré ou
+// consommé) est permanent, les autres statuts (400, 5xx…) sont corrigibles. Body est le corps
+// d'erreur JSON du serveur (jamais un secret : le serveur n'y renvoie que {"error": code}).
+type HTTPError struct {
+	Step   int // 1 ou 2
+	Status int
+	Body   map[string]any
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("enrollment step%d: server rejected (HTTP %d): %v", e.Step, e.Status, e.Body)
+}
+
+// IsForbidden indique que le serveur a refusé l'enrôlement (HTTP 403) : erreur permanente.
+func IsForbidden(err error) bool {
+	var he *HTTPError
+	return errors.As(err, &he) && he.Status == http.StatusForbidden
+}
+
 // Enroll enregistre l'agent via le protocole challenge-response en 2 étapes.
 //
 // L'agent effectue :
@@ -188,7 +208,7 @@ func enrollStep1(ctx context.Context, client *http.Client, cfg Config) (challeng
 	if resp.StatusCode != http.StatusOK {
 		var errBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		return "", "", fmt.Errorf("enrollment step1: server rejected (HTTP %d): %v", resp.StatusCode, errBody)
+		return "", "", &HTTPError{Step: 1, Status: resp.StatusCode, Body: errBody}
 	}
 
 	var result step1Response
@@ -264,7 +284,7 @@ func enrollStep2(ctx context.Context, client *http.Client, cfg Config, nonce []b
 	if resp.StatusCode != http.StatusOK {
 		var errBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		return "", fmt.Errorf("enrollment step2: server rejected (HTTP %d): %v", resp.StatusCode, errBody)
+		return "", &HTTPError{Step: 2, Status: resp.StatusCode, Body: errBody}
 	}
 
 	var result step2Response
