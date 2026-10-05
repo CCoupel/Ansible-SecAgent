@@ -208,10 +208,9 @@ func runScenario(t *testing.T, seed int64, n int, k knobs, duration time.Duratio
 }
 
 func TestProperty_NeverTwoMastersWriting(t *testing.T) {
-	seeds := 16
-	if testing.Short() {
-		seeds = 8
-	}
+	// 16 seeds in every mode: the hazard scenarios are deterministic per seed, and fewer seeds do not all
+	// reach a takeover (the run takes under a second anyway)
+	const seeds = 16
 	scenarios := []struct {
 		name string
 		k    knobs
