@@ -12,10 +12,11 @@
 //	RELAY_CA_BUNDLE       CA bundle PEM custom         (optionnel)
 //	RELAY_INSECURE_TLS    "true" pour désactiver TLS  (TESTS UNIQUEMENT)
 //	RELAY_ONLY_CONNECTED  "true" pour filtrer hôtes connectés uniquement (défaut: false)
+//	RELAY_SCOPE           id d'un relay : limite l'inventaire à sa descendance (optionnel)
 //
 // Format de sortie :
 //
-//	--list : {"all": {"hosts": [...]}, "_meta": {"hostvars": {...}}}
+//	--list : {"all": {"hosts": [...], "children": [...]}, "<relay>": {"hosts": [...], "children": [...]}, "_meta": {"hostvars": {...}}}
 //	--host : {"ansible_connection": "relay", "ansible_host": "...", ...}
 package main
 
@@ -26,30 +27,109 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"strings"
 	"time"
 )
 
-// InventoryResponse est le format retourné par GET /api/inventory
+// InventoryResponse est le format retourné par GET /api/inventory.
+// Depuis #128 l'inventaire est hiérarchique : un groupe par relay (nom exact du relay) en plus de
+// "all" et "_meta", avec les relays enfants comme groupes enfants.
 type InventoryResponse struct {
 	All struct {
-		Hosts []string `json:"hosts"`
+		Hosts    []string `json:"hosts"`
+		Children []string `json:"children,omitempty"`
 	} `json:"all"`
 	Meta struct {
 		Hostvars map[string]json.RawMessage `json:"hostvars"`
 	} `json:"_meta"`
+	// Groups contient les groupes de relays (clés de premier niveau autres que all / _meta).
+	Groups map[string]AnsibleGroup `json:"-"`
+}
+
+// UnmarshalJSON lit "all", "_meta" et toute autre clé comme groupe de relay.
+func (r *InventoryResponse) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = InventoryResponse{}
+	for k, v := range raw {
+		switch k {
+		case "all":
+			if err := json.Unmarshal(v, &r.All); err != nil {
+				return err
+			}
+		case "_meta":
+			if err := json.Unmarshal(v, &r.Meta); err != nil {
+				return err
+			}
+		default:
+			var g AnsibleGroup
+			if err := json.Unmarshal(v, &g); err != nil {
+				return err
+			}
+			if r.Groups == nil {
+				r.Groups = make(map[string]AnsibleGroup)
+			}
+			r.Groups[k] = g
+		}
+	}
+	return nil
 }
 
 // AnsibleInventory est le format de sortie pour --list
 type AnsibleInventory struct {
-	All  AnsibleGroup `json:"all"`
-	Meta AnsibleMeta  `json:"_meta"`
+	All    AnsibleGroup            `json:"all"`
+	Meta   AnsibleMeta             `json:"_meta"`
+	Groups map[string]AnsibleGroup `json:"-"`
 }
 
-// AnsibleGroup représente un groupe Ansible avec ses hôtes
+// MarshalJSON aplatit les groupes de relays à côté de "all" et "_meta".
+func (a AnsibleInventory) MarshalJSON() ([]byte, error) {
+	doc := map[string]any{"_meta": a.Meta, "all": a.All}
+	for name, g := range a.Groups {
+		doc[name] = g
+	}
+	return json.Marshal(doc)
+}
+
+// UnmarshalJSON est l'inverse de MarshalJSON.
+func (a *AnsibleInventory) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*a = AnsibleInventory{}
+	for k, v := range raw {
+		switch k {
+		case "all":
+			if err := json.Unmarshal(v, &a.All); err != nil {
+				return err
+			}
+		case "_meta":
+			if err := json.Unmarshal(v, &a.Meta); err != nil {
+				return err
+			}
+		default:
+			var g AnsibleGroup
+			if err := json.Unmarshal(v, &g); err != nil {
+				return err
+			}
+			if a.Groups == nil {
+				a.Groups = make(map[string]AnsibleGroup)
+			}
+			a.Groups[k] = g
+		}
+	}
+	return nil
+}
+
+// AnsibleGroup représente un groupe Ansible avec ses hôtes et ses groupes enfants
 type AnsibleGroup struct {
-	Hosts []string `json:"hosts"`
+	Hosts    []string `json:"hosts"`
+	Children []string `json:"children,omitempty"`
 }
 
 // AnsibleMeta contient les hostvars de tous les hôtes
@@ -64,6 +144,7 @@ type config struct {
 	caBundle      string
 	insecure      bool
 	onlyConnected bool
+	scopeRelay    string // optional: only the subtree of this relay (RELAY_SCOPE)
 }
 
 func main() {
@@ -108,11 +189,13 @@ func cmdList(cfg config) error {
 
 	out := AnsibleInventory{
 		All: AnsibleGroup{
-			Hosts: inv.All.Hosts,
+			Hosts:    inv.All.Hosts,
+			Children: inv.All.Children,
 		},
 		Meta: AnsibleMeta{
 			Hostvars: inv.Meta.Hostvars,
 		},
+		Groups: inv.Groups,
 	}
 
 	if out.All.Hosts == nil {
@@ -156,6 +239,9 @@ func fetchInventory(cfg config) (*InventoryResponse, error) {
 		url += "?only_connected=true"
 	} else {
 		url += "?only_connected=false"
+	}
+	if cfg.scopeRelay != "" {
+		url += "&relay=" + neturl.QueryEscape(cfg.scopeRelay)
 	}
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -239,6 +325,7 @@ func loadConfig() config {
 		caBundle:      getenv("RELAY_CA_BUNDLE", ""),
 		insecure:      getenv("RELAY_INSECURE_TLS", "") == "true",
 		onlyConnected: getenv("RELAY_ONLY_CONNECTED", "") == "true",
+		scopeRelay:    getenv("RELAY_SCOPE", ""),
 	}
 }
 
