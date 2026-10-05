@@ -20,6 +20,7 @@ x-secagent: &secagent
   user: "10001:10001"
   stop_grace_period: 30s
   read_only: true
+  mem_limit: ${SECAGENT_MEM_LIMIT:-2g}
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
   env_file:
@@ -50,6 +51,7 @@ x-secagent-env: &secagent-env
   TLS_CERT: /certs/tls.crt
   TLS_KEY: /certs/tls.key
   LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+  GOMEMLIMIT: ${GOMEMLIMIT:-1638MiB}   # ~80 % de SECAGENT_MEM_LIMIT
 
 services:
   secagent-server-a:

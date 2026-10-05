@@ -41,6 +41,9 @@ services:
       TLS_CERT: /certs/tls.crt
       TLS_KEY: /certs/tls.key
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Le GC travaille avant l'OOM-kill : ~80 % de la limite memoire (2 GiB -> 1638 MiB). A changer
+      # AVEC SECAGENT_MEM_LIMIT (voir « Dimensionnement » dans le README).
+      GOMEMLIMIT: ${GOMEMLIMIT:-1638MiB}
     volumes:
       # Etat partage (relay.state, relay.lock, journal). Voir DEPLOYMENT/prod/README.md : montage
       # NFS de l'hote (fstab : hard, noatime...) puis bind mount ; alternative : volume Docker NFS
@@ -75,7 +78,7 @@ services:
       options: {max-size: "20m", max-file: "5"}
     deploy:
       resources:
-        limits: {cpus: "2", memory: 2g}
+        limits: {cpus: "2", memory: "${SECAGENT_MEM_LIMIT:-2g}"}   # > 3000 hotes : 2 GiB minimum (pic ~900 Mio mesure a 10 000 agents)
         reservations: {cpus: "0.25", memory: 256m}
 
 # Alternative au bind mount : volume Docker NFS (remplacer la ligne `type: bind` de /data par

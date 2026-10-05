@@ -54,6 +54,14 @@ Il vérifie, avec 500 fichiers : `O_CREAT|O_EXCL` (un seul gagnant par fichier),
 lu), `fsync` fichier et répertoire. À répéter (au moins 3 fois), horloges synchronisées (NTP). Complément manuel : `kill -9`
 d'un maître pendant l'écriture, puis `secagent-server state verify`. Supprimer ensuite `.storage-test`.
 
+## Dimensionnement (parc > 3 000 hôtes)
+
+Mesures QA (#160) : fichier d'état 5,9 Mio à 3 000 agents, 19,7 Mio à 10 000 ; RSS établi 111 à 349 Mio, mais **pic de 640 à 884 Mio**
+pendant des rafales d'enrôlement à 10 000 agents (déchets des opérations RSA-4096, copies du modèle d'état) ; 253 enrôlements/s ;
+exec 5,8 ms à 10 000 agents. Valeur de départ : **limite mémoire 2 GiB** (`SECAGENT_MEM_LIMIT`) et `GOMEMLIMIT` à ~80 %
+(`1638MiB`) pour que le GC travaille avant l'OOM-kill. Modifier les deux ensemble (ex. 4g → 3276MiB). Surveiller le RSS et
+les redémarrages OOM (`docker inspect -f '{{.State.OOMKilled}}'`). La limite est exigée par le contrôle CI de rendu.
+
 ## Premier déploiement
 
 1. Sur chaque hôte : `.env`, `prod.env`, certificats, partage monté, `docker login ghcr.io` si l'image est privée.

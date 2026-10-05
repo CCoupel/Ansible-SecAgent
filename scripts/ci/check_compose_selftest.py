@@ -25,6 +25,12 @@ cases = [
     ("TLS_DISABLE", svc([], {**ok, "TLS_DISABLE": "true"}), True),
     ("nats", {"services": {"nats": {"image": "nats:2"}}}, True),
 ]
+m = svc([], {**ok, "GOMEMLIMIT": "1638MiB"}); m["services"]["s"]["deploy"] = {"resources": {"limits": {"memory": "2147483648"}}}
+for name, doc, want_fail in [("mem ok", m, False), ("mem absente", svc([], ok), True)]:
+    got = bool(check(doc, False, True))
+    print(("ok  " if got == want_fail else "KO  ") + name)
+    if got != want_fail:
+        sys.exit(1)
 bad = 0
 for name, doc, want_fail in cases:
     got = bool(check(doc, False))

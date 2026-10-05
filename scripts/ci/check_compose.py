@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Controles de securite sur le RENDU d'un Compose (`docker compose config --format json`).
 
-Usage : check_compose.py [--allow-build] rendu.json [rendu2.json ...]
+Usage : check_compose.py [--allow-build] [--require-memory-limit] rendu.json [rendu2.json ...]
         docker compose -f X config --format json | check_compose.py -
 
 Echec (exit 1) si, pour un service :
@@ -10,6 +10,7 @@ Echec (exit 1) si, pour un service :
     (ADMIN_INSECURE_HTTP=true + ADMIN_INSECURE_HTTP_ACK=i-understand-the-risk) — meme regle que le serveur ;
   - TLS_DISABLE vaut true ;
   - une image est `latest` ou sans tag, ou un `build:` est present (sauf --allow-build : qualif locale) ;
+  - --require-memory-limit : pas de limite memoire de conteneur, ou GOMEMLIMIT absent ;
   - la configuration mentionne NATS / JetStream / Caddy.
 """
 import json
@@ -34,7 +35,7 @@ def env_of(svc: dict) -> dict:
     return {k: ("" if v is None else str(v)) for k, v in env.items()}
 
 
-def check(doc: dict, allow_build: bool) -> list:
+def check(doc: dict, allow_build: bool, require_mem: bool = False) -> list:
     errs = []
     for name, svc in (doc.get("services") or {}).items():
         where = f"service '{name}'"
@@ -66,6 +67,12 @@ def check(doc: dict, allow_build: bool) -> list:
                 errs.append(f"{where}: image {image!r} sans tag fixe ou 'latest'")
         elif "build" not in svc:
             errs.append(f"{where}: ni image ni build")
+        if require_mem:
+            lim = ((svc.get("deploy") or {}).get("resources") or {}).get("limits", {}).get("memory") or svc.get("mem_limit")
+            if not lim or str(lim) in ("0", ""):
+                errs.append(f"{where}: limite memoire de conteneur absente")
+            if not env.get("GOMEMLIMIT"):
+                errs.append(f"{where}: GOMEMLIMIT absent")
         if "build" in svc and not allow_build:
             errs.append(f"{where}: 'build:' interdit")
     blob = json.dumps(doc).lower()
@@ -77,14 +84,15 @@ def check(doc: dict, allow_build: bool) -> list:
 
 def main(argv):
     allow = "--allow-build" in argv
-    files = [a for a in argv if a != "--allow-build"]
+    req = "--require-memory-limit" in argv
+    files = [a for a in argv if not a.startswith("--")]
     if not files:
         print(__doc__)
         return 2
     rc = 0
     for f in files:
         doc = json.load(sys.stdin if f == "-" else open(f, encoding="utf-8"))
-        errs = check(doc, allow)
+        errs = check(doc, allow, req)
         for e in errs:
             print(f"::error::{f}: {e}")
         print(f"{'FAIL' if errs else 'OK'} {f}")
