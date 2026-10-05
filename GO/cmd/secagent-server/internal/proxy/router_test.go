@@ -32,7 +32,7 @@ func seedRelayNode(t *testing.T, s *storage.Store, relayID, url, mode string, ho
 	node := storage.RelayNode{
 		ID:        "uuid-" + relayID,
 		RelayID:   relayID,
-		URL:       url,
+		URLs:      splitURLs(url),
 		Mode:      mode,
 		Status:    "connected",
 		CreatedAt: time.Now().Unix(),
@@ -127,7 +127,7 @@ func TestProxyRouter_RouteExec_RelayOffline(t *testing.T) {
 	// Register pull relay in DB but no WS connection
 	node := storage.RelayNode{
 		ID: "uuid-offline", RelayID: "offline-relay",
-		URL: "", Mode: "pull", Status: "disconnected", CreatedAt: time.Now().Unix(),
+		Mode: "pull", Status: "disconnected", CreatedAt: time.Now().Unix(),
 	}
 	_ = s.UpsertRelayNode(node)
 	_ = s.BulkUpsertRelayRouting("offline-relay", []string{"host-offline"})
@@ -336,7 +336,7 @@ func TestProxyRouter_AggregateRelayInventory_DisconnectedRelay(t *testing.T) {
 	s := newRouterTestStore(t)
 	node := storage.RelayNode{
 		ID: "uuid-dc", RelayID: "dmz-dc",
-		URL: "", Mode: "pull", Status: "disconnected", CreatedAt: time.Now().Unix(),
+		Mode: "pull", Status: "disconnected", CreatedAt: time.Now().Unix(),
 	}
 	_ = s.UpsertRelayNode(node)
 	_ = s.BulkUpsertRelayRouting("dmz-dc", []string{"dc-host-1", "dc-host-2"})
@@ -695,4 +695,12 @@ func TestProxyRouter_RouteExec_LogQuotesCallerIdentifiers(t *testing.T) {
 	if !strings.Contains(buf.String(), `task_id="t\nFAKE task"`) {
 		t.Errorf("task_id must be quoted: %q", buf.String())
 	}
+}
+
+// splitURLs turns a comma list ("" = none) into the RelayNode.URLs form.
+func splitURLs(u string) []string {
+	if u == "" {
+		return nil
+	}
+	return strings.Split(u, ",")
 }

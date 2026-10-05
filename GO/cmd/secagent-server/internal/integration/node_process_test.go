@@ -49,6 +49,8 @@ func TestNodeProcess(t *testing.T) {
 	if os.Getenv(envNodeProcess) != "1" {
 		t.Skip("child process of the integration harness only")
 	}
+	// the harness' children all listen on 127.0.0.1: the SSRF guard on push targets would refuse them
+	repeater.UnsafeAllowInternalDialTargets(true)
 	cfg, err := server.ConfigFromEnv()
 	if err != nil {
 		log.Fatalf("ConfigFromEnv: %v", err)

@@ -279,7 +279,7 @@ TLS_KEY=/path/to/key.pem           # Clef TLS (optionnel, sinon Caddy)
 ### Server Repeater Mode (enfant pull)
 ```
 REPEATER_ID=dmz1                               # ID unique du relay enfant (format ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$)
-REPEATER_UPSTREAM_URL=wss://central:7772      # URL WSS du parent
+REPEATER_UPSTREAM_URL=wss://central:7772      # URL WSS du parent (liste séparée par des virgules : une par instance)
 REPEATER_UPSTREAM_TOKEN=<jwt-relay-child>     # Token JWT rôle relay-child
 RELAY_GROUP_VARS={"region":"dmz"}             # Variables Ansible JSON (v3.0.2+)
 ```
@@ -290,7 +290,7 @@ RELAY_GROUP_VARS={"region":"dmz"}             # Variables Ansible JSON (v3.0.2+)
 # POST /api/admin/relays
 # {
 #   "relay_id": "dmz1",
-#   "url": "wss://dmz1.internal:7772",
+#   "urls": ["wss://dmz1.internal:7772"],
 #   "token": "<jwt-relay-parent>",
 #   "mode": "push"
 # }

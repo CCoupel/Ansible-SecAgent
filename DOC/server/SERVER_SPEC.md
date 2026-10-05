@@ -307,7 +307,7 @@ secagent-server server stats
 | `DATABASE_URL` | — | **Retirée (#160)** : SQLite n'existe plus. Si la variable est définie, le serveur **refuse de démarrer** (aucune migration d'un ancien `relay.db`) |
 | `RSA_MASTER_KEY` | — | Clef AES-256-GCM pour chiffrer les secrets en DB (tokens push relay) — obligatoire seulement pour enregistrer un relay en mode push |
 | `REPEATER_ID` | — | Identifiant du relay (ex: `dmz1`) — requis en mode enfant |
-| `REPEATER_UPSTREAM_URL` | — | URL WSS du parent (ex: `wss://central:7772`) — requis en mode enfant pull |
+| `REPEATER_UPSTREAM_URL` | — | URL WSS du parent (ex: `wss://central:7772`) — requis en mode enfant pull. Liste séparée par des virgules (une adresse par instance du parent, `wss://` uniquement, 16 max) : essayées dans l'ordre, la dernière qui a répondu en premier ; un échec avant envoi passe à l'adresse suivante, un échec après envoi de la requête d'upgrade ne rejoue pas sur une autre |
 | `REPEATER_UPSTREAM_TOKEN` | — | Token JWT relay-child du relay enfant — requis en mode enfant pull |
 | `RELAY_GROUP_VARS` | — | Variables Ansible JSON injectées pour ce relay (ex: `{"env":"prod"}`) |
 | `API_ADDR` | — | Adresse d'écoute de l'API publique + WS agent/relay (défaut `:7770`) |
@@ -341,7 +341,7 @@ secagent-server server stats
 | Variable | Requis | Description |
 |---|---|---|
 | `REPEATER_ID` | — | Identifiant du relay (`dmz1`) — requis en mode repeater enfant |
-| `REPEATER_UPSTREAM_URL` | — | URL WSS du parent (`wss://central:7772`) — requise si enfant ouvre vers parent |
+| `REPEATER_UPSTREAM_URL` | — | URL(s) WSS du parent (`wss://central:7772[,wss://central2:7772]`) — requise si enfant ouvre vers parent |
 | `REPEATER_UPSTREAM_TOKEN` | — | Token d'authentification du relay enfant — requis si enfant ouvre vers parent |
 | `RELAY_GROUP_VARS` | — | Variables Ansible JSON injectées pour ce relay : `{"region":"dmz"}` |
 
@@ -547,11 +547,17 @@ GET /api/admin/relays?only_connected=false
 POST /api/admin/relays
 {
   "relay_id": "dmz1",
-  "url": "wss://dmz1.internal:7772",
+  "urls": ["wss://dmz1-a.internal:7772", "wss://dmz1-b.internal:7772"],
   "token": "${REPEATER_UPSTREAM_TOKEN_DMZ1}",
   "mode": "push"
 }
 → 201
+# `urls` : adresses des instances du relay enfant, essayées dans l'ordre (la dernière qui a répondu
+# est réessayée en premier). `url` (chaîne) reste accepté (= liste d'un élément) ; `url` ET `urls`
+# ensemble → 400. Chaque adresse : wss:// uniquement, sans userinfo, sans doublon, 16 max, et refusée
+# si elle vise loopback / lien-local / métadonnées cloud (169.254.169.254) / 0.0.0.0 / multicast
+# (les plages RFC1918 sont acceptées). Une adresse refusée refuse toute la liste (400, l'adresse n'est
+# jamais répétée dans l'erreur). Réponses et liste : `urls` (+ `url` = première adresse, compat).
 
 # Revoke a relay (#153) : blacklist du JTI + drapeau revoked + close 4010 du lien actif
 POST /api/admin/relays/{id}/revoke
@@ -911,3 +917,12 @@ services:
 | **Anti-cycle** | Rejet si `REPEATER_ID ∈ relay_chain` |
 | **Auth** | Deux rôles JWT fixés : `relay-child` (enfant ouvre) + `relay-parent` (parent ouvre) ; chaque relay signe ses tokens avec sa JWT_SECRET_KEY |
 | **Suppression** | REPEATER_UPSTREAMS_FILE, seen-set, event_id dedup, priority, multi-upstream |
+
+
+### CLI d'administration : `RELAY_API_URL` en liste (#165)
+
+`RELAY_API_URL` accepte une liste d'adresses séparées par des virgules (une par instance du relay). Une
+lecture (GET) passe à l'adresse suivante sur tout échec de transport ; une écriture n'est retentée sur
+une autre adresse que si l'échec a eu lieu AVANT l'écriture de la requête (connexion refusée, DNS, TLS) :
+une requête partie peut avoir été appliquée et n'est jamais rejouée ailleurs. `relays add --url` prend
+une liste séparée par des virgules (corps `urls`).

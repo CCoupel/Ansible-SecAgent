@@ -25,9 +25,9 @@ func setPushHooks(t *testing.T) *pushCalls {
 		t.Setenv("RSA_MASTER_KEY", "unit-test-master-key") // push registration fails closed without it
 	}
 	c := &pushCalls{}
-	SetRelayPushHooks(func(relayID, url, token string) error {
+	SetRelayPushHooks(func(relayID string, urls []string, token string) error {
 		c.mu.Lock()
-		c.started = append(c.started, relayID+"|"+url+"|"+token)
+		c.started = append(c.started, relayID+"|"+strings.Join(urls, ",")+"|"+token)
 		c.mu.Unlock()
 		return nil
 	}, func(relayID string) {
@@ -233,5 +233,91 @@ func TestPushToken_SealOpenRoundTripWrongKeyAndTamper(t *testing.T) {
 	}
 	if _, err := SealPushToken("dmz1", "x"); !errors.Is(err, ErrPushTokenKeyMissing) {
 		t.Errorf("seal without key: %v", err)
+	}
+}
+
+func createPushBody(t *testing.T, body map[string]interface{}) *httptest.ResponseRecorder {
+	t.Helper()
+	return doAdminRelayRequest(t, AdminCreateRelay, "POST", "/api/admin/relays", body)
+}
+
+func TestPushRelay_UrlsListIsStoredAndDialedInOrder(t *testing.T) {
+	useFreshStores(t)
+	calls := setPushHooks(t)
+	rr := createPushBody(t, map[string]interface{}{"relay_id": "dmz1", "mode": "push", "token": "tok",
+		"urls": []string{"wss://a.example.com:7772", "wss://b.example.com:7772"}})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	calls.mu.Lock()
+	if len(calls.started) != 1 || calls.started[0] != "dmz1|wss://a.example.com:7772,wss://b.example.com:7772|tok" {
+		t.Errorf("started = %v", calls.started)
+	}
+	calls.mu.Unlock()
+	node, err := adminStore.GetRelayNode("dmz1")
+	if err != nil || node == nil || len(node.URLs) != 2 || node.URLs[1] != "wss://b.example.com:7772" {
+		t.Fatalf("stored node = %+v, %v", node, err)
+	}
+}
+
+func TestPushRelay_LegacyUrlStillAccepted(t *testing.T) {
+	useFreshStores(t)
+	setPushHooks(t)
+	if rr := createPush(t, "dmz1", "wss://a.example.com:7772", "tok"); rr.Code != http.StatusCreated {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	node, _ := adminStore.GetRelayNode("dmz1")
+	if node == nil || len(node.URLs) != 1 || node.URLs[0] != "wss://a.example.com:7772" {
+		t.Fatalf("stored node = %+v", node)
+	}
+}
+
+func TestPushRelay_UrlAndUrlsTogetherAreRefused(t *testing.T) {
+	useFreshStores(t)
+	calls := setPushHooks(t)
+	rr := createPushBody(t, map[string]interface{}{"relay_id": "dmz1", "mode": "push", "token": "tok",
+		"url": "wss://a.example.com:7772", "urls": []string{"wss://b.example.com:7772"}})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400", rr.Code)
+	}
+	if len(calls.started) != 0 {
+		t.Errorf("no dialer for a refused request: %v", calls.started)
+	}
+}
+
+func TestPushRelay_OneForbiddenAddressRefusesTheWholeList(t *testing.T) {
+	useFreshStores(t)
+	calls := setPushHooks(t)
+	for name, list := range map[string][]string{
+		"metadata":   {"wss://a.example.com:7772", "wss://169.254.169.254:7772"},
+		"loopback":   {"wss://127.0.0.1:7772", "wss://a.example.com:7772"},
+		"localhost":  {"wss://a.example.com:7772", "wss://localhost:7772"},
+		"bad scheme": {"wss://a.example.com:7772", "ws://b.example.com:7772"},
+		"userinfo":   {"wss://a.example.com:7772", "wss://alice:hunter2@b.example.com:7772"},
+	} {
+		rr := createPushBody(t, map[string]interface{}{"relay_id": "dmz1", "mode": "push", "token": "tok", "urls": list})
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", name, rr.Code)
+		}
+		body := rr.Body.String()
+		if strings.Contains(body, "169.254") || strings.Contains(body, "hunter2") || strings.Contains(body, "alice") {
+			t.Errorf("%s: an address is echoed: %s", name, body)
+		}
+	}
+	if n, _ := adminStore.GetRelayNode("dmz1"); n != nil {
+		t.Error("a refused list must not be stored")
+	}
+	if len(calls.started) != 0 {
+		t.Errorf("no dialer must start: %v", calls.started)
+	}
+}
+
+func TestPushRelay_PrivateRangeAddressesAreAccepted(t *testing.T) {
+	useFreshStores(t)
+	setPushHooks(t)
+	rr := createPushBody(t, map[string]interface{}{"relay_id": "dmz1", "mode": "push", "token": "tok",
+		"urls": []string{"wss://10.1.2.3:7772", "wss://192.168.1.218:7772"}})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("RFC1918 targets must be accepted: %d %s", rr.Code, rr.Body.String())
 	}
 }

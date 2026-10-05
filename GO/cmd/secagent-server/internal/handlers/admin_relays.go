@@ -31,12 +31,12 @@ import (
 
 var (
 	pushHooksMu sync.RWMutex
-	pushStartFn func(relayID, url, token string) error
+	pushStartFn func(relayID string, urls []string, token string) error
 	pushStopFn  func(relayID string)
 )
 
 // SetRelayPushHooks wires the dial-out manager: start (hot) / stop a Dialer for a push relay.
-func SetRelayPushHooks(start func(relayID, url, token string) error, stop func(relayID string)) {
+func SetRelayPushHooks(start func(relayID string, urls []string, token string) error, stop func(relayID string)) {
 	pushHooksMu.Lock()
 	pushStartFn, pushStopFn = start, stop
 	pushHooksMu.Unlock()
@@ -86,11 +86,14 @@ func OpenPushToken(relayID, stored string) (string, error) {
 
 // RelayCreateRequest is the body for POST /api/admin/relays.
 type RelayCreateRequest struct {
-	RelayID     string `json:"relay_id"`        // required, unique name e.g. "dmz1"
-	Mode        string `json:"mode,omitempty"`  // "pull" (default) or "push"
-	URL         string `json:"url,omitempty"`   // push mode: relay HTTP base URL
-	Token       string `json:"token,omitempty"` // push mode: bearer token to auth to the relay
-	Description string `json:"description,omitempty"`
+	RelayID string `json:"relay_id"`       // required, unique name e.g. "dmz1"
+	Mode    string `json:"mode,omitempty"` // "pull" (default) or "push"
+	// push mode: wss:// address(es) of the child's instances, tried in order. "url" (a string) is
+	// the pre-v3.0.3 form, kept for compatibility: it is converted to a one-element list.
+	URLs        []string `json:"urls,omitempty"`
+	URL         string   `json:"url,omitempty"`
+	Token       string   `json:"token,omitempty"` // push mode: bearer token to auth to the relay
+	Description string   `json:"description,omitempty"`
 }
 
 // RelayCreateResponse is returned from POST /api/admin/relays.
@@ -103,22 +106,24 @@ type RelayCreateResponse struct {
 	Description string `json:"description,omitempty"`
 	// pull mode only — shown ONCE, never stored in plain text
 	JWTToken string `json:"jwt_token,omitempty"`
-	// push mode only
-	URL       string `json:"url,omitempty"`
-	CreatedAt string `json:"created_at"`
+	// push mode only: the addresses ("url" = the first one, for older clients)
+	URLs      []string `json:"urls,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	CreatedAt string   `json:"created_at"`
 }
 
 // RelaySummary is the list view for a relay node (no token plain text).
 type RelaySummary struct {
-	ID          string  `json:"id"`
-	RelayID     string  `json:"relay_id"`
-	Mode        string  `json:"mode"`
-	IsProxy     bool    `json:"is_proxy"`
-	Status      string  `json:"status"`
-	Description string  `json:"description,omitempty"`
-	URL         string  `json:"url,omitempty"`
-	LastSeen    *string `json:"last_seen,omitempty"`
-	CreatedAt   string  `json:"created_at"`
+	ID          string   `json:"id"`
+	RelayID     string   `json:"relay_id"`
+	Mode        string   `json:"mode"`
+	IsProxy     bool     `json:"is_proxy"`
+	Status      string   `json:"status"`
+	Description string   `json:"description,omitempty"`
+	URLs        []string `json:"urls,omitempty"`
+	URL         string   `json:"url,omitempty"`
+	LastSeen    *string  `json:"last_seen,omitempty"`
+	CreatedAt   string   `json:"created_at"`
 }
 
 // RelayStatusResponse is returned from GET /api/admin/relays/status.
@@ -173,7 +178,14 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Mode == "push" {
-		if strings.TrimSpace(req.URL) == "" {
+		if len(req.URLs) > 0 && strings.TrimSpace(req.URL) != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url_and_urls_are_exclusive"})
+			return
+		}
+		if len(req.URLs) == 0 && strings.TrimSpace(req.URL) != "" {
+			req.URLs = []string{strings.TrimSpace(req.URL)} // compatibility: url → one-element list
+		}
+		if len(req.URLs) == 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url_required_for_push_mode"})
 			return
 		}
@@ -182,7 +194,7 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// wss:// only, no userinfo, valid id (the error never echoes url userinfo or the token).
-		if err := repeater.ValidateDialTarget(repeater.DialTarget{RelayID: req.RelayID, URL: req.URL, Token: req.Token}); err != nil {
+		if err := repeater.ValidateDialTarget(repeater.DialTarget{RelayID: req.RelayID, URLs: req.URLs, Token: req.Token}); err != nil {
 			log.Printf("AdminCreateRelay push target rejected: relay_id=%q: %v", req.RelayID, err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_push_target"})
 			return
@@ -232,7 +244,7 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		node.TokenHash = fmt.Sprintf("%x", h)
 
 	case "push":
-		node.URL = req.URL
+		node.URLs = req.URLs
 		// The dialer needs the clear token: stored encrypted (RSA_MASTER_KEY), never returned.
 		sealed, err := SealPushToken(req.RelayID, req.Token)
 		if err != nil {
@@ -281,7 +293,7 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		start := pushStartFn
 		pushHooksMu.RUnlock()
 		if start != nil {
-			if err := start(req.RelayID, req.URL, req.Token); err != nil {
+			if err := start(req.RelayID, req.URLs, req.Token); err != nil {
 				log.Printf("AdminCreateRelay: dialer start failed: relay_id=%q: %v", req.RelayID, err)
 			}
 		}
@@ -294,7 +306,8 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		Status:      "pending",
 		Description: req.Description,
 		JWTToken:    jwtToken, // empty for push mode
-		URL:         req.URL,  // empty for pull mode
+		URLs:        req.URLs, // empty for pull mode
+		URL:         firstOf(req.URLs),
 		CreatedAt:   now.Format(time.RFC3339),
 	}
 	writeJSON(w, http.StatusCreated, resp)
@@ -462,7 +475,8 @@ func relayNodeToSummary(n storage.RelayNode) RelaySummary {
 		IsProxy:     n.IsProxy,
 		Status:      n.Status,
 		Description: n.Description,
-		URL:         n.URL,
+		URLs:        n.URLs,
+		URL:         firstOf(n.URLs),
 		CreatedAt:   time.Unix(n.CreatedAt, 0).UTC().Format(time.RFC3339),
 	}
 	if n.LastSeen != nil {
@@ -551,4 +565,12 @@ func RelayRevokedCheck(relayID string) (bool, error) {
 		return false, err
 	}
 	return info.Revoked, nil
+}
+
+// firstOf returns the first address of a list ("" when empty): the legacy "url" field.
+func firstOf(l []string) string {
+	if len(l) == 0 {
+		return ""
+	}
+	return l[0]
 }

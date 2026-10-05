@@ -311,13 +311,13 @@ func TestWithoutAWriteGuardTheStoreIsReadOnly(t *testing.T) {
 
 func TestPushRelayNeedsASealedTokenSecret(t *testing.T) {
 	s := reopen(t, t.TempDir())
-	if err := s.UpsertRelayNode(RelayNode{ID: "u", RelayID: "p1", Mode: "push", URL: "https://x", TokenSecret: "plaintext-token"}); err == nil {
+	if err := s.UpsertRelayNode(RelayNode{ID: "u", RelayID: "p1", Mode: "push", URLs: []string{"wss://x"}, TokenSecret: "plaintext-token"}); err == nil {
 		t.Error("a clear push token must be refused")
 	}
-	if err := s.UpsertRelayNode(RelayNode{ID: "u", RelayID: "p1", Mode: "push", URL: "https://x", TokenHash: "h"}); err == nil {
+	if err := s.UpsertRelayNode(RelayNode{ID: "u", RelayID: "p1", Mode: "push", URLs: []string{"wss://x"}, TokenHash: "h"}); err == nil {
 		t.Error("a push relay without token_secret must be refused")
 	}
-	if err := s.UpsertRelayNode(RelayNode{ID: "u", RelayID: "p1", Mode: "push", URL: "https://x", TokenSecret: "enc:abc"}); err != nil {
+	if err := s.UpsertRelayNode(RelayNode{ID: "u", RelayID: "p1", Mode: "push", URLs: []string{"wss://x"}, TokenSecret: "enc:abc"}); err != nil {
 		t.Errorf("sealed push relay refused: %v", err)
 	}
 	if n, _ := s.GetRelayNode("p1"); n == nil || n.TokenSecret != "enc:abc" || n.TokenHash != "" {

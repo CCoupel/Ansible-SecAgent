@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -159,7 +160,12 @@ func startPushDialers(st *storage.Store, mgr pushStarter) {
 			log.Printf("[WARN] push relay %q skipped: %v", n.RelayID, terr)
 			continue
 		}
-		if serr := mgr.Start(repeater.DialTarget{RelayID: n.RelayID, URL: n.URL, Token: token}); serr != nil {
+		if serr := mgr.Start(repeater.DialTarget{RelayID: n.RelayID, URLs: n.URLs, Token: token}); serr != nil {
+			if errors.Is(serr, repeater.ErrForbiddenTarget) {
+				// the row predates the guard or was written around the API: never dialed
+				log.Printf("[SECURITY WARNING] push relay %q not dialed: a stored address is forbidden (%v)", n.RelayID, serr)
+				continue
+			}
 			log.Printf("[WARN] push relay %q skipped: %v", n.RelayID, serr)
 			continue
 		}

@@ -332,8 +332,8 @@ func Build(cfg Config) (node *Node, err error) {
 	// Push mode (#140): the parent dials its push children (relay_nodes.mode=push).
 	n.dialers = repeater.NewDialerManager(dispatchCtx, dialerOpts)
 	handlers.SetRelayPushHooks(
-		func(relayID, url, token string) error {
-			return n.dialers.Start(repeater.DialTarget{RelayID: relayID, URL: url, Token: token})
+		func(relayID string, urls []string, token string) error {
+			return n.dialers.Start(repeater.DialTarget{RelayID: relayID, URLs: urls, Token: token})
 		},
 		n.dialers.Stop,
 	)

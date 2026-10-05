@@ -3,6 +3,7 @@ package server
 import (
 	"net"
 	"os"
+	"secagent-server/cmd/secagent-server/internal/repeater"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -61,6 +62,8 @@ func seedDB(t *testing.T, seed func(st *storage.Store)) string {
 func buildWith(t *testing.T, dbPath string, tune func(*Config)) *Node {
 	t.Helper()
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
+	repeater.UnsafeAllowInternalDialTargets(true) // the stored push targets are loopback test servers
+	t.Cleanup(func() { repeater.UnsafeAllowInternalDialTargets(false) })
 	cfg := Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: dbPath, InsecureTestState: true, WriteGuard: allowWrites}
 	if tune != nil {
 		tune(&cfg)

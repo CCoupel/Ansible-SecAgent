@@ -19,9 +19,9 @@ import (
 // ALWAYS "enc:"-sealed, bound to the relay id) are distinct fields. Status and LastSeen are
 // volatile (rebuilt by the topology snapshots), CreatedAt and the rest are persistent.
 type RelayNode struct {
-	ID          string // UUID (internal primary key)
-	RelayID     string // human-readable unique ID, e.g. "dmz1"
-	URL         string // HTTP base URL — push mode only, empty for pull
+	ID          string   // UUID (internal primary key)
+	RelayID     string   // human-readable unique ID, e.g. "dmz1"
+	URLs        []string // wss:// addresses of the child's instances — push mode only (tried in order), empty for pull
 	Description string
 	TokenHash   string // pull mode: SHA-256 of the relay token
 	TokenSecret string // push mode: sealed token ("enc:…"), see state.SealSecret
@@ -35,9 +35,7 @@ type RelayNode struct {
 func (s *Store) relayFromState(n state.RelayNode) RelayNode {
 	out := RelayNode{ID: n.ID, RelayID: n.RelayID, Description: n.Description, TokenHash: n.TokenHash, TokenSecret: n.TokenSecret,
 		Mode: n.Mode, IsProxy: n.IsProxy, CreatedAt: n.CreatedAt.Unix(), Status: "pending"}
-	if len(n.URLs) > 0 {
-		out.URL = n.URLs[0]
-	}
+	out.URLs = append([]string(nil), n.URLs...)
 	s.mu.RLock()
 	if v, ok := s.relayVol[n.RelayID]; ok {
 		if v.status != "" {
@@ -72,10 +70,7 @@ func (s *Store) UpsertRelayNode(node RelayNode) error {
 		if !exists {
 			n = state.RelayNode{ID: node.ID, RelayID: node.RelayID, CreatedAt: time.Unix(node.CreatedAt, 0).UTC()}
 		}
-		n.URLs = nil
-		if node.URL != "" {
-			n.URLs = []string{node.URL}
-		}
+		n.URLs = append([]string(nil), node.URLs...)
 		n.Description, n.TokenHash, n.TokenSecret, n.Mode, n.IsProxy = node.Description, node.TokenHash, node.TokenSecret, node.Mode, node.IsProxy
 		return tx.PutRelayNode(n)
 	})

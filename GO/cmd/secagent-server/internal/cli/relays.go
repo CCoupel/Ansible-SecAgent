@@ -115,7 +115,13 @@ Examples:
 			body["mode"] = addRelayMode
 		}
 		if addRelayURL != "" {
-			body["url"] = addRelayURL
+			var urls []string
+			for _, u := range strings.Split(addRelayURL, ",") {
+				if u = strings.TrimSpace(u); u != "" {
+					urls = append(urls, u)
+				}
+			}
+			body["urls"] = urls
 		}
 		if addRelayToken != "" {
 			body["token"] = addRelayToken
@@ -149,7 +155,9 @@ Examples:
 			if desc, ok := m["description"].(string); ok && desc != "" {
 				tp.printf("description\t%v\n", desc)
 			}
-			if url, ok := m["url"].(string); ok && url != "" {
+			if urls, ok := m["urls"].([]interface{}); ok && len(urls) > 0 {
+				tp.printf("urls\t%v\n", urls)
+			} else if url, ok := m["url"].(string); ok && url != "" {
 				tp.printf("url\t%v\n", url)
 			}
 			// Pull mode: show JWT token (one-time)

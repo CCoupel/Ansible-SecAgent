@@ -96,7 +96,6 @@ func intSeedPullRelay(t *testing.T, s *storage.Store, relayID string) {
 	node := storage.RelayNode{
 		ID:        "uuid-int-" + relayID,
 		RelayID:   relayID,
-		URL:       "",
 		Mode:      "pull",
 		Status:    "disconnected",
 		CreatedAt: time.Now().Unix(),
