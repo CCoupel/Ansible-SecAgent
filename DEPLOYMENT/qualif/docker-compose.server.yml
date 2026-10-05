@@ -1,93 +1,78 @@
-# docker-compose.yml — Ansible-SecAgent Server (Phase 2)
+# secagent-server — QUALIF (192.168.1.218) : remplace l'ancien Compose Python.
 #
-# Déploiement du serveur relay uniquement (nats, relay-api, caddy)
-# Utiliser docker-compose.clients.yml pour les agents de test
+# Topologie ACTIF/PASSIF : 2 instances (a, b) sur UN MEME volume d'etat partage `secagent_state`
+# (support de l'E2E #171 et du test de basculement). Exactement 1 maitre (ports ouverts), 1 secondaire
+# (aucun port). Un seul service dans la prod ; ici deux pour reproduire plusieurs hotes sur un seul.
 #
-# Déploiement via Docker remote access :
-#   DOCKER_HOST=tcp://192.168.1.218:2375 docker compose up --build -d
+# PUBLISH QUALIF = promotion SANS rebuild : SECAGENT_IMAGE reference l'image candidate publiee par la CI
+# sur milestone/** (ghcr.io/ccoupel/secagent-server:sha-<commit>@sha256:<digest>).
 #
-# Variables d'environnement requises (fichier .env ou export) :
-#   JWT_SECRET_KEY  : clef HMAC-SHA256 pour les JWT
-#   ADMIN_TOKEN     : token Bearer pour /api/admin/authorize
+#   export SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-<commit>@sha256:<digest>
+#   cp qualif.env.example qualif.env   # secrets de QUALIF (jamais ceux de PROD), hors depot
+#   DOCKER_HOST=tcp://192.168.1.218:2375 docker compose -p secagent-qualif \
+#       -f docker-compose.server.yml up -d
+#
+# Pas de bus ni de reverse proxy : TLS natif (TLS_CERT/TLS_KEY dans QUALIF_TLS_DIR). TLS_DISABLE n'est pas utilise.
+
+x-secagent: &secagent
+  image: ${SECAGENT_IMAGE:?SECAGENT_IMAGE est obligatoire (image candidate sha-<commit>@sha256:<digest>)}
+  restart: unless-stopped
+  user: "10001:10001"
+  stop_grace_period: 30s
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  env_file:
+    - path: ./qualif.env
+      required: true
+  volumes:
+    - secagent_state:/data
+    - type: bind
+      source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt / tls.key)}
+      target: /certs
+      read_only: true
+  tmpfs:
+    - /run/secagent:uid=10001,gid=10001,mode=0700
+    - /tmp:uid=10001,gid=10001,mode=1777
+  healthcheck:
+    test: ["CMD", "/app/secagent-server", "status", "--local"]
+    interval: 10s
+    timeout: 5s
+    retries: 3
+    start_period: 20s
+
+x-secagent-env: &secagent-env
+  STATE_DIR: /data
+  API_ADDR: "0.0.0.0:7770"
+  WS_ADDR: "0.0.0.0:7772"
+  ADMIN_ADDR: "0.0.0.0:7771"
+  ADMIN_TLS: "true"
+  TLS_CERT: /certs/tls.crt
+  TLS_KEY: /certs/tls.key
+  LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
 
 services:
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # PHASE 2 — secagent-server (nats + relay-api + caddy)
-  # ─────────────────────────────────────────────────────────────────────────────
-
-  # ── NATS JetStream ────────────────────────────────────────────────────────────
-  nats:
-    image: nats:2-alpine
-    container_name: relay-nats
-    restart: unless-stopped
-    command: ["-js", "-sd", "/data", "-m", "8222"]
-    volumes:
-      - nats_data:/data
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
-
-  # ── relay-api (FastAPI multi-port) — 3 ports distincts pour sécurité ────────
-  relay-api:
-    build:
-      context: ..
-      dockerfile: server/Dockerfile
-    container_name: relay-api
-    restart: unless-stopped
-    depends_on:
-      nats:
-        condition: service_healthy
-    environment:
-      PYTHONUNBUFFERED: "1"
-      NATS_URL: "nats://nats:4222"
-      DATABASE_URL: "sqlite:////data/relay.db"
-      JWT_SECRET_KEY: "${JWT_SECRET_KEY}"
-      ADMIN_TOKEN: "${ADMIN_TOKEN}"
-      LOG_LEVEL: "INFO"
-    volumes:
-      - secagent_data:/data
-    expose:
-      - "7770"
-      - "7771"
-      - "7772"
+  secagent-server-a:
+    <<: *secagent
+    container_name: secagent-qualif-a
+    environment: *secagent-env
     ports:
-      - "7770:7770"  # Client (enrollment + WSS)
-      - "7771:7771"  # Plugin connection (exec/upload/fetch)
-      - "7772:7772"  # Inventory plugin (admin)
-    healthcheck:
-      test: ["CMD", "python3", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:7770/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
+      - "7770:7770"
+      - "7772:7772"
+      - "127.0.0.1:7771:7771"
 
-  # ── Caddy (reverse proxy + TLS) — optionnel pour production ──────────────────
-  caddy:
-    build:
-      context: ..
-      dockerfile: Dockerfile.caddy
-    container_name: relay-caddy
-    restart: unless-stopped
+  # Meme image, meme volume d'etat : deuxieme "hote". Ports d'hote decales (une seule machine) ; dans le
+  # conteneur ce sont les memes 7770/7771/7772. Le secondaire n'ouvre aucun port dans son conteneur.
+  secagent-server-b:
+    <<: *secagent
+    container_name: secagent-qualif-b
+    environment: *secagent-env
     ports:
-      - "7443:7443"   # TLS frontend (optionnel, peut être remplacé par reverse proxy prod)
-    volumes:
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      relay-api:
-        condition: service_healthy
-    environment:
-      RELAY_API_AGENT_URL: "relay-api:7770"
-      RELAY_API_PLUGIN_URL: "relay-api:7771"
-      RELAY_API_INVENTORY_URL: "relay-api:7772"
+      - "8770:7770"
+      - "8772:7772"
+      - "127.0.0.1:8771:7771"
 
 volumes:
-  nats_data:
-  secagent_data:
-  caddy_data:
-  caddy_config:
+  # Volume local partage par les 2 conteneurs (meme hote). Pour tester un vrai partage reseau (NFS),
+  # remplacer par un volume `driver_opts type=nfs` : voir DEPLOYMENT/prod/README.md.
+  secagent_state:

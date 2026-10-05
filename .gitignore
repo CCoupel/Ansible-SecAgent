@@ -77,3 +77,8 @@ TEMPLATE_claude/
 
 # Dossier de travail inter-agents
 _work/
+
+# Secrets et variables d'hote de production
+DEPLOYMENT/prod/prod.env
+DEPLOYMENT/prod/.env
+DEPLOYMENT/qualif/qualif.env
