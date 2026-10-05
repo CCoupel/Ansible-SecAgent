@@ -204,6 +204,7 @@ var (
 	relayNodeRegisterFn func(relayID string) error
 	relayEventUpstream  func(ev RelayMessage)
 	relayTopoChangedFn  func()
+	relayChainFn        func(relayID string, chain []string) error
 	relayJTIBlacklistFn func(jti string) (bool, error)
 	relayRevokedFn      func(relayID string) (bool, error)
 	relayHostRouteFn    func(hostname string) (string, error)
@@ -253,6 +254,28 @@ func SetRelayTopologyChangedFunc(fn func()) {
 	treeHooksMu.Lock()
 	relayTopoChangedFn = fn
 	treeHooksMu.Unlock()
+}
+
+// SetRelayChainFunc sets the persistence of the top-down path to each relay below this node
+// (["r2","r3"]: r3 learned through our direct child r2). It feeds the topology_snapshot this node
+// sends to ITS parent, which must carry the real chains (not the flattened [self, relay]).
+// A nil chain clears the stored path (the relay is then considered a direct child).
+func SetRelayChainFunc(fn func(relayID string, chain []string) error) {
+	treeHooksMu.Lock()
+	relayChainFn = fn
+	treeHooksMu.Unlock()
+}
+
+func storeRelayChain(relayID string, chain []string) {
+	treeHooksMu.RLock()
+	fn := relayChainFn
+	treeHooksMu.RUnlock()
+	if fn == nil {
+		return
+	}
+	if err := fn(relayID, chain); err != nil {
+		log.Printf("relay chain: store relay=%q: %v", relayID, err)
+	}
 }
 
 func notifyTopologyChanged() {
@@ -1082,6 +1105,9 @@ func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) error {
 				}
 			}
 		}
+		for id := range relayConn.descendants {
+			storeRelayChain(id, nil) // unreachable now: no path to publish
+		}
 		releaseDescendants(relayID, relayConn.descendants)
 		unregisterRelayConnection(relayID)
 		_ = conn.Close()
@@ -1490,6 +1516,19 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	for id := range relays {
 		if rerr := registerRelayNode(id); rerr != nil {
 			log.Printf("topology_snapshot: register relay %s: %v", id, rerr)
+		}
+	}
+	// Remember the real path to every relay below the peer (chains are validated: they start at
+	// the peer and end at the relay), so our own snapshot upstream does not flatten the tree.
+	storeRelayChain(conn.RelayID, []string{conn.RelayID})
+	for _, r := range msg.Relays {
+		storeRelayChain(r.RelayID, r.RelayChain)
+	}
+	if replacing {
+		for id := range conn.descendants {
+			if _, still := relays[id]; !still {
+				storeRelayChain(id, nil)
+			}
 		}
 	}
 	if RelayRoutingBulkUpsertFunc != nil {

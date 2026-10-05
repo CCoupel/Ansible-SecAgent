@@ -80,8 +80,22 @@ func buildSnapshot(selfID string, st *storage.Store) repeater.Snapshot {
 	if gvErr != nil {
 		log.Printf("[REPEATER] snapshot: group vars: %v", gvErr)
 	}
+	// The path to a relay below us is the one learned from the child that declared it
+	// (["r2","r3"]); a direct child has none stored. Prefixed with this node, it is origin-last:
+	// [self, r2, r3]. Using [self, relay] for every relay would flatten the tree.
+	chains, chErr := st.ListRelayChains()
+	if chErr != nil {
+		log.Printf("[REPEATER] snapshot: relay chains: %v", chErr)
+	}
+	chainOf := func(relayID string) []string {
+		below := chains[relayID]
+		if len(below) == 0 || below[len(below)-1] != relayID {
+			below = []string{relayID}
+		}
+		return append([]string{selfID}, below...)
+	}
 	for _, n := range nodes {
-		chain := []string{selfID, n.RelayID}
+		chain := chainOf(n.RelayID)
 		entry := repeater.TopoRelay{RelayID: n.RelayID, RelayChain: chain}
 		if raw, ok := groupVars[n.RelayID]; ok {
 			var gv map[string]any

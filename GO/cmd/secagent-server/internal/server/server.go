@@ -267,6 +267,10 @@ func Build(cfg Config) (node *Node, err error) {
 		_, err := store.UpsertRelayRoute(hostname, relayID, chain)
 		return err
 	})
+	ws.SetRelayChainFunc(func(relayID string, chain []string) error {
+		_, err := store.SetRelayChain(relayID, chain)
+		return err
+	})
 	ws.SetRelayRouteChainsFunc(func(entries []ws.RouteChainEntry) error {
 		rc := make([]storage.RouteChain, 0, len(entries))
 		for _, e := range entries {

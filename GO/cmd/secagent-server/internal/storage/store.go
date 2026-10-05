@@ -159,7 +159,8 @@ CREATE TABLE IF NOT EXISTS relay_nodes (
     jti         TEXT,
     token_exp   INTEGER,
     revoked     INTEGER NOT NULL DEFAULT 0,
-    group_vars  TEXT
+    group_vars  TEXT,
+    relay_chain TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_relay_nodes_relay_id ON relay_nodes (relay_id);
 CREATE INDEX IF NOT EXISTS idx_relay_nodes_status   ON relay_nodes (status);
@@ -245,7 +246,8 @@ func NewStore(dbURL string) (*Store, error) {
 		"ALTER TABLE relay_nodes ADD COLUMN jti TEXT",
 		"ALTER TABLE relay_nodes ADD COLUMN token_exp INTEGER",
 		"ALTER TABLE relay_nodes ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0",
-		"ALTER TABLE relay_nodes ADD COLUMN group_vars TEXT", // #139
+		"ALTER TABLE relay_nodes ADD COLUMN group_vars TEXT",  // #139
+		"ALTER TABLE relay_nodes ADD COLUMN relay_chain TEXT", // top-down path to a deep relay
 	} {
 		_, _ = db.Exec(stmt) // intentionally ignore "duplicate column" errors
 	}

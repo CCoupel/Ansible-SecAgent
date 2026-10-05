@@ -440,3 +440,44 @@ func TestConflict_OneReportPerOwnerChangeWhateverThePath(t *testing.T) {
 		t.Errorf("host.conflict emitted %d times for two relays alternating on one host, want 2 (one per direction)", got)
 	}
 }
+
+// The real path to each relay below the peer is handed to the chain store (it feeds OUR snapshot
+// to OUR parent); a relay that leaves the subtree, or a closed link, clears it.
+func TestResnapshot_RelayChainsAreStoredAndCleared(t *testing.T) {
+	newFakeRouting(t)
+	setTreeHooks(t, "central", nil, nil, nil)
+	var mu sync.Mutex
+	chains := map[string][]string{}
+	SetRelayChainFunc(func(id string, chain []string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if chain == nil {
+			delete(chains, id)
+		} else {
+			chains[id] = chain
+		}
+		return nil
+	})
+	t.Cleanup(func() { SetRelayChainFunc(nil) })
+	get := func(id string) string { mu.Lock(); defer mu.Unlock(); return strings.Join(chains[id], ",") }
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	c := dialRelay(t, srv, makeRelayJWT("relay1", "relay"))
+	handshake(t, c, "relay1")
+	sendSnapshot(t, c,
+		[]RelayTopoEntry{
+			{RelayID: "r2", RelayChain: []string{"relay1", "r2"}},
+			{RelayID: "r3", RelayChain: []string{"relay1", "r2", "r3"}}}, nil)
+	expectAck(t, readMsg(t, c))
+	if get("relay1") != "relay1" || get("r2") != "relay1,r2" || get("r3") != "relay1,r2,r3" {
+		t.Fatalf("chains = %v", chains)
+	}
+	// r3 leaves the subtree
+	sendSnapshot(t, c, []RelayTopoEntry{{RelayID: "r2", RelayChain: []string{"relay1", "r2"}}}, nil)
+	expectAck(t, readMsg(t, c))
+	if get("r3") != "" || get("r2") != "relay1,r2" {
+		t.Errorf("after replacement chains = %v, want r3 cleared and r2 kept", chains)
+	}
+	_ = c.Close()
+	waitUntil(t, "link end clears the chains below", func() bool { return get("r2") == "" })
+}
