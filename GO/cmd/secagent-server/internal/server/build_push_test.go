@@ -126,7 +126,7 @@ func TestBuild_RefusesAStateSealedUnderAnotherMasterKey(t *testing.T) {
 	})
 	t.Setenv("RSA_MASTER_KEY", "another-key")
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
-	if _, err := Build(Config{JWTSecret: "s", AdminToken: "a", StateDir: db, WriteGuard: allowWrites}); err == nil {
+	if _, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: db, WriteGuard: allowWrites}); err == nil {
 		t.Fatal("a state that does not open with the configured master key must refuse to start")
 	}
 	time.Sleep(100 * time.Millisecond)

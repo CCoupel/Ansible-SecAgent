@@ -202,7 +202,7 @@ func TestTLS_WebSocketsWorkOverWSS(t *testing.T) {
 	if _, err := n.store.RegisterAgent(context.Background(), "host-tls", "pem", "jti-tls"); err != nil {
 		t.Fatal(err)
 	}
-	tok := signAgentToken(t, "node-test-secret", "host-tls", "jti-tls")
+	tok := signAgentToken(t, serverJWTSecret(), "host-tls", "jti-tls")
 	d := websocket.Dialer{TLSClientConfig: &tls.Config{RootCAs: p.pool()}, HandshakeTimeout: 5 * time.Second}
 	for name, addr := range map[string]string{"7772": wsAddr, "7770": api} {
 		c, resp, err := d.Dial("wss://"+addr+"/ws/agent", http.Header{"Authorization": {"Bearer " + tok}})
@@ -378,7 +378,7 @@ func TestTLS_HotReloadWithoutCuttingExistingConnections(t *testing.T) {
 	if _, err := n.store.RegisterAgent(context.Background(), "host-hot", "pem", "jti-hot"); err != nil {
 		t.Fatal(err)
 	}
-	tok := signAgentToken(t, "node-test-secret", "host-hot", "jti-hot")
+	tok := signAgentToken(t, serverJWTSecret(), "host-hot", "jti-hot")
 	d := websocket.Dialer{TLSClientConfig: &tls.Config{RootCAs: p.pool()}, HandshakeTimeout: 5 * time.Second}
 	live, _, err := d.Dial("wss://"+wsAddr+"/ws/agent", http.Header{"Authorization": {"Bearer " + tok}})
 	if err != nil {

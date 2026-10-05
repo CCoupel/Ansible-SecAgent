@@ -334,15 +334,6 @@ var (
 	agentKeyPEM  string
 )
 
-func harnessAgentKey(t *testing.T) (*rsa.PrivateKey, string) {
-	t.Helper()
-	k, p, err := harnessAgentKeyErr()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return k, p
-}
-
 var agentKeyErr error
 
 func harnessAgentKeyErr() (*rsa.PrivateKey, string, error) {

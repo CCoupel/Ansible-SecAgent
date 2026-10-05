@@ -18,7 +18,7 @@ import (
 func TestBuild_MissingStateRefusesToStartAndCreatesNothing(t *testing.T) {
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
 	empty := t.TempDir()
-	_, err := Build(Config{JWTSecret: "s", AdminToken: "a", StateDir: empty, WriteGuard: allowWrites})
+	_, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: empty, WriteGuard: allowWrites})
 	if err == nil || !strings.Contains(err.Error(), "run 'secagent-server state init' to initialize") {
 		t.Fatalf("Build without a state: %v", err)
 	}
