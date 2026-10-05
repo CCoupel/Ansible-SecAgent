@@ -826,6 +826,31 @@ Le filtre est validé au chargement de la config (fichier rejeté en bloc si mal
 
 ---
 
+### 9.7b Group Vars — Comportements Observés (v3.0.2+)
+
+**Publication et Visibilité** :
+- Les `group_vars` sont publiés via `relay_hello` (mode pull), `topology_snapshot` (synchronisation et remplacements), et `relay.updated` (mise à jour isolée)
+- Un relay **sans agent n'apparaît pas dans l'inventaire Ansible**, donc ses `group_vars` ne s'affichent pas non plus
+- Seuls les groupes ayant des hôtes (directs ou via descendants) sont exposés
+
+**Héritage dans la Hiérarchie** :
+- Un sous-relay **hérite des `group_vars` du relay parent** (comportement Ansible)
+- **Précédence** : si le relay parent et le sous-relay définissent la même clé, la **valeur du groupe enfant l'emporte**
+  - Exemple : parent a `{"env":"prod"}`, enfant a `{"env":"staging", "team":"ops"}` → enfant expose `env=staging`, `team=ops`, et hérite toutes autres clés du parent
+
+**Noms de variables réservées Ansible** :
+- Noms réservés (ex: `tags`, `retries`) passent la validation RELAY_GROUP_VARS du serveur
+- Ansible affiche un avertissement : `Found variable using reserved name` (avertissement seulement, pas erreur)
+- **Recommandation** : éviter ces noms ; consulter la documentation Ansible
+
+**Validation des `group_vars`** :
+- Valides au démarrage (variable `RELAY_GROUP_VARS`) et rejetées sans start si invalides
+- Valides en `relay_hello`, `topology_snapshot`, `relay.updated` ; rejet partiel si invalide (snapshot/hello rejeté, event.updated ignoring juste cette mise à jour)
+- Interdits : `ansible_*` (sauf `ansible_python_interpreter` sans `..`), `secagent_*`, Jinja markers (`{{}}`, `{%%}`), dépassement de bornes
+- Jamais loggés en clair (JSON peut contenir secrets)
+
+---
+
 ### 9.8 Docker Compose qualification v3.0.1
 
 ```yaml

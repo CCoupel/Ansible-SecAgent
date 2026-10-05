@@ -151,6 +151,52 @@ ansible-playbook -i secagent-inventory site.yml
 
 ---
 
+## 5a. Group Vars — Comportements et Limitations (v3.0.2+)
+
+### Visibilité des group vars
+
+**Un relay sans agent n'apparaît pas dans l'inventaire**, donc ses `group_vars` ne s'affichent pas non plus (cohérent : aucun hôte auquel les appliquer). Seuls les groupes Ansible qui ont des hôtes directs ou indirects apparaissent dans la sortie `--list`.
+
+### Noms de variables réservées
+
+**Noms réservés par Ansible** (ex: `tags`, `retries`, `play_context`, `role_names`) passent la validation RELAY_GROUP_VARS au serveur, mais Ansible lui-même affiche un avertissement : `Found variable using reserved name`. 
+
+**Comportement** : c'est un avertissement seulement, pas une erreur. La variable reste lisible et utilisable, mais Ansible met en garde l'opérateur.
+
+**Recommandation** : éviter les noms réservés. Consulter la documentation Ansible pour la liste complète.
+
+### Héritage et Précédence
+
+Dans une topologie hiérarchique, les sous-relays **héritent** des `group_vars` du relay parent. 
+
+**Précédence** : si le relay parent et le sous-relay définissent la même clé, la **valeur du groupe enfant l'emporte** (comportement Ansible observé sur ansible-core 2.17 et 2.21).
+
+Exemple :
+```yaml
+# Relay parent (dmz1): group_vars = {"env": "prod", "region": "dmz"}
+# Relay enfant (zone-a): group_vars = {"env": "staging", "team": "ops"}
+# Résultat chez Ansible :
+# - zone-a hérite env=staging (enfant l'emporte sur prod du parent)
+# - zone-a hérite region=dmz (du parent)
+# - zone-a a team=ops (propre)
+```
+
+### Test avec Ansible Ad Hoc
+
+Pour tester les variables avec une commande ad hoc, la variable `ansible_connection` doit être explicitement définie en `extra_var` : 
+
+```bash
+# ❌ Ne suffira PAS (l'inventaire a priorité) :
+ansible -i secagent-inventory <host> -m debug -a var=region -c local
+
+# ✅ Correct (extra vars ont priorité maximale) :
+ansible -i secagent-inventory <host> -m debug -a var=region -e ansible_connection=local
+```
+
+La raison : la variable `ansible_connection=relay` définie dans l'inventaire a priorité sur l'option `-c` CLI, sauf si l'extra var (priorité maximale) la surcharge.
+
+---
+
 ## 6. Endpoint serveur
 
 ```
