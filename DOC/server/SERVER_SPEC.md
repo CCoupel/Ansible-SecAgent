@@ -451,7 +451,7 @@ Après handshake établi, tous les changements (hôtes, relays) sont notifiés v
 ```json
 {
   "type":"event_forward",
-  "event":"relay.up|relay.down|relay.updated",
+  "event":"relay.updated",
   "relay_id":"zone-a",
   "relay_chain":["dmz1","zone-a"],
   "group_vars":{"region":"zone2"},
@@ -459,7 +459,7 @@ Après handshake établi, tous les changements (hôtes, relays) sont notifiés v
 }
 ```
 
-**Design** : `event_forward` unifie tous les événements ascendants (hôtes et relays) avec des types distincts (`host.{up,down,new}`, `relay.{up,down,updated}`).
+**Design** : `event_forward` unifie tous les événements ascendants (hôtes et relays) avec des types distincts (`host.{up,down,new}`, `relay.updated`).
 
 **Logique (topologie arbre, un seul chemin)** :
 1. Événement local → relay ajoute son REPEATER_ID à relay_chain
@@ -660,7 +660,10 @@ GET /api/inventory  (sur relay central)
 }
 ```
 
-**Groupes** : nommés exactement du relay (ex: `dmz1`, `zone-a`, pas de préfixe ni de transformation). Un groupe par relay dans la descendance, hiérarchie récursive (`all.children` = relays enfants directs ; chaque groupe `g` a `.children` = relays enfants du relay `g`). **Noms de groupes contenant des tirets** (ex: `zone-a`) déclenchent un avertissement Ansible (« Invalid characters in group names ») — voir §9.5b ci-dessous.
+**Groupes** : nommés exactement du relay (ex: `dmz1`, `zone-a`, pas de préfixe ni de transformation). Un groupe par relay dans la descendance, hiérarchie récursive. 
+- **À la racine** : `all.children` = relays enfants directs ; chaque groupe `g` a `.children` = relays enfants du relay `g`.
+- **Depuis un relay avec REPEATER_ID** (via scoping `?relay=<id>`) : `all.children` = `[<id>]` (le relay lui-même) ; ses enfants relays se trouvent sous `<id>.children`.
+- **Noms de groupes contenant des tirets** (ex: `zone-a`) déclenchent un avertissement Ansible (« Invalid characters in group names ») — voir §9.5b ci-dessous.
 
 **Chaîne `secagent_relay_chain`** : ordre **origine en premier** (relay le plus proche de l'agent en premier). Exemple :
 - Topologie : root ← dmz1 ← zone-a
@@ -785,8 +788,6 @@ CREATE TABLE IF NOT EXISTS relay_routing (
 | `host.down` | Agent se déconnecte | `[relay_id]` | — |
 | `host.new` | Agent apparaît via `agent_list` d'un enfant | `[relay_id_origine, relay_parent, ...]` (chaîne de l'agent) | — |
 | `host.conflict` | Un relay déclare un hôte déjà routé vers un autre relay | `[relay_id_nouveau_propriétaire]` (l'hôte va au nouveau proprietaire) | Rare ; indicatif d'une mal-configuration ou d'une attaque (détournement de route). Un événement max par changement de propriétaire. |
-| `relay.up` | Nouveau relay revendiqué dans `topology_snapshot` | `[relay_id_nouveau_relay]` | — |
-| `relay.down` | Relay disparaît (lien fermé) | `[relay_id_qui_disparait]` | — |
 | `relay.updated` | `group_vars` d'un relay changeant | `[relay_id]` | Permet aux hooks de réagir à la mise à jour des variables d'un relay |
 
 **Sémantique chaîne** :

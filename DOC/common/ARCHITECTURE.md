@@ -1909,7 +1909,7 @@ C'est TOUJOURS l'enfant (relay logiquement plus profond) qui envoie le snapshot,
 }
 ```
 
-**Important** : `agent_list` (périodique, heartbeat) contient **UNIQUEMENT les agents directs du relay**. La connaissance des descendants provient du `topology_snapshot` initial (toute la descendance) et des mises à jour via `event_forward` (host.up/down, relay.up/relay.down).
+**Important** : `agent_list` (périodique, heartbeat) contient **UNIQUEMENT les agents directs du relay**. La connaissance des descendants provient du `topology_snapshot` initial (toute la descendance) et des mises à jour via `event_forward` (host.up/down/new).
 
 **Gestion des conflits de route (HAUT-3)** :
 Comportement : **le dernier arrivé gagne**.
@@ -1940,7 +1940,7 @@ Après le handshake établi, tous les changements du sous-arbre sont notifiés a
 ```json
 {
   "type": "event_forward",
-  "event": "relay.up|relay.down|relay.updated",
+  "event": "relay.updated",
   "relay_id": "zone-a",
   "relay_chain": ["dmz1", "zone-a"],
   "group_vars": {"region": "zone2"},

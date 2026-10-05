@@ -15,7 +15,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - **Propagation d'événements (#126)** :
-  - Types d'événements : `host.up`, `host.down`, `host.new`, `host.conflict`, `relay.up`, `relay.down`, `relay.updated`
+  - Types d'événements : `host.up`, `host.down`, `host.new`, `host.conflict`, `relay.updated`
   - Chaîne d'événement **ordre origine-first** (relay le plus proche de l'agent d'abord)
   - Variables de hook : `{{relay_chain}}` (JSON) et `{{relay_origin}}` (premier relay)
   - Filtre hook `relay_chain_contains:<relay_id>` validé au chargement (fail-closed)
@@ -24,7 +24,7 @@ All notable changes to this project will be documented in this file.
   - `host.conflict` : exact (1 événement par changement de propriétaire), ancien propriétaire cède au nouveau
 - **Inventaire hiérarchique (#128, #139)** :
   - Groupes Ansible = noms exacts des relays (ex: `dmz1`, `zone-a`) — pas de transformation
-  - Hiérarchie récursive : `all.children` = relays enfants directs, chaque groupe `g.children` = relays enfants du relay `g`
+  - Hiérarchie récursive : à la racine, `all.children` = relays enfants directs, chaque groupe `g.children` = relays enfants du relay `g` ; depuis un relay avec REPEATER_ID (scoping `?relay=<id>`), `all.children` = `[<id>]` (le relay lui-même)
   - Chaîne `secagent_relay_chain` : ordre origine-first (ex: `["zone-a", "dmz1"]`)
   - Variable `secagent_next_hop` : relay enfant direct vers lequel router
   - Paramètre `?relay=<id>` : limite l'inventaire à la descendance du relay spécifié
@@ -38,7 +38,7 @@ All notable changes to this project will be documented in this file.
 - **Test de migration v3.0.0 → v3.0.2** (9229c74) : migration de base couverte par test permanent, idempotente, aucune perte de ligne, relays hérités et routes utilisables
 
 ### Changed
-- Plugin d'inventaire Python (`inventory_plugins/secagent_inventory.py`) est **DEPRECATED** — utiliser le binaire GO `secagent-inventory` (v3.0.2+)
+- Aucun plugin Python d'inventaire n'est livré — utiliser le binaire GO `secagent-inventory` (v3.0.2+) pour l'inventaire Ansible
 - Table SQLite `relay_nodes` : colonne `group_vars` TEXT (JSON des variables pour ce relay), `relay_chain` TEXT (chaîne JSON pour ce relay)
 - Table SQLite `relay_routing` : `relay_chain` TEXT (chaîne JSON) — désormais sérialisée correctement pour les profondeurs > 3 niveaux
 - Documentation :

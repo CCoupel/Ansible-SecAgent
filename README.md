@@ -10,7 +10,7 @@ Système permettant d'exécuter des playbooks Ansible sur des hôtes distants sa
 - **Auth JWT + RSA-4096** — enrollment sécurisé, rôles RBAC (`agent` / `plugin` / `admin` / `relay`)
 - **Event Hooks** — actions configurables via JSON (webhook, shell, file, API) déclenchées par événements agent
 - **Repeater Relay Chain** — topologie arbre hiérarchique (v3.0.1+) : relays enfants se connectent au parent (pull) ou parent se connecte aux enfants (push), inventaire unifié par héritage
-- **Propagation d'événements** (v3.0.2+) — événements remontant l'arbre (host.up/down/new/conflict, relay.up/down/updated) avec chaînes d'origine exactes, hooks et variables configurables
+- **Propagation d'événements** (v3.0.2+) — événements remontant l'arbre (host.up/down/new/conflict, relay.updated) avec chaînes d'origine exactes, hooks et variables configurables
 - **Inventaire hiérarchique** (v3.0.2+) — groupes Ansible = relays, hiérarchie récursive, group vars par relay, paramètre `?relay=<id>` pour le scoping
 - **Validation group vars** (v3.0.2+) — JSON persisté, refus de préfixes `ansible_*` et `secagent_*`, marqueurs Jinja interdits
 

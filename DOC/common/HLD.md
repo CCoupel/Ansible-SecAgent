@@ -605,11 +605,11 @@ sequenceDiagram
     Note over Parent,Child: Connexion établie
 ```
 
-Après établissement, chaque changement (host.up/down/new, relay.up/relay.down/relay.updated) remonte via `event_forward`.
+Après établissement, chaque changement (host.up/down/new, relay.updated) remonte via `event_forward`.
 
 ### Flux event_forward — Changements du sous-arbre (v3.0.2)
 
-**Types d'événements** : `host.up`, `host.down`, `host.new`, `host.conflict`, `relay.up`, `relay.down`, `relay.updated`
+**Types d'événements** : `host.up`, `host.down`, `host.new`, `host.conflict`, `relay.updated`
 
 **Chaîne d'événement (origin-first)** : le relais le plus proche de la source figure en première position.
 
