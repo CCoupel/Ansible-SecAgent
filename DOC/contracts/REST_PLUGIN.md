@@ -170,6 +170,8 @@ Content-Type: application/json
 | HTTP | Corps JSON | Exception Ansible |
 |---|---|---|
 | `503` | `{"error": "agent_offline"}` | `AnsibleConnectionError` (UNREACHABLE) |
+| `503` | `{"error": "agent_suspended"}` | `AnsibleConnectionError` (agent suspendu par l'admin, #173) |
+| `503` | `{"error": "agent_state_unavailable"}` | `AnsibleConnectionError` (état de suspension illisible, fail closed) |
 | `504` | `{"error": "timeout"}` | `AnsibleConnectionError` (timeout) |
 | `500` | `{"error": "agent_disconnected"}` | `AnsibleConnectionError` |
 | `429` | `{"error": "agent_busy"}` | `AnsibleConnectionError` |

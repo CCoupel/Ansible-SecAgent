@@ -103,13 +103,13 @@ L'agent reçoit `close(4001)` et s'arrête définitivement (pas de reconnexion).
 
 ### `POST /api/admin/minions/{hostname}/suspend` — Suspendre
 
-Ferme la WS avec `4001` mais conserve l'agent en DB. L'agent ne peut pas reconnecter tant qu'il est suspendu.
+Marque l'agent suspendu (conservé en DB). **La WS reste ouverte** (pas de close `4001`) : seule l'exécution est refusée. `exec`, `upload` et `fetch` répondent `503 {"error": "agent_suspended"}` **avant tout envoi à l'agent** ; si l'état ne peut pas être lu : `503 {"error": "agent_state_unavailable"}` (fail closed). La suspension est évaluée par le relay qui détient l'agent ; un relay parent relaie le refus. L'inventaire liste l'agent avec `secagent_suspended: true`. Chaque tentative journalise un `[SECURITY WARNING]`.
 
 ---
 
 ### `POST /api/admin/minions/{hostname}/resume` — Reprendre
 
-Retire la suspension, l'agent peut se ré-enroller.
+Retire la suspension : `exec`/`upload`/`fetch` sont de nouveau acceptés immédiatement, sans reconnexion.
 
 ---
 

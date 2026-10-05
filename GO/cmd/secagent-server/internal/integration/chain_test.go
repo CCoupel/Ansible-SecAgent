@@ -92,3 +92,33 @@ func TestChain_ReconnectResyncsInventory(t *testing.T) {
 	waitFor(t, "relay1 reconnected", func() bool { return root.logs.count("Relay connected: relay_id=relay1") > before })
 	waitFor(t, "inventory re-synchronised with both agents", func() bool { return root.hasHost("before-cut") && root.hasHost("during-cut") })
 }
+
+// #173: the suspension is decided by the relay that holds the agent; the parent relays the refusal.
+func TestChain_SuspendedAgentBehindChildRelayIsRefusedAtTheRoot(t *testing.T) {
+	parallel(t)
+	root := startNode(t, nodeSpec{ID: "root"})
+	relay1 := startNode(t, nodeSpec{ID: "relay1", ParentURL: root.wssURL(), ParentToken: root.registerChild("relay1")})
+	waitFor(t, "relay1 linked", func() bool { return relay1.upstreamState() == "connected" })
+	m := connectMinion(t, relay1, "host-susp")
+	waitFor(t, "root learns host-susp", func() bool { return root.hasHost("host-susp") })
+
+	if r := root.exec("host-susp", execBody("id")); r.Code != http.StatusOK {
+		t.Fatalf("baseline exec = %d %v", r.Code, r.Body)
+	}
+	if code, _ := relay1.admin("POST", "/api/admin/minions/host-susp/suspend", nil); code != http.StatusOK {
+		t.Fatalf("suspend on relay1 = %d", code)
+	}
+	r := root.exec("host-susp", execBody("whoami"))
+	if r.Code != http.StatusServiceUnavailable || r.Body["error"] != "agent_suspended" {
+		t.Fatalf("exec on a suspended agent behind a child relay = %d %v, want 503 agent_suspended", r.Code, r.Body)
+	}
+	if got := m.received(); len(got) != 1 {
+		t.Errorf("the suspended minion must not receive the task (baseline only): %v", got)
+	}
+	if code, _ := relay1.admin("POST", "/api/admin/minions/host-susp/resume", nil); code != http.StatusOK {
+		t.Fatalf("resume = %d", code)
+	}
+	if r := root.exec("host-susp", execBody("id")); r.Code != http.StatusOK {
+		t.Errorf("exec after resume = %d %v", r.Code, r.Body)
+	}
+}

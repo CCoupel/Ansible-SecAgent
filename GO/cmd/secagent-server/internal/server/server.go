@@ -221,7 +221,7 @@ func Build(cfg Config) (node *Node, err error) {
 		}
 	})
 	// Tasks sent down by our parent: resolve the next hop (live agent first, then relay_routing).
-	forwarder := &forward.Forwarder{NextHop: store.GetNextHopForHostname}
+	forwarder := &forward.Forwarder{NextHop: store.GetNextHopForHostname, Suspended: handlers.AgentSuspended}
 	upOpts := repeater.Options{
 		GroupVars:       cfg.GroupVars,
 		DirectAgents:    directAgents,

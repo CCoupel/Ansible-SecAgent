@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -126,6 +127,43 @@ func validateFetchRequest(req *FetchRequest) error {
 func isLocalAgent(hostname string) bool {
 	_, err := ws.GetConnection(hostname)
 	return err == nil
+}
+
+// ErrAgentSuspended / ErrAgentStateUnavailable are the 503 error codes of a refused task (#173).
+const (
+	ErrAgentSuspended        = "agent_suspended"
+	ErrAgentStateUnavailable = "agent_state_unavailable"
+)
+
+// refuseIfSuspended answers 503 and returns true when the agent must not receive a task: it is
+// suspended (admin action, #173) or its state cannot be read (fail closed: an unreadable flag is
+// never treated as "not suspended"). It runs BEFORE anything is sent to the agent. The WebSocket of
+// a suspended agent stays open (only execution is refused, lifting the suspension is immediate).
+func refuseIfSuspended(w http.ResponseWriter, hostname, taskID, op string) bool {
+	suspended, err := AgentSuspended(hostname)
+	switch {
+	case err != nil:
+		log.Printf("[SECURITY WARNING] %s refused: suspension state of %q unavailable: %v task_id=%s", op, hostname, err, taskID)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": ErrAgentStateUnavailable})
+		return true
+	case suspended:
+		log.Printf("[SECURITY WARNING] %s refused: agent %q is suspended task_id=%s", op, hostname, taskID)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": ErrAgentSuspended})
+		return true
+	}
+	return false
+}
+
+// AgentSuspended reports whether hostname is suspended on THIS node (the relay that holds the
+// agent decides; a parent relays the refusal). Without a store the answer is an error: refusing
+// is the only safe reading.
+func AgentSuspended(hostname string) (bool, error) {
+	if adminStore == nil {
+		return false, fmt.Errorf("store_not_initialized")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return adminStore.IsAgentSuspended(ctx, hostname)
 }
 
 // checkAgentOnline verifies that an agent has an active WebSocket connection.
@@ -284,6 +322,9 @@ func ExecCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify agent is connected via live WS registry
+	if refuseIfSuspended(w, hostname, *taskID, "exec") {
+		return
+	}
 	if err := checkAgentOnline(hostname); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent_offline"})
 		return
@@ -406,6 +447,9 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify agent is connected (after validation)
+	if refuseIfSuspended(w, hostname, *taskID, "upload") {
+		return
+	}
 	if err := checkAgentOnline(hostname); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent_offline"})
 		return
@@ -505,6 +549,9 @@ func FetchFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify agent is connected (after validation)
+	if refuseIfSuspended(w, hostname, *taskID, "fetch") {
+		return
+	}
 	if err := checkAgentOnline(hostname); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent_offline"})
 		return
@@ -552,6 +599,10 @@ func writeProxyExecError(w http.ResponseWriter, err error, hostname, taskID stri
 	switch {
 	case strings.Contains(e, "timeout"):
 		writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "task_timeout"})
+	case strings.Contains(e, ErrAgentSuspended):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": ErrAgentSuspended})
+	case strings.Contains(e, ErrAgentStateUnavailable):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": ErrAgentStateUnavailable})
 	case strings.Contains(e, "relay_offline"), strings.Contains(e, "relay_disconnected"),
 		strings.Contains(e, "dispatch_failed"):
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "relay_offline"})
