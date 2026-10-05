@@ -199,14 +199,24 @@ func Build(cfg Config) (node *Node, err error) {
 	// links opened by a parent are refused.
 	selfID, _ := ws.RelayIdentity()
 	upEvents := make(chan repeater.Event, 256)
+	// A child link changed the subtree below us (snapshot accepted, link closed): our parent gets a
+	// full topology_snapshot again. Non-blocking, coalesced by the uplink.
+	topoChanged := make(chan struct{}, 1)
+	ws.SetRelayTopologyChangedFunc(func() {
+		select {
+		case topoChanged <- struct{}{}:
+		default:
+		}
+	})
 	// Tasks sent down by our parent: resolve the next hop (live agent first, then relay_routing).
 	forwarder := &forward.Forwarder{NextHop: store.GetNextHopForHostname}
 	upOpts := repeater.Options{
-		GroupVars:    cfg.GroupVars,
-		DirectAgents: directAgents,
-		Snapshot:     func() repeater.Snapshot { return buildSnapshot(selfID, store) },
-		Events:       upEvents,
-		OnTask:       forwarder.Handle,
+		GroupVars:       cfg.GroupVars,
+		DirectAgents:    directAgents,
+		Snapshot:        func() repeater.Snapshot { return buildSnapshot(selfID, store) },
+		Events:          upEvents,
+		TopologyChanged: topoChanged,
+		OnTask:          forwarder.Handle,
 	}
 	dialerOpts := repeater.DialerOptions{
 		Identity:  ws.RelayIdentity,
