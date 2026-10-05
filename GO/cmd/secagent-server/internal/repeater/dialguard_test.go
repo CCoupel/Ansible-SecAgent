@@ -154,22 +154,26 @@ func TestGuardedDial_LiteralAndLocalhostAndNumericFormsAreRefused(t *testing.T) 
 	withGuard(t)
 	installResolver(t, &rebinder{public: 1 << 30})
 	for _, addr := range []string{"127.0.0.1:1", "[::1]:1", "169.254.169.254:80", "localhost:1", "x.localhost:1", "2130706433:1", "0x7f000001:1", "0177.0.0.1:1", "100.100.100.200:80"} {
-		if _, err := guardedDial(context.Background(), "tcp", addr); !errors.Is(err, ErrForbiddenTarget) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second) // a missing check would try to connect
+		_, err := guardedDial(ctx, "tcp", addr)
+		cancel()
+		if !errors.Is(err, ErrForbiddenTarget) {
 			t.Errorf("%s: %v", addr, err)
 		}
 	}
 }
 
-func TestGuardedDial_ControlRechecksTheSocketAddress(t *testing.T) {
-	// even when the resolver lies about what it returned, the connect(2) barrier sees the real
-	// address: a resolver answering a PUBLIC address that is in fact a literal internal IP cannot
-	// exist, so the Control path is exercised through the literal path with a doctored allow-list
-	withGuard(t)
-	if _, err := guardedDial(context.Background(), "tcp", "127.0.0.1:1"); !errors.Is(err, ErrForbiddenTarget) {
-		t.Fatalf("literal loopback: %v", err)
+// The connect(2) barrier (net.Dialer.Control) is independent of the resolution check.
+func TestRejectInternalSocket(t *testing.T) {
+	for _, a := range []string{"127.0.0.1:443", "[::1]:443", "169.254.169.254:80", "100.100.100.200:80", "0.0.0.0:1", "[64:ff9b::a9fe:a9fe]:80", "not-an-address", "example.net:443", "[fe80::1]:1"} {
+		if err := rejectInternalSocket(a); !errors.Is(err, ErrForbiddenTarget) {
+			t.Errorf("%s: %v", a, err)
+		}
 	}
-	if internalReason(net.ParseIP("203.0.113.10")) != "" {
-		t.Fatal("test premise")
+	for _, a := range []string{"203.0.113.10:443", "10.1.2.3:7772", "100.64.0.9:443", "[2001:4860:4860::8888]:443"} {
+		if err := rejectInternalSocket(a); err != nil {
+			t.Errorf("%s: %v", a, err)
+		}
 	}
 }
 

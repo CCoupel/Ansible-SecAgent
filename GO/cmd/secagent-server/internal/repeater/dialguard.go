@@ -56,16 +56,7 @@ func guardedDial(ctx context.Context, network, addr string) (net.Conn, error) {
 
 	d := &net.Dialer{}
 	if !allow {
-		d.Control = func(_, address string, _ syscall.RawConn) error {
-			ipStr, _, serr := net.SplitHostPort(address)
-			if serr != nil {
-				return fmt.Errorf("%w: unreadable socket address", ErrForbiddenTarget)
-			}
-			if ip := net.ParseIP(ipStr); ip == nil || internalReason(ip) != "" {
-				return fmt.Errorf("%w: the connection would reach an internal address", ErrForbiddenTarget)
-			}
-			return nil
-		}
+		d.Control = func(_, address string, _ syscall.RawConn) error { return rejectInternalSocket(address) }
 	}
 	var lastErr error
 	for _, ip := range ips {
@@ -88,6 +79,19 @@ func guardedDial(ctx context.Context, network, addr string) (net.Conn, error) {
 		lastErr = fmt.Errorf("%w: no usable address", ErrForbiddenTarget)
 	}
 	return nil, dialErr(addr, lastErr)
+}
+
+// rejectInternalSocket is the check of net.Dialer.Control: the address the socket is about to
+// connect to (ip:port, as the kernel sees it) must be a parseable, non internal IP.
+func rejectInternalSocket(address string) error {
+	ipStr, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("%w: unreadable socket address", ErrForbiddenTarget)
+	}
+	if ip := net.ParseIP(ipStr); ip == nil || internalReason(ip) != "" {
+		return fmt.Errorf("%w: the connection would reach an internal address", ErrForbiddenTarget)
+	}
+	return nil
 }
 
 // dialErr is what the standard dialer returns: a *net.OpError "dial", which endpoints.IsBeforeSend
