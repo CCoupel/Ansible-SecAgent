@@ -309,3 +309,50 @@ func TestRedactErrorMasksURLsInMessages(t *testing.T) {
 		t.Error("plain messages are untouched")
 	}
 }
+
+func TestRedactErrorMasksQuotedURLsWithoutScheme(t *testing.T) {
+	for _, msg := range []string{
+		`parse "http://bad host/x?token=S3CRET": invalid character " " in host name`,
+		`parse "hooks.example.com/x?token=S3CRET": first path segment in URL cannot contain colon`,
+		`Get "http://u:S3CRET@h/p?k=S3CRET#S3CRET": EOF`,
+	} {
+		if out := RedactError(msg); strings.Contains(out, "S3CRET") {
+			t.Errorf("RedactError(%q) leaks: %s", msg, out)
+		}
+	}
+}
+
+func TestRedactActionMasksUnknownFieldsByDefault(t *testing.T) {
+	out := RedactAction([]byte(`{"type":"webhook","token":"NEW-TOKEN","api_key":{"k":"NEW-KEY"},"password":["P"],"timeout_seconds":5}`))
+	for _, secret := range []string{"NEW-TOKEN", "NEW-KEY", `"P"`} {
+		if strings.Contains(out, secret) {
+			t.Errorf("a field unknown to the allow-list must be masked, leaks %q: %s", secret, out)
+		}
+	}
+	if !strings.Contains(out, `"type":"webhook"`) || !strings.Contains(out, `"timeout_seconds":5`) {
+		t.Errorf("kept fields lost: %s", out)
+	}
+}
+
+func TestOpenRefusesASymbolicLinkAtTheJournalPath(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "victim")
+	if err := os.WriteFile(target, []byte("precious\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "actions.log")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	j, err := Open(Options{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	if err := j.Append(entry(1, "host.new", "h")); err == nil {
+		t.Fatal("append through a symbolic link must be refused")
+	}
+	if got, _ := os.ReadFile(target); string(got) != "precious\n" {
+		t.Errorf("the link target was written: %q", got)
+	}
+}

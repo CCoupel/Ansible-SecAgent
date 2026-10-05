@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -160,11 +161,13 @@ func (j *Journal) Append(e Entry) error {
 	return nil
 }
 
+// openLocked opens the journal with O_NOFOLLOW (Linux, the v1 scope): a symbolic link planted at
+// the journal path is refused instead of being written through to its target.
 func (j *Journal) openLocked() error {
 	if err := os.MkdirAll(filepath.Dir(j.opts.Path), 0o700); err != nil {
 		return fmt.Errorf("actionlog: create directory: %w", err)
 	}
-	f, err := os.OpenFile(j.opts.Path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(j.opts.Path, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return fmt.Errorf("actionlog: open: %w", err)
 	}
@@ -250,20 +253,53 @@ func (j *Journal) List(f Filter) ([]Entry, error) {
 // Mask replaces every sensitive value.
 const Mask = "***"
 
-// RedactAction renders a hook action definition for the journal: the type, method, timeouts and
-// non-sensitive locations are kept, every value that may carry a secret is masked — the webhook
-// HMAC secret, header VALUES (keys stay), the body, shell arguments, the query string and the
-// userinfo of a URL. raw is the JSON of the action definition.
+// keptActionFields is the ALLOW-list of the action fields written as they are: they carry no
+// secret (the action kind, the HTTP method, the retry count, the timeouts, the executable and
+// file locations). Anything not listed here — and not handled by a dedicated rule below (url,
+// headers) — is MASKED: secure by default. A new field of the action definition therefore never
+// reaches the journal (nor GET /api/admin/hooks/log) in clear by omission; to keep it visible
+// for the audit, classify it here. hooks.TestRedactActionClassifiesEveryActionField fails while
+// an ActionDef field is classified nowhere.
+var keptActionFields = map[string]bool{
+	"type":            true,
+	"method":          true,
+	"cmd":             true,
+	"path":            true,
+	"max_retries":     true,
+	"timeout_seconds": true,
+}
+
+// KeptActionFields returns the fields written in clear (copy, for tests and documentation).
+func KeptActionFields() []string {
+	out := make([]string, 0, len(keptActionFields))
+	for k := range keptActionFields {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// RedactAction renders a hook action definition for the journal. Secure by default: only the
+// fields of keptActionFields are kept as they are; the url keeps scheme, host and path (userinfo,
+// query string and fragment masked); the header names are kept with masked values and the shell
+// arguments become a list of masks; every other
+// field — the webhook HMAC secret, the body, shell arguments, the append template, and any field
+// added later — is masked. raw is the JSON of the action definition.
 func RedactAction(raw []byte) string {
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return `{"redacted":true}`
 	}
 	for k, v := range m {
-		switch k {
-		case "secret", "body", "append":
-			m[k] = Mask
-		case "headers":
+		switch {
+		case keptActionFields[k]:
+		case k == "url":
+			if s, ok := v.(string); ok {
+				m[k] = RedactURL(s)
+			} else {
+				m[k] = Mask
+			}
+		case k == "headers":
 			if h, ok := v.(map[string]any); ok {
 				for hk := range h {
 					h[hk] = Mask
@@ -271,7 +307,7 @@ func RedactAction(raw []byte) string {
 			} else {
 				m[k] = Mask
 			}
-		case "args":
+		case k == "args": // the number of arguments stays visible, never their values
 			if a, ok := v.([]any); ok {
 				for i := range a {
 					a[i] = Mask
@@ -279,10 +315,8 @@ func RedactAction(raw []byte) string {
 			} else {
 				m[k] = Mask
 			}
-		case "url":
-			if s, ok := v.(string); ok {
-				m[k] = RedactURL(s)
-			}
+		default:
+			m[k] = Mask
 		}
 	}
 	// keys are emitted in a stable order (json.Marshal sorts map keys)
@@ -317,11 +351,21 @@ func RedactURL(s string) string {
 	return u.String()
 }
 
+// quotedURLInError matches the url.Error forms: Get|Head|Post|Put|Patch|Delete|Options|parse "…".
+var quotedURLInError = regexp.MustCompile(`\b(?:Get|Head|Post|Put|Patch|Delete|Options|Connect|Trace|parse) "(?:[^"\\]|\\.)*"`)
+
 var urlInText = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s"'<>]+`)
 
 // RedactError masks the URLs found in an error message (Go's HTTP errors quote the full URL,
 // query string and userinfo included) and flattens it to one line.
 func RedactError(msg string) string {
+	// Go's url.Error quotes the URL (%q): `Post "<url>": …`, `parse "<url>": …`. The quoted part
+	// is masked first, whatever it contains (a URL with a space or without a scheme is not matched
+	// by the generic pattern below, and its query string would leak).
+	msg = quotedURLInError.ReplaceAllStringFunc(msg, func(m string) string {
+		i := strings.IndexByte(m, '"')
+		return m[:i] + `"` + RedactURL(m[i+1:len(m)-1]) + `"`
+	})
 	msg = urlInText.ReplaceAllStringFunc(msg, func(m string) string {
 		// a trailing punctuation belongs to the sentence, not to the URL
 		trail := ""

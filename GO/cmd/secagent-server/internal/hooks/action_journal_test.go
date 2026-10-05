@@ -145,3 +145,61 @@ func TestDispatcher_JournalFailureDoesNotBlockTheDispatch(t *testing.T) {
 type writerFunc func([]byte) (int, error)
 
 func (w writerFunc) Write(p []byte) (int, error) { return w(p) }
+
+// #161b: the SERVER LOG (shipped to central systems) must not leak what the journal masks: Go's
+// HTTP errors quote the whole URL, query-string tokens included.
+func TestDispatcher_ServerLogNeverContainsSecrets(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close() // refuses connections: the error quotes the URL
+
+	const (
+		urlToken   = "URL-QUERY-TOKEN-XYZ"
+		hmacSecret = "HMAC-SECRET-VALUE"
+		authSecret = "SUPER-SECRET-AUTH-TOKEN"
+		userinfo   = "hunter2"
+	)
+	var logs bytes.Buffer
+	var mu sync.Mutex
+	prev := log.Writer()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) { mu.Lock(); defer mu.Unlock(); return logs.Write(p) }))
+	defer log.SetOutput(prev)
+
+	j, err := actionlog.Open(actionlog.Options{Path: filepath.Join(t.TempDir(), "actions.log")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	d := NewDispatcher(j, 10)
+	d.SetConfig(&HooksConfig{Hooks: []HookDef{{Event: "host.new", Actions: []ActionDef{
+		{Type: "webhook", URL: strings.Replace(deadURL, "http://", "http://admin:"+userinfo+"@", 1) + "/hook?access_token=" + urlToken, Secret: hmacSecret, TimeoutSeconds: 2},
+		{Type: "api", Method: "POST", URL: deadURL + "/x?token=" + urlToken, Headers: map[string]string{"Authorization": "Bearer " + authSecret}, TimeoutSeconds: 2},
+		{Type: "api", Method: "GET", URL: "http://bad host/x?token=" + urlToken, TimeoutSeconds: 2}, // url.Parse error quoting a URL with a space
+	}}}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.Start(ctx)
+	d.Dispatch("host.new", "h1", "disconnected", "2026-10-05T10:00:00Z")
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		mu.Lock()
+		n := strings.Count(logs.String(), " FAIL: ")
+		mu.Unlock()
+		if n >= 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected 3 FAIL log lines, got %d:\n%s", n, logs.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	out := logs.String()
+	mu.Unlock()
+	for _, secret := range []string{urlToken, hmacSecret, authSecret, userinfo, "Bearer"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("the server log leaks %q:\n%s", secret, out)
+		}
+	}
+}

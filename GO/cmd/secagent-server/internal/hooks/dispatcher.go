@@ -260,6 +260,7 @@ func (d *Dispatcher) executeAction(ctx context.Context, job dispatchJob, action 
 	// The hook configuration holds secrets (webhook HMAC key, authorization headers, URLs with
 	// tokens): the journal gets a masked snapshot and an error with its URLs masked.
 	raw, _ := json.Marshal(action)
+	safeErr := actionlog.RedactError(errMsg) // Go's errors quote the URL, query-string tokens included
 	entry := actionlog.Entry{
 		ID:             uuid.New().String(),
 		Event:          job.event,
@@ -268,7 +269,7 @@ func (d *Dispatcher) executeAction(ctx context.Context, job dispatchJob, action 
 		ActionIndex:    idx,
 		ConfigSnapshot: actionlog.RedactAction(raw),
 		Success:        success,
-		Error:          actionlog.RedactError(errMsg),
+		Error:          safeErr,
 		DurationMs:     durationMs,
 		ExecutedAt:     time.Now().UTC(),
 	}
@@ -282,6 +283,6 @@ func (d *Dispatcher) executeAction(ctx context.Context, job dispatchJob, action 
 	if success {
 		log.Printf("[HOOKS] %s %s action[%d] type=%s OK duration=%dms", job.event, job.hostname, idx, action.Type, durationMs)
 	} else {
-		log.Printf("[HOOKS] %s %s action[%d] type=%s FAIL: %s duration=%dms", job.event, job.hostname, idx, action.Type, errMsg, durationMs)
+		log.Printf("[HOOKS] %s %s action[%d] type=%s FAIL: %s duration=%dms", job.event, job.hostname, idx, action.Type, safeErr, durationMs) // never the raw errMsg: server logs are shipped elsewhere
 	}
 }
