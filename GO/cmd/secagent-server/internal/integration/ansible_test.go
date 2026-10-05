@@ -9,8 +9,10 @@ package integration
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,17 +95,27 @@ func runAnsible(t *testing.T, tool, script string, env []string, args ...string)
 	return res
 }
 
+// groupNamesWarning is the ONE warning tolerated: relay names are kept exactly as they are, so a
+// relay such as "zone-a" makes Ansible warn that its group name has characters it would rather
+// not see. The inventory stays correct (decision: exact names, documented).
+const groupNamesWarning = "Invalid characters were found in group names"
+
 // parseProblems lists what shows that Ansible did NOT accept the inventory script's output
-// (it never exits non-zero for that: it warns and falls back to an implicit localhost).
+// (it never exits non-zero for that: it warns and falls back to an implicit localhost), and any
+// WARNING other than the tolerated group-names one.
 func parseProblems(r ansibleResult) []string {
 	var p []string
 	if r.Exit != 0 {
 		p = append(p, fmt.Sprintf("exit code %d", r.Exit))
 	}
+	flat := strings.Join(strings.Fields(r.Stderr), " ")
 	for _, bad := range []string{"Failed to parse", "bad data", "No inventory was parsed", "Unable to parse"} {
-		if strings.Contains(strings.ReplaceAll(r.Stderr, "\n", " "), bad) {
+		if strings.Contains(flat, bad) {
 			p = append(p, "ansible reported: "+bad)
 		}
+	}
+	if n, ok := strings.Count(flat, "[WARNING]"), strings.Count(flat, "[WARNING]: "+groupNamesWarning); n != ok {
+		p = append(p, fmt.Sprintf("unexpected WARNING (only the group-names one is tolerated): %s", flat))
 	}
 	return p
 }
@@ -278,21 +290,22 @@ func TestAnsibleInventory(t *testing.T) {
 	tool := ansibleInventoryTool(t)
 	bin := inventoryBinary(t)
 
-	// root ──push──▶ relay1 ◀──pull── relay2 / relay3. relay1 has NO agent of its own (a purely
+	// root ──push──▶ relay1 ◀──pull── relay2 / zone-a (a relay name with a dash: Ansible warns, the
+	// inventory stays correct). relay1 has NO agent of its own (a purely
 	// intermediate relay: its group has children but no host — the shape a script inventory must
-	// still serialise as "hosts": []). relay2 and relay3 are declared to the root by relay1's
+	// still serialise as "hosts": []). relay2 and zone-a are declared to the root by relay1's
 	// snapshot, so the root knows the whole subtree.
 	root := startNode(t, nodeSpec{ID: "root"})
 	relay1 := startNode(t, nodeSpec{ID: "relay1"})
 	relay2 := startNode(t, nodeSpec{ID: "relay2", ParentURL: relay1.wssURL(), ParentToken: relay1.registerChild("relay2")})
-	relay3 := startNode(t, nodeSpec{ID: "relay3", ParentURL: relay1.wssURL(), ParentToken: relay1.registerChild("relay3")})
-	waitFor(t, "relay2 and relay3 linked", func() bool {
-		return relay2.upstreamState() == "connected" && relay3.upstreamState() == "connected"
+	zoneA := startNode(t, nodeSpec{ID: "zone-a", ParentURL: relay1.wssURL(), ParentToken: relay1.registerChild("zone-a")})
+	waitFor(t, "relay2 and zone-a linked", func() bool {
+		return relay2.upstreamState() == "connected" && zoneA.upstreamState() == "connected"
 	})
 	enroll(t, root, "a-root") // enrolled: it is listed by the root's own inventory
 	connectMinion(t, root, "a-root")
 	connectMinion(t, relay2, "a-l2")
-	connectMinion(t, relay3, "a-l3")
+	connectMinion(t, zoneA, "a-l3")
 	waitFor(t, "relay1 knows both deep agents", func() bool { return relay1.hasHost("a-l2") && relay1.hasHost("a-l3") })
 	linkPush(t, root, relay1)
 	waitFor(t, "the root's inventory is complete", func() bool {
@@ -301,9 +314,9 @@ func TestAnsibleInventory(t *testing.T) {
 
 	env := []string{"RELAY_SERVER_URL=" + root.apiURL(), "RELAY_TOKEN=" + root.pluginToken(), "SSL_CERT_FILE=" + certPath}
 	want := expectation{
-		hostGroup: map[string]string{"a-root": "root", "a-l2": "relay2", "a-l3": "relay3"},
-		children:  map[string][]string{"root": {"relay1"}, "relay1": {"relay2", "relay3"}, "relay2": nil, "relay3": nil},
-		chain:     map[string][]string{"a-l2": {"relay2", "relay1"}, "a-l3": {"relay3", "relay1"}},
+		hostGroup: map[string]string{"a-root": "root", "a-l2": "relay2", "a-l3": "zone-a"},
+		children:  map[string][]string{"root": {"relay1"}, "relay1": {"relay2", "zone-a"}, "relay2": nil, "zone-a": nil},
+		chain:     map[string][]string{"a-l2": {"relay2", "relay1"}, "a-l3": {"zone-a", "relay1"}},
 		nextHop:   map[string]string{"a-l2": "relay1", "a-l3": "relay1"},
 	}
 
@@ -338,14 +351,44 @@ func TestAnsibleInventory(t *testing.T) {
 			t.Fatalf("scoped inventory rejected: %v\n%s", p, res.Stderr)
 		}
 		scoped := expectation{
-			hostGroup: map[string]string{"a-l2": "relay2", "a-l3": "relay3"},
-			children:  map[string][]string{"relay1": {"relay2", "relay3"}, "relay2": nil, "relay3": nil},
-			chain:     map[string][]string{"a-l2": {"relay2", "relay1"}, "a-l3": {"relay3", "relay1"}},
+			hostGroup: map[string]string{"a-l2": "relay2", "a-l3": "zone-a"},
+			children:  map[string][]string{"relay1": {"relay2", "zone-a"}, "relay2": nil, "zone-a": nil},
+			chain:     map[string][]string{"a-l2": {"relay2", "relay1"}, "a-l3": {"zone-a", "relay1"}},
 			nextHop:   map[string]string{"a-l2": "relay1", "a-l3": "relay1"},
 			absent:    []string{"a-root", "root"},
 		}
 		if p := inventoryProblems(res.Stdout, scoped); len(p) > 0 {
 			t.Errorf("scoped inventory not conform:\n  %s\nstdout:\n%s", strings.Join(p, "\n  "), res.Stdout)
+		}
+	})
+
+	t.Run("GroupNamesWarningIsTheOnlyWarningAndCanBeSilenced", func(t *testing.T) {
+		res := runAnsible(t, tool, bin, env, "--list")
+		if !strings.Contains(strings.Join(strings.Fields(res.Stderr), " "), groupNamesWarning) {
+			t.Errorf("a relay named \"zone-a\" is expected to make Ansible warn about group names:\n%s", res.Stderr)
+		}
+		quiet := runAnsible(t, tool, bin, append(env, "ANSIBLE_TRANSFORM_INVALID_GROUP_CHARS=ignore"), "--list")
+		if strings.TrimSpace(quiet.Stderr) != "" || len(parseProblems(quiet)) != 0 {
+			t.Errorf("ANSIBLE_TRANSFORM_INVALID_GROUP_CHARS=ignore must silence the warning:\n%s", quiet.Stderr)
+		}
+		if p := inventoryProblems(quiet.Stdout, want); len(p) > 0 {
+			t.Errorf("the inventory must be the same with the warning silenced: %v", p)
+		}
+	})
+
+	t.Run("Graph", func(t *testing.T) {
+		res := runAnsible(t, tool, bin, env, "--graph")
+		if p := parseProblems(res); len(p) > 0 {
+			t.Fatalf("ansible-inventory --graph: %v\n%s", p, res.Stderr)
+		}
+		// the tree: root ⊃ relay1 ⊃ {relay2, zone-a}, each holding its agent
+		for _, line := range []string{"|--@root:", "|--@relay1:", "|--@relay2:", "|--@zone-a:", "|--a-root", "|--a-l2", "|--a-l3"} {
+			if !strings.Contains(res.Stdout, line) {
+				t.Errorf("--graph lacks %q:\n%s", line, res.Stdout)
+			}
+		}
+		if strings.Index(res.Stdout, "@root:") > strings.Index(res.Stdout, "@relay1:") || strings.Index(res.Stdout, "@relay1:") > strings.Index(res.Stdout, "@relay2:") {
+			t.Errorf("the groups must nest root > relay1 > relay2:\n%s", res.Stdout)
 		}
 	})
 
@@ -404,5 +447,112 @@ func TestAnsibleInventory_ChecksCanFail(t *testing.T) {
 	res := runAnsible(t, tool, script, nil, "--list")
 	if len(parseProblems(res)) == 0 {
 		t.Errorf("an inventory Ansible rejects (hosts: null) must be detected:\nstdout: %s\nstderr: %s", res.Stdout, res.Stderr)
+	}
+}
+
+// ── deeper tree and edge cases ───────────────────────────────────────────────
+
+// What a real node tree never produces but Ansible must still accept: empty documents, groups with
+// no host and no child, null values and a relay called "ungrouped" (the name of Ansible's implicit
+// group). A fake server speaking over TLS with the test certificate feeds the real binary, whose
+// output goes through the real ansible-inventory.
+func TestAnsibleInventory_EdgeCasesAreAccepted(t *testing.T) {
+	tool := ansibleInventoryTool(t)
+	bin := inventoryBinary(t)
+	cases := []struct {
+		name      string
+		body      string
+		wantHosts []string // hosts that must be listed
+		wantGroup []string // groups that must exist (Ansible drops groups that hold nothing: only accepted)
+	}{
+		{"empty document", `{}`, nil, nil},
+		{"only all and _meta, empty", `{"_meta":{"hostvars":{}},"all":{"hosts":[]}}`, nil, nil},
+		{"hostvars null", `{"_meta":{"hostvars":null},"all":{"hosts":[]}}`, nil, nil},
+		{"no _meta at all", `{"all":{"hosts":["h1"]},"g":{"hosts":["h1"]}}`, []string{"h1"}, []string{"g"}},
+		{"group without host nor child", `{"all":{"hosts":[],"children":["empty"]},"empty":{}}`, nil, nil},
+		{"group with hosts null", `{"all":{"hosts":null,"children":["g"]},"g":{"hosts":null,"children":null}}`, nil, nil},
+		{"relay named ungrouped", `{"_meta":{"hostvars":{"h-ug":{"ansible_connection":"relay"}}},"all":{"hosts":["h-ug"],"children":["ungrouped"]},"ungrouped":{"hosts":["h-ug"]}}`, []string{"h-ug"}, nil},
+		{"host with empty hostvars", `{"_meta":{"hostvars":{"h":{}}},"all":{"hosts":["h"],"children":["g"]},"g":{"hosts":["h"]}}`, []string{"h"}, []string{"g"}},
+		{"relay with a dash", `{"_meta":{"hostvars":{"h":{"ansible_connection":"relay"}}},"all":{"hosts":["h"],"children":["zone-a"]},"zone-a":{"hosts":["h"]}}`, []string{"h"}, []string{"zone-a"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := fakeInventoryServer(t, tc.body)
+			env := []string{"RELAY_SERVER_URL=" + srv, "RELAY_TOKEN=any-token", "SSL_CERT_FILE=" + certPath}
+			for _, mode := range []string{"--list", "--graph"} {
+				res := runAnsible(t, tool, bin, env, mode)
+				if p := parseProblems(res); len(p) > 0 {
+					t.Fatalf("%s: Ansible does not accept this inventory: %v\nstderr:\n%s", mode, p, res.Stderr)
+				}
+				if mode != "--list" {
+					continue
+				}
+				_, d, err := decodeInventory(res.Stdout)
+				if err != nil {
+					t.Fatalf("not JSON: %v\n%s", err, res.Stdout)
+				}
+				for _, h := range tc.wantHosts {
+					if _, ok := d.Meta.Hostvars[h]; !ok && !strings.Contains(res.Stdout, `"`+h+`"`) {
+						t.Errorf("host %q is lost:\n%s", h, res.Stdout)
+					}
+				}
+				for _, g := range tc.wantGroup {
+					if _, ok := d.Groups[g]; !ok {
+						t.Errorf("group %q is lost:\n%s", g, res.Stdout)
+					}
+				}
+			}
+		})
+	}
+}
+
+// fakeInventoryServer serves body on /api/inventory over TLS with the shared test certificate.
+func fakeInventoryServer(t *testing.T, body string) string {
+	t.Helper()
+	if err := func() error { sharedOnce.Do(func() { sharedErr = initShared() }); return sharedErr }(); err != nil {
+		t.Fatalf("shared test material: %v", err)
+	}
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return "https://" + ln.Addr().String()
+}
+
+// qa reserve K5: a relay whose id is "ungrouped" (a valid relay id) collides with the name of
+// Ansible's implicit group. On a real node tree: Ansible accepts the inventory, lists the host, and
+// the relay's group keeps its name.
+func TestAnsibleInventory_RelayNamedUngroupedIsAccepted(t *testing.T) {
+	tool := ansibleInventoryTool(t)
+	bin := inventoryBinary(t)
+	root := startNode(t, nodeSpec{ID: "root"})
+	ug := startNode(t, nodeSpec{ID: "ungrouped", ParentURL: root.wssURL(), ParentToken: root.registerChild("ungrouped")})
+	waitFor(t, "ungrouped relay linked", func() bool { return ug.upstreamState() == "connected" })
+	connectMinion(t, ug, "h-under-ungrouped")
+	waitFor(t, "root lists the host", func() bool { return root.hasHost("h-under-ungrouped") })
+
+	env := []string{"RELAY_SERVER_URL=" + root.apiURL(), "RELAY_TOKEN=" + root.pluginToken(), "SSL_CERT_FILE=" + certPath}
+	for _, mode := range []string{"--list", "--graph"} {
+		res := runAnsible(t, tool, bin, env, mode)
+		if p := parseProblems(res); len(p) > 0 {
+			t.Fatalf("%s: Ansible does not accept a relay named ungrouped: %v\n%s", mode, p, res.Stderr)
+		}
+		if !strings.Contains(res.Stdout, "h-under-ungrouped") {
+			t.Errorf("%s lost the host of the relay named ungrouped:\n%s", mode, res.Stdout)
+		}
+	}
+	res := runAnsible(t, tool, bin, env, "--host", "h-under-ungrouped")
+	if p := parseProblems(res); len(p) > 0 || !strings.Contains(res.Stdout, `"secagent_relay_chain"`) {
+		t.Errorf("--host on the host of the relay named ungrouped: %v\n%s\n%s", p, res.Stdout, res.Stderr)
 	}
 }
