@@ -51,9 +51,10 @@ func TestRouting_LiveLocalAgentBeatsRelayClaim(t *testing.T) {
 	}
 }
 
-// (d) two relays declaring the same host: the conflict is reported (host.conflict naming both
-// owners) a bounded number of times — NOT at every agent_list round — and once only one relay
-// still claims the host, tasks follow it.
+// (d) two relays declaring the same host: host.conflict is emitted an EXACT number of times —
+// once per change of owner as seen by each claimant — and never again at the following agent_list
+// rounds. The steps are serialised (each waits for the previous one by condition), so the expected
+// counts are exact, not bounds: a regression of one emission, in either direction, fails.
 func TestRouting_DuplicateClaimEmitsHostConflictWithoutStorm(t *testing.T) {
 	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
@@ -61,40 +62,63 @@ func TestRouting_DuplicateClaimEmitsHostConflictWithoutStorm(t *testing.T) {
 	relayB := startNode(t, nodeSpec{ID: "relayB", ParentURL: root.wssURL(), ParentToken: root.registerChild("relayB")})
 	waitFor(t, "relays linked", func() bool { return relayA.upstreamState() == "connected" && relayB.upstreamState() == "connected" })
 
-	atA := connectMinion(t, relayA, "roamer")
-	waitFor(t, "root routes roamer via relayA", func() bool { return root.hasHost("roamer") })
-	if root.logs.count("host.conflict:") != 0 {
-		t.Fatal("no conflict expected with a single owner")
-	}
-
-	atB := connectMinion(t, relayB, "roamer") // relayB now declares the same host while relayA still does
-	waitFor(t, "host.conflict reported", func() bool { return root.logs.count("host.conflict: hostname=roamer") >= 1 })
-	if !root.logs.has("old=relayA new=relayB") && !root.logs.has("old=relayB new=relayA") {
-		t.Errorf("the conflict must name both owners:\n%s", root.logs.String())
-	}
+	conflicts := func() int { return root.logs.count("host.conflict: hostname=roamer") }
+	// rounds waits until the root has processed n more agent_list messages from EACH relay: the
+	// claims of both have been re-evaluated n times since the call
 	rounds := func(n int) {
-		base := root.logs.count("agent_list: relay_id=relayA") + root.logs.count("agent_list: relay_id=relayB")
-		waitFor(t, "more agent_list rounds processed", func() bool {
-			return root.logs.count("agent_list: relay_id=relayA")+root.logs.count("agent_list: relay_id=relayB") >= base+n
+		t.Helper()
+		a0, b0 := root.logs.count("agent_list: relay_id=relayA"), root.logs.count("agent_list: relay_id=relayB")
+		waitFor(t, "more agent_list rounds from both relays", func() bool {
+			return root.logs.count("agent_list: relay_id=relayA") >= a0+n && root.logs.count("agent_list: relay_id=relayB") >= b0+n
 		})
 	}
-	rounds(8)
-	settled := root.logs.count("host.conflict: hostname=roamer")
-	rounds(16)
-	// one report per direction of the flip, plus one when the two claims interleave: bounded, and
-	// above all STABLE once settled (a storm would grow with every agent_list round)
-	if now := root.logs.count("host.conflict: hostname=roamer"); now != settled || now > 4 {
-		t.Errorf("host.conflict count went from %d to %d over 16 more rounds: want a small stable count (<=4)", settled, now)
+
+	// 1. A declares the host alone: it owns it, no conflict
+	atA := connectMinion(t, relayA, "roamer")
+	waitFor(t, "root routes roamer via relayA", func() bool { return root.hasHost("roamer") })
+	rounds(4)
+	if n := conflicts(); n != 0 {
+		t.Fatalf("step 1: %d host.conflict with a single owner, want 0", n)
 	}
 
-	_ = atA.conn.Close() // only relayB declares it now
+	// 2. B declares it too while A still does: ONE conflict per claimant's view of the owner change
+	// (relayA→relayB seen by B's claim, relayB→relayA seen by A's next claim) = exactly 2
+	atB := connectMinion(t, relayB, "roamer")
+	waitFor(t, "both directions reported", func() bool { return conflicts() >= 2 })
+	rounds(16) // many more rounds with BOTH still claiming: nothing more may be emitted
+	if n := conflicts(); n != 2 {
+		t.Fatalf("step 2: %d host.conflict, want exactly 2", n)
+	}
+	if a, b := root.logs.count("old=relayA new=relayB"), root.logs.count("old=relayB new=relayA"); a != 1 || b != 1 {
+		t.Errorf("step 2: relayA→relayB reported %d times and relayB→relayA %d times, want once each", a, b)
+	}
+
+	// 3. A stops claiming (its claim ended), B keeps claiming: nothing new
+	_ = atA.conn.Close()
+	waitFor(t, "relayA's list no longer holds the host", func() bool { return relayA.logs.count("Agent disconnected: hostname=roamer") >= 1 })
+	rounds(16)
+	if n := conflicts(); n != 2 {
+		t.Fatalf("step 3: %d host.conflict after A stopped claiming, want still 2", n)
+	}
 	var r execResult
-	waitFor(t, "tasks follow the surviving owner", func() bool {
+	waitFor(t, "tasks follow the only claimant", func() bool {
 		r = root.exec("roamer", execBody("id"))
 		return r.Code == http.StatusOK
 	})
-	if len(atB.received()) != 1 || len(atA.received()) != 0 {
-		t.Errorf("the task must go to relayB's minion only: A=%v B=%v", atA.received(), atB.received())
+	if len(atB.received()) != 1 {
+		t.Errorf("step 3: the task must go to relayB's minion, got %v", atB.received())
+	}
+
+	// 4. A claims again: its previous report was forgotten when its claim ended, so the change of
+	// owner is reported ONE more time (relayB→relayA) — and B's kept memory suppresses the echo
+	connectMinion(t, relayA, "roamer")
+	waitFor(t, "the renewed claim is reported", func() bool { return conflicts() >= 3 })
+	rounds(16)
+	if n := conflicts(); n != 3 {
+		t.Fatalf("step 4: %d host.conflict, want exactly 3", n)
+	}
+	if b := root.logs.count("old=relayB new=relayA"); b != 2 {
+		t.Errorf("step 4: relayB→relayA reported %d times, want 2 (steps 2 and 4)", b)
 	}
 }
 
