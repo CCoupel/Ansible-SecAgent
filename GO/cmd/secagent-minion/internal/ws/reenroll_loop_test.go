@@ -198,8 +198,9 @@ func TestRun_TransientEnrollmentFailuresRetryWithBackoffForever(t *testing.T) {
 		return "new", nil
 	})
 
-	err := d.Run(ctx)
-	if err == nil || !strings.Contains(err.Error(), "context canceled") && !errors.Is(err, context.Canceled) {
+	// the minion never gives up: Run ends only when the WebSocket finally works and the context is
+	// cancelled (nil), or when the context ends while waiting (context.Canceled)
+	if err := d.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run must keep trying until the context ends, got %v", err)
 	}
 	got := rec.got()
