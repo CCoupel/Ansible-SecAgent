@@ -93,7 +93,7 @@ func TestReEnrollAgainstARealServer(t *testing.T) {
 	t.Cleanup(func() { _ = srv.Process.Kill(); _ = srv.Wait() })
 
 	// the server generates its RSA key on first start: wait for the three ports
-	deadline := time.Now().Add(120 * time.Second)
+	deadline := time.Now().Add(240 * time.Second) // failure-only bound: RSA-4096 key generation has a heavy-tailed duration (>120 s observed under load, empty server output)
 	for _, a := range []string{api, adminAddr, wsAddr} {
 		for {
 			c, err := net.DialTimeout("tcp", a, 300*time.Millisecond)
