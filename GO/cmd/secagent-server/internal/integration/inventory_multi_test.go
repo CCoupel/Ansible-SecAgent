@@ -56,6 +56,15 @@ func TestInventoryMultiAddress(t *testing.T) {
 			t.Fatalf("exit=%d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
 		}
 	})
+	t.Run("failed attempts are silent when an address answers, detailed with RELAY_INVENTORY_VERBOSE", func(t *testing.T) {
+		env := []string{"RELAY_SERVER_URL=" + list, "RELAY_TOKEN=" + token, "SSL_CERT_FILE=" + certPath}
+		if code, _, errOut := runInventoryBinary(t, bin, env, "--list"); code != 0 || strings.TrimSpace(errOut) != "" {
+			t.Errorf("exit=%d, stderr must be empty on success: %q", code, errOut)
+		}
+		if code, _, errOut := runInventoryBinary(t, bin, append(env, "RELAY_INVENTORY_VERBOSE=1"), "--list"); code != 0 || !strings.Contains(errOut, "address failed before send") || strings.Contains(errOut, token) {
+			t.Errorf("verbose: exit=%d stderr=%q", code, errOut)
+		}
+	})
 	t.Run("a refusal by the live address is reported as is", func(t *testing.T) {
 		code, _, errOut := runInventoryBinary(t, bin,
 			[]string{"RELAY_SERVER_URL=" + list, "RELAY_TOKEN=wrong-token-value", "SSL_CERT_FILE=" + certPath}, "--list")
@@ -66,7 +75,7 @@ func TestInventoryMultiAddress(t *testing.T) {
 	t.Run("all addresses dead", func(t *testing.T) {
 		code, _, errOut := runInventoryBinary(t, bin,
 			[]string{"RELAY_SERVER_URL=" + dead + "," + deadAddress(t), "RELAY_TOKEN=" + token, "SSL_CERT_FILE=" + certPath}, "--list")
-		if code == 0 || !strings.Contains(errOut, "2 address(es) tried") || strings.Contains(errOut, token) {
+		if code == 0 || !strings.Contains(errOut, "2 address(es) tried") || strings.Contains(errOut, "WARN") || strings.Contains(errOut, token) {
 			t.Fatalf("exit=%d stderr=%q", code, errOut)
 		}
 	})

@@ -15,6 +15,7 @@
 //	                      avertissement sur stderr à chaque exécution ; refusé si l'URL n'est pas
 //	                      une adresse de bouclage, sauf RELAY_INSECURE_TLS_ACK=i-understand-the-risk
 //	RELAY_INSECURE_TLS_ACK  confirmation explicite pour désactiver TLS vers un serveur non-bouclage
+//	RELAY_INVENTORY_VERBOSE "1" pour afficher sur stderr le détail des adresses en échec (diagnostic)
 //	RELAY_ONLY_CONNECTED  "true" pour filtrer hôtes connectés uniquement (défaut: false)
 //	RELAY_SCOPE           id d'un relay : limite l'inventaire à sa descendance (optionnel)
 //
@@ -32,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	neturl "net/url"
@@ -195,12 +197,15 @@ func main() {
 	}
 
 	cfg := loadConfig()
+	configureLogging(os.Stderr, getenv("RELAY_INVENTORY_VERBOSE", "") == "1")
 
 	// Garde TLS : avant toute requête, pour --list comme pour --host (qui masque les erreurs réseau).
 	if err := checkInsecureTLS(cfg, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	warnPlainHTTP(cfg, os.Stderr)
 
 	switch args[0] {
 	case "--list":
@@ -265,6 +270,32 @@ func checkInsecureTLS(cfg config, w io.Writer) error {
 	}
 	_, err = fmt.Fprintf(w, "[SECURITY WARNING] TLS verification disabled (RELAY_INSECURE_TLS=true) for %s\n", strings.Join(shown, ","))
 	return err
+}
+
+// warnPlainHTTP warns (on w = stderr, stdout stays pure JSON) for every address that uses http://
+// towards a host that is not a loopback address: the bearer token would travel in clear. It never
+// refuses and never writes the token.
+func warnPlainHTTP(cfg config, w io.Writer) {
+	urls, err := endpoints.Parse(cfg.serverURL)
+	if err != nil {
+		return
+	}
+	for i, u := range urls {
+		if strings.EqualFold(u.Scheme, "http") && !isLoopbackURL(u.String()) {
+			_, _ = fmt.Fprintf(w, "[SECURITY WARNING] address #%d (%s) uses http://: the token is sent in clear, https is required outside localhost\n", i+1, u.Host)
+		}
+	}
+}
+
+// configureLogging keeps the failed-attempt diagnostics of internal/endpoints (slog warnings that
+// Ansible would show as errors while the inventory succeeds) out of stderr, unless
+// RELAY_INVENTORY_VERBOSE=1. When EVERY address fails the final error carries the detail anyway.
+func configureLogging(w io.Writer, verbose bool) {
+	if verbose {
+		slog.SetDefault(slog.New(slog.NewTextHandler(w, nil)))
+		return
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // cmdList implémente --list : GET /api/inventory → JSON Ansible complet
@@ -366,6 +397,10 @@ func fetchInventory(cfg config) (*InventoryResponse, error) {
 	for i, u := range urls {
 		reply, err := fetchFromAddress(ctx, client, u, query, cfg.token)
 		if err == nil {
+			if reply.status >= 300 && reply.status < 400 {
+				// the Location (target URL) is deliberately not echoed
+				return nil, fmt.Errorf("server returned %d: redirection refused (never followed, the token is sent to the configured addresses only)", reply.status)
+			}
 			if reply.status != http.StatusOK {
 				return nil, fmt.Errorf("server returned %d: %s", reply.status, strings.TrimSpace(string(reply.body)))
 			}
@@ -381,7 +416,11 @@ func fetchInventory(cfg config) (*InventoryResponse, error) {
 			break
 		}
 	}
-	return nil, fmt.Errorf("relay unreachable, %d address(es) tried: %s", len(tried), strings.Join(tried, "; "))
+	untried := ""
+	if n := len(urls) - len(tried); n > 0 {
+		untried = fmt.Sprintf(", %d not tried (time budget)", n)
+	}
+	return nil, fmt.Errorf("relay unreachable, %d address(es) tried%s: %s", len(tried), untried, strings.Join(tried, "; "))
 }
 
 // fetchFromAddress asks ONE address through endpoints.DialFirst (per-address timeout, failure
@@ -462,6 +501,9 @@ func newHTTPClient(cfg config) (*http.Client, error) {
 	return &http.Client{
 		Transport: transport,
 		Timeout:   10 * time.Second,
+		// NO redirection is ever followed: the bearer token must only reach the configured
+		// addresses, never a host named by a Location header. A 3xx is reported as an error.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}, nil
 }
 

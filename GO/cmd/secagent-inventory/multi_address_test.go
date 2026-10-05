@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
@@ -234,4 +235,88 @@ func selfSigned(t *testing.T) tls.Certificate {
 		t.Fatal(err)
 	}
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// BAS-2: no redirection is ever followed; the token never reaches the host named by Location.
+func TestFetchInventory_NeverFollowsARedirect(t *testing.T) {
+	const token = "TOKEN-THAT-MUST-STAY-HOME"
+	var otherAuth atomic.Value
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		otherAuth.Store(r.Header.Get("Authorization"))
+		okHandler(w, r)
+	}))
+	defer other.Close()
+	redirecting, _ := counting(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/api/inventory?secret=LOCATION-SECRET", http.StatusFound)
+	})
+	second, n2 := counting(t, okHandler)
+	_, err := fetchInventory(config{serverURL: redirecting.URL + "," + second.URL, token: token})
+	if err == nil || !strings.Contains(err.Error(), "302") || !strings.Contains(err.Error(), "redirection refused") {
+		t.Fatalf("err = %v", err)
+	}
+	for _, leak := range []string{other.URL, "LOCATION-SECRET", token} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("the error echoes %q: %v", leak, err)
+		}
+	}
+	if v := otherAuth.Load(); v != nil {
+		t.Errorf("the redirect target was contacted (Authorization %q)", v)
+	}
+	if n2.Load() != 0 {
+		t.Error("a redirect is final: no other address is tried")
+	}
+}
+
+// BAS-1: http:// towards a non-loopback host is warned about (stderr), never refused, no token.
+func TestWarnPlainHTTP(t *testing.T) {
+	var sb strings.Builder
+	warnPlainHTTP(config{serverURL: "http://localhost:7770,http://127.0.0.1:1,https://relay.example.com,http://relay2.example.com:7770", token: "SECRET-TOKEN"}, &sb)
+	out := sb.String()
+	if strings.Count(out, "[SECURITY WARNING]") != 1 || !strings.Contains(out, "#4 (relay2.example.com:7770)") || !strings.Contains(out, "https is required") {
+		t.Errorf("warnings = %q", out)
+	}
+	if strings.Contains(out, "SECRET-TOKEN") || strings.Contains(out, "#1 ") || strings.Contains(out, "#2 ") || strings.Contains(out, "#3 ") {
+		t.Errorf("unexpected content: %q", out)
+	}
+	sb.Reset()
+	warnPlainHTTP(config{serverURL: "https://relay.example.com"}, &sb)
+	if sb.Len() != 0 {
+		t.Errorf("https must not warn: %q", sb.String())
+	}
+}
+
+// N2: failed attempts are silent unless RELAY_INVENTORY_VERBOSE=1; the final error carries them.
+func TestConfigureLogging_QuietUnlessVerbose(t *testing.T) {
+	prev := slog.Default()
+	defer slog.SetDefault(prev)
+	var sb, before strings.Builder
+	slog.SetDefault(slog.New(slog.NewTextHandler(&before, nil))) // what a default logger would have shown
+	configureLogging(&sb, false)
+	slog.Warn("endpoints: address failed before send", "address", 1)
+	if sb.Len() != 0 || before.Len() != 0 {
+		t.Errorf("quiet mode must replace the default logger and write nothing: %q %q", sb.String(), before.String())
+	}
+	configureLogging(&sb, true)
+	slog.Warn("endpoints: address failed before send", "address", 1)
+	if !strings.Contains(sb.String(), "address failed before send") {
+		t.Errorf("verbose mode must show the detail: %q", sb.String())
+	}
+}
+
+// N1: the final message says how many addresses were NOT tried for lack of time.
+func TestFetchInventory_ReportsAddressesNotTriedForLackOfTime(t *testing.T) {
+	oldA, oldT := perAddressTimeout, fetchTotalTimeout
+	perAddressTimeout, fetchTotalTimeout = time.Second, 300*time.Millisecond
+	defer func() { perAddressTimeout, fetchTotalTimeout = oldA, oldT }()
+	release := make(chan struct{})
+	var hs []string
+	for i := 0; i < 4; i++ {
+		s, _ := counting(t, func(w http.ResponseWriter, r *http.Request) { <-release })
+		hs = append(hs, s.URL)
+	}
+	defer close(release)
+	_, err := fetchInventory(config{serverURL: strings.Join(hs, ",")})
+	if err == nil || !strings.Contains(err.Error(), "1 address(es) tried, 3 not tried (time budget)") {
+		t.Fatalf("err = %v", err)
+	}
 }

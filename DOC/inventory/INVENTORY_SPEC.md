@@ -88,6 +88,10 @@ reste valide. Le process est éphémère : ordre de la liste, rien n'est mémori
   chaque adresse.
 - Toutes injoignables : code de sortie 1, message `relay unreachable, N address(es) tried: #1 hôte: cause; …`
   (hôtes et causes seulement : ni token, ni chemin, ni query string).
+- **Redirections : jamais suivies** (`CheckRedirect` → `http.ErrUseLastResponse`) : le jeton n'est envoyé qu'aux adresses configurées, jamais à un hôte désigné par un en-tête `Location`. Une réponse 3xx est une erreur claire (`server returned 302: redirection refused …`), sans écho de l'URL cible ; elle est définitive (aucune autre adresse n'est essayée).
+- **`http://` hors bouclage** : avertissement `[SECURITY WARNING] address #N (hôte) uses http://: the token is sent in clear, https is required outside localhost` sur **stderr** (stdout reste du JSON pur), jamais le jeton ; pas de refus pour l'instant.
+- **Sortie d'erreur** : les tentatives d'adresses qui échouent avant qu'une autre réussisse ne produisent **aucune** ligne sur stderr (Ansible les afficherait comme des erreurs alors que l'inventaire réussit) ; `RELAY_INVENTORY_VERBOSE=1` affiche le détail. Si toutes échouent, le message final liste les adresses essayées et, le cas échéant, `M not tried (time budget)` pour celles que le plafond global de 30 s n'a pas laissé essayer.
+- **Réponse 200 non JSON** (ex. page HTML d'un proxy intermédiaire sur le secondaire) : erreur `decode response`, **sans bascule** — par conception : le serveur a répondu, ce n'est pas un problème de disponibilité ; seuls échec de connexion, timeout, coupure et 503 basculent.
 - **Contrat `endpoints.MarkSent`** : `DialFirst` classe un échec « avant envoi » tant qu'aucun octet de
   requête n'est parti ; `net/http` est suivi automatiquement (`httptrace`), l'inventaire n'a donc rien à
   marquer. **Tout futur dial brut (connexion TCP, upgrade WebSocket) devra appeler `endpoints.MarkSent(ctx)`
