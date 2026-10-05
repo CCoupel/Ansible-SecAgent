@@ -125,3 +125,20 @@ func TestRun_BecomePassStaysOnStdin(t *testing.T) {
 		t.Errorf("become_pass in the logs:\n%s", logs.String())
 	}
 }
+
+// The deny rules win even if someone later adds a forbidden name to the allow-list.
+func TestTaskEnv_ForbiddenWinsOverTheAllowList(t *testing.T) {
+	allowedEnvNames["RELAY_ENROLLMENT_TOKEN"] = true
+	allowedEnvNames["FOO_TOKEN"] = true
+	defer func() { delete(allowedEnvNames, "RELAY_ENROLLMENT_TOKEN"); delete(allowedEnvNames, "FOO_TOKEN") }()
+	got := envMap(TaskEnv([]string{"RELAY_ENROLLMENT_TOKEN=x", "FOO_TOKEN=y", "HOME=/h"}))
+	if _, ok := got["RELAY_ENROLLMENT_TOKEN"]; ok {
+		t.Error("RELAY_* must never pass")
+	}
+	if _, ok := got["FOO_TOKEN"]; ok {
+		t.Error("*_TOKEN must never pass")
+	}
+	if got["HOME"] != "/h" {
+		t.Error("HOME must pass")
+	}
+}

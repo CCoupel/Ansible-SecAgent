@@ -62,7 +62,7 @@ func TestHandleExec_RealHandlerHidesTheMinionSecrets(t *testing.T) {
 	var out strings.Builder
 	send := func(payload any) error {
 		if m, ok := payload.(map[string]any); ok && m["type"] == "result" {
-			out.WriteString(fmt.Sprint(m["stdout"]))
+			_, _ = fmt.Fprint(&out, m["stdout"])
 		}
 		return nil
 	}
