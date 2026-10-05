@@ -125,3 +125,119 @@ jobs:
             echo "::error::Aucun test Ansible execute et passe (absent ou skippe) : le job ne valide rien."
             exit 1
           fi
+
+  # ---- Conteneurs et Compose (#174 M4/M5) ---------------------------------------------------------
+  docker-compose-checks:
+    name: Dockerfiles + Compose (rendu, port admin, anti-NATS)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Bloquant : un Dockerfile casse est detecte au push, pas au tag.
+      - name: Build serveur (sans push)
+        uses: docker/build-push-action@v6
+        with:
+          context: GO
+          file: GO/Dockerfile
+          push: false
+          cache-from: type=gha,scope=secagent-server
+      - name: Build minion (sans push)
+        uses: docker/build-push-action@v6
+        with:
+          context: GO
+          file: GO/Dockerfile.agent
+          push: false
+          cache-from: type=gha,scope=secagent-minion
+
+      - name: Autotest du controle de rendu
+        run: python3 scripts/ci/check_compose_selftest.py
+
+      # Variables d'exemple NON secretes : uniquement pour que `docker compose config` puisse interpoler.
+      - name: Rendu et controles de chaque Compose prod et qualif
+        env:
+          SECAGENT_VERSION: v0.0.0
+          STATE_HOST_DIR: /mnt/state
+          TLS_CERT_DIR: /etc/tls
+          QUALIF_TLS_DIR: /etc/tls
+          SECAGENT_IMAGE: ghcr.io/ccoupel/secagent-server:sha-0000000
+          REPEATER_ID: ci
+          REPEATER_UPSTREAM_URL: https://parent.example:7770
+        run: |
+          set -euo pipefail
+          mkdir -p render
+          touch DEPLOYMENT/prod/prod.env DEPLOYMENT/qualif/qualif.env   # fichiers vides : valeurs jamais lues
+          # Prod : un fichier par role (racine, racine + enfant)
+          docker compose -f DEPLOYMENT/prod/docker-compose.server.yml config --format json > render/prod-root.json
+          docker compose -f DEPLOYMENT/prod/docker-compose.server.yml -f DEPLOYMENT/prod/docker-compose.child.yml config --format json > render/prod-child.json
+          docker compose -f DEPLOYMENT/qualif/docker-compose.server.yml config --format json > render/qualif-server.json
+          python3 scripts/ci/check_compose.py render/prod-root.json render/prod-child.json render/qualif-server.json
+          # Les autres Compose de qualif (minion, proxy, ansible) : syntaxe seulement, `build:` tolere (outillage de test)
+          for f in DEPLOYMENT/qualif/docker-compose.{minion,proxy,ansible}.yml; do
+            docker compose -f "$f" config -q || { echo "::error::$f invalide"; exit 1; }
+          done
+
+      - name: Test negatif — un Compose qui publie 7771 sur toutes les interfaces doit echouer
+        run: |
+          docker compose -f scripts/ci/testdata/bad-admin-port.yml config --format json > render/bad.json
+          if python3 scripts/ci/check_compose.py render/bad.json; then
+            echo "::error::Le controle du port admin a laisse passer un Compose non conforme"; exit 1
+          fi
+          docker compose -f scripts/ci/testdata/good.yml config --format json > render/good.json
+          python3 scripts/ci/check_compose.py render/good.json
+
+      # NATS est retire du projet (#178) : aucune dependance, aucun service, aucune variable.
+      - name: Garde anti-NATS
+        run: |
+          set -u
+          fail=0
+          if grep -rniE 'nats|jetstream' DEPLOYMENT/prod DEPLOYMENT/qualif/docker-compose.server.yml; then fail=1; fi
+          if grep -niE 'nats|jetstream' GO/go.mod GO/go.sum; then fail=1; fi
+          if grep -rniE 'nats-io|nats\.go|jetstream' GO --include='*.go' --exclude='*_test.go'; then fail=1; fi
+          if [ "$fail" -ne 0 ]; then echo "::error::Reference a NATS reintroduite (#178)"; exit 1; fi
+
+  # ---- Image candidate QUALIF (#174 M8) ------------------------------------------------------------
+  # PUBLISH QUALIF = promotion : le Compose de qualif reference ce digest, sans rebuild sur l'hote.
+  candidate-images:
+    name: Image candidate ${{ matrix.image }}
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/milestone/')
+    needs: [build-test, lint, docker-compose-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {image: secagent-server, dockerfile: Dockerfile}
+          - {image: secagent-minion, dockerfile: Dockerfile.agent}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build et push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: GO
+          file: GO/${{ matrix.dockerfile }}
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/ccoupel/${{ matrix.image }}:sha-${{ github.sha }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+      - name: Reference de promotion QUALIF
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "ghcr.io/ccoupel/${{ matrix.image }}:sha-${{ github.sha }}@${DIGEST}" | tee -a "$GITHUB_STEP_SUMMARY"
