@@ -33,6 +33,7 @@ func TestDispatcher_JournalNeverContainsSecrets(t *testing.T) {
 		urlToken   = "URL-QUERY-TOKEN-XYZ"
 		bodySecret = "BODY-SECRET-VALUE"
 		argSecret  = "ARG-SECRET-VALUE"
+		pathSecret = "SLACKPATHSECRET"
 	)
 	journalPath := filepath.Join(t.TempDir(), "actions.log")
 	j, err := actionlog.Open(actionlog.Options{Path: journalPath})
@@ -45,7 +46,7 @@ func TestDispatcher_JournalNeverContainsSecrets(t *testing.T) {
 	d.SetConfig(&HooksConfig{Hooks: []HookDef{{Event: "host.new", Actions: []ActionDef{
 		{Type: "api", Method: "POST", URL: ok.URL + "/notify?token=" + urlToken,
 			Headers: map[string]string{"Authorization": authSecret}, Body: map[string]string{"pw": bodySecret}, TimeoutSeconds: 3},
-		{Type: "webhook", URL: deadURL + "/hook?access_token=" + urlToken, Secret: hmacSecret, MaxRetries: 0, TimeoutSeconds: 2},
+		{Type: "webhook", URL: deadURL + "/services/T0/B0/" + pathSecret + "?access_token=" + urlToken, Secret: hmacSecret, MaxRetries: 0, TimeoutSeconds: 2},
 		{Type: "shell", Cmd: "/bin/true", Args: []string{"--password", argSecret}, TimeoutSeconds: 3},
 	}}}})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -68,7 +69,7 @@ func TestDispatcher_JournalNeverContainsSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{authSecret, "SUPER-SECRET-AUTH-TOKEN", hmacSecret, urlToken, bodySecret, argSecret} {
+	for _, secret := range []string{authSecret, "SUPER-SECRET-AUTH-TOKEN", hmacSecret, urlToken, bodySecret, argSecret, pathSecret} {
 		if bytes.Contains(raw, []byte(secret)) {
 			t.Errorf("the journal leaks %q:\n%s", secret, raw)
 		}
@@ -96,6 +97,12 @@ func TestDispatcher_JournalNeverContainsSecrets(t *testing.T) {
 type failingLogger struct {
 	mu    sync.Mutex
 	calls int
+}
+
+func (f *failingLogger) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 func (f *failingLogger) Append(actionlog.Entry) error {
@@ -128,17 +135,45 @@ func TestDispatcher_JournalFailureDoesNotBlockTheDispatch(t *testing.T) {
 	waitFile(t, f1, 3*time.Second)
 	waitFile(t, f2, 3*time.Second) // the second event is still dispatched after the journal failures
 	deadline := time.Now().Add(3 * time.Second)
-	for {
-		mu.Lock()
-		out := logs.String()
-		mu.Unlock()
-		if strings.Count(out, "[WARN] hooks: action journal: disk full") >= 2 {
-			break
-		}
+	for fl.count() < 2 { // both actions reach the journal
 		if time.Now().After(deadline) {
-			t.Fatalf("expected a [WARN] per failed append, logs:\n%s", out)
+			t.Fatalf("both actions must still reach the journal: %d", fl.count())
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	out := logs.String()
+	mu.Unlock()
+	// R4: one warning per minute, not one per failed append
+	if n := strings.Count(out, "[WARN] hooks: action journal: disk full"); n != 1 {
+		t.Fatalf("expected exactly 1 [WARN] for 2 failed appends, got %d:\n%s", n, out)
+	}
+}
+
+func TestDispatcher_JournalWarningIsRateLimitedPerMinute(t *testing.T) {
+	var logs bytes.Buffer
+	var mu sync.Mutex
+	prev := log.Writer()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) { mu.Lock(); defer mu.Unlock(); return logs.Write(p) }))
+	defer log.SetOutput(prev)
+
+	d := NewDispatcher(&failingLogger{}, 1)
+	now := time.Unix(1700000000, 0)
+	d.warnNow = func() time.Time { return now }
+	err := errors.New("disk full")
+	for i := 0; i < 5; i++ {
+		d.warnJournal(err)
+	}
+	now = now.Add(61 * time.Second)
+	d.warnJournal(err)
+	mu.Lock()
+	out := logs.String()
+	mu.Unlock()
+	if n := strings.Count(out, "[WARN] hooks: action journal: disk full"); n != 2 {
+		t.Fatalf("expected 2 warnings (before/after the minute), got %d:\n%s", n, out)
+	}
+	if !strings.Contains(out, "(4 similar warning(s) suppressed)") {
+		t.Errorf("the suppressed count must be reported:\n%s", out)
 	}
 }
 
@@ -158,6 +193,7 @@ func TestDispatcher_ServerLogNeverContainsSecrets(t *testing.T) {
 		hmacSecret = "HMAC-SECRET-VALUE"
 		authSecret = "SUPER-SECRET-AUTH-TOKEN"
 		userinfo   = "hunter2"
+		pathSecret = "SLACKPATHSECRET"
 	)
 	var logs bytes.Buffer
 	var mu sync.Mutex
@@ -172,7 +208,7 @@ func TestDispatcher_ServerLogNeverContainsSecrets(t *testing.T) {
 	defer func() { _ = j.Close() }()
 	d := NewDispatcher(j, 10)
 	d.SetConfig(&HooksConfig{Hooks: []HookDef{{Event: "host.new", Actions: []ActionDef{
-		{Type: "webhook", URL: strings.Replace(deadURL, "http://", "http://admin:"+userinfo+"@", 1) + "/hook?access_token=" + urlToken, Secret: hmacSecret, TimeoutSeconds: 2},
+		{Type: "webhook", URL: strings.Replace(deadURL, "http://", "http://admin:"+userinfo+"@", 1) + "/services/T0/B0/" + pathSecret + "?access_token=" + urlToken, Secret: hmacSecret, TimeoutSeconds: 2},
 		{Type: "api", Method: "POST", URL: deadURL + "/x?token=" + urlToken, Headers: map[string]string{"Authorization": "Bearer " + authSecret}, TimeoutSeconds: 2},
 		{Type: "api", Method: "GET", URL: "http://bad host/x?token=" + urlToken, TimeoutSeconds: 2}, // url.Parse error quoting a URL with a space
 	}}}})
@@ -197,7 +233,7 @@ func TestDispatcher_ServerLogNeverContainsSecrets(t *testing.T) {
 	mu.Lock()
 	out := logs.String()
 	mu.Unlock()
-	for _, secret := range []string{urlToken, hmacSecret, authSecret, userinfo, "Bearer"} {
+	for _, secret := range []string{urlToken, hmacSecret, authSecret, userinfo, "Bearer", pathSecret} {
 		if strings.Contains(out, secret) {
 			t.Errorf("the server log leaks %q:\n%s", secret, out)
 		}

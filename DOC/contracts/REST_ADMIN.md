@@ -326,6 +326,24 @@ Format de réponse identique à `GET /api/inventory` (voir `DOC/contracts/REST_P
 
 ---
 
+## 5b. Journal des hooks
+
+### `GET /api/admin/hooks/log` — Journal d'exécution des actions de hooks
+
+```http
+GET /api/admin/hooks/log?limit=50&event=host.new&hostname=web01
+Authorization: Bearer <ADMIN_TOKEN>
+```
+
+Lu dans le journal append-only `actions.log` (#161). `limit` : 1–200 (défaut 50), sinon `400 invalid_limit`. Réponse `200` : tableau, du plus récent au plus ancien, de `{id, event, hostname, action_type, action_index, config_snapshot, success, error, duration_ms, executed_at}`.
+
+- `config_snapshot` et `error` sont **masqués** : seuls restent le type, la méthode, `cmd`, `path`, les délais et, pour une URL, schéma + hôte + port (le chemin devient `/***` et la query string `?***` — le secret d'un webhook Slack/Discord/Teams est dans le chemin) ; noms des en-têtes conservés, valeurs masquées ; tout autre champ est masqué.
+- Journal inexistant ou vide : `200 []`.
+- Journal existant mais illisible : `503 {"error":"journal_unavailable"}` (jamais un `[]` trompeur).
+- Journal non configuré : `500 {"error":"action_log_not_initialized"}`.
+
+---
+
 ## 6. Statut serveur
 
 ### `GET /api/admin/server/status`
@@ -367,3 +385,4 @@ Format de réponse identique à `GET /api/inventory` (voir `DOC/contracts/REST_P
 | `404` | Ressource introuvable |
 | `409` | Conflit (ex: hostname déjà existant) |
 | `500` | Erreur interne |
+| `503` | Ressource temporairement indisponible (ex. `journal_unavailable`) |

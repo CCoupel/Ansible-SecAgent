@@ -659,7 +659,8 @@ func actionJournal() *actionlog.Journal {
 
 // AdminHooksLog returns the hook action journal entries (actions.log, #161) with optional filters.
 // Query params: limit (1–200, default 50), event, hostname. config_snapshot is masked: it never
-// carries a webhook secret, a header value, a body or a shell argument.
+// carries a webhook secret, a header value, a body or a shell argument. A journal that does not
+// exist yet (or is empty) gives []; one that exists but cannot be read gives 503 journal_unavailable.
 func AdminHooksLog(w http.ResponseWriter, r *http.Request) {
 	if !requireAdminAuth(w, r) {
 		return
@@ -689,8 +690,9 @@ func AdminHooksLog(w http.ResponseWriter, r *http.Request) {
 		Limit:    limit,
 	})
 	if err != nil {
+		// the journal exists but cannot be read: not an empty history
 		log.Printf("AdminHooksLog: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "action_log_error"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "journal_unavailable"})
 		return
 	}
 

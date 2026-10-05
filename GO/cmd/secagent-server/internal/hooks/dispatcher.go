@@ -74,10 +74,42 @@ type Dispatcher struct {
 	// handed to it: a received event is never forwarded back up from here.
 	upstream func(event, hostname, status, enrolledAt string)
 
+	// journalWarn rate-limits the warning logged when the journal cannot be written: one per
+	// minute (with the count of the suppressed ones), not one per action.
+	warnMu    sync.Mutex
+	warnLast  time.Time
+	warnQuiet int
+	warnNow   func() time.Time // test seam, nil = time.Now
+
 	webhookExec *WebhookExecutor
 	shellExec   *ShellExecutor
 	fileExec    *FileExecutor
 	apiExec     *APIExecutor
+}
+
+// journalWarnInterval is the minimum delay between two journal-failure warnings.
+const journalWarnInterval = time.Minute
+
+// warnJournal logs a journal write failure at most once per journalWarnInterval.
+func (d *Dispatcher) warnJournal(err error) {
+	d.warnMu.Lock()
+	now := time.Now()
+	if d.warnNow != nil {
+		now = d.warnNow()
+	}
+	if !d.warnLast.IsZero() && now.Sub(d.warnLast) < journalWarnInterval {
+		d.warnQuiet++
+		d.warnMu.Unlock()
+		return
+	}
+	quiet := d.warnQuiet
+	d.warnLast, d.warnQuiet = now, 0
+	d.warnMu.Unlock()
+	if quiet > 0 {
+		log.Printf("[WARN] hooks: action journal: %v (%d similar warning(s) suppressed)", err, quiet)
+		return
+	}
+	log.Printf("[WARN] hooks: action journal: %v", err)
 }
 
 // GlobalDispatcher is the server-wide singleton injected from main.go.
@@ -276,7 +308,7 @@ func (d *Dispatcher) executeAction(ctx context.Context, job dispatchJob, action 
 
 	if d.store != nil {
 		if err := d.store.Append(entry); err != nil {
-			log.Printf("[WARN] hooks: action journal: %v", err)
+			d.warnJournal(err)
 		}
 	}
 

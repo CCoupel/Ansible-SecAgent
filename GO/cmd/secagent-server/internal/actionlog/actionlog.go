@@ -280,9 +280,9 @@ func KeptActionFields() []string {
 }
 
 // RedactAction renders a hook action definition for the journal. Secure by default: only the
-// fields of keptActionFields are kept as they are; the url keeps scheme, host and path (userinfo,
-// query string and fragment masked); the header names are kept with masked values and the shell
-// arguments become a list of masks; every other
+// fields of keptActionFields are kept as they are; the url keeps scheme, host and port only (see
+// RedactURL); the header names are kept with masked values and the shell arguments become a list
+// of masks; every other
 // field — the webhook HMAC secret, the body, shell arguments, the append template, and any field
 // added later — is masked. raw is the JSON of the action definition.
 func RedactAction(raw []byte) string {
@@ -327,28 +327,23 @@ func RedactAction(raw []byte) string {
 	return string(out)
 }
 
-// RedactURL drops the userinfo and masks the values of the query string and the fragment.
+// RedactURL keeps only the scheme, the host and the port. The path is replaced by "/***" and the
+// query string by "?***": chat webhooks (Slack, Discord, Teams…) carry their secret IN THE PATH,
+// and no path segment can be assumed harmless. The userinfo and the fragment are dropped. A value
+// that is not an absolute URL is fully masked.
 func RedactURL(s string) string {
 	u, err := url.Parse(s)
-	if err != nil || u.Scheme == "" {
+	if err != nil || u.Scheme == "" || u.Host == "" {
 		return Mask
 	}
-	u.User = nil
-	u.Fragment = ""
-	if u.RawQuery != "" {
-		q := u.Query()
-		keys := make([]string, 0, len(q))
-		for k := range q {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		parts := make([]string, 0, len(keys))
-		for _, k := range keys {
-			parts = append(parts, url.QueryEscape(k)+"="+Mask)
-		}
-		u.RawQuery = strings.Join(parts, "&")
+	out := u.Scheme + "://" + u.Host
+	if p := u.EscapedPath(); p != "" && p != "/" {
+		out += "/" + Mask
 	}
-	return u.String()
+	if u.RawQuery != "" || u.ForceQuery {
+		out += "?" + Mask
+	}
+	return out
 }
 
 // quotedURLInError matches the url.Error forms: Get|Head|Post|Put|Patch|Delete|Options|parse "…".

@@ -259,7 +259,7 @@ func TestRedactActionMasksEverySecret(t *testing.T) {
 		"body":{"password":"BODY-SECRET"},"cmd":"/usr/bin/notify","args":["--password","ARG-SECRET"],
 		"append":"line with TEMPLATE-SECRET","max_retries":3,"timeout_seconds":10}`)
 	out := RedactAction(raw)
-	for _, secret := range []string{"HMAC-SECRET", "SUPER-SECRET-TOKEN", "KEY-123", "BODY-SECRET", "ARG-SECRET", "Q-TOKEN", "pw-in-url", "user:", "frag-secret", "TEMPLATE-SECRET"} {
+	for _, secret := range []string{"HMAC-SECRET", "SUPER-SECRET-TOKEN", "KEY-123", "BODY-SECRET", "ARG-SECRET", "Q-TOKEN", "pw-in-url", "user:", "frag-secret", "v1/notify", "token=", "TEMPLATE-SECRET"} {
 		if strings.Contains(out, secret) {
 			t.Errorf("snapshot leaks %q: %s", secret, out)
 		}
@@ -275,7 +275,7 @@ func TestRedactActionMasksEverySecret(t *testing.T) {
 	if h := m["headers"].(map[string]any); h["Authorization"] != Mask || h["X-Api-Key"] != Mask {
 		t.Errorf("header keys must stay with masked values: %v", h)
 	}
-	if u := m["url"].(string); !strings.HasPrefix(u, "https://hooks.example.com/v1/notify?") || !strings.Contains(u, "token="+Mask) {
+	if u := m["url"].(string); !strings.HasPrefix(u, "https://hooks.example.com/"+Mask+"?"+Mask) || strings.Contains(u, "v1/notify") {
 		t.Errorf("url: %s", u)
 	}
 	if m["secret"] != Mask || m["body"] != Mask {
@@ -292,7 +292,7 @@ func TestRedactActionMasksEverySecret(t *testing.T) {
 }
 
 func TestRedactErrorMasksURLsInMessages(t *testing.T) {
-	msg := "Post \"https://admin:hunter2@hooks.example.com/x?token=S3CRET&k=v\": dial tcp 10.0.0.1:443: connect: connection refused;\nsecond line http://a/b?sig=ZZZ."
+	msg := "Post \"https://admin:hunter2@hooks.example.com/services/T0/B0/S3CRET?token=S3CRET&k=v\": dial tcp 10.0.0.1:443: connect: connection refused;\nsecond line http://a/b?sig=ZZZ."
 	out := RedactError(msg)
 	for _, secret := range []string{"hunter2", "S3CRET", "ZZZ", "admin:"} {
 		if strings.Contains(out, secret) {
@@ -354,5 +354,34 @@ func TestOpenRefusesASymbolicLinkAtTheJournalPath(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(target); string(got) != "precious\n" {
 		t.Errorf("the link target was written: %q", got)
+	}
+}
+
+// R1: chat webhooks (Slack, Discord, Teams) carry their secret in the URL PATH.
+func TestRedactURLNeverKeepsThePath(t *testing.T) {
+	const secret = "SLACKPATHSECRET"
+	for in, want := range map[string]string{
+		"https://hooks.slack.com/services/T0/B0/" + secret:                   "https://hooks.slack.com/***",
+		"https://discord.com:8443/api/webhooks/1/" + secret + "?wait=true#f": "https://discord.com:8443/***?***",
+		"https://u:p@h.example/":                                             "https://h.example",
+		"not a url":                                                          Mask,
+		"/relative/" + secret:                                                Mask,
+	} {
+		got := RedactURL(in)
+		if got != want || strings.Contains(got, secret) {
+			t.Errorf("RedactURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+	snap := RedactAction([]byte(`{"type":"webhook","url":"https://hooks.slack.com/services/T0/B0/` + secret + `"}`))
+	if strings.Contains(snap, secret) {
+		t.Errorf("snapshot leaks the path secret: %s", snap)
+	}
+	for _, msg := range []string{
+		`Post "https://hooks.slack.com/services/T0/B0/` + secret + `": dial tcp: connection refused`,
+		`dial failed for https://hooks.slack.com/services/T0/B0/` + secret + ` (timeout)`,
+	} {
+		if out := RedactError(msg); strings.Contains(out, secret) {
+			t.Errorf("RedactError leaks the path secret: %s", out)
+		}
 	}
 }

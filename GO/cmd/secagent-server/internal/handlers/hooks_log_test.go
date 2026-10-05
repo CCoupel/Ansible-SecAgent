@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -70,5 +71,33 @@ func TestAdminHooksLog_RequiresAdminAndAJournal(t *testing.T) {
 	AdminHooksLog(w, httptest.NewRequest("GET", "/api/admin/hooks/log", nil)) // no admin token
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("anonymous: %d", w.Code)
+	}
+}
+
+// R4: an unreadable journal is not an empty history.
+func TestAdminHooksLog_UnreadableJournalIs503NotEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "actions.log")
+	j, err := actionlog.Open(actionlog.Options{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetActionJournal(j)
+	t.Cleanup(func() { SetActionJournal(nil); _ = j.Close() })
+
+	// not created yet: empty history
+	w := httptest.NewRecorder()
+	AdminHooksLog(w, adminReq("GET", "/api/admin/hooks/log", nil))
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
+		t.Errorf("missing file: %d %s", w.Code, w.Body.String())
+	}
+	// the path exists but cannot be read (a directory, whatever the user running the tests)
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	AdminHooksLog(w, adminReq("GET", "/api/admin/hooks/log", nil))
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "journal_unavailable") {
+		t.Errorf("unreadable journal: %d %s", w.Code, w.Body.String())
 	}
 }
