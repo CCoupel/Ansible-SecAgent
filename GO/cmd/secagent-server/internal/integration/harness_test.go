@@ -278,6 +278,35 @@ func (n *node) dbScalar(query string) string {
 	return v.String
 }
 
+// enrollAgent records host in the node's database with the given current JTI, as an enrollment
+// would: /ws/agent refuses (401) a token whose agent is unknown or whose JTI is not the current one
+// (#169). It goes through the database file because the node is a separate process.
+func (n *node) enrollAgent(host, jti string) {
+	n.t.Helper()
+	path := ""
+	for _, e := range n.env {
+		if strings.HasPrefix(e, "DATABASE_URL=sqlite:///") {
+			path = strings.TrimPrefix(e, "DATABASE_URL=sqlite:///")
+		}
+	}
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		n.t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA busy_timeout=10000"); err != nil {
+		n.t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.Exec(`INSERT INTO agents (hostname, public_key_pem, token_jti, enrolled_at, last_seen, status)
+		VALUES (?, 'pem', ?, ?, ?, 'disconnected')
+		ON CONFLICT(hostname) DO UPDATE SET token_jti = excluded.token_jti`,
+		host, jti, now, now); err != nil {
+		n.t.Fatalf("enroll %s: %v", host, err)
+	}
+}
+
 // setEnv sets (or replaces) one environment variable of the node for its NEXT start / restart.
 func (n *node) setEnv(key, value string) {
 	for i, e := range n.env {
@@ -670,6 +699,7 @@ func (m *minion) received() []map[string]any {
 // connectMinion opens a real /ws/agent link signed with the node's secret and answers tasks.
 func connectMinion(t *testing.T, n *node, host string) *minion {
 	t.Helper()
+	n.enrollAgent(host, "agent-"+host)
 	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub": host, "role": "agent", "jti": "agent-" + host,
 		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),

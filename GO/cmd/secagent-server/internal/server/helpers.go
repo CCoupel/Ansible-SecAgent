@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -172,5 +173,36 @@ func queueUpstream(ch chan<- repeater.Event, ev repeater.Event) {
 	case ch <- ev:
 	default:
 		log.Printf("[REPEATER] upstream event queue full, event %s dropped", ev.Event)
+	}
+}
+
+// agentJTICheck builds the /ws/agent handshake check (#169, SECURITY.md §4/§5) on top of the
+// store. A token is refused when its JTI is blacklisted (revoked agent), when the agent is
+// unknown, or when its JTI is no longer the agent's current one (replaced by a re-enrollment, a
+// refresh or a rekey). A token validated with the PREVIOUS JWT secret (rotation grace period)
+// legitimately carries an older JTI: it only has to be non-blacklisted. Any store error refuses
+// the connection (fail closed).
+func agentJTICheck(store *storage.Store) func(hostname, jti string, usedPrevious bool) error {
+	return func(hostname, jti string, usedPrevious bool) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		revoked, err := store.IsJTIBlacklisted(ctx, jti)
+		if err != nil {
+			return fmt.Errorf("blacklist_check_failed: %w", err)
+		}
+		if revoked {
+			return fmt.Errorf("token_revoked")
+		}
+		agent, err := store.GetAgent(ctx, hostname)
+		if err != nil {
+			return fmt.Errorf("agent_lookup_failed: %w", err)
+		}
+		if agent == nil {
+			return fmt.Errorf("unknown_agent")
+		}
+		if !usedPrevious && agent.TokenJTI != jti {
+			return fmt.Errorf("token_replaced")
+		}
+		return nil
 	}
 }

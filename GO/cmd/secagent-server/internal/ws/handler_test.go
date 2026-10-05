@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 )
 
@@ -933,5 +934,85 @@ func TestConcurrentGetConnectedHostnames(t *testing.T) {
 	// After all goroutines finish, map should be empty (or have no leaked entries)
 	if n := GetConnectedCount(); n != 0 {
 		t.Errorf("expected 0 after cleanup, got %d", n)
+	}
+}
+
+// ========================================================================
+// /ws/agent revocation check (#169): fail closed, before the upgrade
+// ========================================================================
+
+func jtiHandshake(t *testing.T, secret, jti string) (status int, err error) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(AgentHandler))
+	defer srv.Close()
+	h := http.Header{}
+	h.Set("Authorization", "Bearer "+makeJTIToken(secret, "jti-host", jti))
+	c, resp, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), h)
+	if c != nil {
+		_ = c.Close()
+	}
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	return status, err
+}
+
+func makeJTIToken(secret, sub, jti string) string {
+	claims := jwt.MapClaims{"sub": sub, "role": "agent", "exp": time.Now().Add(time.Hour).Unix()}
+	if jti != "" {
+		claims["jti"] = jti
+	}
+	s, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+	return s
+}
+
+func TestAgentHandler_JTICheckNotConfiguredFailsClosed(t *testing.T) {
+	resetState()
+	SetJWTSecretsFunc(func() (string, string, time.Time) { return "s3cret", "", time.Time{} })
+	SetAgentJTICheckFunc(nil)
+	defer func() { JWTSecretsFunc = nil }()
+
+	status, err := jtiHandshake(t, "s3cret", "some-jti")
+	if err == nil || status != http.StatusUnauthorized {
+		t.Fatalf("valid JWT without a configured check: status %d err %v, want 401", status, err)
+	}
+	if _, e := GetConnection("jti-host"); e == nil {
+		t.Error("the agent must not be registered")
+	}
+}
+
+func TestAgentHandler_JTICheckRefusalAndAcceptance(t *testing.T) {
+	resetState()
+	SetJWTSecretsFunc(func() (string, string, time.Time) { return "s3cret", "prev", time.Now().Add(time.Hour) })
+	defer func() { JWTSecretsFunc = nil; SetAgentJTICheckFunc(nil) }()
+
+	var gotHost, gotJTI string
+	var gotPrev bool
+	SetAgentJTICheckFunc(func(host, jti string, prev bool) error {
+		gotHost, gotJTI, gotPrev = host, jti, prev
+		if jti == "revoked" {
+			return fmt.Errorf("token_revoked")
+		}
+		return nil
+	})
+
+	if status, err := jtiHandshake(t, "s3cret", "revoked"); err == nil || status != http.StatusUnauthorized {
+		t.Fatalf("revoked: status %d err %v, want 401", status, err)
+	}
+	if status, err := jtiHandshake(t, "s3cret", ""); err == nil || status != http.StatusUnauthorized {
+		t.Fatalf("token without jti: status %d err %v, want 401", status, err)
+	}
+	if status, err := jtiHandshake(t, "s3cret", "good"); err != nil || status != http.StatusSwitchingProtocols {
+		t.Fatalf("accepted token: status %d err %v, want 101", status, err)
+	}
+	if gotHost != "jti-host" || gotJTI != "good" || gotPrev {
+		t.Errorf("check received (%q, %q, prev=%v)", gotHost, gotJTI, gotPrev)
+	}
+	// a token signed with the PREVIOUS secret reports usedPrevious=true to the check
+	if status, err := jtiHandshake(t, "prev", "good2"); err != nil || status != http.StatusSwitchingProtocols {
+		t.Fatalf("previous-secret token: status %d err %v", status, err)
+	}
+	if !gotPrev || gotJTI != "good2" {
+		t.Errorf("usedPrevious not propagated: (%q, prev=%v)", gotJTI, gotPrev)
 	}
 }

@@ -113,6 +113,9 @@ func Build(cfg Config) (node *Node, err error) {
 	// Inject JWT secrets getter into WS handler for dual-key validation
 	ws.SetJWTSecretsFunc(handlers.GetServerJWTSecrets)
 
+	// Revocation / token-replacement check of /ws/agent (#169, fail closed without it).
+	ws.SetAgentJTICheckFunc(agentJTICheck(store))
+
 	// Inject rekey function into WS handler (used when agent connects with previous key)
 	ws.SetRekeyFunc(handlers.RekeyAgent)
 

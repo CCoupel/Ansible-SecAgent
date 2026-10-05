@@ -317,24 +317,82 @@ func HandleMessage(msg Message, hostname string) {
 	}
 }
 
+// agentJTICheckFn decides whether the agent presenting jti may connect (see SetAgentJTICheckFunc).
+var (
+	agentJTICheckMu sync.RWMutex
+	agentJTICheckFn func(hostname, jti string, usedPrevious bool) error
+)
+
+// SetAgentJTICheckFunc injects the revocation check used at the /ws/agent handshake. The
+// function returns nil when the token is acceptable, an error otherwise (revoked, replaced,
+// unknown agent, store failure). usedPrevious is true when the token was validated with the
+// previous JWT secret (rotation grace period).
+func SetAgentJTICheckFunc(fn func(hostname, jti string, usedPrevious bool) error) {
+	agentJTICheckMu.Lock()
+	agentJTICheckFn = fn
+	agentJTICheckMu.Unlock()
+}
+
+// checkAgentJTI fails closed: without a configured check no verified token is accepted.
+func checkAgentJTI(hostname, jti string, usedPrevious bool) error {
+	agentJTICheckMu.RLock()
+	fn := agentJTICheckFn
+	agentJTICheckMu.RUnlock()
+	if fn == nil {
+		return fmt.Errorf("blacklist_not_configured")
+	}
+	if jti == "" {
+		return fmt.Errorf("token_without_jti")
+	}
+	return fn(hostname, jti, usedPrevious)
+}
+
+// truncateJTI keeps the log readable without reproducing a full identifier.
+func truncateJTI(jti string) string {
+	if len(jti) > 8 {
+		return jti[:8] + "…"
+	}
+	return jti
+}
+
 // extractHostnameFromRequest validates the JWT Bearer token using dual-key validation
 // and extracts the "sub" claim as hostname. Falls back to ?hostname= query param
 // only when JWTSecretsFunc is not configured (e.g. tests without DB).
 // Returns (hostname, usedPreviousKey, error).
 func extractHostnameFromRequest(r *http.Request) (hostname string, usedPrevious bool, err error) {
+	id, err := authenticateAgentRequest(r)
+	if err != nil {
+		return "", false, err
+	}
+	return id.Hostname, id.UsedPrevious, nil
+}
+
+// agentIdentity is what the /ws/agent handshake established about the caller.
+type agentIdentity struct {
+	Hostname     string
+	JTI          string
+	UsedPrevious bool
+	// Verified is true when the identity comes from a JWT whose signature was checked (the
+	// production path). Only verified identities go through the revocation check.
+	Verified bool
+}
+
+// authenticateAgentRequest validates the Bearer token (dual-key) and returns the identity.
+func authenticateAgentRequest(r *http.Request) (agentIdentity, error) {
 	authHeader := r.Header.Get("Authorization")
 
 	// If JWT validation is configured, use it (production path)
 	if JWTSecretsFunc != nil && strings.HasPrefix(authHeader, "Bearer ") {
 		claims, prev, valErr := ExtractJWTClaims(authHeader)
 		if valErr != nil {
-			return "", false, fmt.Errorf("jwt_invalid: %w", valErr)
+			return agentIdentity{}, fmt.Errorf("jwt_invalid: %w", valErr)
 		}
 		sub, _ := claims["sub"].(string)
 		if sub == "" {
-			return "", false, fmt.Errorf("jwt_missing_sub")
+			return agentIdentity{}, fmt.Errorf("jwt_missing_sub")
 		}
-		return sub, prev, nil
+		jti, _ := claims["jti"].(string)
+		return agentIdentity{Hostname: sub, JTI: jti, UsedPrevious: prev, Verified: true}, nil
 	}
 
 	// Fallback: extract sub from JWT payload without verification (tests / no-DB mode)
@@ -342,16 +400,16 @@ func extractHostnameFromRequest(r *http.Request) (hostname string, usedPrevious 
 	if strings.HasPrefix(authHeader, "Bearer ") && len(authHeader) > 7 {
 		sub := extractSubFromJWTUnsafe(authHeader[7:])
 		if sub != "" {
-			return sub, false, nil
+			return agentIdentity{Hostname: sub}, nil
 		}
 	}
 
 	// Last resort: query param (legacy / tests)
 	if h := r.URL.Query().Get("hostname"); h != "" {
-		return h, false, nil
+		return agentIdentity{Hostname: h}, nil
 	}
 
-	return "", false, fmt.Errorf("missing_hostname")
+	return agentIdentity{}, fmt.Errorf("missing_hostname")
 }
 
 // extractSubFromJWTUnsafe decodes the JWT payload without signature verification.
@@ -395,11 +453,23 @@ func extractSubFromJWTUnsafe(tokenStr string) string {
 //  5. Register connection and loop on incoming messages
 //  6. On disconnect: cleanup, resolve pending futures
 func AgentHandler(w http.ResponseWriter, r *http.Request) {
-	hostname, usedPrevious, err := extractHostnameFromRequest(r)
+	id, err := authenticateAgentRequest(r)
 	if err != nil {
 		log.Printf("WS auth rejected: %v", err)
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
+	}
+	hostname, usedPrevious := id.Hostname, id.UsedPrevious
+
+	// Revocation / token-replacement check BEFORE the upgrade (401, no close code, SECURITY.md §4).
+	// Fail closed: a verified token is only accepted when the check is configured and passes.
+	if id.Verified {
+		if err := checkAgentJTI(hostname, id.JTI, usedPrevious); err != nil {
+			log.Printf("[SECURITY WARNING] agent connection refused: hostname=%q jti=%q: %v",
+				hostname, truncateJTI(id.JTI), err)
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
 	}
 
 	// Upgrade HTTP → WebSocket
