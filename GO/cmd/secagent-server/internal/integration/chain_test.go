@@ -118,3 +118,21 @@ func TestChain_LateJoiningRelay_DeepHostIsRoutableFromItsHostUp(t *testing.T) {
 	}
 	_ = relay1
 }
+
+// WANTED (reported with #126, awaiting the dynamic-topology fix): when a descendant relay UNLINKS,
+// the ancestors drop its subtree — its hosts are no longer routable and their routes are cleaned
+// up (today the ancestors keep routing hosts of a relay that is gone until their own link is
+// recreated). Remove the Skip when a link loss below triggers a replacement snapshot upwards.
+func TestChain_UnlinkingRelay_ItsHostsAreNoLongerRoutableAtTheAncestors(t *testing.T) {
+	t.Skip("awaiting the dynamic-topology fix (#126 follow-up): a full snapshot is re-sent upwards when a child relay link is lost")
+	parallel(t)
+	root, mid, leaf := pushChain(t)
+	connectMinion(t, leaf, "leaf-host")
+	waitFor(t, "root routes the leaf's host", func() bool { return root.hasHost("leaf-host") })
+	leaf.stop() // the leaf relay goes away
+	waitFor(t, "mid no longer routes the leaf's host", func() bool { return !mid.hasHost("leaf-host") })
+	waitFor(t, "root drops the unlinked relay's subtree and cleans its routes", func() bool { return !root.hasHost("leaf-host") })
+	if r := root.exec("leaf-host", execBody("id")); r.Code == http.StatusOK {
+		t.Errorf("exec on a host whose relay is gone must fail, got %v", r)
+	}
+}
