@@ -124,7 +124,7 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 	if snap.Agents == nil {
 		snap.Agents = []TopoAgent{}
 	}
-	if err := u.write(conn, snapshotMessage{Type: "topology_snapshot", Relays: snap.Relays, Agents: snap.Agents}); err != nil {
+	if err := u.write(conn, snapshotMessage{Type: "topology_snapshot", Relays: snap.Relays, Agents: snap.Agents, GroupVars: u.opts.GroupVars}); err != nil {
 		return false, fmt.Errorf("send topology_snapshot: %w", err)
 	}
 	established = true

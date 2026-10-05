@@ -55,8 +55,9 @@ type AgentInfo struct {
 
 // TopoRelay is a descendant relay in a topology_snapshot.
 type TopoRelay struct {
-	RelayID    string   `json:"relay_id"`
-	RelayChain []string `json:"relay_chain"`
+	RelayID    string         `json:"relay_id"`
+	RelayChain []string       `json:"relay_chain"`
+	GroupVars  map[string]any `json:"group_vars,omitempty"` // that relay's Ansible group vars (#139)
 }
 
 // TopoAgent is an agent of the subtree in a topology_snapshot.
@@ -90,25 +91,27 @@ type Event struct {
 
 // message is the generic envelope; only the fields of the given type are set.
 type message struct {
-	Type       string      `json:"type"`
-	NodeType   string      `json:"node_type,omitempty"`
-	Mode       string      `json:"mode,omitempty"`
-	RelayID    string      `json:"relay_id,omitempty"`
-	Ancestors  []string    `json:"ancestors,omitempty"`
-	Version    string      `json:"version,omitempty"`
-	Status     string      `json:"status,omitempty"`
-	Error      string      `json:"error,omitempty"`
-	Timestamp  string      `json:"timestamp,omitempty"`
-	Agents     []AgentInfo `json:"agents,omitempty"`
-	TaskID     string      `json:"task_id,omitempty"`
-	Hostname   string      `json:"hostname,omitempty"`
-	RelayChain []string    `json:"relay_chain,omitempty"`
+	GroupVars  map[string]any `json:"group_vars,omitempty"`
+	Type       string         `json:"type"`
+	NodeType   string         `json:"node_type,omitempty"`
+	Mode       string         `json:"mode,omitempty"`
+	RelayID    string         `json:"relay_id,omitempty"`
+	Ancestors  []string       `json:"ancestors,omitempty"`
+	Version    string         `json:"version,omitempty"`
+	Status     string         `json:"status,omitempty"`
+	Error      string         `json:"error,omitempty"`
+	Timestamp  string         `json:"timestamp,omitempty"`
+	Agents     []AgentInfo    `json:"agents,omitempty"`
+	TaskID     string         `json:"task_id,omitempty"`
+	Hostname   string         `json:"hostname,omitempty"`
+	RelayChain []string       `json:"relay_chain,omitempty"`
 }
 
 type snapshotMessage struct {
-	Type   string      `json:"type"`
-	Relays []TopoRelay `json:"relays"`
-	Agents []TopoAgent `json:"agents"`
+	Type      string         `json:"type"`
+	Relays    []TopoRelay    `json:"relays"`
+	Agents    []TopoAgent    `json:"agents"`
+	GroupVars map[string]any `json:"group_vars,omitempty"` // this relay's own Ansible group vars (#139)
 }
 
 type eventMessage struct {
@@ -133,6 +136,9 @@ type Options struct {
 	Events <-chan Event
 	// Changed signals a downstream state change → agent_list is re-sent (optional).
 	Changed <-chan struct{}
+	// GroupVars are this relay's Ansible group variables (RELAY_GROUP_VARS, already validated):
+	// sent in relay_hello (pull) and in every topology_snapshot (pull and push).
+	GroupVars map[string]any
 	// OnTask handles task_forward (optional; tasks are dropped with a log if nil).
 	OnTask TaskHandler
 
@@ -289,7 +295,7 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 
 	// 1. relay_hello
 	hello := message{Type: "relay_hello", NodeType: NodeTypeRelay, Mode: ModePull,
-		RelayID: c.cfg.ID, Ancestors: []string{}, Version: ProtocolVersion}
+		RelayID: c.cfg.ID, Ancestors: []string{}, Version: ProtocolVersion, GroupVars: c.opts.GroupVars}
 	if err := c.write(conn, hello); err != nil {
 		return false, fmt.Errorf("send relay_hello: %w", err)
 	}
