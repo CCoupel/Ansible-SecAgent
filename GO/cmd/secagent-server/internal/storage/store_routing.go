@@ -134,3 +134,25 @@ func (s *Store) SetRelayRouteChains(entries []RouteChain) error {
 	}
 	return tx.Commit()
 }
+
+// ListRelayRoutes returns every route of relay_routing ordered by hostname.
+func (s *Store) ListRelayRoutes() ([]RelayRoute, error) {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
+	rows, err := s.db.Query("SELECT hostname, relay_id, hop_type, relay_chain, updated_at FROM relay_routing ORDER BY hostname")
+	if err != nil {
+		return nil, fmt.Errorf("ListRelayRoutes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []RelayRoute
+	for rows.Next() {
+		var r RelayRoute
+		var chain string
+		if err := rows.Scan(&r.Hostname, &r.RelayID, &r.HopType, &chain, &r.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("ListRelayRoutes scan: %w", err)
+		}
+		r.RelayChain = parseChain(chain)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

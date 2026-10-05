@@ -1056,6 +1056,19 @@ func CloseRelay(relayID string, code int, reason string) bool {
 	return true
 }
 
+// ConfiguredRelayID returns this node's own relay id (REPEATER_ID) and whether one is configured.
+// A standalone root has none (RelayIdentity then reports a placeholder).
+func ConfiguredRelayID() (string, bool) {
+	treeHooksMu.RLock()
+	fn := relayLocalIDFn
+	treeHooksMu.RUnlock()
+	if fn == nil {
+		return "", false
+	}
+	id := fn()
+	return id, id != ""
+}
+
 // RelayWouldLoop reports whether linking childID under this node would create a loop
 // (childID ∈ {this node} ∪ ancestors(this node)).
 func RelayWouldLoop(childID string) bool { return loopedWith(childID) }
