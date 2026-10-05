@@ -566,12 +566,14 @@ RELAY_GROUP_VARS='{"env":"prod", "region":"dmz"}'
 - **Interdits** :
   - Préfixe `ansible_*` (réservé à Ansible) — **sauf** `ansible_python_interpreter` si sa valeur ne contient pas `..` (prévention path traversal)
   - Préfixe `secagent_*` (réservé à secagent)
-  - Marqueurs Jinja (`{{ }}`, `{%` `%}`) — refus du snapshot entier si présent
+  - Marqueurs Jinja (`{{`, `{%`, `{#`) — refus du snapshot entier si présent (seuls les marqueurs ouvrants sont vérifiés, ce qui suffit à bloquer toute injection de template)
 - **Bornes** (longueur totale, nombre de clefs) :
-  - JSON total ≤ 8 KB (ajustable)
-  - Nombre de clefs ≤ 100
-  - Toute clef > 128 caractères → rejet
-  - Toute valeur > 4 KB → rejet
+  - JSON total ≤ 16 KiB (`maxGroupVarsBytes = 16 * 1024`)
+  - Nombre de clefs ≤ 64 (`maxGroupVarKeys = 64`)
+  - Profondeur d'imbrication ≤ 4 (`maxGroupVarDepth = 4`)
+  - Toute clef > 64 caractères → rejet (regex `^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
+  - Toute valeur > 1 024 octets → rejet (`maxGroupVarString = 1024`)
+  - Toute liste > 64 éléments → rejet (`maxGroupVarListLen = 64`)
 
 **Stockage** : persisté dans `relay_nodes.group_vars` TEXT (JSON sérialisé), une fois validé.
 
@@ -586,7 +588,7 @@ Le format de `relay_id` est **uniformément validé** partout dans le code :
 | Contexte | Validation | Erreur |
 |---|---|---|
 | `POST /api/admin/relays` (enregistrement) | relayIDShape `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$` | **400 `invalid_relay_id`** |
-| `/ws/relay` upgrade (handshake) | `relay_hello.relay_id` == jwt.sub | **401** (avant upgrade TLS) ou **4010** (après) |
+| `/ws/relay` upgrade (handshake) | JWT sub format check + `relay_hello.relay_id` == jwt.sub | **401** (avant upgrade WebSocket) ou **4010** (après) |
 | `topology_snapshot` validation (relay enfant) | chainOK valide tous les IDs | **4012** (rejet corrigible) |
 | Événements `event_forward` | relay_id de chaque maillon de la chaîne | **silencieusement rejeté** si invalide |
 
@@ -596,10 +598,12 @@ Le format de `relay_id` est **uniformément validé** partout dans le code :
 
 Quand un lien relay se termine avec un code de fermeture 4010 ou 4012, le texte de fermeture peut contenir des données envoyées par le pair distant (motif d'erreur, détail technique).
 
-**Assainissement** (relay_handler.go, setRelayStatusFromClose) :
-- Remplace les caractères de contrôle (newline, tab, `\x00`) par des espaces
-- Borne la longueur : **200 octets max** (tronqué sur une frontière UTF-8)
-- Jamais de révélation d'identifiants tiers (relay_id du pair ne figure jamais dans closeReason logué)
+**Assainissement** (repeater/status.go, `sanitizeText`) :
+- Remplace les caractères de contrôle (dont `\r`, `\n`, `\t`, `\x00`, séparateurs de ligne Unicode U+2028/U+2029/U+0085) par des espaces — le pair ne peut pas forger de ligne de log (ex. un faux `[SECURITY WARNING]`)
+- Borne la longueur : **200 octets max** (tronqué sur une frontière UTF-8, `…` ajouté)
+- Jamais de révélation d'identifiants tiers (relay_id du pair ne figure jamais dans le texte assaini logué)
+
+Note : les trames de fermeture que le serveur **envoie** aux relays enfants (close 4010 / 4012) sont quant à elles bornées à **100 octets** par `closeReason()` dans `ws/relay_handler.go` (contrainte de la trame WebSocket : payload ≤ 123 octets code inclus).
 
 **Exposition** (server status CLI/API) :
 - `/api/admin/status` (port 7771) et `secagent-server server status` : affichent le texte assaini
