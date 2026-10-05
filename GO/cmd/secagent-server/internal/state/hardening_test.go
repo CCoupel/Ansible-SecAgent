@@ -279,6 +279,12 @@ func TestInsecureTestModeIsRefusedWithAMasterKeyAtStartup(t *testing.T) {
 	if _, err := Open(Options{Dir: dir, MasterKey: hmKey}); !errors.Is(err, ErrSecurityInvariant) {
 		t.Fatalf("clear state with a master key: %v", err)
 	}
+	// an otherwise perfectly valid, authenticated state does not make the mix acceptable
+	good := t.TempDir()
+	keyedState(t, good)
+	if _, err := Open(Options{Dir: good, InsecureTestMode: true, MasterKey: hmKey}); !errors.Is(err, ErrSecurityInvariant) {
+		t.Fatalf("test mode with a master key on a valid state: %v", err)
+	}
 	// init itself refuses to mix them
 	if err := Init(InitOptions{Dir: t.TempDir(), AllowPlaintext: true, MasterKey: hmKey, RSABits: 2048}); err == nil {
 		t.Fatal("init --insecure-test-mode with RSA_MASTER_KEY must be refused")
