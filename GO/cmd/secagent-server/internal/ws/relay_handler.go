@@ -19,6 +19,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -86,6 +87,7 @@ type RelayMessage struct {
 
 	// event_forward
 	Event      string         `json:"event,omitempty"`
+	EnrolledAt string         `json:"enrolled_at,omitempty"` // host.new only
 	RelayChain []string       `json:"relay_chain,omitempty"`
 	GroupVars  map[string]any `json:"group_vars,omitempty"`
 	// host.conflict: previous and new owner of a hostname route
@@ -191,6 +193,7 @@ var (
 	relayRouteUpsertFn  func(hostname, relayID string, chain []string) error
 	relayRouteChainsFn  func(entries []RouteChainEntry) error
 	relayConflictFn     func(c HostConflict, fromBelow bool)
+	relayEventLocalFn   func(event, hostname, status, enrolledAt string, relayChain []string)
 )
 
 // SetRelayLocalIDFunc sets the provider of this node's own relay id (REPEATER_ID; "" if unset).
@@ -342,6 +345,24 @@ func SetRelayRouteChainsFunc(fn func(entries []RouteChainEntry) error) {
 	treeHooksMu.Lock()
 	relayRouteChainsFn = fn
 	treeHooksMu.Unlock()
+}
+
+// SetRelayEventLocalFunc sets the local dispatch of an event received from a child (hooks run
+// here with the received relay_chain, origin first). It is called for validated host.up / host.down /
+// host.new only, and never forwards: the handler forwards the event upstream itself.
+func SetRelayEventLocalFunc(fn func(event, hostname, status, enrolledAt string, relayChain []string)) {
+	treeHooksMu.Lock()
+	relayEventLocalFn = fn
+	treeHooksMu.Unlock()
+}
+
+func dispatchEventLocal(m RelayMessage) {
+	treeHooksMu.RLock()
+	fn := relayEventLocalFn
+	treeHooksMu.RUnlock()
+	if fn != nil {
+		fn(m.Event, m.Hostname, m.Status, m.EnrolledAt, append([]string(nil), m.RelayChain...))
+	}
 }
 
 // SetRelayConflictFunc sets the host.conflict sink. fromBelow is true when the conflict was
@@ -1401,20 +1422,69 @@ func handleEventForward(conn *RelayConnection, msg RelayMessage) {
 			}
 		}
 	}
-	applyEventRouting(conn, msg)
+	if reason := eventShapeError(msg); reason != "" {
+		log.Printf("[SECURITY WARNING] event_forward rejected: relay_id=%s event=%q: %s", conn.RelayID, msg.Event, reason)
+		return
+	}
+	if !applyEventRouting(conn, msg) {
+		return // not accepted (host not owned by this peer's subtree): neither dispatched nor forwarded
+	}
+	// Hooks of THIS node see the event with the received relay_chain (origin first); the event is
+	// then forwarded to our own parent (the uplink appends our id). A received event is never
+	// handed back to the sender.
+	switch msg.Event {
+	case "host.up", "host.down", "host.new":
+		dispatchEventLocal(msg)
+	}
 	forwardEventUpstream(msg)
 }
+
+// hostnameShape / enrolledAtShape bound what a child may put in an event: the values end up in
+// hook templates, environment variables and webhook bodies.
+var hostnameShape = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$`)
+
+// eventShapeError returns why an event_forward must be refused, "" when well formed.
+func eventShapeError(m RelayMessage) string {
+	switch m.Event {
+	case "host.up", "host.down", "host.new", "host.conflict":
+	default:
+		return "unsupported event kind"
+	}
+	if !hostnameShape.MatchString(m.Hostname) {
+		return "invalid hostname"
+	}
+	switch m.Event {
+	case "host.up", "host.down", "host.new":
+		if m.Status != "connected" && m.Status != "disconnected" {
+			return "invalid status"
+		}
+		if m.EnrolledAt != "" {
+			if m.Event != "host.new" {
+				return "enrolled_at only belongs to host.new"
+			}
+			if _, err := time.Parse(time.RFC3339, m.EnrolledAt); err != nil {
+				return "invalid enrolled_at"
+			}
+		}
+	case "host.conflict":
+		for _, id := range []string{m.OldRelay, m.NewRelay} {
+			if id != LocalOwner && !relayIDShape.MatchString(id) {
+				return "invalid relay id in host.conflict"
+			}
+		}
+	}
+	return ""
+}
+
+var relayIDShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
 
 // applyEventRouting keeps relay_routing in sync with descendants' events: host.up / host.new
 // (re)route the host to the relay where it lives (chain[0]) via the peer; a host.conflict
 // reported below is relayed to the hooks. host.down keeps the route (dispatch reports offline).
-func applyEventRouting(conn *RelayConnection, msg RelayMessage) {
+func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 	chain := msg.RelayChain // origin first, authenticated peer last
 	switch msg.Event {
 	case "host.up", "host.new":
-		if msg.Hostname == "" {
-			return
-		}
 		origin := chain[0]
 		topDown := make([]string, len(chain))
 		for i, id := range chain {
@@ -1424,7 +1494,7 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) {
 		if c := detectHostConflict(conn, msg.Hostname, topDown); c != nil {
 			reportConflictOnce(conn, *c)
 			if c.OldRelay == LocalOwner {
-				return // a live local agent is never re-routed
+				return false // a live local agent is never re-routed, nor announced as up from below
 			}
 		} else {
 			delete(conn.reported, msg.Hostname)
@@ -1439,12 +1509,26 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) {
 				log.Printf("event_forward: route update host=%q: %v", msg.Hostname, err)
 			}
 		}
-	case "host.conflict":
-		if msg.Hostname == "" {
-			return
+		return true
+	case "host.down":
+		// A child may only report the going down of a host of its own subtree: never of a host
+		// connected here nor routed through another peer (no alert spam / no spoofing).
+		if _, err := GetConnection(msg.Hostname); err == nil {
+			log.Printf("[SECURITY WARNING] event_forward host.down refused: relay_id=%s hostname=%q is connected locally", conn.RelayID, msg.Hostname)
+			return false
 		}
+		if prev, err := lookupHostRoute(msg.Hostname); err == nil && prev != "" && prev != conn.RelayID {
+			if _, mine := conn.descendants[prev]; !mine {
+				log.Printf("[SECURITY WARNING] event_forward host.down refused: relay_id=%s hostname=%q is routed through another relay", conn.RelayID, msg.Hostname)
+				return false
+			}
+		}
+		return true
+	case "host.conflict":
 		emitConflict(HostConflict{Hostname: msg.Hostname, OldRelay: msg.OldRelay, NewRelay: msg.NewRelay, RelayChain: chain}, true)
+		return true
 	}
+	return false
 }
 
 // closeWithRejection sends the WS close frame for a rejected link.

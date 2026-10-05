@@ -207,7 +207,7 @@ func TestRouting_EventHostUpRoutesThroughPeer(t *testing.T) {
 	readMsg(t, c)
 
 	// event chain: origin first, authenticated peer last
-	if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.new", Hostname: "late", RelayChain: []string{"zone-a", "dmz1"}}); err != nil {
+	if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.new", Status: "connected", Hostname: "late", RelayChain: []string{"zone-a", "dmz1"}}); err != nil {
 		t.Fatal(err)
 	}
 	<-events // forwarded upstream after the route was recorded
@@ -223,7 +223,7 @@ func TestRouting_EventHostUpRoutesThroughPeer(t *testing.T) {
 	rl.mu.Lock()
 	delete(rl.routes, "late")
 	rl.mu.Unlock()
-	if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.down", Hostname: "late", RelayChain: []string{"zone-a", "dmz1"}}); err != nil {
+	if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.down", Status: "disconnected", Hostname: "late", RelayChain: []string{"zone-a", "dmz1"}}); err != nil {
 		t.Fatal(err)
 	}
 	<-events
@@ -242,7 +242,7 @@ func TestRouting_EventHostUpMovingFromOtherRelayIsConflict(t *testing.T) {
 	defer srv.Close()
 	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
 	handshake(t, c, "dmz1")
-	if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: "h", RelayChain: []string{"dmz1"}}); err != nil {
+	if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Status: "connected", Hostname: "h", RelayChain: []string{"dmz1"}}); err != nil {
 		t.Fatal(err)
 	}
 	<-events

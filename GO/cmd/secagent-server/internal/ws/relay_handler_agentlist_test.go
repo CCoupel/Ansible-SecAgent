@@ -141,10 +141,19 @@ func TestEvent_HostUpOnLocalAgentCreatesNoRoute(t *testing.T) {
 	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
 	handshake(t, c, "dmz1")
 	for i := 0; i < 2; i++ {
-		if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: "local-host", RelayChain: []string{"dmz1"}}); err != nil {
+		if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Status: "connected", Hostname: "local-host", RelayChain: []string{"dmz1"}}); err != nil {
 			t.Fatal(err)
 		}
-		<-events
+	}
+	// barrier: everything sent above was processed once the heartbeat is answered
+	if err := c.WriteJSON(RelayMessage{Type: "heartbeat"}); err != nil {
+		t.Fatal(err)
+	}
+	readMsg(t, c)
+	select {
+	case m := <-events:
+		t.Errorf("an event about a locally connected host must not be forwarded upstream: %+v", m)
+	default:
 	}
 	if _, ok := rl.get("local-host"); ok {
 		t.Error("a live local agent must not get a route through a relay")

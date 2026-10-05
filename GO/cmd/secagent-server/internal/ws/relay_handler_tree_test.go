@@ -361,7 +361,7 @@ func TestTree_EventForwardValidation(t *testing.T) {
 
 	send := func(chain ...string) {
 		t.Helper()
-		if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: "h", RelayChain: chain}); err != nil {
+		if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Status: "connected", Hostname: "h", RelayChain: chain}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -391,7 +391,7 @@ func TestTree_EventForwardRateLimited(t *testing.T) {
 	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
 	handshake(t, c, "dmz1")
 	for i := 0; i < maxEventsPerSecond*3; i++ {
-		if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", RelayChain: []string{"dmz1"}}); err != nil {
+		if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: "h", Status: "connected", RelayChain: []string{"dmz1"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -701,7 +701,7 @@ func TestTree_EventChainTooLongDropped(t *testing.T) {
 		t.Fatalf("snapshot: %+v", m)
 	}
 	send := func(chain []string) {
-		if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", RelayChain: chain}); err != nil {
+		if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: "h", Status: "connected", RelayChain: chain}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -728,7 +728,7 @@ func TestTree_EventBeforeHelloIgnored(t *testing.T) {
 	defer srv.Close()
 	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
 	// chain [dmz1] is otherwise valid; hello was not sent
-	if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", RelayChain: []string{"dmz1"}}); err != nil {
+	if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: "h", Status: "connected", RelayChain: []string{"dmz1"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.WriteJSON(RelayMessage{Type: "heartbeat"}); err != nil {

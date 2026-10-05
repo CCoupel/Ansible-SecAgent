@@ -225,7 +225,7 @@ func TestPush_DialedChildSnapshotRoutingAndTask(t *testing.T) {
 	}
 
 	// event_forward goes up through the same validation as in pull mode
-	if err := child.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: "host-A2", RelayChain: []string{"dmz1"}}); err != nil {
+	if err := child.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Status: "connected", Hostname: "host-A2", RelayChain: []string{"dmz1"}}); err != nil {
 		t.Fatal(err)
 	}
 	select {

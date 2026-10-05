@@ -64,9 +64,8 @@ func TestLogSafety_PeerTextStaysOnItsOwnLogLine(t *testing.T) {
 	// 4. forged relay_chain element refused by validation
 	_ = c.WriteJSON(RelayMessage{Type: wsForged})
 	_ = c.WriteJSON(RelayMessage{Type: "task_result", TaskID: wsForged})
-	_ = c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: wsForged, RelayChain: []string{"dmz1"}})
-	<-events
-	_ = c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: "h", RelayChain: []string{wsForged, "dmz1"}})
+	_ = c.WriteJSON(RelayMessage{Type: "event_forward", Event: wsForged, Hostname: "h", Status: "connected", RelayChain: []string{"dmz1"}}) // forged event kind: refused, logged escaped
+	_ = c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Status: "connected", Hostname: "h", RelayChain: []string{wsForged, "dmz1"}})
 	_ = c.WriteJSON(RelayMessage{Type: "heartbeat"}) // barrier: all previous messages are processed
 	readMsg(t, c)
 	time.Sleep(20 * time.Millisecond)
