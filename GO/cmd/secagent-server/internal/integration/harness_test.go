@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -125,9 +126,10 @@ type node struct {
 	stdin     io.WriteCloser
 	plugin    string
 
-	statusPath string        // RELAY_STATUS_FILE of this instance (local, outside STATE_DIR)
-	exited     chan struct{} // closed when the current process ended
-	exitCode   int           // its exit code (valid once exited is closed)
+	statusPath   string         // RELAY_STATUS_FILE of this instance (local, outside STATE_DIR)
+	pendingReady chan nodeReady // of a secondary: receives the addresses once it is promoted
+	exited       chan struct{}  // closed when the current process ended
+	exitCode     int            // its exit code (valid once exited is closed)
 }
 
 // ── shared test material: TLS certificate and RSA key ────────────────────────
@@ -487,7 +489,8 @@ func (n *node) launch(extra []string) {
 // the process runs its lock loop.
 func (n *node) launchSecondary(extra []string) {
 	n.t.Helper()
-	_, started := n.startProcess(extra)
+	ready, started := n.startProcess(extra)
+	n.pendingReady = ready
 	select {
 	case <-started:
 	case <-n.exited:
@@ -895,6 +898,22 @@ type minion struct {
 	mu   sync.Mutex
 	got  []map[string]any
 	conn *websocket.Conn
+	// closed receives the error that ended the read loop (a *websocket.CloseError for a close frame)
+	closed chan error
+}
+
+// closeCode waits for the link to end and returns the close code the server sent (-1: no close frame).
+func (m *minion) closeCode(d time.Duration) (int, bool) {
+	select {
+	case err := <-m.closed:
+		var ce *websocket.CloseError
+		if errors.As(err, &ce) {
+			return ce.Code, true
+		}
+		return -1, true
+	case <-time.After(d):
+		return 0, false
+	}
 }
 
 func (m *minion) received() []map[string]any {
@@ -919,12 +938,13 @@ func connectMinionWithToken(t *testing.T, n *node, host, tok string) *minion {
 	if err != nil {
 		t.Fatalf("minion %s dial %s: %v (resp %v)", host, n.id, err, resp)
 	}
-	m := &minion{host: host, conn: conn}
+	m := &minion{host: host, conn: conn, closed: make(chan error, 1)}
 	t.Cleanup(func() { _ = conn.Close() })
 	go func() {
 		for {
 			var msg map[string]any
 			if err := conn.ReadJSON(&msg); err != nil {
+				m.closed <- err
 				return
 			}
 			m.mu.Lock()
@@ -953,4 +973,17 @@ func allLogs(nodes ...*node) string {
 		sb.WriteString("=== " + n.id + " ===\n" + n.logs.String())
 	}
 	return sb.String()
+}
+
+// awaitPromotion waits for a secondary (launchSecondary) to be promoted and serving.
+func (n *node) awaitPromotion(d time.Duration) bool {
+	select {
+	case r := <-n.pendingReady:
+		n.ready = r
+		return true
+	case <-n.exited:
+		return false
+	case <-time.After(d):
+		return false
+	}
 }
