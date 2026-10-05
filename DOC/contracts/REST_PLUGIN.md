@@ -34,25 +34,42 @@ X-Relay-Client-Host: ansible-control-prod
 
 ---
 
-## 2. `GET /api/inventory` — Inventaire dynamique Ansible
+## 2. `GET /api/inventory` — Inventaire dynamique Ansible (v3.0.2+)
 
 ### Requête
 
 ```http
-GET /api/inventory?only_connected=false
+GET /api/inventory?only_connected=false&relay=<relay_id>
 Authorization: Bearer <PLUGIN_TOKEN>
 ```
 
 | Paramètre | Type | Défaut | Description |
 |---|---|---|---|
 | `only_connected` | bool | `false` | `true` = exclure les agents déconnectés |
+| `relay` | string | (absent) | ID d'un relay (optionnel, v3.0.2+) — limite l'inventaire à la descendance de ce relay |
 
 ### Réponse 200
 
 ```json
 {
   "all": {
-    "hosts": ["host-A", "host-B", "host-C"]
+    "hosts": ["host-C"],
+    "children": ["dmz1", "zone2"]
+  },
+  "dmz1": {
+    "hosts": ["host-A", "host-B"],
+    "children": ["zone-a"],
+    "vars": {"region": "dmz"}
+  },
+  "zone-a": {
+    "hosts": ["host-D"],
+    "children": [],
+    "vars": {"zone": "a"}
+  },
+  "zone2": {
+    "hosts": ["host-C"],
+    "children": [],
+    "vars": {}
   },
   "_meta": {
     "hostvars": {
@@ -60,18 +77,29 @@ Authorization: Bearer <PLUGIN_TOKEN>
         "ansible_connection": "relay",
         "ansible_host": "host-A",
         "secagent_status": "connected",
-        "secagent_last_seen": "2026-03-06T10:00:00Z"
+        "secagent_last_seen": "2026-03-06T10:00:00Z",
+        "secagent_relay_chain": ["dmz1"],
+        "secagent_next_hop": "dmz1"
       },
-      "host-B": {
+      "host-D": {
         "ansible_connection": "relay",
-        "ansible_host": "host-B",
-        "secagent_status": "disconnected",
-        "secagent_last_seen": "2026-03-05T08:00:00Z"
+        "ansible_host": "host-D",
+        "secagent_status": "connected",
+        "secagent_last_seen": "2026-03-06T10:00:00Z",
+        "secagent_relay_chain": ["zone-a", "dmz1"],
+        "secagent_next_hop": "zone-a"
       }
     }
   }
 }
 ```
+
+**Format hiérarchique (v3.0.2+)** :
+- Groupes (`all`, `dmz1`, `zone-a`, `zone2`) = noms exacts des relays dans la descendance
+- `children` = relays enfants directs (hiérarchie récursive)
+- `vars` = `RELAY_GROUP_VARS` du relay (JSON)
+- Chaînes `secagent_relay_chain` = ordre **origine en premier** (relay le plus proche de l'agent d'abord)
+- `secagent_next_hop` = relay enfant direct vers lequel router la tâche
 
 Les agents `disconnected` sont inclus par défaut. Ansible les marquera `UNREACHABLE` lors de l'exécution.
 
@@ -79,6 +107,7 @@ Les agents `disconnected` sont inclus par défaut. Ansible les marquera `UNREACH
 
 | HTTP | Signification |
 |---|---|
+| `400` | Paramètre `relay` mal formé (voir format `relayIDShape` : `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`) |
 | `401` | Token invalide ou révoqué |
 | `403` | IP source non autorisée ou hostname non autorisé |
 

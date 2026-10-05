@@ -315,6 +315,8 @@ secagent-server server stats
 | `MAX_SNAPSHOT_HOSTS` | — | Limite nombre hôtes dans topology_snapshot (défaut 10000) |
 | `MAX_AGENT_LIST_HOSTS` | — | Limite nombre hôtes dans agent_list par appel (défaut = MAX_SNAPSHOT_HOSTS = 10 000) |
 | `MAX_WS_MESSAGE_SIZE_RELAY` | — | Taille maximale message WebSocket relay (défaut 10MB) |
+| `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` | — | Limite goroutines simultanées pour exécution des hooks (défaut `64`) — voir §9.7a |
+| `RELAY_INSECURE_TLS` | — | Utilisé par le binaire `secagent-inventory` (v3.0.2+) : accepter certificats TLS auto-signés. Requiert `RELAY_INSECURE_TLS_ACK=i-understand-the-risk` pour éviter les acceptations accidentelles (fail-closed) |
 
 ---
 
@@ -651,18 +653,57 @@ GET /api/inventory  (sur relay central)
       "host-D": {
         "ansible_connection":"relay",
         "secagent_next_hop":"zone-a",
-        "secagent_relay_chain":["dmz1","zone-a"]
+        "secagent_relay_chain":["zone-a","dmz1"]
       }
     }
   }
 }
 ```
 
-**Groupes** : nommés exactement du relay (ex: `dmz1`, `zone-a`) — **pas de préfixe**.
+**Groupes** : nommés exactement du relay (ex: `dmz1`, `zone-a`, pas de préfixe ni de transformation). Un groupe par relay dans la descendance, hiérarchie récursive (`all.children` = relays enfants directs ; chaque groupe `g` a `.children` = relays enfants du relay `g`). **Noms de groupes contenant des tirets** (ex: `zone-a`) déclenchent un avertissement Ansible (« Invalid characters in group names ») — voir §9.5b ci-dessous.
+
+**Chaîne `secagent_relay_chain`** : ordre **origine en premier** (relay le plus proche de l'agent en premier). Exemple :
+- Topologie : root ← dmz1 ← zone-a
+- Agent `host-D` connecté à zone-a directement : chaîne = `["zone-a"]`
+- Agent `host-D` via zone-a (enfant de dmz1) vu de root : chaîne = `["zone-a", "dmz1"]` (zone-a d'abord, origin de l'agent ; root en dernier)
+
+**`secagent_next_hop`** : relay enfant direct du nœud courant vers lequel router la tâche (dernier élément de la chaîne `secagent_relay_chain`, ou le relay direct si chaîne vide). Pour `host-D` chez root, `next_hop = "zone-a"`.
+
+**Cas `relay_chain = []`** : agent connecté **directement** au relay qui sert l'inventaire (pas d'intermédiaire). Exemple : `host-C` connecté à `zone2` et interrogation de `zone2` retourne `secagent_relay_chain = []` et `secagent_next_hop = "zone2"` (mais `next_hop` n'est visible que pour l'agent direct ; si querying la racine, les hostvars de `host-C` omettent `next_hop` car le routage est direct sur zone2).
+
+**Paramètre `?relay=<id>`** (depuis v3.0.2) : limite l'inventaire à la descendance du relay spécifié. Retourne uniquement les groupes et hôtes sous `<id>`, avec les chaînes recalculées relativement à `<id>`. Erreur **400** si `<id>` est mal formé (format `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`, voir validation `relayIDShape`).
 
 **Cloisonnement** : obtenu via authentification JWT (rôles, tokens), pas par limitation de profondeur.
 
 **Collision REPEATER_ID/hostname** : pas de contrôle automatique ; mitigation = naming convention.
+
+---
+
+### 9.5b Noms de groupes Ansible avec tirets — Avertissement et configuration
+
+**Contexte** : Un nom de relay peut contenir des tirets (format `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`) — ex: `zone-a`. Ansible considère comme « valides » uniquement les noms de groupe de type identifiant Python (lettres, chiffres, `_`). Un tiret déclenche l'avertissement « Invalid characters in group names ».
+
+**Comportement Ansible (ansible-core 2.21.4+)** :
+
+La directive `TRANSFORM_INVALID_GROUP_CHARS` (alias `force_valid_group_names` dans `ansible.cfg`) contrôle ce comportement :
+
+| Valeur | Comportement |
+|---|---|
+| `never` (défaut) | Avertissement seulement ; le groupe est créé avec son nom exact et utilisable |
+| `ignore` | Pas d'avertissement ; le groupe est créé avec son nom exact (même qu'`never`, sans log) |
+| `always` | Remplace caractères invalides par `_` (ex: `zone-a` → `zone_a`) ; attention aux collisions |
+| `silently` | Même que `always` mais sans avertissement |
+
+**Recommandations** :
+
+1. **Pour Ansible** : utiliser `ANSIBLE_TRANSFORM_INVALID_GROUP_CHARS=ignore` (env var) ou dans `ansible.cfg` :
+   ```ini
+   [defaults]
+   force_valid_group_names = ignore
+   ```
+   **Ne pas utiliser `always` ou `silently`** : si deux relays `zone-a` et `zone_a` coexistent, la transformation rendrait leurs groupes identiques → collision.
+
+2. **Pour secagent** : les noms de relay ne sont **jamais** transformés (ni par le serveur, ni par `secagent-inventory`). Utiliser des underscores dans les noms de relay (ex: `zone_a` au lieu de `zone-a`) évite l'avertissement sans réglage Ansible.
 
 ---
 
@@ -680,7 +721,7 @@ Un hôte connecté directement au relay GAGNE TOUJOURS sur la table `relay_routi
 2. Même si relay E (enfant) envoie `agent_list` déclarant l'agent X → `host.conflict` émis une seule fois, X reste routé vers R
 3. Test : `TestAgentList_ClaimOnLocalAgentCreatesNoRoute` (routage non créé) et `TestAgentList_RepeatedClaimEmitsConflictOnce`
 
-**Limite connue (#126)** : Un hôte profond (connecté via chaîne de relays) n'est routable chez l'ancêtre qu'après un nouveau `topology_snapshot` du parent intermédiaire. Les événements `host.up` d'un agent local ne remontent pas (à implémenter en #126).
+**Résolu en v3.0.2 (#126)** : Un hôte profond est maintenant routable chez l'ancêtre après un `topology_snapshot` du parent intermédiaire. Les événements se propagent correctement via `event_forward`.
 
 ---
 
@@ -734,7 +775,58 @@ CREATE TABLE IF NOT EXISTS relay_routing (
 
 ---
 
-### 9.7 Docker Compose qualification v3.0.1
+### 9.7 Événements et propagation (#126 v3.0.2)
+
+**Types d'événements supportés** (envoyés via `event_forward` lors de changements) :
+
+| Type | Déclencheur | Chaîne | Remarques |
+|---|---|---|---|
+| `host.up` | Agent se connecte via `/ws/agent` | `[relay_id]` (l'agent direct) | Non propagé à l'ancêtre si l'agent n'est qu'un agent local du relay |
+| `host.down` | Agent se déconnecte | `[relay_id]` | — |
+| `host.new` | Agent apparaît via `agent_list` d'un enfant | `[relay_id_origine, relay_parent, ...]` (chaîne de l'agent) | — |
+| `host.conflict` | Un relay déclare un hôte déjà routé vers un autre relay | `[relay_id_nouveau_propriétaire]` (l'hôte va au nouveau proprietaire) | Rare ; indicatif d'une mal-configuration ou d'une attaque (détournement de route). Un événement max par changement de propriétaire. |
+| `relay.up` | Nouveau relay revendiqué dans `topology_snapshot` | `[relay_id_nouveau_relay]` | — |
+| `relay.down` | Relay disparaît (lien fermé) | `[relay_id_qui_disparait]` | — |
+| `relay.updated` | `group_vars` d'un relay changeant | `[relay_id]` | Permet aux hooks de réagir à la mise à jour des variables d'un relay |
+
+**Sémantique chaîne** :
+- Chaque relay ajoute son propre ID à la chaîne lors du relayage vers le parent
+- Un événement local n'est pas re-forwardé au parent (évite les boucles)
+- Anti-boucle : un relay refuse de transmettre si son ID est déjà dans la chaîne
+
+**Rate limit** : Chaque lien relay-parent peut accepter **40 topology_snapshot** replacements par 60 s. Au-delà, fermeture WebSocket **4012** (refus corrigible) ; le relay enfant se reconnecte avec backoff.
+
+**Variables de hook** : Lors de l'exécution d'un hook, les événements injectent deux variables supplémentaires :
+- `{{relay_chain}}` : chaîne d'événement JSON (ex: `["zone-a","dmz1"]`)
+- `{{relay_origin}}` : premier élément de la chaîne (relay d'où l'événement provient ; ex: `"zone-a"`)
+
+**Filtrage des hooks** (`relay_chain_contains`) : Permet un hook d'accepter les événements seulement si un relay spécifique figure dans la chaîne :
+```yaml
+hooks:
+  - event: "host.up"
+    filter: "relay_chain_contains:dmz1"
+    cmd: "notify-mgmt.sh {{hostname}}"
+```
+Le filtre est validé au chargement de la config (fichier rejeté en bloc si malformé ; config précédente conservée au SIGHUP) — **fail-closed**.
+
+---
+
+### 9.7a Sémaphore hooks et concurrence (`RELAY_HOOKS_MAX_CONCURRENT_ACTIONS`)
+
+**Limite** : le nombre d'actions (commandes, webhooks) exécutées en parallèle par relay pour éviter un débordement de goroutines ou d'I/O en cas de tempête d'événements.
+
+| Variable | Défaut | Description |
+|---|---|---|
+| `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` | `64` | Max goroutines simultanées pour les hooks (tous types confondus : commandes, webhooks) |
+
+**Comportement au-delà de la limite** :
+- Action rejetée silencieusement (ne bloque pas le dispatcher)
+- Compteur `DroppedActions()` incrémenté
+- Log `[SECURITY WARNING]` (1 fois sur 100 pour éviter la saturation log) : hostname en format sûr, ID relay
+
+---
+
+### 9.8 Docker Compose qualification v3.0.1
 
 ```yaml
 services:

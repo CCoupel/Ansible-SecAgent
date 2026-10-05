@@ -38,12 +38,30 @@ secagent-inventory --host my-host
 
 ```bash
 RELAY_SERVER_URL=https://relay.example.com    # défaut: https://localhost:7770
-RELAY_TOKEN=secagent_plugin_xxxxx                # Bearer token (PLUGIN_TOKEN)
+RELAY_TOKEN=secagent_plugin_xxxxx              # Bearer token (PLUGIN_TOKEN)
 RELAY_CA_BUNDLE=/path/to/ca.pem               # CA custom (optionnel)
 RELAY_INSECURE_TLS=false                      # true = désactiver vérif TLS (TESTS UNIQUEMENT, voir ci-dessous)
 RELAY_INSECURE_TLS_ACK=                       # i-understand-the-risk = confirmation pour un serveur non-bouclage
 RELAY_ONLY_CONNECTED=false                    # true = hôtes connectés uniquement
+RELAY_SCOPE=                                  # ID du relay à interroger (optionnel, voir §3a ci-dessous)
 ```
+
+### 3a. Scoping — RELAY_SCOPE (v3.0.2+)
+
+Par défaut, `secagent-inventory --list` retourne **toute la descendance** du relay interogé. Avec `RELAY_SCOPE`, limitez l'inventaire à un sous-arbre :
+
+```bash
+RELAY_SCOPE="zone2-relay1"
+secagent-inventory --list
+# Retourne uniquement les hôtes et sous-relays de zone2-relay1
+```
+
+**Détail du scoping** :
+- Requête interne : `GET /api/inventory?relay=zone2-relay1`
+- Le serveur filtre les groupes et hôtes à la descendance de `zone2-relay1`
+- Les chaînes `secagent_relay_chain` sont recalculées relativement au relay racine du scope (ex: si le relay demandé a des enfants, la chaîne devient `[enfant_direct, zone2-relay1]`)
+- Erreur **400** si le relay ID est mal formé ou introuvable
+- Authentification : même Bearer token que pour l'inventaire complet
 
 **Garde `RELAY_INSECURE_TLS`** (vérifiée avant toute requête, pour `--list` comme `--host`) :
 
@@ -89,14 +107,16 @@ RELAY_ONLY_CONNECTED=false                    # true = hôtes connectés uniquem
         "ansible_host": "host-A",
         "secagent_status": "connected",
         "secagent_last_seen": "2026-03-06T10:00:00Z",
-        "secagent_relay_chain": ["dmz1"]
+        "secagent_relay_chain": ["dmz1"],
+        "secagent_next_hop": "dmz1"
       },
       "host-D": {
         "ansible_connection": "relay",
         "ansible_host": "host-D",
         "secagent_status": "connected",
         "secagent_last_seen": "2026-03-06T10:00:00Z",
-        "secagent_relay_chain": ["dmz1", "zone2-relay1"]
+        "secagent_relay_chain": ["zone2-relay1", "dmz1"],
+        "secagent_next_hop": "zone2-relay1"
       }
     }
   }

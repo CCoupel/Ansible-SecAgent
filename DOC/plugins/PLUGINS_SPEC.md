@@ -16,7 +16,7 @@ Ils remplacent SSH par des appels REST HTTPS vers le secagent-server.
 ```
 Ansible Control Node
   ├── connection_plugins/secagent.py   — remplace SSH (exec, upload, fetch) — OBLIGATOIRE PYTHON
-  └── inventory_plugins/secagent.py   — inventaire dynamique (GET /api/inventory) — OPTIONNEL (voir §1b)
+  └── inventory_plugins/ (DEPRECATED) — utiliser le binaire secagent-inventory à la place (voir §1b)
           │
           │ HTTPS bloquant (requests/httpx)
           ▼
@@ -38,20 +38,23 @@ Ansible Control Node
 
 → **Conséquence** : `connection_plugins/secagent.py` reste **obligatoirement Python**
 
-### 1b. Inventaire : Plugin Python OU binaire GO
+### 1b. Inventaire : Binaire GO uniquement (v3.0.2+)
 
-Deux approches pour l'inventaire Ansible :
+**À partir de la v3.0.2, l'inventaire Ansible est fourni par le binaire GO `secagent-inventory` uniquement.**
 
-| Approche | Fichier | Langage | Contrainte | Usage |
-|----------|---------|---------|-----------|-------|
-| **Plugin Ansible** | `inventory_plugins/secagent_inventory.py` | Python | Ansible API Python | Natif, zéro config |
-| **Binaire GO** | `secagent-inventory` | GO (Phase 9) | Ansible external inventory protocol | Docker, CI/CD, restrictions env |
+Le plugin Python d'inventaire (`inventory_plugins/secagent_inventory.py`) est **DEPRECATED** et **n'est pas implémenté**. Les raisons :
+- Le binaire GO offre les mêmes fonctionnalités avec moins de dépendances
+- Performance identique ou meilleure (pas de runtime Python)
+- Meilleure portabilité (déploiements Docker, CI/CD)
+- Compatible avec le protocole Ansible externe `--list` / `--host`
 
-**Recommandation** : Utiliser le **binaire GO** (`secagent-inventory`) en production :
-- ✅ Déjà implémenté (Phase 9, 19 tests PASS)
-- ✅ Moins de dépendances Python à gérer
-- ✅ Performance identique
-- ✅ Compatible Ansible `--list` / `--host` protocol
+**Usage** : Ansible interroge directement le binaire `secagent-inventory` via `ansible.cfg` :
+```ini
+[defaults]
+inventory = /usr/local/bin/secagent-inventory
+```
+
+Voir `DOC/inventory/INVENTORY_SPEC.md` pour les détails complets.
 
 **Contrainte fondamentale :** `exec_command()` d'Ansible est synchrone.
 Les plugins utilisent `requests` ou `httpx` (HTTP bloquant), jamais `asyncio`.

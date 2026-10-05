@@ -7,8 +7,55 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- **CI** : job « Inventaire Ansible » (ansible-core 2.21.4 épinglé) validant la sortie réelle de `secagent-inventory` avec `ansible-inventory --list`, via `ANSIBLE_E2E=1`
 - (future features for next milestone)
+
+---
+
+## [v3.0.2] — 2026-10-05 — Events et Inventaire Hiérarchique
+
+### Added
+- **Propagation d'événements (#126)** :
+  - Types d'événements : `host.up`, `host.down`, `host.new`, `host.conflict`, `relay.up`, `relay.down`, `relay.updated`
+  - Chaîne d'événement **ordre origine-first** (relay le plus proche de l'agent d'abord)
+  - Variables de hook : `{{relay_chain}}` (JSON) et `{{relay_origin}}` (premier relay)
+  - Filtre hook `relay_chain_contains:<relay_id>` validé au chargement (fail-closed)
+  - Sémaphore hooks : `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` (défaut 64) — actions excédentaires rejetées silencieusement avec log limité
+  - Re-snapshot atomique lors de changements de topologie : coalescé (200 ms debounce, 2 s min gap), rate limit 40/60s par lien
+  - `host.conflict` : exact (1 événement par changement de propriétaire), ancien propriétaire cède au nouveau
+- **Inventaire hiérarchique (#128, #139)** :
+  - Groupes Ansible = noms exacts des relays (ex: `dmz1`, `zone-a`) — pas de transformation
+  - Hiérarchie récursive : `all.children` = relays enfants directs, chaque groupe `g.children` = relays enfants du relay `g`
+  - Chaîne `secagent_relay_chain` : ordre origine-first (ex: `["zone-a", "dmz1"]`)
+  - Variable `secagent_next_hop` : relay enfant direct vers lequel router
+  - Paramètre `?relay=<id>` : limite l'inventaire à la descendance du relay spécifié
+  - **Group vars (#139)** : `RELAY_GROUP_VARS` JSON persisté dans `relay_nodes.group_vars`, transmis en `relay_hello`, `topology_snapshot`, `relay.updated`
+  - Validation group vars : refus du snapshot/hello en bloc si JSON invalide ; interdits : `ansible_*` (sauf `ansible_python_interpreter` validé sans `..`), `secagent_*` ; marqueurs Jinja interdits
+  - Noms de groupes avec tirets (ex: `zone-a`) déclenchent avertissement Ansible — à silencer avec `ANSIBLE_TRANSFORM_INVALID_GROUP_CHARS=ignore` (recommandation : nommer les relays avec underscores)
+- **Extraction du câblage dans `internal/server` (#155)** :
+  - Variables `API_ADDR` (défaut `:7770`), `ADMIN_ADDR` (défaut `:7771`), `WS_ADDR` (défaut `:7772`)
+  - Validation `relay_id` partout : API admin `POST /api/admin/relays` 400 `invalid_relay_id`, `/ws/relay` upgrade 401, stockage
+- **CI job « Inventaire Ansible »** : ansible-core 2.21.4 épinglé, `ANSIBLE_E2E=1 go test -race -run 'Ansible'` valide la sortie réelle de `secagent-inventory`
+
+### Changed
+- Plugin d'inventaire Python (`inventory_plugins/secagent_inventory.py`) est **DEPRECATED** — utiliser le binaire GO `secagent-inventory` (v3.0.2+)
+- Table SQLite `relay_nodes` : colonne `group_vars` TEXT (JSON des variables pour ce relay), `relay_chain` TEXT (chaîne JSON pour ce relay)
+- Table SQLite `relay_routing` : `relay_chain` TEXT (chaîne JSON) — désormais sérialisée correctement pour les profondeurs > 3 niveaux (était aplatie avant, cf. #126)
+- Documentation :
+  - DOC/server/SERVER_SPEC.md §9.5 : ordre chaîne corrigé, `secagent_next_hop` explicité, paramètre `?relay=<id>` documenté, avertissement noms Ansible et configuration (§9.5b)
+  - DOC/inventory/INVENTORY_SPEC.md : RELAY_SCOPE variable, exemples avec ordre correct et `secagent_next_hop`
+  - DOC/contracts/REST_PLUGIN.md §2 : paramètre `relay`, réponse hiérarchique, chaînes correctes
+
+### Fixed
+- #155 : extraction du câblage (API_ADDR, ADMIN_ADDR, WS_ADDR défauts précis — la variable SERVER_ADDR n'existait pas)
+- Validation `relay_id` cohérente partout (format `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
+- Chaînes de relays vraies jusqu'à 5+ niveaux (avant #126, décodeur les aplatissait au 3e niveau)
+
+### Known Limitations
+- #146 : `tokens create --role relay-child` via API (aujourd'hui non disponible)
+- #147 : Migration bases entre versions à couvrir avec fixture v3.0.1 figée
+- #151 : Monitoring et métriques (aucune infra existante)
+- #152 : Colonne `relay_nodes.token_hash` mal nommée (stocke hash pull, token chiffré push)
+- #156 : Rate limit trop strict pour certains déploiements (à affiner)
 
 ---
 
