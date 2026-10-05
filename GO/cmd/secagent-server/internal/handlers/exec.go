@@ -74,9 +74,6 @@ const (
 	timeoutMarginSec = 5          // Extra seconds on top of task timeout
 )
 
-// In-memory storage for completed task results (task_id -> result)
-var completedResults = make(map[string]map[string]interface{})
-
 // newTaskID generates a new UUID-based task ID
 func newTaskID() string {
 	return uuid.New().String()
@@ -560,36 +557,5 @@ func writeProxyExecError(w http.ResponseWriter, err error, hostname, taskID stri
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "relay_offline"})
 	default:
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": e})
-	}
-}
-
-// GET /api/async_status/{task_id} — Poll the status of an async task
-func AsyncStatus(w http.ResponseWriter, r *http.Request) {
-	taskID := r.PathValue("task_id")
-
-	// Check completed cache first
-	if result, exists := completedResults[taskID]; exists {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"task_id":   taskID,
-			"status":    "finished",
-			"rc":        result["rc"],
-			"stdout":    result["stdout"],
-			"stderr":    result["stderr"],
-			"truncated": result["truncated"],
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusNotFound, map[string]string{"error": "task_not_found"})
-}
-
-// StoreResult stores a completed task result for later retrieval via async_status
-func StoreResult(taskID string, result map[string]interface{}) {
-	completedResults[taskID] = map[string]interface{}{
-		"rc":        result["rc"],
-		"stdout":    result["stdout"],
-		"stderr":    result["stderr"],
-		"truncated": result["truncated"],
-		"status":    "finished",
 	}
 }

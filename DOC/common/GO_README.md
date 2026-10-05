@@ -58,7 +58,6 @@ GO/
 - `FetchFile()`: POST /api/fetch/{hostname}
   - Remote file retrieval
   - Base64 encoding
-- `AsyncStatus()`: GET /api/async_status/{task_id}
   - Task polling
   - Result caching
 
