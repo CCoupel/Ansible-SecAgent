@@ -353,3 +353,92 @@ func TestInventoryHierarchy_AdminEndpointServesTheSameHierarchy(t *testing.T) {
 	}
 	eq(t, "admin scoped hosts", inv.All.Hosts, "minion-A", "minion-B")
 }
+
+// ── group vars per relay group (#139) ────────────────────────────────────────
+
+func setStoredVars(t *testing.T, s *storage.Store, relayID, json string) {
+	t.Helper()
+	if ok, err := s.SetRelayGroupVars(relayID, json); err != nil || !ok {
+		t.Fatalf("SetRelayGroupVars(%s): %v %v", relayID, ok, err)
+	}
+}
+
+func TestInventoryGroupVars_PublishedPerRelayGroup(t *testing.T) {
+	s, withAuth := setupProxyTest(t)
+	seedIssueTopology(t, s)
+	setStoredVars(t, s, "dmz1", `{"env":"staging","datacenter":"paris","replicas":3,"ansible_python_interpreter":"/usr/bin/python3"}`)
+
+	req := withAuth(httptest.NewRequest("GET", "/api/inventory", nil))
+	w := httptest.NewRecorder()
+	GetInventory(w, req)
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	var dmz1 struct {
+		Hosts []string                   `json:"hosts"`
+		Vars  map[string]json.RawMessage `json:"vars"`
+	}
+	if err := json.Unmarshal(doc["dmz1"], &dmz1); err != nil {
+		t.Fatal(err)
+	}
+	if string(dmz1.Vars["env"]) != `"staging"` || string(dmz1.Vars["replicas"]) != `3` ||
+		string(dmz1.Vars["ansible_python_interpreter"]) != `"/usr/bin/python3"` {
+		t.Errorf("dmz1 vars = %v (JSON types must be preserved)", dmz1.Vars)
+	}
+	// a relay without vars has no "vars" key at all
+	if strings.Contains(string(doc["zone2"]), `"vars"`) {
+		t.Errorf("zone2 has no group vars but the group carries a vars key: %s", doc["zone2"])
+	}
+}
+
+func TestInventoryGroupVars_NodesOwnVarsServedInItsOwnGroup(t *testing.T) {
+	s, withAuth := setupProxyTest(t)
+	seedIssueTopology(t, s)
+	ws.SetRelayLocalIDFunc(func() string { return "central" })
+	SetLocalGroupVars(map[string]any{"env": "prod"})
+	t.Cleanup(func() { ws.SetRelayLocalIDFunc(nil); SetLocalGroupVars(nil) })
+	_, inv := getInv(t, withAuth, "")
+	if string(inv.Groups["central"].Vars["env"]) != `"prod"` {
+		t.Errorf("central vars = %v", inv.Groups["central"].Vars)
+	}
+	// a node without REPEATER_ID has no group of its own: its vars are not published anywhere
+	ws.SetRelayLocalIDFunc(nil)
+	_, inv = getInv(t, withAuth, "")
+	if _, ok := inv.Groups["central"]; ok {
+		t.Error("no own group without REPEATER_ID")
+	}
+}
+
+// Whatever the database holds, only validated vars are served: a corrupted row, or one that
+// predates the validation rules, is ignored (the controller must never receive a template).
+func TestInventoryGroupVars_InvalidStoredVarsAreNeverServed(t *testing.T) {
+	s, withAuth := setupProxyTest(t)
+	seedIssueTopology(t, s)
+	setStoredVars(t, s, "dmz1", `{"x":"{{ lookup('pipe','id') }}"}`)
+	setStoredVars(t, s, "zone2", `{"ansible_connection":"local"}`)
+	req := withAuth(httptest.NewRequest("GET", "/api/inventory", nil))
+	w := httptest.NewRecorder()
+	GetInventory(w, req)
+	if strings.Contains(w.Body.String(), "lookup") || strings.Contains(w.Body.String(), "ansible_connection\":\"local") {
+		t.Errorf("an invalid stored var reached the inventory:\n%s", w.Body.String())
+	}
+	_, inv := getInv(t, withAuth, "")
+	if len(inv.Groups["dmz1"].Vars) != 0 || len(inv.Groups["zone2"].Vars) != 0 {
+		t.Errorf("vars = %v / %v", inv.Groups["dmz1"].Vars, inv.Groups["zone2"].Vars)
+	}
+}
+
+func TestInventoryGroupVars_ScopeKeepsOnlyVisibleGroupsVars(t *testing.T) {
+	s, withAuth := setupProxyTest(t)
+	seedIssueTopology(t, s)
+	setStoredVars(t, s, "dmz1", `{"env":"staging"}`)
+	setStoredVars(t, s, "zone2", `{"secret_region":"eu"}`)
+	_, scoped := getInv(t, withAuth, "?relay=dmz1")
+	if _, ok := scoped.Groups["zone2"]; ok {
+		t.Error("the parent group must not be part of a subtree scope")
+	}
+	if string(scoped.Groups["dmz1"].Vars["env"]) != `"staging"` {
+		t.Errorf("dmz1 vars = %v", scoped.Groups["dmz1"].Vars)
+	}
+}

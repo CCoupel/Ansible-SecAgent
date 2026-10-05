@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 
+	"secagent-server/cmd/secagent-server/internal/config"
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
@@ -38,6 +40,56 @@ type HostVars struct {
 type InventoryGroup struct {
 	Hosts    []string `json:"hosts,omitempty"`
 	Children []string `json:"children,omitempty"`
+	// Vars are the Ansible group variables published by the relay (RELAY_GROUP_VARS, #139);
+	// absent when the relay has none. Values keep their JSON types.
+	Vars map[string]json.RawMessage `json:"vars,omitempty"`
+}
+
+var (
+	localGroupVarsMu sync.RWMutex
+	localGroupVars   map[string]any
+)
+
+// SetLocalGroupVars sets this node's own group vars (RELAY_GROUP_VARS), served as the vars of its
+// own relay group when it has a REPEATER_ID.
+func SetLocalGroupVars(m map[string]any) {
+	localGroupVarsMu.Lock()
+	localGroupVars = m
+	localGroupVarsMu.Unlock()
+}
+
+// relayGroupVars returns the group vars to publish for each relay group: those stored from the
+// relays' hello / snapshot / relay.updated, plus this node's own. Stored content was validated
+// on reception and is re-checked here: anything that does not validate is not served.
+func relayGroupVars(localID string) map[string]map[string]json.RawMessage {
+	out := map[string]map[string]json.RawMessage{}
+	stored, err := adminStore.ListRelayGroupVars()
+	if err != nil {
+		log.Printf("inventory: group vars unavailable: %v", err)
+	}
+	for id, raw := range stored {
+		var generic map[string]any
+		if json.Unmarshal([]byte(raw), &generic) != nil || config.ValidateGroupVars(generic) != nil {
+			log.Printf("[WARN] inventory: ignoring invalid stored group vars of relay %q", id)
+			continue
+		}
+		var typed map[string]json.RawMessage
+		if json.Unmarshal([]byte(raw), &typed) == nil && len(typed) > 0 {
+			out[id] = typed
+		}
+	}
+	localGroupVarsMu.RLock()
+	local := localGroupVars
+	localGroupVarsMu.RUnlock()
+	if localID != "" && len(local) > 0 && config.ValidateGroupVars(local) == nil {
+		if b, err := json.Marshal(local); err == nil {
+			var typed map[string]json.RawMessage
+			if json.Unmarshal(b, &typed) == nil {
+				out[localID] = typed
+			}
+		}
+	}
+	return out
 }
 
 // InventoryResponse is the Ansible dynamic inventory format, hierarchical since #128:
@@ -273,11 +325,12 @@ func buildInventory(opts inventoryOptions) InventoryResponse {
 	}
 
 	response.All.Children = g.children["all"]
+	vars := relayGroupVars(localGroup)
 	for id := range g.names {
 		if id == "all" {
 			continue
 		}
-		response.Groups[id] = InventoryGroup{Hosts: g.hosts[id], Children: g.children[id]}
+		response.Groups[id] = InventoryGroup{Hosts: g.hosts[id], Children: g.children[id], Vars: vars[id]}
 	}
 	return response
 }
