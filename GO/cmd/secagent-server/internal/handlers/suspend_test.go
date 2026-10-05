@@ -85,27 +85,8 @@ func TestSuspend_OtherAgentsAreUnaffected(t *testing.T) {
 	}
 }
 
-func TestSuspend_StoreFailureRefusesFailClosed(t *testing.T) {
-	host := "susp-failclosed"
-	agent, _, withAuth := precSetup(t, host)
-	if _, err := adminStore.RegisterAgent(context.Background(), host, "pem", "j"); err != nil {
-		t.Fatal(err)
-	}
-	if err := adminStore.Close(); err != nil { // the state can no longer be read
-		t.Fatal(err)
-	}
-	for _, c := range suspendCases(host) {
-		w := precRequest(t, withAuth, c.handler, "POST", c.path, host, c.body)
-		// the plugin token lookup uses the same store: it fails first (500) or the check refuses (503);
-		// either way nothing may reach the agent
-		if w.Code == http.StatusOK {
-			t.Errorf("%s accepted with an unreadable store", c.name)
-		}
-	}
-	if got := agent.received(); len(got) != 0 {
-		t.Errorf("nothing must be sent to the agent: %v", got)
-	}
-}
+// (Reading the suspension flag is a memory lookup that can not fail since #160: the fail-closed
+// paths left are a missing store, below, and an error from the Forwarder hook, in forward.)
 
 func TestAgentSuspended_NoStoreIsAnError(t *testing.T) {
 	prev := adminStore
@@ -132,25 +113,19 @@ type errString string
 
 func (e errString) Error() string { return string(e) }
 
-// The check itself, isolated from the plugin token lookup: an unreadable state answers 503
-// agent_state_unavailable and never "not suspended".
-func TestRefuseIfSuspended_UnreadableStateIsRefused(t *testing.T) {
-	s := newTestStore(t)
-	SetAdminStore(s)
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
+// The state can not be read without a store: the check refuses (503 agent_state_unavailable).
+func TestRefuseIfSuspended_NoStoreIsRefused(t *testing.T) {
+	prev := adminStore
+	adminStore = nil
+	defer func() { adminStore = prev }()
 	w := httptest.NewRecorder()
 	if !refuseIfSuspended(w, "h", "t", "exec") {
-		t.Fatal("an unreadable suspension state must refuse")
-	}
-	if w.Code != http.StatusServiceUnavailable || w.Body.String() == "" {
-		t.Errorf("got %d %s", w.Code, w.Body.String())
+		t.Fatal("an unavailable suspension state must refuse")
 	}
 	var resp map[string]string
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["error"] != ErrAgentStateUnavailable {
-		t.Errorf("error = %q, want %q", resp["error"], ErrAgentStateUnavailable)
+	if w.Code != http.StatusServiceUnavailable || resp["error"] != ErrAgentStateUnavailable {
+		t.Errorf("got %d %s", w.Code, w.Body.String())
 	}
 }
 

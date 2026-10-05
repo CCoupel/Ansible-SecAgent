@@ -21,8 +21,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 
-	"secagent-server/cmd/secagent-server/internal/crypto"
 	"secagent-server/cmd/secagent-server/internal/hooks"
+	"secagent-server/cmd/secagent-server/internal/state"
 	"secagent-server/cmd/secagent-server/internal/storage"
 )
 
@@ -149,43 +149,49 @@ func rsaMasterKey() (string, bool) {
 	return v, v != ""
 }
 
-// persistRSAKey encrypts privPEM with AES-256-GCM (when masterKey is set) and stores it.
-func persistRSAKey(ctx context.Context, store *storage.Store, configKey, privPEM string) error {
-	masterKey, hasMaster := rsaMasterKey()
-	var toStore string
-	if hasMaster {
-		encrypted, err := crypto.EncryptAESGCM(privPEM, masterKey)
+// persistConfigSecret stores a server_config secret (RSA private key, JWT secret): sealed with
+// AES-256-GCM under RSA_MASTER_KEY and bound to its field name (AAD) when a master key is set; in
+// clear only without master key (dev/test: the state engine accepts that only in its explicit
+// insecure test mode).
+func persistConfigSecret(ctx context.Context, store *storage.Store, configKey, plain string) error {
+	toStore := plain
+	if masterKey, hasMaster := rsaMasterKey(); hasMaster {
+		sealed, err := state.SealSecret(plain, masterKey, state.ConfigAAD(configKey))
 		if err != nil {
 			return fmt.Errorf("encrypt %s: %w", configKey, err)
 		}
-		toStore = "enc:" + encrypted // prefix to distinguish encrypted from plaintext
-	} else {
-		toStore = privPEM // unencrypted — dev/test mode
+		toStore = sealed
 	}
 	return store.ConfigSet(ctx, configKey, toStore)
 }
 
-// loadRSAKey retrieves and decrypts (if needed) a stored RSA private key PEM.
-func loadRSAKey(ctx context.Context, store *storage.Store, configKey string) (string, error) {
+// loadConfigSecret retrieves and decrypts a server_config secret ("" when absent).
+func loadConfigSecret(ctx context.Context, store *storage.Store, configKey string) (string, error) {
 	stored, err := store.ConfigGet(ctx, configKey)
 	if err != nil || stored == "" {
 		return stored, err
 	}
-
-	if len(stored) > 4 && stored[:4] == "enc:" {
+	if strings.HasPrefix(stored, state.EncPrefix) {
 		masterKey, hasMaster := rsaMasterKey()
 		if !hasMaster {
 			return "", fmt.Errorf("RSA_MASTER_KEY required to decrypt %s", configKey)
 		}
-		plaintext, err := crypto.DecryptAESGCM(stored[4:], masterKey)
+		plaintext, err := state.OpenSecret(stored, masterKey, state.ConfigAAD(configKey))
 		if err != nil {
 			return "", fmt.Errorf("decrypt %s: %w", configKey, err)
 		}
 		return plaintext, nil
 	}
+	return stored, nil // clear: dev/test mode
+}
 
-	// Unencrypted (dev/test mode or legacy)
-	return stored, nil
+// persistRSAKey / loadRSAKey: the RSA private keys of server_config.
+func persistRSAKey(ctx context.Context, store *storage.Store, configKey, privPEM string) error {
+	return persistConfigSecret(ctx, store, configKey, privPEM)
+}
+
+func loadRSAKey(ctx context.Context, store *storage.Store, configKey string) (string, error) {
+	return loadConfigSecret(ctx, store, configKey)
 }
 
 // InitServerState loads (or generates) RSA keypair and JWT secret from DB.
@@ -203,14 +209,14 @@ func InitServerState(ctx context.Context, store *storage.Store) error {
 	}
 
 	// --- JWT secret ---
-	jwtCurrent, err := store.ConfigGet(ctx, "jwt_secret_current")
+	jwtCurrent, err := loadConfigSecret(ctx, store, "jwt_secret_current")
 	if err != nil {
 		return fmt.Errorf("ConfigGet jwt_secret_current: %w", err)
 	}
 	if jwtCurrent == "" {
 		// First boot: persist the env-provided secret
 		jwtCurrent = server.JWTSecret
-		if err := store.ConfigSet(ctx, "jwt_secret_current", jwtCurrent); err != nil {
+		if err := persistConfigSecret(ctx, store, "jwt_secret_current", jwtCurrent); err != nil {
 			return fmt.Errorf("ConfigSet jwt_secret_current: %w", err)
 		}
 		log.Println("[INIT] JWT secret persisted to DB")
@@ -220,7 +226,7 @@ func InitServerState(ctx context.Context, store *storage.Store) error {
 	}
 
 	// Load previous JWT secret (may be empty)
-	jwtPrev, err := store.ConfigGet(ctx, "jwt_secret_previous")
+	jwtPrev, err := loadConfigSecret(ctx, store, "jwt_secret_previous")
 	if err != nil {
 		return fmt.Errorf("ConfigGet jwt_secret_previous: %w", err)
 	}
@@ -555,17 +561,11 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 		}
 
 		// Persist: consume token (increment use_count), store authorized_key, register agent
-		if err := registerStore.ConsumeEnrollmentToken(ctx, tok.ID); err != nil {
-			log.Printf("RegisterAgent ConsumeEnrollmentToken: %v", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
-			return
-		}
-		if err := registerStore.AddAuthorizedKey(ctx, req.Hostname, req.PublicKeyPEM, "enrollment_token:"+tok.ID); err != nil {
-			log.Printf("RegisterAgent AddAuthorizedKey: %v", err)
-			// Non-fatal: continue (key may already exist from prior enrollment)
-		}
-		if _, err := registerStore.RegisterAgent(ctx, req.Hostname, req.PublicKeyPEM, jti); err != nil {
-			log.Printf("RegisterAgent persist: %v", err)
+		// ONE mutation (#160): the token is consumed, the key authorized and the agent registered,
+		// or nothing happens (a failure between the steps can not leave a consumed token without
+		// agent, nor an agent without key).
+		if err := registerStore.EnrollAgent(ctx, tok.ID, req.Hostname, req.PublicKeyPEM, jti, "enrollment_token:"+tok.ID); err != nil {
+			log.Printf("RegisterAgent EnrollAgent: %v", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 			return
 		}

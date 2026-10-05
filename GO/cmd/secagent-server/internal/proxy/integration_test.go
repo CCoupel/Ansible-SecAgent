@@ -12,7 +12,7 @@
 //
 // All tests run in-memory (no external infrastructure required):
 //   - Pull-mode tests: httptest.Server + gorilla/websocket relay goroutines
-//   - Storage: storage.NewStore(":memory:")
+//   - Storage: storage.OpenTemp()
 //
 // Non-regression: additive tests only — no modifications to existing *_test.go files.
 package proxy

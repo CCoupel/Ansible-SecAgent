@@ -112,10 +112,10 @@ func AdminRotateKeys(w http.ResponseWriter, r *http.Request) {
 	// === Step 8: Persist all values to DB ===
 	deadlineStr := deadline.UTC().Format(time.RFC3339)
 
-	if err := adminStore.ConfigSet(ctx, "jwt_secret_previous", oldJWTSecret); err != nil {
+	if err := persistConfigSecret(ctx, adminStore, "jwt_secret_previous", oldJWTSecret); err != nil {
 		log.Printf("AdminRotateKeys: persist jwt_secret_previous: %v", err)
 	}
-	if err := adminStore.ConfigSet(ctx, "jwt_secret_current", newJWTSecret); err != nil {
+	if err := persistConfigSecret(ctx, adminStore, "jwt_secret_current", newJWTSecret); err != nil {
 		log.Printf("AdminRotateKeys: persist jwt_secret_current: %v", err)
 	}
 	if err := adminStore.ConfigSet(ctx, "key_rotation_deadline", deadlineStr); err != nil {

@@ -9,6 +9,9 @@ All notable changes to this project will be documented in this file.
 ### Added
 - (future features for next milestone)
 
+### Changed (breaking)
+- **Le Store passe sur le fichier d'état, SQLite et CGO sont retirés (#160)** : `STATE_DIR` (défaut `/data`, créé par `secagent-server state init`) remplace `DATABASE_URL` ; `DATABASE_URL` définie = **erreur au démarrage** (aucune migration d'un ancien `relay.db`). Enrôlement et révocation d'un relay en une seule mutation ; statut, `last_seen`, routage et `relay_chain` en mémoire ; purge horaire de la blacklist ; `last_used_*` des tokens plugin approximatifs (champ `last_used_approximate`). Tokens relay : `token_hash` (pull) et `token_secret` scellé (push) distincts. Sans garde d'écriture (#163) le serveur est en lecture seule, sauf déclaration explicite `RELAY_SINGLE_INSTANCE=true` (une seule instance, pas de verrou). Binaire et image serveur en `CGO_ENABLED=0`.
+
 ### Removed
 - **NATS JetStream retiré du serveur et du déploiement (#178)** : aucun usage fonctionnel (l'exec passe par WebSocket direct), aucune perte. Suppression de `internal/broker`, de `GO/nats.conf`, des services/volumes `nats*` des Compose hors prod, des dépendances `nats-io` du `go.mod`. `NATS_URL` encore définie : un seul `[WARN] NATS_URL is obsolete and ignored`, démarrage normal.
 - **[BREAKING]** `GET /api/admin/status` et `secagent-server server status` ne renvoient plus le champ `nats`.

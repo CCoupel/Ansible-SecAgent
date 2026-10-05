@@ -154,7 +154,7 @@ func startPushDialers(st *storage.Store, mgr pushStarter) {
 		if n.Mode != "push" {
 			continue
 		}
-		token, terr := handlers.OpenPushToken(n.TokenHash)
+		token, terr := handlers.OpenPushToken(n.RelayID, n.TokenSecret)
 		if terr != nil {
 			log.Printf("[WARN] push relay %q skipped: %v", n.RelayID, terr)
 			continue

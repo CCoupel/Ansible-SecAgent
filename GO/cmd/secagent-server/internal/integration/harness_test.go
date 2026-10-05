@@ -7,15 +7,15 @@ package integration
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -31,11 +31,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 
-	"secagent-server/cmd/secagent-server/internal/crypto"
-	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/state"
 )
 
 // waitLimit is only ever reached on failure (every wait polls every 5 ms), so it costs nothing when
@@ -118,6 +116,7 @@ type node struct {
 	adminTok  string
 	jwtSecret string
 	env       []string // environment of the node process (restart reuses it)
+	stateDir  string   // STATE_DIR of the node
 	hooksPath string   // RELAY_HOOKS_CONFIG of the node
 	hookOut   string   // file the hooks' file-actions append to
 	logs      *syncBuf
@@ -216,21 +215,39 @@ func tlsClientConfig() *tls.Config {
 	return &tls.Config{RootCAs: tlsPool, MinVersion: tls.VersionTLS12}
 }
 
-// seedDatabase pre-creates the node's database with its RSA key (encrypted like in production).
-func seedDatabase(t *testing.T, dbPath, masterKey string) {
+var (
+	stateTplMu sync.Mutex
+	stateTpl   = map[string]string{}
+)
+
+// seedState creates the node's state like `secagent-server state init` does (RSA key and JWT secret
+// encrypted with the node's master key). The RSA-2048 generation is done once per master key.
+func seedState(t *testing.T, dir, masterKey string) {
 	t.Helper()
-	st, err := storage.NewStore(dbPath)
+	stateTplMu.Lock()
+	tpl, ok := stateTpl[masterKey]
+	if !ok {
+		d, err := os.MkdirTemp("", "secagent-itest-state-*")
+		if err != nil {
+			stateTplMu.Unlock()
+			t.Fatal(err)
+		}
+		if err := state.Init(state.InitOptions{Dir: d, MasterKey: masterKey, RSABits: 2048}); err != nil {
+			stateTplMu.Unlock()
+			t.Fatal(err)
+		}
+		tpl = filepath.Join(d, state.StateFile)
+		stateTpl[masterKey] = tpl
+	}
+	stateTplMu.Unlock()
+	data, err := os.ReadFile(tpl)
 	if err != nil {
 		t.Fatal(err)
 	}
-	enc, err := crypto.EncryptAESGCM(rsaKeyPEM, masterKey)
-	if err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.ConfigSet(context.Background(), "rsa_key_current", "enc:"+enc); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Close(); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, state.StateFile), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -251,7 +268,8 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 	}
 	n := &node{t: t, id: spec.ID, adminTok: "admin-" + spec.ID + "-secret-token", jwtSecret: "jwt-signing-secret-of-" + spec.ID + "-0123456789", logs: &syncBuf{}}
 	masterKey := "integration-master-key-" + spec.ID
-	dbPath := filepath.Join(t.TempDir(), "relay.db")
+	stateDir := filepath.Join(t.TempDir(), "state")
+	n.stateDir = stateDir
 	n.hooksPath = filepath.Join(t.TempDir(), "hooks.json")
 	n.hookOut = filepath.Join(t.TempDir(), "hooks.out")
 	if spec.Hooks != nil {
@@ -259,7 +277,7 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 			t.Fatal(err)
 		}
 	}
-	seedDatabase(t, dbPath, masterKey)
+	seedState(t, stateDir, masterKey)
 
 	n.env = append(append(os.Environ(),
 		envNodeProcess+"=1",
@@ -269,8 +287,8 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 		"ADMIN_TOKEN="+n.adminTok,
 		"JWT_SECRET_KEY="+n.jwtSecret,
 		"RSA_MASTER_KEY="+masterKey,
-		"DATABASE_URL=sqlite:///"+dbPath,
-		"RELAY_ACTION_LOG="+filepath.Join(filepath.Dir(dbPath), "actions.log"),
+		"STATE_DIR="+stateDir,
+		"RELAY_ACTION_LOG="+filepath.Join(filepath.Dir(stateDir), "actions.log"),
 		"RELAY_HOOKS_CONFIG="+n.hooksPath, // absent unless spec.Hooks: 0 hooks active
 		"REPEATER_ID="+spec.ID,
 		"REPEATER_UPSTREAM_URL="+spec.ParentURL,
@@ -279,54 +297,135 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 	return n
 }
 
-// dbScalar runs a read-only query on the node's database file and returns its first column.
-func (n *node) dbScalar(query string) string {
+// statePayload returns the permanent data of the node as written in its relay.state (the file is
+// read-only for the test: the node is its single writer). Volatile data (routing, relay status,
+// last_seen) is never in it.
+func (n *node) statePayload() map[string]json.RawMessage {
 	n.t.Helper()
-	path := ""
-	for _, e := range n.env {
-		if strings.HasPrefix(e, "DATABASE_URL=sqlite:///") {
-			path = strings.TrimPrefix(e, "DATABASE_URL=sqlite:///")
-		}
-	}
-	db, err := sql.Open("sqlite3", path)
+	raw, err := os.ReadFile(filepath.Join(n.stateDir, state.StateFile))
 	if err != nil {
 		n.t.Fatal(err)
 	}
-	defer func() { _ = db.Close() }()
-	var v sql.NullString
-	if err := db.QueryRow(query).Scan(&v); err != nil {
-		n.t.Fatalf("%s: %v", query, err)
+	var env struct {
+		Payload map[string]json.RawMessage `json:"payload"`
 	}
-	return v.String
+	if err := json.Unmarshal(raw, &env); err != nil {
+		n.t.Fatalf("relay.state of %s: %v", n.id, err)
+	}
+	return env.Payload
 }
 
-// enrollAgent records host in the node's database with the given current JTI, as an enrollment
-// would: /ws/agent refuses (401) a token whose agent is unknown or whose JTI is not the current one
-// (#169). It goes through the database file because the node is a separate process.
-func (n *node) enrollAgent(host, jti string) {
+// stateSection decodes one section (e.g. "relay_nodes", "agents") of the state file.
+func (n *node) stateSection(name string) map[string]map[string]any {
 	n.t.Helper()
-	path := ""
-	for _, e := range n.env {
-		if strings.HasPrefix(e, "DATABASE_URL=sqlite:///") {
-			path = strings.TrimPrefix(e, "DATABASE_URL=sqlite:///")
+	out := map[string]map[string]any{}
+	if raw, ok := n.statePayload()[name]; ok {
+		if err := json.Unmarshal(raw, &out); err != nil {
+			n.t.Fatalf("state section %s: %v", name, err)
 		}
 	}
-	db, err := sql.Open("sqlite3", path)
+	return out
+}
+
+// agentKey is the RSA key every harness minion enrolls with.
+var (
+	agentKeyOnce sync.Once
+	agentKey     *rsa.PrivateKey
+	agentKeyPEM  string
+)
+
+func harnessAgentKey(t *testing.T) (*rsa.PrivateKey, string) {
+	t.Helper()
+	k, p, err := harnessAgentKeyErr()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k, p
+}
+
+var agentKeyErr error
+
+func harnessAgentKeyErr() (*rsa.PrivateKey, string, error) {
+	agentKeyOnce.Do(func() {
+		// 4096 bits like a real minion: a JWT does not fit in an RSA-OAEP block of a 2048-bit key
+		k, err := rsa.GenerateKey(rand.Reader, 4096)
+		if err != nil {
+			agentKeyErr = err
+			return
+		}
+		der, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
+		agentKey, agentKeyPEM = k, string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	})
+	return agentKey, agentKeyPEM, agentKeyErr
+}
+
+// enrollAgent enrolls host through the REAL flow (admin pre-authorization of its key, then
+// POST /api/register) and returns the JWT the server issued: /ws/agent refuses a token whose agent
+// is unknown or whose JTI is not the current one (#169), and the server signs with the secret of
+// its state.
+func (n *node) enrollAgent(host string) string {
+	n.t.Helper()
+	tok, err := n.enrollAgentErr(host)
 	if err != nil {
 		n.t.Fatal(err)
 	}
-	defer func() { _ = db.Close() }()
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec("PRAGMA busy_timeout=10000"); err != nil {
-		n.t.Fatal(err)
+	return tok
+}
+
+// enrollAgentErr is enrollAgent for goroutines other than the test's (it never calls t.Fatal).
+func (n *node) enrollAgentErr(host string) (string, error) {
+	key, pubPEM, err := harnessAgentKeyErr()
+	if err != nil {
+		return "", err
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.Exec(`INSERT INTO agents (hostname, public_key_pem, token_jti, enrolled_at, last_seen, status)
-		VALUES (?, 'pem', ?, ?, ?, 'disconnected')
-		ON CONFLICT(hostname) DO UPDATE SET token_jti = excluded.token_jti`,
-		host, jti, now, now); err != nil {
-		n.t.Fatalf("enroll %s: %v", host, err)
+	if code, raw, err := n.callErr("POST", n.adminURL(), "/api/admin/authorize", n.adminTok, map[string]any{"hostname": host, "public_key_pem": pubPEM, "approved_by": "harness"}); err != nil || code >= 300 {
+		return "", fmt.Errorf("authorize %s on %s: %d %s %v", host, n.id, code, raw, err)
 	}
+	code, raw, err := n.callErr("POST", n.apiURL(), "/api/register", "", map[string]any{"hostname": host, "public_key_pem": pubPEM})
+	if err != nil || code != http.StatusOK {
+		return "", fmt.Errorf("register %s on %s: %d %s %v", host, n.id, code, raw, err)
+	}
+	var resp struct {
+		TokenEncrypted string `json:"token_encrypted"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil || resp.TokenEncrypted == "" {
+		return "", fmt.Errorf("register response of %s: %v %s", host, err, raw)
+	}
+	ct, err := base64.StdEncoding.DecodeString(resp.TokenEncrypted)
+	if err != nil {
+		return "", err
+	}
+	jwtRaw, err := rsa.DecryptOAEP(sha256.New(), nil, key, ct, nil)
+	if err != nil {
+		return "", fmt.Errorf("decrypt the token of %s: %w", host, err)
+	}
+	return string(jwtRaw), nil
+}
+
+// callErr is callOn for goroutines other than the test's.
+func (n *node) callErr(method, base, path, bearer string, body any) (int, []byte, error) {
+	var rd io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, base+path, rd)
+	if err != nil {
+		return 0, nil, err
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, out, nil
 }
 
 // setEnv sets (or replaces) one environment variable of the node for its NEXT start / restart.
@@ -421,6 +520,21 @@ func (n *node) restart() {
 	n.t.Helper()
 	prev := n.ready
 	n.stop()
+	n.launch([]string{"NODE_API_ADDR=" + prev.API, "NODE_ADMIN_ADDR=" + prev.Admin, "NODE_WS_ADDR=" + prev.WS})
+}
+
+// kill9 stops the node like a crash (SIGKILL, no graceful shutdown) and restarts it on its previous
+// addresses and its persistent state.
+func (n *node) kill9() {
+	n.t.Helper()
+	prev := n.ready
+	if n.cmd == nil || n.cmd.Process == nil {
+		n.t.Fatal("kill9: node not running")
+	}
+	_ = n.cmd.Process.Kill()
+	_ = n.cmd.Wait()
+	_ = n.stdin.Close()
+	n.cmd = nil
 	n.launch([]string{"NODE_API_ADDR=" + prev.API, "NODE_ADMIN_ADDR=" + prev.Admin, "NODE_WS_ADDR=" + prev.WS})
 }
 
@@ -721,14 +835,12 @@ func (m *minion) received() []map[string]any {
 // connectMinion opens a real /ws/agent link signed with the node's secret and answers tasks.
 func connectMinion(t *testing.T, n *node, host string) *minion {
 	t.Helper()
-	n.enrollAgent(host, "agent-"+host)
-	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": host, "role": "agent", "jti": "agent-" + host,
-		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
-	}).SignedString([]byte(n.jwtSecret))
-	if err != nil {
-		t.Fatal(err)
-	}
+	return connectMinionWithToken(t, n, host, n.enrollAgent(host))
+}
+
+// connectMinionWithToken opens the /ws/agent link of an already enrolled agent.
+func connectMinionWithToken(t *testing.T, n *node, host, tok string) *minion {
+	t.Helper()
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+tok)
 	d := websocket.Dialer{TLSClientConfig: tlsClientConfig(), HandshakeTimeout: 5 * time.Second}

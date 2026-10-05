@@ -50,8 +50,8 @@ func TestWiring_AgentRevocationIsEnforcedOnBothPorts(t *testing.T) {
 	if _, err := n.store.RegisterAgent(ctx, "host-b", "pem", "jti-b"); err != nil {
 		t.Fatal(err)
 	}
-	tokA := signAgentToken(t, "node-test-secret", "host-a", "jti-a")
-	tokB := signAgentToken(t, "node-test-secret", "host-b", "jti-b")
+	tokA := signAgentToken(t, serverJWTSecret(), "host-a", "jti-a")
+	tokB := signAgentToken(t, serverJWTSecret(), "host-b", "jti-b")
 
 	// a legitimate agent connects on the API port (7770) and on the WS port (7772)
 	cA, status, err := dialAgentWS(wsAddr, tokA)
@@ -91,7 +91,7 @@ func TestWiring_AgentReplacedTokenIsRefused(t *testing.T) {
 	if _, err := n.store.RegisterAgent(ctx, "host-r", "pem", "jti-old"); err != nil {
 		t.Fatal(err)
 	}
-	old := signAgentToken(t, "node-test-secret", "host-r", "jti-old")
+	old := signAgentToken(t, serverJWTSecret(), "host-r", "jti-old")
 	// re-enrollment / refresh / rekey replace the current JTI
 	if _, err := n.store.UpdateTokenJTI(ctx, "host-r", "jti-new"); err != nil {
 		t.Fatal(err)
@@ -99,23 +99,23 @@ func TestWiring_AgentReplacedTokenIsRefused(t *testing.T) {
 	if _, status, err := dialAgentWS(wsAddr, old); err == nil || status != http.StatusUnauthorized {
 		t.Errorf("replaced token accepted: status %d err %v, want 401", status, err)
 	}
-	c, status, err := dialAgentWS(wsAddr, signAgentToken(t, "node-test-secret", "host-r", "jti-new"))
+	c, status, err := dialAgentWS(wsAddr, signAgentToken(t, serverJWTSecret(), "host-r", "jti-new"))
 	if err != nil {
 		t.Fatalf("current token must connect: %v (status %d)", err, status)
 	}
 	_ = c.Close()
 	// unknown agent and token without jti: refused (fail closed)
-	if _, status, err := dialAgentWS(wsAddr, signAgentToken(t, "node-test-secret", "ghost", "jti-g")); err == nil || status != http.StatusUnauthorized {
+	if _, status, err := dialAgentWS(wsAddr, signAgentToken(t, serverJWTSecret(), "ghost", "jti-g")); err == nil || status != http.StatusUnauthorized {
 		t.Errorf("unknown agent accepted: status %d err %v", status, err)
 	}
-	if _, status, err := dialAgentWS(wsAddr, signAgentToken(t, "node-test-secret", "host-r", "")); err == nil || status != http.StatusUnauthorized {
+	if _, status, err := dialAgentWS(wsAddr, signAgentToken(t, serverJWTSecret(), "host-r", "")); err == nil || status != http.StatusUnauthorized {
 		t.Errorf("token without jti accepted: status %d err %v", status, err)
 	}
 }
 
 func newMemStore(t *testing.T) *storage.Store {
 	t.Helper()
-	st, err := storage.NewStore(":memory:")
+	st, err := storage.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -78,6 +78,8 @@ func TestNodeProcess(t *testing.T) {
 		*p = tls.NewListener(ln, tlsCfg)
 	}
 	applyTuning(&cfg)
+	// the lock of #163 is not part of the harness: this child is the only instance of its state
+	cfg.WriteGuard = func() error { return nil }
 
 	node, err := server.Build(cfg)
 	if err != nil {

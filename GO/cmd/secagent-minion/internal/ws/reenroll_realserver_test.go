@@ -75,13 +75,21 @@ func TestReEnrollAgainstARealServer(t *testing.T) {
 		t.Fatalf("build secagent-server: %v\n%s", err, out)
 	}
 
+	// the relay state, created by the real `secagent-server state init` (RSA-4096 generation: heavy-tailed duration under load)
+	stateDir := filepath.Join(dir, "state")
+	initCmd := exec.Command(bin, "state", "init")
+	initCmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "RSA_MASTER_KEY=realserver-master-key", "STATE_DIR=" + stateDir}
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		t.Fatalf("state init: %v\n%s", err, out)
+	}
 	api, adminAddr, wsAddr := localAddr(t), localAddr(t), localAddr(t)
 	const adminToken = "realserver-admin-token"
 	srv := exec.Command(bin)
 	srv.Env = []string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + dir,
 		"JWT_SECRET_KEY=realserver-jwt-secret", "ADMIN_TOKEN=" + adminToken,
-		"RSA_MASTER_KEY=realserver-master-key", "DATABASE_URL=" + filepath.Join(dir, "relay.db"),
+		"RSA_MASTER_KEY=realserver-master-key", "STATE_DIR=" + stateDir,
+		"RELAY_SINGLE_INSTANCE=true", // one instance, no lock (#163 not wired yet)
 		"RELAY_HOOKS_CONFIG=" + filepath.Join(dir, "absent-hooks.json"), "TLS_DISABLE=true",
 		"API_ADDR=" + api, "ADMIN_ADDR=" + adminAddr, "WS_ADDR=" + wsAddr,
 	}
@@ -92,7 +100,7 @@ func TestReEnrollAgainstARealServer(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = srv.Process.Kill(); _ = srv.Wait() })
 
-	// the server generates its RSA key on first start: wait for the three ports
+	// wait for the three ports
 	deadline := time.Now().Add(240 * time.Second) // failure-only bound: RSA-4096 key generation has a heavy-tailed duration (>120 s observed under load, empty server output)
 	for _, a := range []string{api, adminAddr, wsAddr} {
 		for {

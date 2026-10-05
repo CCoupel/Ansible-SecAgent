@@ -18,10 +18,9 @@ func startNode(t *testing.T, mutate func(*Config)) (n *Node, api, admin, wsAddr 
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent-hooks.json")
 	t.Setenv("RELAY_ACTION_LOG", t.TempDir()+"/actions.log") // hook journal (#161): never /data in tests
 	cfg := Config{
-		TLSDisable: true,
-		JWTSecret:  "node-test-secret", AdminToken: "node-test-admin",
-		DatabaseURL: ":memory:",
-		LogLevel:    "INFO",
+		TLSDisable: true, JWTSecret: "node-test-secret", AdminToken: "node-test-admin",
+		StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites,
+		LogLevel: "INFO",
 	}
 	for _, p := range []*net.Listener{&cfg.APIListener, &cfg.AdminListener, &cfg.WSListener} {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")

@@ -10,7 +10,7 @@ import (
 // newRelayTestStore returns a fresh in-memory store for relay tests.
 func newRelayTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := NewStore(":memory:")
+	s, err := OpenTemp()
 	if err != nil {
 		t.Fatalf("newRelayTestStore: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestUpsertRelayNode_UpdatesOnConflict(t *testing.T) {
 	}
 
 	// Update with same relay_id → should change mode and status
-	node2 := RelayNode{ID: id, RelayID: "relay1", Mode: "push", URL: "https://relay1:7770", Status: "connected", CreatedAt: 1000}
+	node2 := RelayNode{ID: id, RelayID: "relay1", Mode: "push", URL: "https://relay1:7770", TokenSecret: "enc:sealed", Status: "connected", CreatedAt: 1000}
 	if err := s.UpsertRelayNode(node2); err != nil {
 		t.Fatalf("second upsert: %v", err)
 	}

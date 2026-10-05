@@ -25,11 +25,6 @@ func TestRouting_LiveLocalAgentBeatsRelayClaim(t *testing.T) {
 		t.Errorf("host.conflict against the local owner emitted %d times, want once", n)
 	}
 
-	// (the host is enrolled on the root, so the inventory lists it anyway: the route table is the check)
-	if n := root.dbScalar("SELECT COUNT(*) FROM relay_routing WHERE hostname = 'dup-host'"); n != "0" {
-		t.Errorf("the claim of a relay must not create a route for a host connected to this node (routes: %s)", n)
-	}
-
 	r := root.exec("dup-host", execBody("id"))
 	if r.Code != http.StatusOK || r.Body["stdout"] != `ran "id" on dup-host` {
 		t.Fatalf("exec = %d %v", r.Code, r.Body)

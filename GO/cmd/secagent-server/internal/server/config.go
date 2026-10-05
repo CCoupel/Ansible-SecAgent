@@ -14,6 +14,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/config"
 	"secagent-server/cmd/secagent-server/internal/handlers"
 	"secagent-server/cmd/secagent-server/internal/repeater"
+	"secagent-server/cmd/secagent-server/internal/state"
 )
 
 // Default listen addresses (unchanged since v1).
@@ -32,10 +33,29 @@ const (
 
 // Config is everything the server needs to start.
 type Config struct {
-	JWTSecret   string
-	AdminToken  string
-	DatabaseURL string
-	LogLevel    string
+	JWTSecret  string
+	AdminToken string
+	LogLevel   string
+
+	// StateDir is STATE_DIR (default /data): the directory of relay.state (#160). The state must
+	// have been created by `secagent-server state init`; the server never creates it.
+	StateDir string
+	// StateMaxBytes is STATE_MAX_BYTES (0 = the default ceiling).
+	StateMaxBytes int64
+	// WriteGuard is the write guard of the state engine: the lock identity check of #163. While it
+	// is nil the instance is read-only (every write fails with storage.ErrReadOnly). Never set from
+	// the environment.
+	WriteGuard func() error
+	// SingleInstance (RELAY_SINGLE_INSTANCE=true) is the operator's explicit statement "exactly one
+	// instance runs on this STATE_DIR, there is no exclusivity lock": the write guard then allows
+	// every write. It exists until the active/passive lock is wired (#163) and stays the way to run
+	// a lone relay without shared storage. Never enable it with two instances on one STATE_DIR.
+	SingleInstance bool
+	// InsecureTestState accepts a state created with `state init --insecure-test-mode` (secrets in
+	// clear). TEST SEAM: never set by ConfigFromEnv, and refused when RSA_MASTER_KEY is set.
+	InsecureTestState bool
+	// PurgeInterval is the period of the blacklist purge task (0 = one hour). TEST SEAM.
+	PurgeInterval time.Duration
 
 	// Listen addresses; empty = the defaults above.
 	APIAddr   string
@@ -76,6 +96,10 @@ type Config struct {
 	Repeater *config.RepeaterConfig
 }
 
+// ErrDatabaseURLRemoved is returned when DATABASE_URL is still set: since v3.0.3 the relay state is
+// the file relay.state in STATE_DIR (no SQLite, no migration of an existing relay.db).
+var ErrDatabaseURLRemoved = errors.New("DATABASE_URL is no longer supported: the relay state is now relay.state in STATE_DIR (default /data); unset DATABASE_URL and create the state with 'secagent-server state init' (existing relay.db data is NOT migrated)")
+
 // ErrMissingJWTSecret / ErrMissingAdminToken are returned by ConfigFromEnv.
 var (
 	ErrMissingJWTSecret  = errors.New("JWT_SECRET_KEY environment variable is required")
@@ -88,7 +112,7 @@ func ConfigFromEnv() (Config, error) {
 	cfg := Config{
 		JWTSecret:         os.Getenv("JWT_SECRET_KEY"),
 		AdminToken:        os.Getenv("ADMIN_TOKEN"),
-		DatabaseURL:       envOr("DATABASE_URL", "sqlite:///./relay.db"),
+		StateDir:          state.DirFromEnv(),
 		LogLevel:          envOr("LOG_LEVEL", "INFO"),
 		TrustedProxyCIDRs: os.Getenv(handlers.EnvTrustedProxyCIDRs),
 		APIAddr:           envOr(EnvAPIAddr, DefaultAPIAddr),
@@ -104,6 +128,9 @@ func ConfigFromEnv() (Config, error) {
 	if cfg.AdminTLS, terr = envStrictBool(EnvAdminTLS); terr != nil {
 		return Config{}, terr
 	}
+	if cfg.SingleInstance, terr = envStrictBool("RELAY_SINGLE_INSTANCE"); terr != nil {
+		return Config{}, terr
+	}
 	if err := validateTLSConfig(cfg); err != nil {
 		return Config{}, err
 	}
@@ -115,6 +142,16 @@ func ConfigFromEnv() (Config, error) {
 	if _, err := handlers.ParseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs); err != nil {
 		return Config{}, err
 	}
+	if v := os.Getenv("DATABASE_URL"); v != "" {
+		// SQLite is gone: ignoring the variable would let the operator believe a database is
+		// still in use, so this is an error, not a warning (unlike the obsolete NATS_URL).
+		return Config{}, ErrDatabaseURLRemoved
+	}
+	max, err := state.MaxBytesFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.StateMaxBytes = max
 	if cfg.JWTSecret == "" {
 		return Config{}, ErrMissingJWTSecret
 	}

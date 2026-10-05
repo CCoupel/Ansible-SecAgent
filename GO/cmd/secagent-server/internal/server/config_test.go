@@ -11,7 +11,7 @@ func setServerEnv(t *testing.T) {
 	t.Setenv("JWT_SECRET_KEY", "s")
 	t.Setenv("ADMIN_TOKEN", "a")
 	t.Setenv("TLS_DISABLE", "true")
-	for _, k := range []string{EnvAPIAddr, EnvAdminAddr, EnvWSAddr, "DATABASE_URL", "LOG_LEVEL",
+	for _, k := range []string{EnvAPIAddr, EnvAdminAddr, EnvWSAddr, "DATABASE_URL", "STATE_DIR", "STATE_MAX_BYTES", "RELAY_SINGLE_INSTANCE", "LOG_LEVEL",
 		"REPEATER_ID", "REPEATER_UPSTREAM_URL", "REPEATER_UPSTREAM_TOKEN"} {
 		t.Setenv(k, "")
 	}
@@ -26,7 +26,7 @@ func TestConfigFromEnv_DefaultsAreTheHistoricalPorts(t *testing.T) {
 	if cfg.APIAddr != ":7770" || cfg.AdminAddr != ":7771" || cfg.WSAddr != ":7772" {
 		t.Errorf("addresses = %q %q %q, want :7770 :7771 :7772", cfg.APIAddr, cfg.AdminAddr, cfg.WSAddr)
 	}
-	if cfg.DatabaseURL != "sqlite:///./relay.db" || cfg.LogLevel != "INFO" {
+	if cfg.StateDir != "/data" || cfg.LogLevel != "INFO" {
 		t.Errorf("defaults = %+v", cfg)
 	}
 	if cfg.Repeater != nil {
@@ -135,7 +135,7 @@ func TestConfig_InvalidTrustedProxyCIDRsRefusesToStart(t *testing.T) {
 	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "TRUSTED_PROXY_CIDRS") {
 		t.Fatalf("ConfigFromEnv error = %v, want a TRUSTED_PROXY_CIDRS error", err)
 	}
-	if _, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:", TrustedProxyCIDRs: "10.0.0.0/99"}); err == nil {
+	if _, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites, TrustedProxyCIDRs: "10.0.0.0/99"}); err == nil {
 		t.Fatal("Build must refuse an invalid CIDR")
 	}
 	t.Setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8, 192.168.0.0/16")
@@ -155,8 +155,53 @@ func TestConfig_TrustedProxyCIDRsPrefixZeroRefusesToStart(t *testing.T) {
 		if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "TRUSTED_PROXY_CIDRS") {
 			t.Errorf("ConfigFromEnv(%q) error = %v, want a TRUSTED_PROXY_CIDRS error", bad, err)
 		}
-		if _, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:", TrustedProxyCIDRs: bad}); err == nil {
+		if _, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites, TrustedProxyCIDRs: bad}); err == nil {
 			t.Errorf("Build(%q) must refuse a /0 range", bad)
+		}
+	}
+}
+
+// #160: DATABASE_URL (SQLite) is an ERROR, not a warning: ignoring it would let the operator
+// believe a database is still in use. STATE_DIR / STATE_MAX_BYTES are read and validated.
+func TestConfigFromEnv_StateSettings(t *testing.T) {
+	setServerEnv(t)
+	t.Setenv("DATABASE_URL", "sqlite:////data/relay.db")
+	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "DATABASE_URL is no longer supported") {
+		t.Fatalf("DATABASE_URL set: %v", err)
+	} else if !errors.Is(err, ErrDatabaseURLRemoved) {
+		t.Errorf("not ErrDatabaseURLRemoved: %v", err)
+	}
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("STATE_DIR", "/srv/relay-state")
+	t.Setenv("STATE_MAX_BYTES", "1048576")
+	cfg, err := ConfigFromEnv()
+	if err != nil || cfg.StateDir != "/srv/relay-state" || cfg.StateMaxBytes != 1048576 {
+		t.Fatalf("cfg = %+v %v", cfg, err)
+	}
+	if cfg.WriteGuard != nil || cfg.InsecureTestState {
+		t.Error("the environment can never set the write guard nor the insecure test mode")
+	}
+	t.Setenv("STATE_MAX_BYTES", "lots")
+	if _, err := ConfigFromEnv(); err == nil {
+		t.Error("an invalid STATE_MAX_BYTES must be refused")
+	}
+}
+
+// RELAY_SINGLE_INSTANCE is an explicit opt-in: "true", "false" or unset; anything else is an error
+// (like TLS_DISABLE: "1" or "yes" must never silently mean something else).
+func TestConfigFromEnv_SingleInstanceIsAnExplicitOptIn(t *testing.T) {
+	setServerEnv(t)
+	for value, want := range map[string]bool{"": false, "false": false, "true": true} {
+		t.Setenv("RELAY_SINGLE_INSTANCE", value)
+		cfg, err := ConfigFromEnv()
+		if err != nil || cfg.SingleInstance != want {
+			t.Errorf("RELAY_SINGLE_INSTANCE=%q: SingleInstance=%v err=%v, want %v", value, cfg.SingleInstance, err, want)
+		}
+	}
+	for _, bad := range []string{"1", "yes", "TRUE", "on"} {
+		t.Setenv("RELAY_SINGLE_INSTANCE", bad)
+		if _, err := ConfigFromEnv(); err == nil {
+			t.Errorf("RELAY_SINGLE_INSTANCE=%q must be refused", bad)
 		}
 	}
 }

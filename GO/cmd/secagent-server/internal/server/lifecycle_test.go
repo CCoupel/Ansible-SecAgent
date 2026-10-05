@@ -42,7 +42,7 @@ func TestNode_RunReturnsOnPortConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = busy.Close() }()
-	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:",
+	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites,
 		APIAddr: busy.Addr().String(), AdminAddr: "127.0.0.1:0", WSAddr: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatal(err)
@@ -56,15 +56,15 @@ func TestNode_RunReturnsOnPortConflict(t *testing.T) {
 
 func TestBuild_ReleasesEverythingOnError(t *testing.T) {
 	_, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a",
-		DatabaseURL: "/nonexistent-dir-for-secagent-test/\x00/relay.db"})
+		StateDir: "/nonexistent-dir-for-secagent-test/\x00/state", InsecureTestState: true, WriteGuard: allowWrites})
 	if err == nil {
-		t.Fatal("expected a database error")
+		t.Fatal("expected a state error")
 	}
 }
 
 func TestNode_CloseIsIdempotent(t *testing.T) {
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
-	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:"})
+	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -87,7 +87,7 @@ func Build(cfg Config) (node *Node, err error) {
 		// functional effect, so this is a warning, not an error (unlike DATABASE_URL, #160).
 		log.Printf("[WARN] NATS_URL is obsolete and ignored (NATS removed in v3.0.3)")
 	}
-	log.Printf("[INIT] DATABASE_URL: %s", cfg.DatabaseURL)
+	log.Printf("[INIT] STATE_DIR: %s", cfg.StateDir)
 	log.Printf("[INIT] LOG_LEVEL: %s", cfg.LogLevel)
 	if repeaterCfg != nil {
 		log.Printf("[INIT] Repeater child mode: REPEATER_ID=%s upstream=%s", repeaterCfg.ID, repeaterCfg.UpstreamURL)
@@ -103,14 +103,35 @@ func Build(cfg Config) (node *Node, err error) {
 	// Bootstrap secrets from the Config (init() read the same values from the environment).
 	handlers.ConfigureServer(cfg.JWTSecret, cfg.AdminToken)
 
-	// Initialize storage (SQLite)
-	log.Println("[INIT] Initializing SQLite database...")
-	store, err := storage.NewStore(cfg.DatabaseURL)
+	// Load the state file BEFORE anything else: a missing state refuses to start (never created
+	// here), an invalid or tampered one too. Without a write guard the instance is read-only.
+	log.Println("[INIT] Loading the state file...")
+	stateDir := cfg.StateDir
+	if stateDir == "" {
+		stateDir = state.DefaultStateDir
+	}
+	masterKey := os.Getenv("RSA_MASTER_KEY")
+	writeGuard := cfg.WriteGuard
+	if writeGuard == nil && cfg.SingleInstance {
+		log.Println("[WARN] RELAY_SINGLE_INSTANCE: no exclusivity lock, every write is allowed — run exactly ONE instance on this STATE_DIR")
+		writeGuard = func() error { return nil }
+	}
+	store, err := storage.Open(state.Options{
+		Dir:       stateDir,
+		MaxBytes:  cfg.StateMaxBytes,
+		MasterKey: masterKey,
+		// clear secrets are accepted only by the explicit test seam, and never with a master key
+		InsecureTestMode: cfg.InsecureTestState && masterKey == "",
+		BeforeWrite:      writeGuard,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize database: %w", err)
+		return nil, fmt.Errorf("failed to load the state: %w", err)
 	}
 	n.store = store
-	log.Println("[OK] Database initialized")
+	if writeGuard == nil {
+		log.Println("[WARN] no write guard connected: the state is READ-ONLY until this instance is the confirmed master (#163)")
+	}
+	log.Println("[OK] State loaded")
 
 	// Inject store into admin handlers
 	handlers.SetAdminStore(store)
@@ -142,6 +163,8 @@ func Build(cfg Config) (node *Node, err error) {
 
 	// Initialize hooks dispatcher (async event delivery)
 	n.dispatchCtx, n.cancel = context.WithCancel(context.Background())
+	// Periodic purge of the expired blacklist entries (bounds the state file; the write guard applies).
+	n.startPurge(cfg.PurgeInterval)
 	dispatchCtx := n.dispatchCtx
 	journal, jerr := actionlog.Open(actionlog.Options{Path: actionlog.PathFromEnv(state.DirFromEnv())})
 	if jerr != nil {
@@ -166,9 +189,9 @@ func Build(cfg Config) (node *Node, err error) {
 	}
 
 	// Wire DispatchFunc into ws package (avoids import cycle ws→hooks)
-	ws.DispatchFunc = func(event, hostname, status, enrolledAt string) {
+	ws.SetDispatchFunc(func(event, hostname, status, enrolledAt string) {
 		dispatcher.Dispatch(event, hostname, status, enrolledAt)
-	}
+	})
 	log.Println("[OK] Hooks dispatcher started")
 
 	// Wire relay routing/status update functions into ws package (avoids import cycle ws→storage)
@@ -511,4 +534,30 @@ func (n *Node) shutdownServers() {
 			log.Printf("%s server shutdown error: %v", s.name, err)
 		}
 	}
+}
+
+// startPurge runs the periodic purge of the expired blacklist entries until the node is closed.
+// A purge only writes when something expired, and goes through the write guard like any write.
+func (n *Node) startPurge(every time.Duration) {
+	if every <= 0 {
+		every = time.Hour
+	}
+	ctx := n.dispatchCtx
+	if ctx == nil {
+		return
+	}
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if _, err := n.store.PurgeExpiredBlacklist(ctx); err != nil && !errors.Is(err, storage.ErrReadOnly) {
+					log.Printf("[WARN] blacklist purge: %v", err)
+				}
+			}
+		}
+	}()
 }

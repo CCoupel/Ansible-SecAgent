@@ -6,10 +6,13 @@ import (
 	"log"
 	"strings"
 	"testing"
+	"time"
+
+	"secagent-server/cmd/secagent-server/internal/state"
 )
 
 func TestUpsertRelayNode_RefusesMalformedRelayID(t *testing.T) {
-	s, err := NewStore(":memory:")
+	s, err := OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +30,7 @@ func TestUpsertRelayNode_RefusesMalformedRelayID(t *testing.T) {
 // Rows written before the validation are ignored (with a warning, the id quoted) by the consumers
 // that route / publish / inventory, but stay listable so that an admin can delete them.
 func TestListValidRelayNodes_IgnoresLegacyMalformedRows(t *testing.T) {
-	s, err := NewStore(":memory:")
+	s, err := OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,12 +38,11 @@ func TestListValidRelayNodes_IgnoresLegacyMalformedRows(t *testing.T) {
 	if err := s.UpsertRelayNode(RelayNode{ID: "good", RelayID: "dmz1", Mode: "pull", Status: "pending"}); err != nil {
 		t.Fatal(err)
 	}
-	// a legacy row inserted behind the guard
-	if _, err := s.db.Exec(`INSERT INTO relay_nodes (id, relay_id, url, description, token_hash, mode, is_proxy, created_at, status)
-		VALUES ('bad', E'a\nb', '', '', '', 'pull', 0, 0, 'pending')`); err != nil {
-		if _, err2 := s.db.Exec("INSERT INTO relay_nodes (id, relay_id, url, description, token_hash, mode, is_proxy, created_at, status) VALUES ('bad', 'a'||char(10)||'b', '', '', '', 'pull', 0, 0, 'pending')"); err2 != nil {
-			t.Fatal(err2)
-		}
+	// a legacy row inserted behind the guard (straight through the engine)
+	if err := s.Engine().Mutate(func(tx *state.Tx) error {
+		return tx.PutRelayNode(state.RelayNode{ID: "bad", RelayID: "a\nb", Mode: "pull", CreatedAt: time.Unix(0, 0)})
+	}); err != nil {
+		t.Fatal(err)
 	}
 	var buf bytes.Buffer
 	prev := log.Writer()
@@ -70,7 +72,7 @@ func TestListValidRelayNodes_IgnoresLegacyMalformedRows(t *testing.T) {
 // never served: the hostname, the declaring relay and every chain element must be well formed.
 func TestRelayRouting_MalformedRowsAreNeverServed(t *testing.T) {
 	resetIgnored()
-	s, err := NewStore(":memory:")
+	s, err := OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,19 +80,16 @@ func TestRelayRouting_MalformedRowsAreNeverServed(t *testing.T) {
 	if err := s.UpsertRelayNode(RelayNode{ID: "good", RelayID: "dmz1", Mode: "pull", Status: "pending"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec("INSERT INTO relay_nodes (id, relay_id, url, description, token_hash, mode, is_proxy, created_at, status) VALUES ('bad', 'bad'||char(10)||'one', '', '', '', 'pull', 0, 0, 'pending')"); err != nil {
-		t.Fatal(err)
-	}
-	ins := func(host, relay, chain string) {
+	ins := func(host, relay string, chain []string) {
 		t.Helper()
-		if _, err := s.db.Exec("INSERT INTO relay_routing (hostname, relay_id, updated_at, hop_type, relay_chain) VALUES (?, ?, 0, 'relay', ?)", host, relay, chain); err != nil {
-			t.Fatal(err)
-		}
+		s.mu.Lock()
+		s.routes[host] = RelayRoute{Hostname: host, RelayID: relay, HopType: "relay", RelayChain: chain}
+		s.mu.Unlock()
 	}
-	ins("ok-host", "dmz1", `["dmz1"]`)
-	ins("bad-relay-host", "bad\none", `["bad\none"]`)
-	ins("bad-chain-host", "dmz1", `["dmz1","x\n[SECURITY WARNING] forged"]`)
-	ins("bad\nhost", "dmz1", `["dmz1"]`)
+	ins("ok-host", "dmz1", []string{"dmz1"})
+	ins("bad-relay-host", "bad\none", []string{"bad\none"})
+	ins("bad-chain-host", "dmz1", []string{"dmz1", "x\n[SECURITY WARNING] forged"})
+	ins("bad\nhost", "dmz1", []string{"dmz1"})
 
 	var buf bytes.Buffer
 	prev := log.Writer()

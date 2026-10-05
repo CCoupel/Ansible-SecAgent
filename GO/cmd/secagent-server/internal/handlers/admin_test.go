@@ -14,7 +14,7 @@ import (
 // newTestStore creates an in-memory SQLite store for testing.
 func newTestStore(t *testing.T) *storage.Store {
 	t.Helper()
-	s, err := storage.NewStore(":memory:")
+	s, err := storage.OpenTemp()
 	if err != nil {
 		t.Fatalf("newTestStore: %v", err)
 	}

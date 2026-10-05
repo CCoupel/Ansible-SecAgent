@@ -46,7 +46,7 @@ func TestWiring_AgentAuthFailsClosedOnBothPorts(t *testing.T) {
 	if code, body := adminCall(t, admin, "POST", "/api/admin/revoke/host-revoked", nil); code != http.StatusOK {
 		t.Fatalf("revoke: %d %s", code, body)
 	}
-	const secret = "node-test-secret"
+	secret := serverJWTSecret()
 	bearer := func(tok string) http.Header { return http.Header{"Authorization": {"Bearer " + tok}} }
 
 	refused := []struct {

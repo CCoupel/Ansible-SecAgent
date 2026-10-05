@@ -2,17 +2,18 @@ package storage
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
 	"net"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
+
+	"secagent-server/cmd/secagent-server/internal/state"
 )
 
-// PluginToken represents a static bearer token authorizing an Ansible plugin.
-// Matches SECURITY.md §6 table schema exactly.
+// PluginToken represents a stored plugin/admin API token (SECURITY.md §6).
 type PluginToken struct {
 	ID                     string
 	TokenHash              string // SHA-256(token) — never the token in clear
@@ -22,187 +23,131 @@ type PluginToken struct {
 	AllowedHostnamePattern string // Go regexp anchored ^...$, empty = no restriction
 	CreatedAt              time.Time
 	ExpiresAt              *time.Time // nil = no expiry
-	LastUsedAt             *time.Time // nil = never used
-	LastUsedIP             string
-	Revoked                bool
+	// LastUsedAt / LastUsedIP are APPROXIMATE: kept in memory and persisted only when the state
+	// file is written for another reason, so they may lag by minutes and a token used just before
+	// a crash can read "never used".
+	LastUsedAt *time.Time // nil = never used
+	LastUsedIP string
+	Revoked    bool
+}
+
+func (s *Store) pluginFromState(t state.PluginToken) *PluginToken {
+	out := &PluginToken{ID: t.ID, TokenHash: t.TokenHash, Description: t.Description, Role: t.Role, AllowedIPs: t.AllowedIPs,
+		AllowedHostnamePattern: t.AllowedHostnamePattern, CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt,
+		LastUsedAt: t.LastUsedAt, LastUsedIP: t.LastUsedIP, Revoked: t.Revoked}
+	s.mu.RLock()
+	if v, ok := s.pluginVol[t.ID]; ok && (out.LastUsedAt == nil || v.at.After(*out.LastUsedAt)) {
+		at := v.at
+		out.LastUsedAt, out.LastUsedIP = &at, v.ip
+	}
+	s.mu.RUnlock()
+	return out
 }
 
 // CreatePluginToken inserts a new plugin token.
-// id and tokenHash must be pre-computed by the caller (UUID + SHA-256).
 func (s *Store) CreatePluginToken(ctx context.Context, t PluginToken) error {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
-
-	createdAt := t.CreatedAt.UTC().Unix()
-
-	var expiresAt interface{}
-	if t.ExpiresAt != nil {
-		expiresAt = t.ExpiresAt.UTC().Unix()
-	}
-
 	role := t.Role
 	if role == "" {
 		role = "plugin"
 	}
-
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO plugin_tokens
-			(id, token_hash, description, role, allowed_ips, allowed_hostname_pattern,
-			 created_at, expires_at, last_used_at, last_used_ip, revoked)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0)
-	`, t.ID, t.TokenHash, t.Description, role,
-		nullableString(t.AllowedIPs), nullableString(t.AllowedHostnamePattern),
-		createdAt, expiresAt)
+	err := s.mutate(func(tx *state.Tx) error {
+		if _, exists := tx.PluginToken(t.ID); exists {
+			return fmt.Errorf("%w: plugin token id %q", state.ErrDuplicate, t.ID)
+		}
+		return tx.PutPluginToken(state.PluginToken{ID: t.ID, TokenHash: t.TokenHash, Description: t.Description, Role: role,
+			AllowedIPs: t.AllowedIPs, AllowedHostnamePattern: t.AllowedHostnamePattern,
+			CreatedAt: t.CreatedAt.UTC().Truncate(time.Second), ExpiresAt: secondsUTC(t.ExpiresAt)})
+	})
 	if err != nil {
 		return fmt.Errorf("CreatePluginToken: %w", err)
 	}
-
-	log.Printf("Plugin token created: id=%s description=%q role=%s", t.ID, t.Description, role)
+	log.Printf("Plugin token created: id=%q description=%q role=%q", t.ID, t.Description, role)
 	return nil
 }
 
-// GetPluginTokenByHash returns the token matching the given SHA-256 hash,
-// or nil if not found.
+// GetPluginTokenByHash returns the token with this hash, or (nil, nil).
 func (s *Store) GetPluginTokenByHash(ctx context.Context, tokenHash string) (*PluginToken, error) {
-	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
-
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, token_hash, description, role, allowed_ips, allowed_hostname_pattern,
-		       created_at, expires_at, last_used_at, last_used_ip, revoked
-		FROM plugin_tokens
-		WHERE token_hash = ?
-	`, tokenHash)
-
-	return scanPluginToken(row)
+	t, ok := s.snap().PluginTokenByHash(tokenHash)
+	if !ok {
+		return nil, nil
+	}
+	return s.pluginFromState(t), nil
 }
 
-// GetPluginTokenByID returns the token matching the given UUID.
+// GetPluginTokenByID returns the token with this id, or (nil, nil).
 func (s *Store) GetPluginTokenByID(ctx context.Context, id string) (*PluginToken, error) {
-	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
-
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, token_hash, description, role, allowed_ips, allowed_hostname_pattern,
-		       created_at, expires_at, last_used_at, last_used_ip, revoked
-		FROM plugin_tokens
-		WHERE id = ?
-	`, id)
-
-	return scanPluginToken(row)
+	t, ok := s.snap().PluginToken(id)
+	if !ok {
+		return nil, nil
+	}
+	return s.pluginFromState(t), nil
 }
 
-// ListPluginTokens returns all plugin tokens ordered by created_at desc.
+// ListPluginTokens returns all plugin tokens, newest first.
 func (s *Store) ListPluginTokens(ctx context.Context) ([]PluginToken, error) {
-	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
-
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, token_hash, description, role, allowed_ips, allowed_hostname_pattern,
-		       created_at, expires_at, last_used_at, last_used_ip, revoked
-		FROM plugin_tokens
-		ORDER BY created_at DESC
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("ListPluginTokens: %w", err)
+	var out []PluginToken
+	for _, t := range s.snap().PluginTokens() {
+		out = append(out, *s.pluginFromState(t))
 	}
-	defer func() { _ = rows.Close() }()
-
-	var tokens []PluginToken
-	for rows.Next() {
-		t, err := scanPluginTokenRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("ListPluginTokens scan: %w", err)
-		}
-		tokens = append(tokens, *t)
-	}
-	return tokens, rows.Err()
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
 }
 
-// RevokePluginToken soft-deletes a token by setting revoked=1.
-// Returns (true, nil) if found, (false, nil) if not found.
+// RevokePluginToken marks a token revoked; reports whether it existed.
 func (s *Store) RevokePluginToken(ctx context.Context, id string) (bool, error) {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
-
-	result, err := s.db.ExecContext(ctx,
-		"UPDATE plugin_tokens SET revoked = 1 WHERE id = ?", id)
+	found := false
+	err := s.mutate(func(tx *state.Tx) error {
+		t, ok := tx.PluginToken(id)
+		if !ok {
+			return nil
+		}
+		found = true
+		t.Revoked = true
+		return tx.PutPluginToken(t)
+	})
 	if err != nil {
 		return false, fmt.Errorf("RevokePluginToken: %w", err)
 	}
-
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("RevokePluginToken rows: %w", err)
-	}
-
-	found := affected > 0
 	if found {
-		log.Printf("Plugin token revoked: id=%s", id)
+		log.Printf("Plugin token revoked: id=%q", id)
 	}
 	return found, nil
 }
 
-// DeletePluginToken removes a token permanently.
-// Returns (true, nil) if deleted, (false, nil) if not found.
+// DeletePluginToken removes a token; reports whether it existed.
 func (s *Store) DeletePluginToken(ctx context.Context, id string) (bool, error) {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
-
-	result, err := s.db.ExecContext(ctx,
-		"DELETE FROM plugin_tokens WHERE id = ?", id)
-	if err != nil {
+	deleted := false
+	if err := s.mutate(func(tx *state.Tx) error { deleted = tx.DeletePluginToken(id); return nil }); err != nil {
 		return false, fmt.Errorf("DeletePluginToken: %w", err)
 	}
-
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("DeletePluginToken rows: %w", err)
-	}
-
-	deleted := affected > 0
 	if deleted {
-		log.Printf("Plugin token deleted: id=%s", id)
+		s.mu.Lock()
+		delete(s.pluginVol, id)
+		s.mu.Unlock()
+		log.Printf("Plugin token deleted: id=%q", id)
 	}
 	return deleted, nil
 }
 
-// TouchPluginToken updates last_used_at and last_used_ip for audit purposes.
+// TouchPluginToken records the use of a token. MEMORY ONLY: a plugin request never writes to the
+// disk (the value is persisted with the next write of the file).
 func (s *Store) TouchPluginToken(ctx context.Context, id, remoteIP string) error {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
-
-	now := time.Now().UTC().Unix()
-	result, err := s.db.ExecContext(ctx,
-		"UPDATE plugin_tokens SET last_used_at = ?, last_used_ip = ? WHERE id = ?",
-		now, remoteIP, id)
-	if err != nil {
-		return fmt.Errorf("TouchPluginToken: %w", err)
-	}
-
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("TouchPluginToken rows: %w", err)
-	}
-	if affected == 0 {
+	if _, ok := s.snap().PluginToken(id); !ok {
 		return fmt.Errorf("TouchPluginToken: token not found id=%s", id)
 	}
+	s.mu.Lock()
+	s.pluginVol[id] = pluginVolatile{at: time.Now().UTC().Truncate(time.Second), ip: remoteIP}
+	s.mu.Unlock()
 	return nil
 }
 
-// ========================================================================
-// Validation helpers — SECURITY.md §6 logic
-// ========================================================================
-
-// PluginTokenCheckIP returns true if remoteIP is allowed by the token's allowed_ips.
-// If allowed_ips is empty, access is always allowed (no IP restriction).
-// Accepts remoteIP in "host:port" or "host" format.
+// PluginTokenCheckIP reports whether remoteAddr is inside one of the comma-separated CIDRs
+// of allowedIPs. An empty allowedIPs means "no restriction".
 func PluginTokenCheckIP(allowedIPs, remoteAddr string) (bool, error) {
 	if allowedIPs == "" {
 		return true, nil
 	}
 
-	// Strip port if present
 	host := remoteAddr
 	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
 		host = h
@@ -229,118 +174,21 @@ func PluginTokenCheckIP(allowedIPs, remoteAddr string) (bool, error) {
 	return false, nil
 }
 
-// PluginTokenCheckHostname returns true if hostname matches the token's allowed_hostname_pattern.
-// If allowed_hostname_pattern is empty, access is always allowed.
-//
-// Security: two-step anchoring (#143).
-//
-//  1. The raw pattern is compiled first. This rejects unbalanced groups such as
-//     "web1)|(db", which would otherwise compile as "^(?:web1)|(db)$" (the closing
-//     paren escapes the non-capturing group, recreating the partial-anchor bypass).
-//
-//  2. The validated pattern is wrapped in a non-capturing group: ^(?:pattern)$
-//     This prevents alternation bypass: "web1|db" anchors as "^(?:web1|db)$",
-//     accepting only "web1" and "db" (not "web1-evil" or "xdb").
+// PluginTokenCheckHostname reports whether hostname matches the anchored pattern. An empty pattern
+// means "no restriction".
 func PluginTokenCheckHostname(pattern, hostname string) (bool, error) {
 	if pattern == "" {
 		return true, nil
 	}
 
-	// Step 1: validate the raw pattern before wrapping.
 	if _, err := regexp.Compile(pattern); err != nil {
 		return false, fmt.Errorf("invalid hostname pattern %q: %w", pattern, err)
 	}
 
-	// Step 2: anchor with non-capturing group.
 	anchored := "^(?:" + pattern + ")$"
 	matched, err := regexp.MatchString(anchored, hostname)
 	if err != nil {
-		// Unreachable: a pattern that compiled in step 1 always compiles when wrapped.
 		return false, fmt.Errorf("invalid hostname pattern %q: %w", pattern, err)
 	}
 	return matched, nil
-}
-
-// ========================================================================
-// internal scan helpers
-// ========================================================================
-
-func nullableString(s string) interface{} {
-	if s == "" {
-		return nil
-	}
-	return s
-}
-
-func scanPluginToken(row *sql.Row) (*PluginToken, error) {
-	var t PluginToken
-	var description, allowedIPs, allowedHostnamePattern, lastUsedIP sql.NullString
-	var createdAtUnix int64
-	var expiresAtUnix, lastUsedAtUnix sql.NullInt64
-	var revoked int
-
-	err := row.Scan(
-		&t.ID, &t.TokenHash, &description, &t.Role,
-		&allowedIPs, &allowedHostnamePattern,
-		&createdAtUnix, &expiresAtUnix, &lastUsedAtUnix, &lastUsedIP, &revoked,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("scan plugin token: %w", err)
-	}
-
-	applyPluginTokenNullables(&t, description, allowedIPs, allowedHostnamePattern,
-		lastUsedIP, createdAtUnix, expiresAtUnix, lastUsedAtUnix, revoked)
-	return &t, nil
-}
-
-func scanPluginTokenRow(rows *sql.Rows) (*PluginToken, error) {
-	var t PluginToken
-	var description, allowedIPs, allowedHostnamePattern, lastUsedIP sql.NullString
-	var createdAtUnix int64
-	var expiresAtUnix, lastUsedAtUnix sql.NullInt64
-	var revoked int
-
-	err := rows.Scan(
-		&t.ID, &t.TokenHash, &description, &t.Role,
-		&allowedIPs, &allowedHostnamePattern,
-		&createdAtUnix, &expiresAtUnix, &lastUsedAtUnix, &lastUsedIP, &revoked,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("scan plugin token row: %w", err)
-	}
-
-	applyPluginTokenNullables(&t, description, allowedIPs, allowedHostnamePattern,
-		lastUsedIP, createdAtUnix, expiresAtUnix, lastUsedAtUnix, revoked)
-	return &t, nil
-}
-
-func applyPluginTokenNullables(t *PluginToken,
-	description, allowedIPs, allowedHostnamePattern, lastUsedIP sql.NullString,
-	createdAtUnix int64, expiresAtUnix, lastUsedAtUnix sql.NullInt64, revoked int,
-) {
-	if description.Valid {
-		t.Description = description.String
-	}
-	if allowedIPs.Valid {
-		t.AllowedIPs = allowedIPs.String
-	}
-	if allowedHostnamePattern.Valid {
-		t.AllowedHostnamePattern = allowedHostnamePattern.String
-	}
-	if lastUsedIP.Valid {
-		t.LastUsedIP = lastUsedIP.String
-	}
-	t.CreatedAt = time.Unix(createdAtUnix, 0).UTC()
-	if expiresAtUnix.Valid {
-		ts := time.Unix(expiresAtUnix.Int64, 0).UTC()
-		t.ExpiresAt = &ts
-	}
-	if lastUsedAtUnix.Valid {
-		ts := time.Unix(lastUsedAtUnix.Int64, 0).UTC()
-		t.LastUsedAt = &ts
-	}
-	t.Revoked = revoked != 0
 }

@@ -118,21 +118,26 @@ func TestPushRelay_TokenEncryptedAtRestWithMasterKey(t *testing.T) {
 	if err != nil || node == nil {
 		t.Fatalf("node: %v %v", node, err)
 	}
-	if strings.Contains(node.TokenHash, "child-signed-jwt") || !strings.HasPrefix(node.TokenHash, "enc:") {
-		t.Errorf("token not encrypted at rest: %q", node.TokenHash)
+	if strings.Contains(node.TokenSecret, "child-signed-jwt") || !strings.HasPrefix(node.TokenSecret, "enc:") || node.TokenHash != "" {
+		t.Errorf("token not encrypted at rest (token_secret=%q token_hash=%q)", node.TokenSecret, node.TokenHash)
 	}
-	got, err := OpenPushToken(node.TokenHash)
+	got, err := OpenPushToken("dmz1", node.TokenSecret)
 	if err != nil || got != "child-signed-jwt" {
 		t.Errorf("OpenPushToken = %q, %v", got, err)
 	}
 	// encrypted row without the master key must fail closed, not return garbage
 	t.Setenv("RSA_MASTER_KEY", "")
-	if _, err := OpenPushToken(node.TokenHash); err == nil {
+	if _, err := OpenPushToken("dmz1", node.TokenSecret); err == nil {
 		t.Error("expected an error when the master key is missing")
 	}
-	// legacy plaintext rows still open
-	if got, err := OpenPushToken("legacy-token"); err != nil || got != "legacy-token" {
-		t.Errorf("legacy = %q %v", got, err)
+	// bound to its relay: the same sealed value does not open for another relay
+	t.Setenv("RSA_MASTER_KEY", "unit-test-master-key")
+	if _, err := OpenPushToken("dmz2", node.TokenSecret); err == nil {
+		t.Error("a sealed token must not open for another relay (AAD)")
+	}
+	// a value that is not sealed is refused: the state never holds one
+	if _, err := OpenPushToken("dmz1", "legacy-token"); err == nil {
+		t.Error("a clear token must be refused")
 	}
 }
 
@@ -196,37 +201,37 @@ func TestPushRelay_RefusedWithoutMasterKey(t *testing.T) {
 
 func TestPushToken_SealOpenRoundTripWrongKeyAndTamper(t *testing.T) {
 	t.Setenv("RSA_MASTER_KEY", "key-one")
-	sealed, err := SealPushToken("secret-jwt")
+	sealed, err := SealPushToken("dmz1", "secret-jwt")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(sealed, "secret-jwt") || !strings.HasPrefix(sealed, "enc:") {
 		t.Fatalf("not sealed: %q", sealed)
 	}
-	if got, err := OpenPushToken(sealed); err != nil || got != "secret-jwt" {
+	if got, err := OpenPushToken("dmz1", sealed); err != nil || got != "secret-jwt" {
 		t.Fatalf("round trip = %q %v", got, err)
 	}
 	// two seals of the same token differ (random nonce)
-	if again, _ := SealPushToken("secret-jwt"); again == sealed {
+	if again, _ := SealPushToken("dmz1", "secret-jwt"); again == sealed {
 		t.Error("sealing must be randomized")
 	}
 	// altered ciphertext is rejected (GCM authentication)
 	b := []byte(sealed)
 	b[len(b)-3] ^= 0x01
-	if got, err := OpenPushToken(string(b)); err == nil {
+	if got, err := OpenPushToken("dmz1", string(b)); err == nil {
 		t.Errorf("tampered data accepted: %q", got)
 	}
 	// wrong key
 	t.Setenv("RSA_MASTER_KEY", "key-two")
-	if got, err := OpenPushToken(sealed); err == nil {
+	if got, err := OpenPushToken("dmz1", sealed); err == nil {
 		t.Errorf("wrong key accepted: %q", got)
 	}
 	// missing key
 	t.Setenv("RSA_MASTER_KEY", "")
-	if _, err := OpenPushToken(sealed); err == nil {
+	if _, err := OpenPushToken("dmz1", sealed); err == nil {
 		t.Error("missing key must fail")
 	}
-	if _, err := SealPushToken("x"); !errors.Is(err, ErrPushTokenKeyMissing) {
+	if _, err := SealPushToken("dmz1", "x"); !errors.Is(err, ErrPushTokenKeyMissing) {
 		t.Errorf("seal without key: %v", err)
 	}
 }

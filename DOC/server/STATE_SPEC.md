@@ -55,3 +55,11 @@ La garde d'écriture `BeforeWrite` est appelée avant le lot, puis de nouveau ju
 ## Dimensionnement mesuré (10 000 agents, clé publique ~800 octets)
 
 Fichier ≈ 10 Mio ; chargement ≈ 150 ms ; écriture complète ≈ 150 ms ; 100 enrôlements concurrents ≈ 220 ms en 2 écritures.
+
+## Store (#160)
+
+`internal/storage.Store` est réimplémenté sur ce moteur (même API publique ; `storage.Open(state.Options)`). Lectures : index en mémoire. Écritures : mutations du moteur. **Atomicité** : l'enrôlement (`EnrollAgent` : jeton consommé + clé autorisée + agent) et la révocation d'un relay (drapeau + blacklist, `RevokeRelayNode` / `RevokeRelayParentToken`) sont **une seule mutation** (un rename). **Volatile, jamais écrit** : statut et `last_seen` des agents et des relays, `relay_routing`, `relay_chain`. **Piggyback** : `agents.last_seen` et `last_used_at`/`last_used_ip` des tokens plugin sont fusionnés dans le fichier à la prochaine écriture naturelle (une requête plugin n'écrit jamais sur le disque). **Purge** : une tâche du serveur retire chaque heure les entrées expirées de la blacklist (elle n'écrit que s'il y en a, et passe par la garde).
+
+Tokens de relay : `token_hash` (pull, SHA-256 du JWT) et `token_secret` (push : jeton scellé `enc:` lié au relay par AAD, `relay_nodes/<id>/token_secret`) sont deux champs distincts. Un relay révoqué sans JTI (déclaré automatiquement à sa connexion) reçoit un JTI synthétique `no-token:<relay_id>`, blacklisté dans la même mutation (le drapeau `revoked` seul refuse ses connexions).
+
+**Sans garde d'écriture** (`Config.WriteGuard` nul : l'instance n'est pas encore le maître confirmé, #163), le serveur démarre en **lecture seule**, sauf si l'opérateur déclare `RELAY_SINGLE_INSTANCE=true` (« une seule instance sur ce `STATE_DIR`, pas de verrou » : la garde laisse alors passer toutes les écritures ; jamais avec deux instances sur le même répertoire) : toute écriture échoue (`storage.ErrReadOnly`), aucun fichier n'est créé. Le serveur ne crée jamais l'état : `relay.state` absent = `FATAL: relay.state not found in STATE_DIR=<dir> — run 'secagent-server state init' to initialize`. `DATABASE_URL` définie = erreur de démarrage.

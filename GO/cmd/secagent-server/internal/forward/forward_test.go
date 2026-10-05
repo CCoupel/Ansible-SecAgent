@@ -139,7 +139,7 @@ func run(t *testing.T, f *Forwarder, msg ws.RelayMessage) ws.RelayMessage {
 
 func routeStore(t *testing.T) *storage.Store {
 	t.Helper()
-	s, err := storage.NewStore(":memory:")
+	s, err := storage.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -103,8 +103,12 @@ type PluginTokenSummary struct {
 	ExpiresAt              string `json:"expires_at,omitempty"`
 	LastUsedAt             string `json:"last_used_at,omitempty"`
 	LastUsedIP             string `json:"last_used_ip,omitempty"`
-	Revoked                bool   `json:"revoked"`
-	CreatedAt              string `json:"created_at"`
+	// LastUsedApproximate is true whenever last_used_at / last_used_ip are reported: they are kept
+	// in memory and persisted only with the next write of the state, so they may lag by minutes and
+	// a token used just before a crash can read "never used" (audits must not rely on them).
+	LastUsedApproximate bool   `json:"last_used_approximate,omitempty"`
+	Revoked             bool   `json:"revoked"`
+	CreatedAt           string `json:"created_at"`
 }
 
 // PurgeResponse is returned from POST /api/admin/tokens/purge.
@@ -635,6 +639,7 @@ func pluginTokenToSummary(t storage.PluginToken) PluginTokenSummary {
 	}
 	if t.LastUsedAt != nil {
 		s.LastUsedAt = t.LastUsedAt.UTC().Format(time.RFC3339)
+		s.LastUsedApproximate = true
 	}
 	return s
 }

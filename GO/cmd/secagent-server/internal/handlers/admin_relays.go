@@ -21,8 +21,8 @@ import (
 	"github.com/google/uuid"
 
 	"secagent-server/cmd/secagent-server/internal/auth"
-	"secagent-server/cmd/secagent-server/internal/crypto"
 	"secagent-server/cmd/secagent-server/internal/repeater"
+	"secagent-server/cmd/secagent-server/internal/state"
 	"secagent-server/cmd/secagent-server/internal/storage"
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
@@ -47,33 +47,33 @@ const pushTokenPrefix = "enc:"
 // ErrPushTokenKeyMissing is returned when a push token must be stored but RSA_MASTER_KEY is unset.
 var ErrPushTokenKeyMissing = errors.New("RSA_MASTER_KEY is required to store a push relay token")
 
-// SealPushToken encrypts a push-mode token for storage in relay_nodes.token_hash
-// (AES-256-GCM with RSA_MASTER_KEY, "enc:" prefix). Fail closed: without a master key the
-// token is never stored in clear. (The column is named token_hash for historical reasons:
-// for push nodes it holds the encrypted token, not a hash.)
-func SealPushToken(token string) (string, error) {
+// SealPushToken encrypts a push-mode token for storage in relay_nodes.token_secret: AES-256-GCM
+// under RSA_MASTER_KEY, "enc:" prefix, bound to the relay (AAD), so that a sealed token moved to
+// another relay does not open. Fail closed: without a master key the token is never stored in clear.
+func SealPushToken(relayID, token string) (string, error) {
 	key, ok := rsaMasterKey()
 	if !ok {
 		log.Printf("[SECURITY WARNING] push relay registration refused: RSA_MASTER_KEY is not set")
 		return "", ErrPushTokenKeyMissing
 	}
-	enc, err := crypto.EncryptAESGCM(token, key)
+	sealed, err := state.SealSecret(token, key, state.RelayTokenSecretAAD(relayID))
 	if err != nil {
 		return "", fmt.Errorf("encrypt push token: %w", err)
 	}
-	return pushTokenPrefix + enc, nil
+	return sealed, nil
 }
 
-// OpenPushToken returns the clear token from its stored form (legacy rows are plaintext).
-func OpenPushToken(stored string) (string, error) {
+// OpenPushToken returns the clear token from its stored form. A value that is not sealed is
+// refused (the state engine never loads one).
+func OpenPushToken(relayID, stored string) (string, error) {
 	if !strings.HasPrefix(stored, pushTokenPrefix) {
-		return stored, nil
+		return "", errors.New("push token is not sealed")
 	}
 	key, ok := rsaMasterKey()
 	if !ok {
 		return "", errors.New("push token is encrypted but RSA_MASTER_KEY is not set")
 	}
-	token, err := crypto.DecryptAESGCM(strings.TrimPrefix(stored, pushTokenPrefix), key)
+	token, err := state.OpenSecret(stored, key, state.RelayTokenSecretAAD(relayID))
 	if err != nil {
 		return "", fmt.Errorf("decrypt push token: %w", err)
 	}
@@ -234,7 +234,7 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 	case "push":
 		node.URL = req.URL
 		// The dialer needs the clear token: stored encrypted (RSA_MASTER_KEY), never returned.
-		sealed, err := SealPushToken(req.Token)
+		sealed, err := SealPushToken(req.RelayID, req.Token)
 		if err != nil {
 			if errors.Is(err, ErrPushTokenKeyMissing) {
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "rsa_master_key_required_for_push_mode"})
@@ -244,7 +244,7 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token_encryption_failed"})
 			return
 		}
-		node.TokenHash = sealed
+		node.TokenSecret = sealed
 	}
 
 	// Re-registering a relay issues a NEW token: remember the previous JTI so it can be cut off.

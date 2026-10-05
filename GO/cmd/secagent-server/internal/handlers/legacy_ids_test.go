@@ -3,17 +3,16 @@ package handlers
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/proxy"
+	"secagent-server/cmd/secagent-server/internal/state"
 	"secagent-server/cmd/secagent-server/internal/storage"
 )
 
@@ -60,28 +59,24 @@ func TestInventory_LegacyHostileRoutesAreNeverServed(t *testing.T) {
 	}
 }
 
-// legacyStore returns a store whose relay_nodes contains a malformed relay_id that predates the
-// validation (inserted behind the guard, then reopened).
+// legacyStore returns a store whose relay_nodes contains a malformed relay_id that bypassed the
+// validation (written straight through the state engine, then reopened).
 func legacyStore(t *testing.T) *storage.Store {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "legacy.db")
-	s, err := storage.NewStore(path)
+	dir := t.TempDir()
+	s, err := storage.OpenTestDir(dir)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Engine().Mutate(func(tx *state.Tx) error {
+		return tx.PutRelayNode(state.RelayNode{ID: "legacy-uuid", RelayID: hostileID, Mode: "pull", CreatedAt: time.Unix(0, 0)})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	_ = s.Close()
-	db, err := sql.Open("sqlite3", path)
+	s, err = storage.OpenTestDir(dir)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO relay_nodes (id, relay_id, url, description, token_hash, mode, is_proxy, created_at, status, revoked)
-		VALUES ('legacy-uuid', ?, '', '', '', 'pull', 0, 0, 'pending', 0)`, hostileID); err != nil {
-		t.Fatal(err)
-	}
-	_ = db.Close()
-	s, err = storage.NewStore(path)
-	if err != nil {
-		t.Fatalf("a legacy malformed row must not break the startup: %v", err)
+		t.Fatalf("a malformed row must not break the startup: %v", err)
 	}
 	prevAdmin, prevRegister := adminStore, registerStore
 	SetAdminStore(s)

@@ -17,7 +17,7 @@ import (
 
 func newRouterTestStore(t *testing.T) *storage.Store {
 	t.Helper()
-	s, err := storage.NewStore(":memory:")
+	s, err := storage.OpenTemp()
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -33,10 +33,14 @@ func seedRelayNode(t *testing.T, s *storage.Store, relayID, url, mode string, ho
 		ID:        "uuid-" + relayID,
 		RelayID:   relayID,
 		URL:       url,
-		TokenHash: "test-token-" + relayID,
 		Mode:      mode,
 		Status:    "connected",
 		CreatedAt: time.Now().Unix(),
+	}
+	if mode == "push" {
+		node.TokenSecret = "enc:test-token-" + relayID // the state only holds sealed push tokens
+	} else {
+		node.TokenHash = "test-token-" + relayID
 	}
 	if err := s.UpsertRelayNode(node); err != nil {
 		t.Fatalf("UpsertRelayNode: %v", err)

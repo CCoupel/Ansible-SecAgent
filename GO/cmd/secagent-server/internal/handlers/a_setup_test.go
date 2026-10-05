@@ -49,7 +49,7 @@ func TestMain(m *testing.M) {
 	}
 
 	// Initialize an in-memory SQLite store for register/token handler tests.
-	testStore, err := storage.NewStore(":memory:")
+	testStore, err := storage.OpenTemp()
 	if err != nil {
 		log.Fatalf("TestMain: create test store: %v", err)
 	}

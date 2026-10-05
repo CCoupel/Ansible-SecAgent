@@ -115,9 +115,11 @@ func TestGroupVars_DisappearWithTheirRelay(t *testing.T) {
 		t.Errorf("the removed relay's vars are still served:\n%s", inventoryRaw(root))
 	}
 	// the inventory omits a group that holds no host, so also look where the vars are KEPT: the
-	// removed relay's row, with its stored vars, must be gone from the root's database
-	if n := root.dbScalar("SELECT COUNT(*) FROM relay_nodes WHERE relay_id = 'relayP' OR group_vars LIKE '%staging%'"); n != "0" {
-		t.Errorf("the removed relay's stored group vars are still in the database (%s rows)", n)
+	// removed relay's entry, with its stored vars, must be gone from the root's state file
+	for id, nd := range root.stateSection("relay_nodes") {
+		if id == "relayP" || nd["group_vars"] != nil {
+			t.Errorf("the removed relay's stored group vars are still in the state: %s %v", id, nd)
+		}
 	}
 }
 

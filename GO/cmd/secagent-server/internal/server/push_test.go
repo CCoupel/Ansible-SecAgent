@@ -25,23 +25,26 @@ func (f *fakePushStarter) Start(t repeater.DialTarget) error {
 
 func seedRelay(t *testing.T, st *storage.Store, id, mode, url, tokenField string) {
 	t.Helper()
-	if err := st.UpsertRelayNode(storage.RelayNode{
-		ID: "uuid-" + id, RelayID: id, Mode: mode, URL: url, TokenHash: tokenField,
-		CreatedAt: time.Now().Unix(), Status: "disconnected",
-	}); err != nil {
+	n := storage.RelayNode{ID: "uuid-" + id, RelayID: id, Mode: mode, URL: url, CreatedAt: time.Now().Unix(), Status: "disconnected"}
+	if mode == "push" {
+		n.TokenSecret = tokenField // the sealed token: the state refuses anything else
+	} else {
+		n.TokenHash = tokenField
+	}
+	if err := st.UpsertRelayNode(n); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestStartPushDialers_OnlyPushNodesWithClearToken(t *testing.T) {
+func TestStartPushDialers_OnlyPushNodesWithASealedToken(t *testing.T) {
 	t.Setenv("RSA_MASTER_KEY", "main-test-master-key")
-	st, err := storage.NewStore(":memory:")
+	st, err := storage.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
 
-	sealed, err := handlers.SealPushToken("child-jwt")
+	sealed, err := handlers.SealPushToken("dmz1", "child-jwt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +52,6 @@ func TestStartPushDialers_OnlyPushNodesWithClearToken(t *testing.T) {
 		t.Fatal("token not sealed")
 	}
 	seedRelay(t, st, "dmz1", "push", "wss://dmz1:7772", sealed)
-	seedRelay(t, st, "dmz2", "push", "wss://dmz2:7772", "legacy-plain")
 	seedRelay(t, st, "pull1", "pull", "", "sha256-of-jwt")
 
 	f := &fakePushStarter{}
@@ -59,8 +61,7 @@ func TestStartPushDialers_OnlyPushNodesWithClearToken(t *testing.T) {
 	for _, tg := range f.targets {
 		got[tg.RelayID] = tg
 	}
-	if len(got) != 2 || got["dmz1"].Token != "child-jwt" || got["dmz1"].URL != "wss://dmz1:7772" ||
-		got["dmz2"].Token != "legacy-plain" {
+	if len(got) != 1 || got["dmz1"].Token != "child-jwt" || got["dmz1"].URL != "wss://dmz1:7772" {
 		t.Errorf("targets = %+v", got)
 	}
 	if _, ok := got["pull1"]; ok {
@@ -69,14 +70,14 @@ func TestStartPushDialers_OnlyPushNodesWithClearToken(t *testing.T) {
 }
 
 func TestStartPushDialers_SkipsUndecryptableAndInvalidRows(t *testing.T) {
-	st, err := storage.NewStore(":memory:")
+	st, err := storage.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
 
 	t.Setenv("RSA_MASTER_KEY", "k1")
-	sealed, _ := handlers.SealPushToken("child-jwt")
+	sealed, _ := handlers.SealPushToken("dmz1", "child-jwt")
 	t.Setenv("RSA_MASTER_KEY", "") // key lost: the sealed row cannot be opened
 	seedRelay(t, st, "dmz1", "push", "wss://dmz1:7772", sealed)
 

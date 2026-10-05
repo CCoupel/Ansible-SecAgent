@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -79,12 +80,22 @@ var (
 	// Injected from handlers at startup; nil = send a plain rekey signal (no encrypted token).
 	RekeyFunc func(hostname string) bool
 
-	// DispatchFunc is called when an agent connects (host.up) or disconnects (host.down).
-	// Injected from main.go at startup to avoid an import cycle between ws and hooks.
-	// Signature: (event, hostname, status, enrolledAt) — enrolledAt is always "" here.
-	// nil = no dispatch (tests, degraded mode).
-	DispatchFunc func(event string, hostname string, status string, enrolledAt string)
+	// dispatchFn is called when an agent connects (host.up) or disconnects (host.down); see
+	// SetDispatchFunc. Atomic: handler goroutines of a node that is going away read it while a new
+	// node is built.
+	dispatchFn atomic.Pointer[func(event string, hostname string, status string, enrolledAt string)]
 )
+
+// SetDispatchFunc injects the function called when an agent connects (host.up) or disconnects
+// (host.down), from the server wiring, to avoid an import cycle between ws and hooks.
+// Signature: (event, hostname, status, enrolledAt) — enrolledAt is always "" here. nil = no dispatch.
+func SetDispatchFunc(fn func(event string, hostname string, status string, enrolledAt string)) {
+	if fn == nil {
+		dispatchFn.Store(nil)
+		return
+	}
+	dispatchFn.Store(&fn)
+}
 
 // SetRekeyFunc injects the function used to issue a new encrypted token to an agent.
 // Called at startup by main.go after handlers are initialized.
@@ -116,8 +127,8 @@ func RegisterConnection(hostname string, conn *AgentConnection) {
 	wsConnections[hostname] = conn
 	log.Printf("Agent connected: hostname=%q", hostname)
 
-	if DispatchFunc != nil {
-		go DispatchFunc("host.up", hostname, "connected", "")
+	if fn := dispatchFn.Load(); fn != nil {
+		go (*fn)("host.up", hostname, "connected", "")
 	}
 }
 
@@ -129,8 +140,8 @@ func UnregisterConnection(hostname string) {
 	delete(wsConnections, hostname)
 	log.Printf("Agent disconnected: hostname=%q", hostname)
 
-	if DispatchFunc != nil {
-		go DispatchFunc("host.down", hostname, "disconnected", "")
+	if fn := dispatchFn.Load(); fn != nil {
+		go (*fn)("host.down", hostname, "disconnected", "")
 	}
 
 	// Resolve all pending futures with error

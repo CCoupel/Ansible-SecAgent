@@ -36,12 +36,14 @@ func captureLogs(t *testing.T) *lockedBuf {
 func TestBuild_NoNATSTrace(t *testing.T) {
 	t.Setenv("NATS_URL", "")
 	buf := captureLogs(t)
-	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:"})
+	dir := testStateDir(t)
+	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: dir, InsecureTestState: true, WriteGuard: allowWrites})
 	if err != nil {
 		t.Fatal(err)
 	}
 	n.Close()
-	if out := buf.String(); strings.Contains(strings.ToLower(out), "nats") || strings.Contains(strings.ToLower(out), "jetstream") {
+	// the temporary directories are named after the test: do not read "NATS" in a path
+	if out := strings.ReplaceAll(buf.String(), dir, "<state-dir>"); strings.Contains(strings.ToLower(out), "nats") || strings.Contains(strings.ToLower(out), "jetstream") {
 		t.Errorf("start-up must not mention NATS:\n%s", out)
 	}
 }
@@ -49,7 +51,7 @@ func TestBuild_NoNATSTrace(t *testing.T) {
 func TestBuild_ObsoleteNATSURLWarnsOnceAndStarts(t *testing.T) {
 	t.Setenv("NATS_URL", "nats://legacy.example:4222")
 	buf := captureLogs(t)
-	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:"})
+	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
 	if err != nil {
 		t.Fatalf("an obsolete NATS_URL must not be an error: %v", err)
 	}

@@ -166,7 +166,9 @@ Stream RELAY_RESULTS
 
 ---
 
-## 5. Persistance — Schéma SQLite
+## 5. Persistance — (historique) schéma SQLite
+
+> **Remplacé en v3.0.3 (#159/#160)** par le fichier d'état unique `relay.state` : voir `DOC/server/STATE_SPEC.md`. Le schéma ci-dessous n'est conservé que pour l'historique. Données volatiles (statut et `last_seen` des agents et relays, routage `relay_routing`, `relay_chain`, `last_used_*` des tokens plugin) : en mémoire seulement ; `last_used_at` / `last_used_ip` des tokens plugin sont **approximatifs** (persistés avec la prochaine écriture du fichier, donc en retard de plusieurs minutes, voire perdus lors d'un arrêt brutal : l'API les signale par `last_used_approximate: true`).
 
 ```sql
 -- Agents enregistrés
@@ -299,8 +301,10 @@ secagent-server server stats
 |---|---|---|
 | `JWT_SECRET_KEY` | ✅ | Secret HMAC-HS256 pour signer les JWT agents |
 | `ADMIN_TOKEN` | ✅ | Token admin (port 7771) |
-| `NATS_URL` | — | URL NATS JetStream (défaut `nats://localhost:4222`) — le serveur démarre en mode dégradé si NATS n'est pas accessible |
-| `DATABASE_URL` | — | SQLite path (`./relay.db`) ou PostgreSQL URL (défaut `sqlite:///./relay.db`) |
+| `NATS_URL` | — | **Obsolète (#178)** : NATS est retiré ; si la variable est définie, un `[WARN]` est journalisé et elle est ignorée |
+| `STATE_DIR` | — | Répertoire du fichier d'état `relay.state` (défaut `/data`), créé par `secagent-server state init` — voir `STATE_SPEC.md` (#160) |
+| `STATE_MAX_BYTES` | — | Plafond dur de taille du fichier d'état (défaut 64 Mio) |
+| `DATABASE_URL` | — | **Retirée (#160)** : SQLite n'existe plus. Si la variable est définie, le serveur **refuse de démarrer** (aucune migration d'un ancien `relay.db`) |
 | `RSA_MASTER_KEY` | — | Clef AES-256-GCM pour chiffrer les secrets en DB (tokens push relay) — obligatoire seulement pour enregistrer un relay en mode push |
 | `REPEATER_ID` | — | Identifiant du relay (ex: `dmz1`) — requis en mode enfant |
 | `REPEATER_UPSTREAM_URL` | — | URL WSS du parent (ex: `wss://central:7772`) — requis en mode enfant pull |

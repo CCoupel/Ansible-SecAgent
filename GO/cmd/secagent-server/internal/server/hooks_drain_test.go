@@ -24,7 +24,7 @@ func TestNode_CleanStopFlushesTheHooksQueue(t *testing.T) {
 	t.Setenv("RELAY_HOOKS_CONFIG", hp)
 	t.Setenv("RELAY_HOOKS_MAX_CONCURRENT_ACTIONS", "2")
 	t.Setenv("RELAY_ACTION_LOG", filepath.Join(dir, "actions.log"))
-	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:",
+	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites,
 		APIAddr: "127.0.0.1:0", AdminAddr: "127.0.0.1:0", WSAddr: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatal(err)

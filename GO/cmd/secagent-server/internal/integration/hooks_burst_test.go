@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"database/sql"
 	"fmt"
 	"net/http"
 	"os"
@@ -10,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 )
 
@@ -26,48 +24,39 @@ func TestHooksBurst_3000AgentsReconnectingAllRunTheirHook(t *testing.T) {
 		return `{"hooks":[{"event":"host.up","actions":[{"type":"file","path":"` + out + `","append":"up {{hostname}}\n"}]}]}`
 	}})
 
-	// enroll all agents in ONE transaction (the node is a separate process: through its database file)
-	path := ""
-	for _, e := range n.env {
-		if strings.HasPrefix(e, "DATABASE_URL=sqlite:///") {
-			path = strings.TrimPrefix(e, "DATABASE_URL=sqlite:///")
-		}
+	// enroll all agents through the real flow, concurrently (the state engine groups the writes)
+	tokens := make([]string, agents)
+	var ewg sync.WaitGroup
+	eq := make(chan int)
+	eerrs := make(chan error, agents)
+	for w := 0; w < 64; w++ {
+		ewg.Add(1)
+		go func() {
+			defer ewg.Done()
+			for i := range eq {
+				tok, err := n.enrollAgentErr(fmt.Sprintf("burst-%04d", i))
+				if err != nil {
+					eerrs <- err
+					continue
+				}
+				tokens[i] = tok
+			}
+		}()
 	}
-	db, err := sql.Open("sqlite3", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec("PRAGMA busy_timeout=10000"); err != nil {
-		t.Fatal(err)
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
 	for i := 0; i < agents; i++ {
-		h := fmt.Sprintf("burst-%04d", i)
-		if _, err := tx.Exec(`INSERT INTO agents (hostname, public_key_pem, token_jti, enrolled_at, last_seen, status)
-			VALUES (?, 'pem', ?, ?, ?, 'disconnected')`, h, "agent-"+h, now, now); err != nil {
-			t.Fatal(err)
-		}
+		eq <- i
 	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
+	close(eq)
+	ewg.Wait()
+	close(eerrs)
+	if err := <-eerrs; err != nil {
+		t.Fatalf("an agent could not enroll: %v", err)
 	}
-	_ = db.Close()
 
-	dial := func(host string) error {
-		tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-			"sub": host, "role": "agent", "jti": "agent-" + host,
-			"iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
-		}).SignedString([]byte(n.jwtSecret))
-		if err != nil {
-			return err
-		}
+	// the failover burst: all of them (re)connect at once
+	dial := func(i int) error {
 		h := http.Header{}
-		h.Set("Authorization", "Bearer "+tok)
+		h.Set("Authorization", "Bearer "+tokens[i])
 		d := websocket.Dialer{TLSClientConfig: tlsClientConfig(), HandshakeTimeout: 20 * time.Second}
 		conn, _, err := d.Dial(n.wssURL()+"/ws/agent", h)
 		if err != nil {
@@ -83,7 +72,7 @@ func TestHooksBurst_3000AgentsReconnectingAllRunTheirHook(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := range next {
-				if err := dial(fmt.Sprintf("burst-%04d", i)); err != nil {
+				if err := dial(i); err != nil {
 					errs <- err
 				}
 			}

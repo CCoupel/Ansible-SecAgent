@@ -279,7 +279,7 @@ func TestTLS_FailClosedOnEveryBadConfiguration(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := Config{JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:", TLSCert: tc.cert, TLSKey: tc.key, TLSDisable: tc.disable}
+			cfg := Config{JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites, TLSCert: tc.cert, TLSKey: tc.key, TLSDisable: tc.disable}
 			n, err := Build(cfg)
 			if err == nil {
 				n.Close()
@@ -299,7 +299,7 @@ func TestTLS_FailClosedOnEveryBadConfiguration(t *testing.T) {
 
 func TestTLS_DisableIsExplicitAndLoud(t *testing.T) {
 	logs := captureStdLog(t)
-	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:"})
+	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestTLS_KeyPermissionsAreChecked(t *testing.T) {
 	if err := os.Chmod(p.keyPath, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	n, err := Build(Config{TLSCert: p.certPath, TLSKey: p.keyPath, JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:"})
+	n, err := Build(Config{TLSCert: p.certPath, TLSKey: p.keyPath, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestTLS_KeyPermissionsAreChecked(t *testing.T) {
 func TestTLS_AdminPlainOnANonLoopbackAddressIsReported(t *testing.T) {
 	logs := captureStdLog(t)
 	p := validPair(t)
-	n, err := Build(Config{TLSCert: p.certPath, TLSKey: p.keyPath, AdminAddr: "0.0.0.0:7771", JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:"})
+	n, err := Build(Config{TLSCert: p.certPath, TLSKey: p.keyPath, AdminAddr: "0.0.0.0:7771", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
 	if err != nil {
 		t.Fatal(err)
 	}

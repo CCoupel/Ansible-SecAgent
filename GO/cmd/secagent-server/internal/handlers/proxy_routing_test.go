@@ -62,13 +62,13 @@ func setupProxyTest(t *testing.T) (*storage.Store, func(r *http.Request) *http.R
 func seedProxyRelay(t *testing.T, s *storage.Store, relayID, url string, hosts []string) {
 	t.Helper()
 	node := storage.RelayNode{
-		ID:        "uuid-" + relayID,
-		RelayID:   relayID,
-		URL:       url,
-		TokenHash: "relay-token",
-		Mode:      "push",
-		Status:    "connected",
-		CreatedAt: time.Now().Unix(),
+		ID:          "uuid-" + relayID,
+		RelayID:     relayID,
+		URL:         url,
+		TokenSecret: "enc:relay-token", // the state only holds sealed push tokens
+		Mode:        "push",
+		Status:      "connected",
+		CreatedAt:   time.Now().Unix(),
 	}
 	if err := s.UpsertRelayNode(node); err != nil {
 		t.Fatalf("seedProxyRelay: UpsertRelayNode: %v", err)
