@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -62,8 +63,15 @@ func apiURL() string {
 // checkHTTPS returns an error if the URL uses plain HTTP for a non-loopback address.
 // This prevents ADMIN_TOKEN from being sent in cleartext over the network.
 func checkHTTPS(u string) error {
-	isLocal := strings.Contains(u, "localhost") || strings.Contains(u, "127.0.0.1")
-	if !isLocal && strings.HasPrefix(u, "http://") {
+	if !strings.HasPrefix(u, "http://") {
+		return nil
+	}
+	isLocal := false
+	if pu, err := url.Parse(u); err == nil {
+		h := pu.Hostname()
+		isLocal = h == "localhost" || (net.ParseIP(h) != nil && net.ParseIP(h).IsLoopback())
+	}
+	if !isLocal {
 		return fmt.Errorf("RELAY_API_URL uses http:// for a non-local address — use https:// to protect ADMIN_TOKEN in transit")
 	}
 	return nil

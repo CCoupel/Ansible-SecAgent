@@ -12,6 +12,7 @@ import (
 	"log"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/state"
@@ -60,6 +61,8 @@ type Store struct {
 	pluginVol map[string]pluginVolatile
 	relayVol  map[string]relayVolatile
 	routes    map[string]RelayRoute
+
+	onWrite atomic.Pointer[func(uint64)]
 }
 
 type agentVolatile struct {
@@ -144,7 +147,22 @@ func (s *Store) piggyback(p *state.Payload) {
 	}
 }
 
-func (s *Store) mutate(fn func(*state.Tx) error) error { return s.eng.Mutate(fn) }
+func (s *Store) mutate(fn func(*state.Tx) error) error {
+	err := s.eng.Mutate(fn)
+	if err == nil {
+		if cb := s.onWrite.Load(); cb != nil {
+			(*cb)(s.snap().WriteSeq())
+		}
+	}
+	return err
+}
+
+// SetOnWrite registers fn, called with the state's write_seq after every successful state write
+// (the master publishes it in relay.lock, #163). fn must be fast and must not write.
+func (s *Store) SetOnWrite(fn func(seq uint64)) { s.onWrite.Store(&fn) }
+
+// WriteSeq is the write_seq of the state currently held.
+func (s *Store) WriteSeq() uint64 { return s.snap().WriteSeq() }
 
 func (s *Store) snap() state.Snapshot { return s.eng.Snapshot() }
 

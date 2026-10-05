@@ -28,7 +28,7 @@ func isCLIMode() bool {
 	}
 	// Known CLI top-level commands
 	switch first {
-	case "minions", "security", "inventory", "server", "tokens", "hooks", "relays", "state", "help", "completion":
+	case "minions", "security", "inventory", "server", "tokens", "hooks", "relays", "state", "status", "help", "completion":
 		return true
 	}
 	return false
