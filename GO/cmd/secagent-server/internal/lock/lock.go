@@ -236,9 +236,14 @@ func (l *Lock) fresh(raw []byte) (isFresh bool, age time.Duration, owner content
 // step is one iteration of the secondary loop. It returns true once promoted to master.
 func (l *Lock) step(ctx context.Context) (bool, error) {
 	l.mu.Lock()
-	l.lastCheck, l.phase = l.cfg.Clock.Now(), PhaseSecondary
+	l.phase = PhaseSecondary
 	l.mu.Unlock()
 	raw, err := l.cfg.FS.ReadFile(l.path)
+	if err == nil || errors.Is(err, os.ErrNotExist) { // a SUCCESSFUL poll (free lock included)
+		l.mu.Lock()
+		l.lastCheck = l.cfg.Clock.Now()
+		l.mu.Unlock()
+	}
 	switch {
 	case err == nil:
 		isFresh, age, owner := l.fresh(raw)
@@ -603,17 +608,26 @@ func (l *Lock) Maintain(ctx context.Context) error {
 			}
 		}
 	})
+	// The write_seq publication runs on its OWN goroutine: a write that blocks on a lost mount must
+	// never keep the identity check (and so the self-retire) from running.
+	l.cfg.Spawn(func() {
+		for {
+			if err := l.cfg.Clock.Sleep(ctx, l.p.Check); err != nil {
+				return
+			}
+			l.publishSeqIfNeeded()
+		}
+	})
 	var lostErr error
 	for {
 		if err := l.cfg.Clock.Sleep(ctx, l.p.Check); err != nil {
 			break
 		}
 		err := l.CheckOwnership()
-		l.mu.Lock()
-		l.lastCheck = l.cfg.Clock.Now()
-		l.mu.Unlock()
-		if err == nil {
-			l.publishSeqIfNeeded()
+		if err == nil { // only a CONFIRMED identity check counts as fresh
+			l.mu.Lock()
+			l.lastCheck = l.cfg.Clock.Now()
+			l.mu.Unlock()
 		}
 		if err != nil {
 			l.mu.Lock()

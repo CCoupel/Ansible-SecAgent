@@ -52,7 +52,7 @@ func TestStatusLocal_Verdicts(t *testing.T) {
 		}
 	}
 	write(localstatus.File{Role: "master", InstanceID: "m1", State: localstatus.StateReady, LastBeatAt: now.Add(-5 * time.Second).UnixMilli(), BeatPeriodMS: 30000, CheckPeriodMS: 5000})
-	if out, err := runStatusLocal(t, now, "--local"); err != nil || !strings.Contains(out, "m1") || !strings.Contains(out, "master") || !strings.Contains(out, "healthy") {
+	if out, err := runStatusLocal(t, now, "--local"); err != nil || !strings.Contains(out, "m1") || !strings.Contains(out, "master") || !strings.Contains(out, "healthy") || !strings.Contains(out, "state_mode") {
 		t.Fatalf("healthy master: %q %v", out, err)
 	}
 	write(localstatus.File{Role: "secondary", InstanceID: "s1", State: localstatus.StateWaiting, LastCheckAt: now.Add(-2 * time.Second).UnixMilli(), BeatPeriodMS: 30000, CheckPeriodMS: 5000})

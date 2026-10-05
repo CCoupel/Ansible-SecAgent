@@ -946,3 +946,5 @@ Plusieurs instances d'un même relay partagent `STATE_DIR` ; **une seule** est m
 | 0 | arrêt demandé (SIGTERM/SIGINT) |
 | 1 | démarrage refusé (configuration, certificat, état invalide, rejeu) ou erreur serveur |
 | 75 | verrou maître perdu : relancer (en secondaire) |
+
+**Mode lecture seule visible (#163)** : une écriture refusée parce que l'instance n'a pas de garde confirmée (`no write guard`), a perdu le verrou (`lock lost`) ou ne peut pas le confirmer (`ownership not confirmed`) répond `503 {"error":"state_read_only","reason":…}`, journalisé une fois par minute. `/api/admin/status`, `secagent-server server status` et `status --local` exposent `state_mode` (`read_write` / `read_only`), le rôle, l'`instance_id`, le `write_seq` et le dernier battement.

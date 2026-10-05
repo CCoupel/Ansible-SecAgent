@@ -1,6 +1,7 @@
 package lock
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -86,5 +87,31 @@ func TestStatus_PhasesAndTimestamps(t *testing.T) {
 		if st := sec.l.Status(); st.Phase != PhaseLost || st.LostReason == "" {
 			t.Fatalf("after the loss: %+v", st)
 		}
+	})
+}
+
+// The maintenance loop publishes the noted write_seq by itself (its own goroutine), within a check
+// period or two, without any beat.
+func TestSeq_MaintainPublishesTheNotedSeq(t *testing.T) {
+	forBothModes(t, func(t *testing.T, fs *memFS) {
+		s := newSim()
+		m := newInst(t, s, fs, "m", 1, true, nil)
+		if !step(t, m) {
+			t.Fatal("setup")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		m.clk.immediate = false
+		done := make(chan error, 1)
+		s.Go(func() { done <- m.l.Maintain(ctx) })
+		m.l.NoteSeq(12)
+		for i := 0; i < 4; i++ {
+			s.Advance(DefaultParams().Check)
+		}
+		if c, _ := fs.content(lockPath); c.Seq != 12 {
+			t.Fatalf("published write_seq = %d, want 12", c.Seq)
+		}
+		cancel()
+		s.Drain()
 	})
 }

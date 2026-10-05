@@ -19,6 +19,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/forward"
 	"secagent-server/cmd/secagent-server/internal/handlers"
 	"secagent-server/cmd/secagent-server/internal/hooks"
+	"secagent-server/cmd/secagent-server/internal/lock"
 	"secagent-server/cmd/secagent-server/internal/logsafe"
 	"secagent-server/cmd/secagent-server/internal/proxy"
 	"secagent-server/cmd/secagent-server/internal/repeater"
@@ -60,15 +61,16 @@ type Node struct {
 
 	// abort is closed by Abort (loss of the lock): Run then stops at once, without graceful
 	// shutdown and without draining the hooks queue.
-	abort     chan struct{}
-	abortOnce sync.Once
-	instMu    sync.Mutex
-	instRole  string
-	instID    string
-	apiAddr   string // effective addresses once listening
-	adminAddr string
-	wsAddr    string
-	addrMu    sync.Mutex
+	abort      chan struct{}
+	abortOnce  sync.Once
+	instMu     sync.Mutex
+	instRole   string
+	instID     string
+	lockStatus func() lock.Status
+	apiAddr    string // effective addresses once listening
+	adminAddr  string
+	wsAddr     string
+	addrMu     sync.Mutex
 }
 
 // Build wires every component in the production order (store, JWT secrets, hooks, revocation and
@@ -363,6 +365,7 @@ func Build(cfg Config) (node *Node, err error) {
 	// Link status (#154): /health "degraded" and the admin status "links".
 	n.healthLinks = n.linksStatus
 	handlers.SetLinkStatusFunc(func() interface{} { return n.linksStatus() })
+	handlers.SetInstanceStatusFunc(n.StatusFields)
 
 	n.buildRouters()
 	return n, nil
@@ -560,8 +563,16 @@ func (n *Node) Run(ctx context.Context) error {
 	ws.CloseAllLinks(1001, "server shutting down") // Going Away: peers reconnect (never 4001)
 	n.shutdownServers()
 	if runErr == nil && n.dispatcher != nil { // clean stop: flush the hooks queue (bounded), then count what is left
-		if left := n.dispatcher.Drain(hooks.DefaultDrainTimeout); left > 0 {
-			log.Printf("[SHUTDOWN] hooks: %d event(s) still pending after %s — they are lost", left, hooks.DefaultDrainTimeout)
+		drained := make(chan int64, 1)
+		go func() { drained <- n.dispatcher.Drain(hooks.DefaultDrainTimeout) }()
+		select {
+		case left := <-drained:
+			if left > 0 {
+				log.Printf("[SHUTDOWN] hooks: %d event(s) still pending after %s — they are lost", left, hooks.DefaultDrainTimeout)
+			}
+		case <-n.abort: // the lock was lost during the drain: stop executing actions at once
+			log.Println("[SHUTDOWN] aborted during the hooks drain: the master lock was lost")
+			return ErrLockLost
 		}
 	}
 	log.Println("[OK] Shutdown complete")

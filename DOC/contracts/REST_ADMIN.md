@@ -358,6 +358,10 @@ Lu dans le journal append-only `actions.log` (#161). `limit` : 1–200 (défaut 
 
 `hooks_dropped_events` : événements rejetés (file pleine ou arrêt) ; `hooks_dropped_actions` : actions perdues avec des événements en file lors d'un arrêt brutal (doit rester 0). `secagent-server server status` les affiche.
 
+**Mode d'écriture de l'état (#163)** : `state_mode` (`read_write` | `read_only`), `state_mode_reason` quand il est `read_only` (`no write guard`, `lock lost`, `ownership not confirmed`), `role` (`master`), `instance_id`, `write_seq` (de l'état détenu), `beat` et `last_beat_at` (dernier battement réussi du verrou, RFC 3339). `secagent-server server status` les affiche ; `secagent-server status --local` donne le même mode d'écriture sans passer par l'API.
+
+**Écriture refusée parce que l'instance est en lecture seule (#163)** : toute route qui écrit répond **`503 {"error":"state_read_only","reason":"<no write guard|lock lost|ownership not confirmed>"}`** (et non plus un `500 db_error` générique) quand, au moment de la réponse, l'état est réellement en lecture seule (aucune garde, verrou perdu ou non confirmé). Un vrai échec de base reste un `500 db_error`. Le refus est journalisé une fois par minute. Une révocation d'agent (`POST …/revoke`) dont l'écriture dans la blacklist est refusée **ne ferme plus** le lien en `4001` : elle répond 503 et le client réessaie.
+
 ---
 
 ### `GET /api/admin/server/status`

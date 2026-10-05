@@ -39,7 +39,13 @@ For the API view of a running master use "server status".`,
 			return &ExitError{Code: 1, Msg: fmt.Sprintf("unhealthy: %v", err)}
 		}
 		ok, reason := localstatus.Verdict(f, statusNow())
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "role\t%s\ninstance_id\t%s\nstate\t%s\n", f.Role, f.InstanceID, f.State)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "role\t%s\ninstance_id\t%s\nstate\t%s\nstate_mode\t%s\n", f.Role, f.InstanceID, f.State, f.StateMode)
+		if f.WriteSeq > 0 {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "write_seq\t%d\n", f.WriteSeq)
+		}
+		if f.LastBeatAt > 0 {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "last_beat_at\t%s\n", time.UnixMilli(f.LastBeatAt).UTC().Format(time.RFC3339))
+		}
 		if !ok {
 			return &ExitError{Code: 1, Msg: "unhealthy: " + reason}
 		}

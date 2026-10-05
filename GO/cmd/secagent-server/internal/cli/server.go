@@ -44,6 +44,17 @@ var serverStatusCmd = &cobra.Command{
 			tp.printf("db\t%v\n", m["db"])
 			tp.printf("ws_connections\t%v\n", m["ws_connections"])
 			tp.printf("uptime\t%v\n", m["uptime"])
+			if mode, ok := m["state_mode"]; ok {
+				tp.printf("state_mode\t%v\n", mode)
+				if r, ok := m["state_mode_reason"]; ok {
+					tp.printf("state_mode_reason\t%v\n", r)
+				}
+				for _, k := range []string{"role", "instance_id", "write_seq", "beat", "last_beat_at"} {
+					if v, ok := m[k]; ok {
+						tp.printf("%s\t%v\n", k, v)
+					}
+				}
+			}
 			if _, ok := m["hooks_queue_depth"]; ok {
 				tp.printf("hooks_queue_depth\t%v / %v\n", m["hooks_queue_depth"], m["hooks_queue_capacity"])
 				tp.printf("hooks_inflight\t%v\n", m["hooks_inflight"])

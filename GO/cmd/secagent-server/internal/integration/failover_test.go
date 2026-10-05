@@ -169,8 +169,15 @@ func TestFailover_SecondaryHasNoPortAndWritesNothing(t *testing.T) {
 	if ok, why := a.healthy(t); !ok {
 		t.Errorf("healthy master reported unhealthy: %s", why)
 	}
-	if st := a.status(t); st.Role != "master" || st.State != localstatus.StateReady {
-		t.Errorf("master status = %+v", st)
+	if st := a.status(t); st.Role != "master" || st.State != localstatus.StateReady || st.StateMode != localstatus.ModeReadWrite || st.WriteSeq == 0 {
+		t.Errorf("master status = %+v, want master/ready/read_write with a write_seq", st)
+	}
+	if st := b.status(t); st.StateMode != localstatus.ModeReadOnly {
+		t.Errorf("a secondary is read_only, got %+v", st)
+	}
+	if code, m := a.admin("GET", "/api/admin/status", nil); code != 200 || m["state_mode"] != "read_write" || m["role"] != "master" ||
+		m["instance_id"] != a.status(t).InstanceID || m["write_seq"] == nil || m["last_beat_at"] == nil {
+		t.Errorf("admin status of the master: %d %v", code, m)
 	}
 	if h := a.publicHealth(); !strings.Contains(h, "master") || !strings.Contains(h, a.status(t).InstanceID) {
 		t.Errorf("/health must expose role and instance_id: %s", h)
@@ -291,6 +298,9 @@ func TestFailover_FrozenMasterWakesUpEvictedAndExits(t *testing.T) {
 	}
 	if ok, _ := a.healthy(t); ok {
 		t.Error("a process that lost the lock must be reported unhealthy by status --local")
+	}
+	if st := a.status(t); st.StateMode != localstatus.ModeReadOnly {
+		t.Errorf("after the loss the mode is read_only, got %+v", st)
 	}
 	// nothing was written by the evicted master: the state still carries the new master's lineage
 	if seq := stateWriteSeq(t, a.stateDir); seq < seqAtTakeover {

@@ -56,3 +56,41 @@ func TestAbort_QueuedHookActionsNeverRunAndNothingIsDrained(t *testing.T) {
 	}
 	n.Abort() // idempotent
 }
+
+// The lock is lost DURING the graceful shutdown (SIGTERM already received, hooks being drained): Run
+// stops at once with ErrLockLost instead of draining on behalf of a former master.
+func TestAbort_LossDuringTheGracefulDrainStopsTheDrain(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "hooks.out")
+	hooksFile := filepath.Join(dir, "hooks.json")
+	cfgJSON := `{"hooks":[{"event":"host.up","actions":[` +
+		`{"type":"shell","cmd":"/bin/sleep","args":["0.4"],"timeout_seconds":5},` +
+		`{"type":"file","path":"` + out + `","append":"ran {{hostname}}\n"}]}]}`
+	if err := os.WriteFile(hooksFile, []byte(cfgJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n, _, _, _, cancel, done := startNodeCtl(t, func(*Config) { t.Setenv("RELAY_HOOKS_CONFIG", hooksFile) })
+	for i := 0; i < 20; i++ { // 20 x 0.4 s on one worker: a drain would take 8 s
+		hooks.GlobalDispatcher.Dispatch("host.up", "h", "connected", "")
+	}
+	time.Sleep(100 * time.Millisecond)
+	cancel() // SIGTERM: the graceful path starts, the drain begins
+	time.Sleep(300 * time.Millisecond)
+	start := time.Now()
+	n.Abort() // the lock is lost now
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), ErrLockLost.Error()) {
+			t.Fatalf("Run returned %v, want ErrLockLost", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run kept draining after the lock was lost")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Errorf("stop took %v", time.Since(start))
+	}
+	time.Sleep(600 * time.Millisecond)
+	if b, _ := os.ReadFile(out); strings.Count(string(b), "ran") > 1 {
+		t.Errorf("actions kept running after the loss: %q", b)
+	}
+}

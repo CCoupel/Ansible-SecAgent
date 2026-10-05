@@ -326,6 +326,7 @@ func TestCase7_StorageLostSelfRetireBeforeStaleness(t *testing.T) {
 		done := make(chan error, 1)
 		s.Go(func() { done <- m.l.Maintain(ctx) })
 		step(t, sec)         // the secondary watches
+		m.l.NoteSeq(9)       // a state write is waiting to be published: it must not delay the self-retire
 		fs.failWrites = true // storage lost: beats fail from now on
 		for s.Now().Sub(start) < DefaultParams().MasterStale-time.Second && len(m.lost) == 0 {
 			s.Advance(time.Second)

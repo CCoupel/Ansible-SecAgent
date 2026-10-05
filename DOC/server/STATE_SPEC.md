@@ -101,3 +101,5 @@ Le HMAC interdit de **forger** un état, pas de **rejouer une copie authentique 
 - à la promotion, le chargement refuse un `relay.state` (ou un `.prev` de repli) dont le `write_seq` est inférieur : `[SECURITY WARNING]`, démarrage refusé (code de sortie 1, aucun port ouvert, verrou supprimé, état local `failed`).
 
 **Limite résiduelle** : la garde vit dans la mémoire des instances. Après un **arrêt à froid de toutes les instances**, elle est perdue et le rejeu d'une copie authentique reste possible ; la protection repose alors sur le contrôle d'accès à `STATE_DIR` et sur les sauvegardes (`state verify` / `state restore --from --min-write-seq`, #187).
+
+À l'**arrêt propre** le verrou est supprimé, et avec lui son champ `write_seq` : la garde ne subsiste alors que dans la mémoire des secondaires qui l'ont lu (au plus une période de contrôle de retard, ~5 s). Un rejeu d'une copie authentique plus ancienne juste après un arrêt propre n'est donc détecté que pour ce qui a été observé ; même limite que l'arrêt à froid de toutes les instances ci-dessus.

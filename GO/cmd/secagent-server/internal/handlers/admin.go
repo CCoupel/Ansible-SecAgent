@@ -471,8 +471,12 @@ func AdminRevokeMinion(w http.ResponseWriter, r *http.Request) {
 		expiresAt := time.Now().Add(25 * time.Hour).UTC().Format(time.RFC3339)
 		reason := "admin_revoke"
 		if err := adminStore.AddToBlacklist(ctx, agent.TokenJTI, hostname, expiresAt, &reason); err != nil {
+			// The revocation is not persisted (state read-only after a lost lock, disk error): do NOT
+			// close the link with 4001 ("must not reconnect") — the new master would not know the
+			// revocation and the agent would be cut for nothing. The caller retries the revoke.
 			log.Printf("AdminRevokeMinion blacklist: %v", err)
-			// Continue anyway — close WS regardless
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+			return
 		}
 	}
 
@@ -503,6 +507,19 @@ func AdminRevokeMinion(w http.ResponseWriter, r *http.Request) {
 var (
 	linkStatusMu sync.RWMutex
 	linkStatusFn func() interface{}
+)
+
+// SetInstanceStatusFunc wires the instance fields of GET /api/admin/status: write mode, role,
+// instance_id, write_seq, last heartbeat (#163).
+func SetInstanceStatusFunc(fn func() map[string]interface{}) {
+	instanceStatusMu.Lock()
+	instanceStatusFn = fn
+	instanceStatusMu.Unlock()
+}
+
+var (
+	instanceStatusMu sync.RWMutex
+	instanceStatusFn func() map[string]interface{}
 )
 
 // SetLinkStatusFunc wires the parent / push-child link status exposed by GET /api/admin/status (#154).
@@ -545,6 +562,14 @@ func AdminStatus(w http.ResponseWriter, r *http.Request) {
 		body["hooks_inflight"] = st.Inflight
 		body["hooks_dropped_events"] = st.DroppedEvents
 		body["hooks_dropped_actions"] = st.DroppedActions
+	}
+	instanceStatusMu.RLock()
+	instFn := instanceStatusFn
+	instanceStatusMu.RUnlock()
+	if instFn != nil { // write mode, role, instance, write_seq, last beat (#163)
+		for k, v := range instFn() {
+			body[k] = v
+		}
 	}
 	linkStatusMu.RLock()
 	links := linkStatusFn

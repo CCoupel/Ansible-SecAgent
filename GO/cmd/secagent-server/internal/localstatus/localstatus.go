@@ -19,6 +19,12 @@ const EnvStatusFile = "RELAY_STATUS_FILE"
 // DefaultPath is where the status file lives without RELAY_STATUS_FILE (a per-host tmpfs).
 const DefaultPath = "/run/secagent/status.json"
 
+// Write modes of the state (File.StateMode, /api/admin/status).
+const (
+	ModeReadOnly  = "read_only"
+	ModeReadWrite = "read_write"
+)
+
 // States of the process (File.State).
 const (
 	StateWaiting = "waiting" // secondary or candidate: no port, no state loaded
@@ -36,6 +42,10 @@ type File struct {
 	Detail     string `json:"detail,omitempty"` // a short non-secret reason (failed / lost)
 	Pid        int    `json:"pid"`
 	Beat       uint64 `json:"beat"`
+	// StateMode: "read_write" only for a ready master whose write guard passes, else "read_only";
+	// WriteSeq: the write_seq of the state held (ready master only).
+	StateMode string `json:"state_mode"`
+	WriteSeq  uint64 `json:"write_seq,omitempty"`
 	// LastBeatAt (master) / LastCheckAt (secondary, and master identity checks): unix milliseconds
 	// of the last SUCCESSFUL lock activity, taken from the lock itself (not from this file's write
 	// time): a frozen process stops refreshing them.

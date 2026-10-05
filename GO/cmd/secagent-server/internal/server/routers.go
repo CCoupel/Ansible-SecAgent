@@ -101,17 +101,18 @@ func (n *Node) buildRouters() {
 	apiH("/ws/relay", ws.RelayHandler) // also on 7770 for compat
 	log.Println("[RELAY] /ws/relay endpoint enabled")
 
-	n.apiHandler, n.adminHandler, n.wsHandler = apiRouter, adminRouter, wsRouter
+	// a write refused because the instance is read-only is a visible 503, not a generic 500 (#163)
+	n.apiHandler, n.adminHandler, n.wsHandler = n.readOnlyRewrite(apiRouter), n.readOnlyRewrite(adminRouter), wsRouter
 
 	// Create HTTP servers
 	n.apiSrv = &http.Server{
-		Handler:      apiRouter,
+		Handler:      n.apiHandler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 	n.adminSrv = &http.Server{
-		Handler:      adminRouter,
+		Handler:      n.adminHandler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
