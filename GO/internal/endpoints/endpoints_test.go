@@ -255,7 +255,13 @@ func TestDialFirst_BlackholeTimeoutPerAddress(t *testing.T) {
 	_, _, err := DialFirst(context.Background(), r, 50*time.Millisecond,
 		func(ctx context.Context, u *url.URL) (int, error) {
 			calls++
-			<-ctx.Done() // silent host: only the per-address timeout frees us
+			// Silent host: only the per-address timeout frees us. The
+			// watchdog makes a missing timeout fail fast instead of hanging.
+			select {
+			case <-ctx.Done():
+			case <-time.After(5 * time.Second):
+				t.Error("per-address timeout not applied")
+			}
 			return 0, MarkBeforeSend(ctx.Err())
 		})
 	if !errors.Is(err, ErrAllFailed) {
@@ -293,7 +299,10 @@ func TestDialFirst_SilentHostTLSHandshakeTimeout(t *testing.T) {
 	pool := trustPool(srv)
 	get := getFn(pool)
 	start := time.Now()
-	got, _, err := DialFirst(context.Background(), r, 200*time.Millisecond,
+	// Safety net: a broken per-address timeout fails in 10s, never hangs.
+	guard, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	got, _, err := DialFirst(guard, r, 200*time.Millisecond,
 		func(ctx context.Context, u *url.URL) (string, error) {
 			// Connection phase: TCP + TLS handshake only.
 			d := tls.Dialer{Config: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}
