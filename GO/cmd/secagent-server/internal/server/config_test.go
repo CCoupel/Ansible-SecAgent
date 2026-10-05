@@ -124,3 +124,21 @@ func TestConfigFromEnv_GroupVars(t *testing.T) {
 		}
 	}
 }
+
+// #177: an invalid TRUSTED_PROXY_CIDRS refuses to start, in ConfigFromEnv and in Build.
+func TestConfig_InvalidTrustedProxyCIDRsRefusesToStart(t *testing.T) {
+	t.Setenv("JWT_SECRET_KEY", "s")
+	t.Setenv("ADMIN_TOKEN", "a")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8,not-a-cidr")
+	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "TRUSTED_PROXY_CIDRS") {
+		t.Fatalf("ConfigFromEnv error = %v, want a TRUSTED_PROXY_CIDRS error", err)
+	}
+	if _, err := Build(Config{JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:", TrustedProxyCIDRs: "10.0.0.0/99"}); err == nil {
+		t.Fatal("Build must refuse an invalid CIDR")
+	}
+	t.Setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8, 192.168.0.0/16")
+	cfg, err := ConfigFromEnv()
+	if err != nil || cfg.TrustedProxyCIDRs == "" {
+		t.Fatalf("valid list: (%+v, %v)", cfg, err)
+	}
+}

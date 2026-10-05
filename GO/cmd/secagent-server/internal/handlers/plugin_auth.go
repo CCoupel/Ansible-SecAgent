@@ -82,7 +82,10 @@ func requirePluginAuth(w http.ResponseWriter, r *http.Request) (*PluginAuthResul
 	}
 
 	// 5. IP validation
-	clientIP := extractClientIP(r)
+	clientIP, peerIP := clientAddr(r)
+	if clientIP != peerIP {
+		log.Printf("requirePluginAuth: client ip %q resolved through trusted proxy %q", clientIP, peerIP)
+	}
 	if tok.AllowedIPs != "" {
 		allowed, err := storage.PluginTokenCheckIP(tok.AllowedIPs, clientIP)
 		if err != nil {
@@ -91,7 +94,7 @@ func requirePluginAuth(w http.ResponseWriter, r *http.Request) (*PluginAuthResul
 			return nil, false
 		}
 		if !allowed {
-			log.Printf("requirePluginAuth IP rejected: ip=%s allowed_ips=%s token_id=%s", clientIP, tok.AllowedIPs, tok.ID)
+			log.Printf("requirePluginAuth IP rejected: ip=%q peer=%q allowed_ips=%q token_id=%s", clientIP, peerIP, tok.AllowedIPs, tok.ID)
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "ip_not_allowed"})
 			return nil, false
 		}
@@ -122,21 +125,11 @@ func requirePluginAuth(w http.ResponseWriter, r *http.Request) (*PluginAuthResul
 	return &PluginAuthResult{Token: tok, ClientIP: clientIP}, true
 }
 
-// extractClientIP returns the client IP address from the request.
-// Priority: X-Forwarded-For (first non-empty entry) → r.RemoteAddr.
-// Strips the port if present.
+// extractClientIP returns the client IP address of the request (see clientAddr: X-Forwarded-For
+// is honored only behind a trusted proxy, TRUSTED_PROXY_CIDRS).
 func extractClientIP(r *http.Request) string {
-	// Check X-Forwarded-For (set by reverse proxies)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// May contain multiple IPs: "client, proxy1, proxy2"
-		parts := strings.Split(xff, ",")
-		ip := strings.TrimSpace(parts[0])
-		if ip != "" {
-			return stripPort(ip)
-		}
-	}
-
-	return stripPort(r.RemoteAddr)
+	c, _ := clientAddr(r)
+	return c
 }
 
 // stripPort removes the port from a "host:port" or "[ipv6]:port" address.

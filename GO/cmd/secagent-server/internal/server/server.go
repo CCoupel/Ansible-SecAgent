@@ -79,6 +79,13 @@ func Build(cfg Config) (node *Node, err error) {
 		log.Printf("[INIT] Repeater child mode: REPEATER_ID=%s upstream=%s", repeaterCfg.ID, repeaterCfg.UpstreamURL)
 	}
 
+	// X-Forwarded-For is trusted only behind these proxies (#177); invalid CIDR = no start.
+	proxies, perr := handlers.ParseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs)
+	if perr != nil {
+		return nil, perr
+	}
+	handlers.SetTrustedProxies(proxies)
+
 	// Bootstrap secrets from the Config (init() read the same values from the environment).
 	handlers.ConfigureServer(cfg.JWTSecret, cfg.AdminToken)
 

@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"secagent-server/cmd/secagent-server/internal/config"
+	"secagent-server/cmd/secagent-server/internal/handlers"
 	"secagent-server/cmd/secagent-server/internal/repeater"
 )
 
@@ -54,6 +55,10 @@ type Config struct {
 	// GroupVars are this relay's Ansible group variables (RELAY_GROUP_VARS), validated.
 	GroupVars map[string]any
 
+	// TrustedProxyCIDRs (TRUSTED_PROXY_CIDRS, comma separated) are the reverse proxies whose
+	// X-Forwarded-For is believed; empty = never (#177). An invalid CIDR refuses the start.
+	TrustedProxyCIDRs string
+
 	// Repeater is the validated child-relay configuration (REPEATER_UPSTREAM_*); nil = no pull parent.
 	Repeater *config.RepeaterConfig
 }
@@ -68,19 +73,23 @@ var (
 // PROXY_MODE and PROXY_RELAYS are silently ignored (removed in v3.0, #123).
 func ConfigFromEnv() (Config, error) {
 	cfg := Config{
-		JWTSecret:   os.Getenv("JWT_SECRET_KEY"),
-		AdminToken:  os.Getenv("ADMIN_TOKEN"),
-		NATSURL:     envOr("NATS_URL", "nats://localhost:4222"),
-		DatabaseURL: envOr("DATABASE_URL", "sqlite:///./relay.db"),
-		LogLevel:    envOr("LOG_LEVEL", "INFO"),
-		APIAddr:     envOr(EnvAPIAddr, DefaultAPIAddr),
-		AdminAddr:   envOr(EnvAdminAddr, DefaultAdminAddr),
-		WSAddr:      envOr(EnvWSAddr, DefaultWSAddr),
+		JWTSecret:         os.Getenv("JWT_SECRET_KEY"),
+		AdminToken:        os.Getenv("ADMIN_TOKEN"),
+		NATSURL:           envOr("NATS_URL", "nats://localhost:4222"),
+		DatabaseURL:       envOr("DATABASE_URL", "sqlite:///./relay.db"),
+		LogLevel:          envOr("LOG_LEVEL", "INFO"),
+		TrustedProxyCIDRs: os.Getenv(handlers.EnvTrustedProxyCIDRs),
+		APIAddr:           envOr(EnvAPIAddr, DefaultAPIAddr),
+		AdminAddr:         envOr(EnvAdminAddr, DefaultAdminAddr),
+		WSAddr:            envOr(EnvWSAddr, DefaultWSAddr),
 	}
 	for name, addr := range map[string]string{EnvAPIAddr: cfg.APIAddr, EnvAdminAddr: cfg.AdminAddr, EnvWSAddr: cfg.WSAddr} {
 		if _, _, err := net.SplitHostPort(addr); err != nil {
 			return Config{}, fmt.Errorf("invalid %s %q: %w", name, addr, err)
 		}
+	}
+	if _, err := handlers.ParseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs); err != nil {
+		return Config{}, err
 	}
 	if cfg.JWTSecret == "" {
 		return Config{}, ErrMissingJWTSecret
