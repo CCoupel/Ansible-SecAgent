@@ -307,7 +307,9 @@ secagent-server server stats
 | `REPEATER_UPSTREAM_URL` | — | URL WSS du parent (ex: `wss://central:7772`) — requis en mode enfant pull |
 | `REPEATER_UPSTREAM_TOKEN` | — | Token JWT relay-child du relay enfant — requis en mode enfant pull |
 | `RELAY_GROUP_VARS` | — | Variables Ansible JSON injectées pour ce relay (ex: `{"env":"prod"}`) |
-| `SERVER_ADDR` | — | Adresse d'écoute (défaut `:7770`) |
+| `API_ADDR` | — | Adresse d'écoute de l'API publique + WS agent/relay (défaut `:7770`) |
+| `ADMIN_ADDR` | — | Adresse d'écoute de l'API admin (défaut `:7771`) — ne jamais l'exposer publiquement ; les handlers admin ne sont servis que sur cette adresse (sauf `POST /api/admin/authorize`, par compatibilité) |
+| `WS_ADDR` | — | Adresse d'écoute WebSocket (défaut `:7772`) |
 | `TLS_CERT` / `TLS_KEY` | — | Certificats TLS directs (sinon Caddy) |
 | `MAX_SNAPSHOT_RELAYS` | — | Limite nombre relays dans topology_snapshot (défaut 1000) |
 | `MAX_SNAPSHOT_HOSTS` | — | Limite nombre hôtes dans topology_snapshot (défaut 10000) |

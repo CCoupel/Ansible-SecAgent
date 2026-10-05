@@ -6,6 +6,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 
@@ -17,6 +18,13 @@ const (
 	DefaultAPIAddr   = ":7770" // public API + agent/relay WebSocket (compat)
 	DefaultAdminAddr = ":7771" // admin API (never exposed publicly)
 	DefaultWSAddr    = ":7772" // WebSocket
+)
+
+// Environment variables overriding the listen addresses (host:port or :port).
+const (
+	EnvAPIAddr   = "API_ADDR"
+	EnvAdminAddr = "ADMIN_ADDR"
+	EnvWSAddr    = "WS_ADDR"
 )
 
 // Config is everything the server needs to start.
@@ -55,9 +63,14 @@ func ConfigFromEnv() (Config, error) {
 		NATSURL:     envOr("NATS_URL", "nats://localhost:4222"),
 		DatabaseURL: envOr("DATABASE_URL", "sqlite:///./relay.db"),
 		LogLevel:    envOr("LOG_LEVEL", "INFO"),
-		APIAddr:     DefaultAPIAddr,
-		AdminAddr:   DefaultAdminAddr,
-		WSAddr:      DefaultWSAddr,
+		APIAddr:     envOr(EnvAPIAddr, DefaultAPIAddr),
+		AdminAddr:   envOr(EnvAdminAddr, DefaultAdminAddr),
+		WSAddr:      envOr(EnvWSAddr, DefaultWSAddr),
+	}
+	for name, addr := range map[string]string{EnvAPIAddr: cfg.APIAddr, EnvAdminAddr: cfg.AdminAddr, EnvWSAddr: cfg.WSAddr} {
+		if _, _, err := net.SplitHostPort(addr); err != nil {
+			return Config{}, fmt.Errorf("invalid %s %q: %w", name, addr, err)
+		}
 	}
 	if cfg.JWTSecret == "" {
 		return Config{}, ErrMissingJWTSecret

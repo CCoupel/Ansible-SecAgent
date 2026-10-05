@@ -59,12 +59,11 @@ type Node struct {
 // Build wires every component in the production order (store, JWT secrets, hooks, revocation and
 // blacklist checks BEFORE any listener exists) and returns the Node. It does not listen.
 // On error everything already opened is released.
-func Build(cfg Config) (n *Node, err error) {
-	n = &Node{cfg: cfg, ready: make(chan struct{})}
+func Build(cfg Config) (node *Node, err error) {
+	n := &Node{cfg: cfg, ready: make(chan struct{})}
 	defer func() {
 		if err != nil {
 			n.Close()
-			n = nil
 		}
 	}()
 
