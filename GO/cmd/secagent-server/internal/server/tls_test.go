@@ -389,6 +389,12 @@ func TestTLS_HotReloadWithoutCuttingExistingConnections(t *testing.T) {
 		t.Fatal("the first certificate is not served")
 	}
 
+	// no change on disk = no reload, however many polls go by (no log spam, no useless work)
+	time.Sleep(500 * time.Millisecond)
+	if strings.Contains(logs.String(), "TLS certificate reloaded") {
+		t.Fatalf("the unchanged files were reloaded:\n%s", logs.String())
+	}
+
 	// 1. a new valid pair replaces the files: new connections get it, nothing restarts
 	certPEM, keyPEM, leaf2 := genPEM(t, "rotated", time.Now().Add(-time.Hour), time.Now().Add(60*24*time.Hour))
 	p2 := &tlsPair{certPath: p.certPath, keyPath: p.keyPath, leaf: leaf2}
@@ -425,8 +431,12 @@ func TestTLS_HotReloadWithoutCuttingExistingConnections(t *testing.T) {
 		"empty files":   {{}, {}},
 		"truncated key": {certPEM, keyPEM[:len(keyPEM)/2]},
 	} {
+		before := strings.Count(logs.String(), "TLS certificate reload refused")
 		replaceFiles(t, p, files[0], files[1])
 		time.Sleep(450 * time.Millisecond) // several polls
+		if got := strings.Count(logs.String(), "TLS certificate reload refused") - before; got != 1 {
+			t.Errorf("%s: %d refusal warnings, want exactly 1 (the same bad content must not be re-reported at every poll)", name, got)
+		}
 		if peerFingerprint(t, api, p2.pool()) != p2.fingerprint() {
 			t.Fatalf("%s: the previous certificate must stay in service", name)
 		}
