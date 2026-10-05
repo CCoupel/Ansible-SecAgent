@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -59,6 +62,12 @@ type Dispatcher struct {
 	queue chan dispatchJob
 	store ActionLogger
 
+	// slots bounds the actions running at once (one goroutine each): slow webhooks with many
+	// retries, or a burst of events from a hostile child, cannot pile goroutines up. Actions that
+	// find no free slot are dropped with a warning (the dispatch never blocks) and counted.
+	slots   chan struct{}
+	dropped atomic.Int64
+
 	// upstream, when set, receives every LOCAL event of a propagated kind (see Propagated) so that
 	// it can be forwarded to the parent. Events received from a child (DispatchChain) are never
 	// handed to it: a received event is never forwarded back up from here.
@@ -81,6 +90,7 @@ func NewDispatcher(store ActionLogger, bufSize int) *Dispatcher {
 		},
 	}
 	return &Dispatcher{
+		slots:       make(chan struct{}, maxConcurrentActions()),
 		queue:       make(chan dispatchJob, bufSize),
 		store:       store,
 		webhookExec: &WebhookExecutor{client: client},
@@ -89,6 +99,20 @@ func NewDispatcher(store ActionLogger, bufSize int) *Dispatcher {
 		apiExec:     &APIExecutor{client: client},
 	}
 }
+
+// DefaultMaxConcurrentActions is the default bound of simultaneously running hook actions;
+// RELAY_HOOKS_MAX_CONCURRENT_ACTIONS overrides it (read when the dispatcher is created).
+const DefaultMaxConcurrentActions = 64
+
+func maxConcurrentActions() int {
+	if n, err := strconv.Atoi(os.Getenv("RELAY_HOOKS_MAX_CONCURRENT_ACTIONS")); err == nil && n > 0 {
+		return n
+	}
+	return DefaultMaxConcurrentActions
+}
+
+// DroppedActions returns how many actions were dropped because the concurrency bound was reached.
+func (d *Dispatcher) DroppedActions() int64 { return d.dropped.Load() }
 
 // SetConfig replaces the active hooks configuration.
 // Thread-safe; called from main.go at startup and on SIGHUP.
@@ -194,7 +218,20 @@ func (d *Dispatcher) processJob(ctx context.Context, job dispatchJob) {
 		for idx, action := range hookDef.Actions {
 			action := action // capture for goroutine
 			idx := idx
-			go d.executeAction(ctx, job, action, idx, vars)
+			select {
+			case d.slots <- struct{}{}:
+			default:
+				// log at most once per 100 drops: the log itself must not become the flood
+				if n := d.dropped.Add(1); n%100 == 1 {
+					log.Printf("[SECURITY WARNING] hooks: %d concurrent actions running, action dropped (total dropped=%d) event=%s hostname=%q",
+						cap(d.slots), n, job.event, job.hostname)
+				}
+				continue
+			}
+			go func() {
+				defer func() { <-d.slots }()
+				d.executeAction(ctx, job, action, idx, vars)
+			}()
 		}
 		return // first matching HookDef wins
 	}
