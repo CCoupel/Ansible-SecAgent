@@ -94,7 +94,7 @@ func requirePluginAuth(w http.ResponseWriter, r *http.Request) (*PluginAuthResul
 			return nil, false
 		}
 		if !allowed {
-			log.Printf("requirePluginAuth IP rejected: ip=%q peer=%q allowed_ips=%q token_id=%s", clientIP, peerIP, tok.AllowedIPs, tok.ID)
+			log.Printf("requirePluginAuth IP rejected: ip=%q peer=%q allowed_ips=%q token_id=%q", clientIP, peerIP, tok.AllowedIPs, tok.ID)
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "ip_not_allowed"})
 			return nil, false
 		}
@@ -110,7 +110,7 @@ func requirePluginAuth(w http.ResponseWriter, r *http.Request) (*PluginAuthResul
 			return nil, false
 		}
 		if !matched {
-			log.Printf("requirePluginAuth hostname rejected: hostname=%q pattern=%q token_id=%s",
+			log.Printf("requirePluginAuth hostname rejected: hostname=%q pattern=%q token_id=%q",
 				clientHostname, tok.AllowedHostnamePattern, tok.ID)
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "hostname_not_allowed"})
 			return nil, false

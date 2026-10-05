@@ -285,7 +285,7 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("Relay registered: relay_id=%q mode=%s id=%s", req.RelayID, req.Mode, id)
+	log.Printf("Relay registered: relay_id=%q mode=%q id=%q", req.RelayID, req.Mode, id)
 
 	// Push mode: start the dial-out immediately, without restart.
 	if req.Mode == "push" {
@@ -459,7 +459,7 @@ func AdminDeleteRelay(w http.ResponseWriter, r *http.Request) {
 	// A deleted relay must not keep a live link: cut it (permanent code, #148).
 	disconnected := ws.CloseRelay(node.RelayID, ws.WSRelayCloseRevoked, "relay deleted")
 
-	log.Printf("Relay deleted: id=%s relay_id=%q link_closed=%v", id, node.RelayID, disconnected)
+	log.Printf("Relay deleted: id=%q relay_id=%q link_closed=%v", id, node.RelayID, disconnected)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -550,7 +550,7 @@ func revokeRelayNode(r *http.Request, node *storage.RelayNode) (RelayRevokeRespo
 		resp.LegacyToken = info.JTI == ""
 	}
 	resp.Disconnected = ws.CloseRelay(node.RelayID, ws.WSRelayCloseRevoked, "token revoked")
-	log.Printf("Relay revoked: relay_id=%q mode=%s blacklisted=%v legacy=%v link_closed=%v",
+	log.Printf("Relay revoked: relay_id=%q mode=%q blacklisted=%v legacy=%v link_closed=%v",
 		node.RelayID, node.Mode, resp.Blacklisted, resp.LegacyToken, resp.Disconnected)
 	return resp, nil
 }

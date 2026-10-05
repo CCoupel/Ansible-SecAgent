@@ -234,7 +234,7 @@ func AdminCreateToken(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 			return
 		}
-		log.Printf("Plugin token created by admin: id=%s description=%q", id, req.Description)
+		log.Printf("Plugin token created by admin: id=%q description=%q", id, req.Description)
 	}
 
 	expiresStr := ""
@@ -433,7 +433,7 @@ func AdminRevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if found {
-		log.Printf("Token revoked: id=%s", id)
+		log.Printf("Token revoked: id=%q", id)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"revoked":    true,
 			"id":         id,
@@ -449,7 +449,7 @@ func AdminRevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if ok {
 		disconnected := ws.RevokeRelayParentLink(rt.JTI)
-		log.Printf("Relay-parent token revoked: id=%s parent=%s link_closed=%v", id, rt.ParentID, disconnected)
+		log.Printf("Relay-parent token revoked: id=%q parent=%q link_closed=%v", id, rt.ParentID, disconnected)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"revoked":      true,
 			"id":           id,
@@ -521,7 +521,7 @@ func AdminDeleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if deleted {
-		log.Printf("Enrollment token deleted: id=%s", id)
+		log.Printf("Enrollment token deleted: id=%q", id)
 		writeJSON(w, http.StatusOK, map[string]interface{}{"deleted": true, "id": id})
 		return
 	}
@@ -534,7 +534,7 @@ func AdminDeleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if deleted {
-		log.Printf("Plugin token deleted: id=%s", id)
+		log.Printf("Plugin token deleted: id=%q", id)
 		writeJSON(w, http.StatusOK, map[string]interface{}{"deleted": true, "id": id})
 		return
 	}

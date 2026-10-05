@@ -238,7 +238,7 @@ func writeAgentError(w http.ResponseWriter, errStr string, hostname, taskID stri
 		log.Printf("Agent busy: hostname=%q task_id=%q", hostname, taskID)
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "agent_busy"})
 	default:
-		log.Printf("Agent error: hostname=%q task_id=%q error=%s", hostname, taskID, errStr)
+		log.Printf("Agent error: hostname=%q task_id=%q error=%q", hostname, taskID, errStr)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": errStr})
 	}
 }
@@ -595,7 +595,7 @@ func FetchFile(w http.ResponseWriter, r *http.Request) {
 // writeProxyExecError writes the appropriate HTTP error for a proxy routing failure.
 func writeProxyExecError(w http.ResponseWriter, err error, hostname, taskID string) {
 	e := err.Error()
-	log.Printf("Proxy exec error: hostname=%q task_id=%q err=%s", hostname, taskID, e)
+	log.Printf("Proxy exec error: hostname=%q task_id=%q err=%q", hostname, taskID, e)
 	switch {
 	case strings.Contains(e, "timeout"):
 		writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "task_timeout"})

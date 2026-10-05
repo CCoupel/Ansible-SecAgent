@@ -13,10 +13,12 @@ package integration
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -63,19 +65,20 @@ func TestNodeProcess(t *testing.T) {
 	// ephemeral loopback ports, unless the harness restarts the node on its previous addresses
 	for p, env := range map[*net.Listener]string{&cfg.APIListener: "NODE_API_ADDR", &cfg.AdminListener: "NODE_ADMIN_ADDR", &cfg.WSListener: "NODE_WS_ADDR"} {
 		addr := os.Getenv(env)
-		if addr == "" {
-			addr = "127.0.0.1:0"
-		}
 		var ln net.Listener
 		var err error
-		for i := 0; i < 50; i++ { // the previous process may still be releasing its port
-			if ln, err = net.Listen("tcp", addr); err == nil {
-				break
+		if addr == "" {
+			ln, err = listenOutsideEphemeralRange()
+		} else {
+			for i := 0; i < 50; i++ { // the previous process may still be releasing its port
+				if ln, err = net.Listen("tcp", addr); err == nil {
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
 			}
-			time.Sleep(100 * time.Millisecond)
 		}
 		if err != nil {
-			log.Fatalf("listen %s: %v", addr, err)
+			log.Fatalf("listen %q: %v", addr, err)
 		}
 		*p = tls.NewListener(ln, tlsCfg)
 	}
@@ -145,4 +148,32 @@ func applyTuning(cfg *server.Config) {
 		o.AgentListInterval = 100 * time.Millisecond
 		d.MinBackoff, d.MaxBackoff = 50*time.Millisecond, 400*time.Millisecond
 	}
+}
+
+// listenOutsideEphemeralRange binds a loopback port that the kernel never hands out as an ephemeral
+// port (source port of an outgoing connection, ":0" listener): the harness restarts a node on the
+// SAME address, and an ephemeral port released by the stopped process could be taken by another
+// connection of the test run before the new process binds it ("address already in use").
+func listenOutsideEphemeralRange() (net.Listener, error) {
+	top := 32768
+	if b, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range"); err == nil {
+		var lo, hi int
+		if _, err := fmt.Sscanf(string(b), "%d %d", &lo, &hi); err == nil && lo >= 2048 {
+			top = lo
+		}
+	}
+	const bottom = 12000
+	if top-bottom < 1000 {
+		return net.Listen("tcp", "127.0.0.1:0")
+	}
+	for i := 0; i < 500; i++ {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(top-bottom)))
+		if err != nil {
+			return nil, err
+		}
+		if ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", bottom+int(n.Int64()))); err == nil {
+			return ln, nil
+		}
+	}
+	return net.Listen("tcp", "127.0.0.1:0")
 }

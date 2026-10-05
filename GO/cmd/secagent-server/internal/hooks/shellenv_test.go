@@ -153,3 +153,33 @@ func TestShellExecutor_RealProcessSeesOnlyTheAllowList(t *testing.T) {
 		}
 	}
 }
+
+// A forged hostname (control characters) can not add a variable to the hook's environment, and the
+// event variables are the only values sanitised.
+func TestShellEnvironment_ControlCharactersOfEventDataAreReplaced(t *testing.T) {
+	vars := map[string]string{"event": "host.up", "hostname": "a\nB=c", "timestamp": "T\x00x", "status": "s\x1b[31m\x7f", "relay_chain": "r1,\nr2", "relay_origin": "r1\r"}
+	env := shellEnvironment(nil, map[string]string{"MULTI": "line1\nline2", "FROM_EVENT": "{{hostname}}"}, vars)
+	for _, kv := range env {
+		if strings.ContainsAny(strings.SplitN(kv, "=", 2)[1], "\n\r\x00\x1b\x7f") && !strings.HasPrefix(kv, "MULTI=") {
+			t.Errorf("control character in %q", kv)
+		}
+	}
+	got := envMap(env)
+	if got["SECAGENT_HOSTNAME"] != "a_B=c" || got["SECAGENT_TIMESTAMP"] != "T_x" || got["SECAGENT_STATUS"] != "s_[31m_" ||
+		got["SECAGENT_RELAY_CHAIN"] != "r1,_r2" || got["FROM_EVENT"] != "a_B=c" {
+		t.Errorf("sanitised values: %v", got)
+	}
+	if _, injected := got["B"]; injected {
+		t.Error("a forged hostname must not inject a variable")
+	}
+	if got["MULTI"] != "line1\nline2" {
+		t.Errorf("an operator-declared value is kept as written: %q", got["MULTI"])
+	}
+	// a real process: NUL in a hostname used to make the start fail
+	out := filepath.Join(t.TempDir(), "env.out")
+	ok, msg, _ := (&ShellExecutor{}).Execute(context.Background(), ActionDef{Type: "shell", Cmd: "/bin/sh", Args: []string{"-c", "echo $SECAGENT_HOSTNAME > " + out}, TimeoutSeconds: 5},
+		map[string]string{"event": "e", "hostname": "x\x00y\nZ=1", "timestamp": "t", "status": "s"})
+	if b, _ := os.ReadFile(out); !ok || strings.TrimSpace(string(b)) != "x_y_Z=1" {
+		t.Errorf("ok=%v msg=%q out=%q", ok, msg, b)
+	}
+}

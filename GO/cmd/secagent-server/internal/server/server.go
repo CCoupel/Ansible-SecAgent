@@ -91,7 +91,7 @@ func Build(cfg Config) (node *Node, err error) {
 	log.Printf("[INIT] STATE_DIR: %s", cfg.StateDir)
 	log.Printf("[INIT] LOG_LEVEL: %s", cfg.LogLevel)
 	if repeaterCfg != nil {
-		log.Printf("[INIT] Repeater child mode: REPEATER_ID=%s upstream=%s", repeaterCfg.ID, repeaterCfg.UpstreamURL)
+		log.Printf("[INIT] Repeater child mode: REPEATER_ID=%q upstream=%s", repeaterCfg.ID, repeaterCfg.UpstreamURL)
 	}
 
 	// X-Forwarded-For is trusted only behind these proxies (#177); invalid CIDR = no start.

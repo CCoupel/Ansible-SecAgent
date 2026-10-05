@@ -182,13 +182,13 @@ func sendRekeyToAgent(ctx context.Context, hostname, jwtSecret string, jwtTTL ti
 	// Encrypt JWT with agent's RSA public key (RSAES-OAEP SHA-256)
 	tokenEncrypted, err := encryptWithPublicKey(rawJWT, agent.PublicKeyPEM)
 	if err != nil {
-		log.Printf("sendRekeyToAgent: encryptWithPublicKey %s: %v", hostname, err)
+		log.Printf("sendRekeyToAgent: encryptWithPublicKey %q: %v", hostname, err)
 		return false
 	}
 
 	// Persist new JTI in DB
 	if _, err := adminStore.UpdateTokenJTI(ctx, hostname, newJTI); err != nil {
-		log.Printf("sendRekeyToAgent: UpdateTokenJTI %s: %v", hostname, err)
+		log.Printf("sendRekeyToAgent: UpdateTokenJTI %q: %v", hostname, err)
 		// Non-fatal — still send the message
 	}
 
@@ -198,11 +198,11 @@ func sendRekeyToAgent(ctx context.Context, hostname, jwtSecret string, jwtTTL ti
 		"token_encrypted": tokenEncrypted,
 	}
 	if err := ws.SendToAgent(hostname, rekeyMsg); err != nil {
-		log.Printf("sendRekeyToAgent: SendToAgent %s: %v", hostname, err)
+		log.Printf("sendRekeyToAgent: SendToAgent %q: %v", hostname, err)
 		return false
 	}
 
-	log.Printf("Rekey sent to agent: hostname=%q jti=%s", hostname, newJTI)
+	log.Printf("Rekey sent to agent: hostname=%q jti=%q", hostname, newJTI)
 	return true
 }
 

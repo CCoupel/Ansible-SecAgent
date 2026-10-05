@@ -82,7 +82,7 @@ func (s *Store) UpsertRelayNode(node RelayNode) error {
 	v.status, v.lastSeen = node.Status, node.LastSeen
 	s.relayVol[node.RelayID] = v
 	s.mu.Unlock()
-	log.Printf("RelayNode upserted: relay_id=%q mode=%s status=%s", node.RelayID, node.Mode, node.Status)
+	log.Printf("RelayNode upserted: relay_id=%q mode=%q status=%q", node.RelayID, node.Mode, node.Status)
 	return nil
 }
 

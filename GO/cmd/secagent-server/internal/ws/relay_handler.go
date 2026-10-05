@@ -421,7 +421,7 @@ func SetRelayGroupVarsFunc(fn func(relayID, groupVarsJSON string) error) {
 func storeGroupVars(conn *RelayConnection, relayID string, chainToPeer []string, vars map[string]any) error {
 	canonical, err := config.EncodeGroupVars(vars)
 	if err != nil {
-		log.Printf("[SECURITY WARNING] group_vars refused: relay_id=%s declared by %s: %v", conn.RelayID, relayID, err)
+		log.Printf("[SECURITY WARNING] group_vars refused: relay_id=%q declared by %q: %v", conn.RelayID, relayID, err)
 		return err
 	}
 	treeHooksMu.RLock()
@@ -640,7 +640,7 @@ func loopedWith(childID string) bool {
 // reject asks the read loop to close the link with the CORRECTABLE code 4012 (invalid snapshot,
 // protocol error, conflict): the peer may fix the cause and reconnect with backoff.
 func reject(conn *RelayConnection, reason string) {
-	log.Printf("[RELAY] link refused (retryable): relay_id=%s reason=%q", conn.RelayID, reason)
+	log.Printf("[RELAY] link refused (retryable): relay_id=%q reason=%q", conn.RelayID, reason)
 	conn.reject = &relayRejection{code: WSRelayCloseRetry, reason: closeReason(reason)}
 }
 
@@ -663,7 +663,7 @@ func closeReason(reason string) string {
 // rejectPermanent closes the link with 4010: the refusal cannot be fixed by retrying
 // (identity not authorized, loop). The client stops instead of reconnecting.
 func rejectPermanent(conn *RelayConnection, reason string) {
-	log.Printf("[SECURITY WARNING] link refused (permanent): relay_id=%s reason=%q", conn.RelayID, reason)
+	log.Printf("[SECURITY WARNING] link refused (permanent): relay_id=%q reason=%q", conn.RelayID, reason)
 	conn.reject = &relayRejection{code: WSRelayCloseRevoked, reason: closeReason(reason)}
 }
 
@@ -750,7 +750,7 @@ func DispatchToRelay(relayID string, msg RelayMessage) (chan RelayTaskResult, er
 func registerRelayConnection(conn *RelayConnection) {
 	relayConnsMu.Lock()
 	if old, exists := relayConnections[conn.RelayID]; exists {
-		log.Printf("Replacing stale relay WS: relay_id=%s", conn.RelayID)
+		log.Printf("Replacing stale relay WS: relay_id=%q", conn.RelayID)
 		_ = old // old.Conn.Close() called from its own goroutine
 	}
 	relayConnections[conn.RelayID] = conn
@@ -758,10 +758,10 @@ func registerRelayConnection(conn *RelayConnection) {
 
 	if RelayStatusUpdateFunc != nil {
 		if err := RelayStatusUpdateFunc(conn.RelayID, "connected", time.Now().Unix()); err != nil {
-			log.Printf("registerRelayConnection: status update error: relay_id=%s err=%v", conn.RelayID, err)
+			log.Printf("registerRelayConnection: status update error: relay_id=%q err=%v", conn.RelayID, err)
 		}
 	}
-	log.Printf("Relay connected: relay_id=%s is_proxy=%v", conn.RelayID, conn.IsProxy)
+	log.Printf("Relay connected: relay_id=%q is_proxy=%v", conn.RelayID, conn.IsProxy)
 }
 
 // unregisterRelayConnection removes a relay connection and resolves pending tasks.
@@ -773,14 +773,14 @@ func unregisterRelayConnection(relayID string) {
 	// Update DB status
 	if RelayStatusUpdateFunc != nil {
 		if err := RelayStatusUpdateFunc(relayID, "disconnected", time.Now().Unix()); err != nil {
-			log.Printf("unregisterRelayConnection: status update error: relay_id=%s err=%v", relayID, err)
+			log.Printf("unregisterRelayConnection: status update error: relay_id=%q err=%v", relayID, err)
 		}
 	}
 
 	// Clear routing for this relay (empty hostnames list = delete all entries for relayID)
 	if RelayRoutingBulkUpsertFunc != nil {
 		if err := RelayRoutingBulkUpsertFunc(relayID, nil); err != nil {
-			log.Printf("unregisterRelayConnection: routing clear error: relay_id=%s err=%v", relayID, err)
+			log.Printf("unregisterRelayConnection: routing clear error: relay_id=%q err=%v", relayID, err)
 		}
 	}
 
@@ -807,7 +807,7 @@ func unregisterRelayConnection(relayID string) {
 		}
 	}
 
-	log.Printf("Relay disconnected: relay_id=%s", relayID)
+	log.Printf("Relay disconnected: relay_id=%q", relayID)
 }
 
 // Relay JWT roles accepted on /ws/relay.
@@ -865,17 +865,17 @@ func extractRelayAuth(r *http.Request) (relayAuth, error) {
 	// Revocation: a revoked token must not reconnect (SECURITY.md §7).
 	jti, _ := claims["jti"].(string)
 	if jti == "" {
-		log.Printf("[SECURITY WARNING] relay connection refused: JWT without jti (relay_id=%s)", sub)
+		log.Printf("[SECURITY WARNING] relay connection refused: JWT without jti (relay_id=%q)", sub)
 		return relayAuth{}, fmt.Errorf("jwt_missing_jti")
 	}
 	if err := checkRelayJTI(jti); err != nil {
-		log.Printf("[SECURITY WARNING] relay connection refused: relay_id=%s jti=%s: %v", sub, jti, err)
+		log.Printf("[SECURITY WARNING] relay connection refused: relay_id=%q jti=%q: %v", sub, jti, err)
 		return relayAuth{}, err
 	}
 	// A revoked relay (flagged in relay_nodes) is refused even if its JTI is unknown (legacy token).
 	if role == relayRoleChild {
 		if err := checkRelayRevoked(sub); err != nil {
-			log.Printf("[SECURITY WARNING] relay connection refused: relay_id=%s: %v", sub, err)
+			log.Printf("[SECURITY WARNING] relay connection refused: relay_id=%q: %v", sub, err)
 			return relayAuth{}, err
 		}
 	}
@@ -906,12 +906,12 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		// can distinguish proxy nodes from simple relay nodes
 		if isProxyNode && RelayIsProxyUpdateFunc != nil {
 			if err := RelayIsProxyUpdateFunc(conn.RelayID, true); err != nil {
-				log.Printf("relay_hello: SetRelayIsProxy error: relay_id=%s err=%v", conn.RelayID, err)
+				log.Printf("relay_hello: SetRelayIsProxy error: relay_id=%q err=%v", conn.RelayID, err)
 			}
 		}
 		// Auto-registration in relay_nodes (idempotent).
 		if err := registerRelayNode(conn.RelayID); err != nil {
-			log.Printf("relay_hello: auto-register error: relay_id=%s err=%v", conn.RelayID, err)
+			log.Printf("relay_hello: auto-register error: relay_id=%q err=%v", conn.RelayID, err)
 		}
 		conn.helloDone = true
 		if msg.GroupVars != nil {
@@ -931,10 +931,10 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		}
 		conn.mu.Lock()
 		if err := conn.Conn.WriteJSON(ack); err != nil {
-			log.Printf("relay_hello ack write error: relay_id=%s err=%v", conn.RelayID, err)
+			log.Printf("relay_hello ack write error: relay_id=%q err=%v", conn.RelayID, err)
 		}
 		conn.mu.Unlock()
-		log.Printf("relay_hello ack: relay_id=%s version=%s is_proxy=%v node_type=%q",
+		log.Printf("relay_hello ack: relay_id=%q version=%q is_proxy=%v node_type=%q",
 			conn.RelayID, msg.Version, conn.IsProxy, msg.NodeType)
 
 	case "topology_snapshot":
@@ -957,7 +957,7 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 			hostnames = append(hostnames, a.Hostname)
 		}
 		if n := len(msg.Agents); n > maxAgentListHosts() {
-			log.Printf("[SECURITY WARNING] agent_list refused: relay_id=%s hosts=%d limit=%d", conn.RelayID, n, maxAgentListHosts())
+			log.Printf("[SECURITY WARNING] agent_list refused: relay_id=%q hosts=%d limit=%d", conn.RelayID, n, maxAgentListHosts())
 			reject(conn, "agent_list too large")
 			return
 		}
@@ -985,7 +985,7 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		hostnames = routable
 		if RelayRoutingBulkUpsertFunc != nil {
 			if err := RelayRoutingBulkUpsertFunc(conn.RelayID, hostnames); err != nil {
-				log.Printf("agent_list routing update error: relay_id=%s err=%v", conn.RelayID, err)
+				log.Printf("agent_list routing update error: relay_id=%q err=%v", conn.RelayID, err)
 			}
 		}
 		ack := RelayMessage{
@@ -996,10 +996,10 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		}
 		conn.mu.Lock()
 		if err := conn.Conn.WriteJSON(ack); err != nil {
-			log.Printf("agent_list ack write error: relay_id=%s err=%v", conn.RelayID, err)
+			log.Printf("agent_list ack write error: relay_id=%q err=%v", conn.RelayID, err)
 		}
 		conn.mu.Unlock()
-		log.Printf("agent_list: relay_id=%s count=%d", conn.RelayID, len(hostnames))
+		log.Printf("agent_list: relay_id=%q count=%d", conn.RelayID, len(hostnames))
 
 	case "task_result":
 		// Relay returns the result of a dispatched task
@@ -1022,12 +1022,12 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 			}
 			select {
 			case ch <- res:
-				log.Printf("task_result resolved: task_id=%q rc=%d relay_id=%s", msg.TaskID, msg.RC, conn.RelayID)
+				log.Printf("task_result resolved: task_id=%q rc=%d relay_id=%q", msg.TaskID, msg.RC, conn.RelayID)
 			default:
-				log.Printf("task_result channel full: task_id=%q relay_id=%s", msg.TaskID, conn.RelayID)
+				log.Printf("task_result channel full: task_id=%q relay_id=%q", msg.TaskID, conn.RelayID)
 			}
 		} else {
-			log.Printf("task_result with no pending future: task_id=%q relay_id=%s", msg.TaskID, conn.RelayID)
+			log.Printf("task_result with no pending future: task_id=%q relay_id=%q", msg.TaskID, conn.RelayID)
 		}
 
 	case "heartbeat":
@@ -1037,12 +1037,12 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		}
 		conn.mu.Lock()
 		if err := conn.Conn.WriteJSON(ack); err != nil {
-			log.Printf("heartbeat_ack write error: relay_id=%s err=%v", conn.RelayID, err)
+			log.Printf("heartbeat_ack write error: relay_id=%q err=%v", conn.RelayID, err)
 		}
 		conn.mu.Unlock()
 
 	default:
-		log.Printf("unknown relay message type: type=%q relay_id=%s", msg.Type, conn.RelayID)
+		log.Printf("unknown relay message type: type=%q relay_id=%q", msg.Type, conn.RelayID)
 	}
 }
 
@@ -1068,7 +1068,7 @@ func RelayHandler(w http.ResponseWriter, r *http.Request) {
 	relayID, isProxy := auth.RelayID, auth.IsProxy
 	conn, upgradeErr := upgrader.Upgrade(w, r, nil)
 	if upgradeErr != nil {
-		log.Printf("Relay WebSocket upgrade failed: relay_id=%s err=%v", relayID, upgradeErr)
+		log.Printf("Relay WebSocket upgrade failed: relay_id=%q err=%v", relayID, upgradeErr)
 		return
 	}
 
@@ -1112,7 +1112,7 @@ func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) error {
 		if RelayRoutingBulkUpsertFunc != nil {
 			for id := range relayConn.descendants {
 				if err := RelayRoutingBulkUpsertFunc(id, nil); err != nil {
-					log.Printf("Relay WS cleanup: routing clear relay=%s err=%v", id, err)
+					log.Printf("Relay WS cleanup: routing clear relay=%q err=%v", id, err)
 				}
 			}
 		}
@@ -1127,7 +1127,7 @@ func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) error {
 
 	// Set read deadline for heartbeat monitoring
 	if err := conn.SetReadDeadline(time.Now().Add(120 * time.Second)); err != nil {
-		log.Printf("Relay WS SetReadDeadline: relay_id=%s err=%v", relayID, err)
+		log.Printf("Relay WS SetReadDeadline: relay_id=%q err=%v", relayID, err)
 	}
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(120 * time.Second))
@@ -1138,16 +1138,16 @@ func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) error {
 		var msg RelayMessage
 		if err := conn.ReadJSON(&msg); err != nil {
 			if isNormalClose(err) {
-				log.Printf("Relay WS closed: relay_id=%s", relayID)
+				log.Printf("Relay WS closed: relay_id=%q", relayID)
 			} else {
-				log.Printf("Relay WS read error: relay_id=%s err=%v", relayID, err)
+				log.Printf("Relay WS read error: relay_id=%q err=%v", relayID, err)
 			}
 			loopErr = err
 			break
 		}
 		// Reset deadline on any message
 		if err := conn.SetReadDeadline(time.Now().Add(120 * time.Second)); err != nil {
-			log.Printf("Relay WS SetReadDeadline loop: relay_id=%s err=%v", relayID, err)
+			log.Printf("Relay WS SetReadDeadline loop: relay_id=%q err=%v", relayID, err)
 		}
 		handleRelayMessage(relayConn, msg)
 		if relayConn.reject != nil {
@@ -1176,7 +1176,7 @@ func CloseRelay(relayID string, code int, reason string) bool {
 	if rc == nil || rc.wsConn == nil {
 		return false
 	}
-	log.Printf("Relay force-closed: relay_id=%q code=%d reason=%s", relayID, code, reason)
+	log.Printf("Relay force-closed: relay_id=%q code=%d reason=%q", relayID, code, reason)
 	closeWithRejection(rc.wsConn, &relayRejection{code: code, reason: reason})
 	_ = rc.wsConn.Close()
 	return true
@@ -1291,11 +1291,11 @@ func serveParentLink(ctx context.Context, conn *websocket.Conn, parentID, jti st
 	defer unregisterParentLink(jti, conn)
 	// refuse closes with 4012 (the parent may fix the cause and retry); refusePermanent with 4010.
 	refuse := func(reason string) {
-		log.Printf("[SECURITY WARNING] parent link refused (retryable): parent=%s reason=%s", parentID, reason)
+		log.Printf("[SECURITY WARNING] parent link refused (retryable): parent=%q reason=%q", parentID, reason)
 		closeWithRejection(conn, &relayRejection{code: WSRelayCloseRetry, reason: reason})
 	}
 	refusePermanent := func(reason string) {
-		log.Printf("[SECURITY WARNING] parent link refused (permanent): parent=%s reason=%s", parentID, reason)
+		log.Printf("[SECURITY WARNING] parent link refused (permanent): parent=%q reason=%q", parentID, reason)
 		closeWithRejection(conn, &relayRejection{code: WSRelayCloseRevoked, reason: reason})
 	}
 
@@ -1350,12 +1350,12 @@ func serveParentLink(ctx context.Context, conn *websocket.Conn, parentID, jti st
 	err := link(ctx, conn, ancestors, ack)
 	if !acked {
 		// The single-parent slot was not available (or the hook failed): refused, no handshake done.
-		log.Printf("[SECURITY WARNING] parent link refused: parent=%s err=%v", parentID, err)
+		log.Printf("[SECURITY WARNING] parent link refused: parent=%q err=%v", parentID, err)
 		// busy single-parent slot: another link may end soon, so the parent may retry
 		closeWithRejection(conn, &relayRejection{code: WSRelayCloseRetry, reason: "parent link refused"})
 		return
 	}
-	log.Printf("parent link closed: parent=%s err=%v", parentID, err)
+	log.Printf("parent link closed: parent=%q err=%v", parentID, err)
 }
 
 // isNormalClose returns true for expected WS close errors.
@@ -1473,7 +1473,7 @@ func validateSnapshot(conn *RelayConnection, msg RelayMessage) (map[string]struc
 
 func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	if !conn.helloDone {
-		log.Printf("[SECURITY WARNING] topology_snapshot before relay_hello: relay_id=%s", conn.RelayID)
+		log.Printf("[SECURITY WARNING] topology_snapshot before relay_hello: relay_id=%q", conn.RelayID)
 		reject(conn, "topology_snapshot before relay_hello")
 		return
 	}
@@ -1487,7 +1487,7 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 		}
 		conn.snapCount++
 		if conn.snapCount > snapshotReplaceLimit {
-			log.Printf("[SECURITY WARNING] topology_snapshot rate limit exceeded: relay_id=%s (> %d per %s)", conn.RelayID, snapshotReplaceLimit, snapshotReplaceWindow)
+			log.Printf("[SECURITY WARNING] topology_snapshot rate limit exceeded: relay_id=%q (> %d per %s)", conn.RelayID, snapshotReplaceLimit, snapshotReplaceWindow)
 			reject(conn, "topology_snapshot rate limit exceeded")
 			return
 		}
@@ -1499,13 +1499,13 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	}
 	// Group vars (#139) are validated as a whole before anything is written.
 	if err := validateSnapshotGroupVars(msg); err != nil {
-		log.Printf("[SECURITY WARNING] topology_snapshot refused: relay_id=%s: %v", conn.RelayID, err)
+		log.Printf("[SECURITY WARNING] topology_snapshot refused: relay_id=%q: %v", conn.RelayID, err)
 		reject(conn, "invalid group_vars in topology_snapshot")
 		return
 	}
 	// Route-hijack protection (HAUT-3): refuse before any write.
 	if id, ok := claimDescendants(conn.RelayID, relays); !ok {
-		log.Printf("[SECURITY WARNING] topology_snapshot refused: relay_id=%s declares relay %q already owned elsewhere", conn.RelayID, id)
+		log.Printf("[SECURITY WARNING] topology_snapshot refused: relay_id=%q declares relay %q already owned elsewhere", conn.RelayID, id)
 		reject(conn, "topology_snapshot conflicts with an existing relay")
 		return
 	}
@@ -1519,14 +1519,14 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	}
 	if cerr := checkHostConflicts(conn, relays, byRelay); cerr != nil {
 		releaseDescendants(conn.RelayID, fresh)
-		log.Printf("[SECURITY WARNING] topology_snapshot refused: relay_id=%s: %v", conn.RelayID, cerr)
+		log.Printf("[SECURITY WARNING] topology_snapshot refused: relay_id=%q: %v", conn.RelayID, cerr)
 		reject(conn, "topology_snapshot conflicts with existing routing")
 		return
 	}
 	// Declare descendants and publish routing: hostname → declaring relay.
 	for id := range relays {
 		if rerr := registerRelayNode(id); rerr != nil {
-			log.Printf("topology_snapshot: register relay %s: %v", id, rerr)
+			log.Printf("topology_snapshot: register relay %q: %v", id, rerr)
 		}
 	}
 	// Remember the real path to every relay below the peer (chains are validated: they start at
@@ -1548,7 +1548,7 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 		// are cleared.
 		write := func(id string) {
 			if uerr := RelayRoutingBulkUpsertFunc(id, byRelay[id]); uerr != nil {
-				log.Printf("topology_snapshot: routing update relay=%s: %v", id, uerr)
+				log.Printf("topology_snapshot: routing update relay=%q: %v", id, uerr)
 			}
 		}
 		write(conn.RelayID)
@@ -1558,7 +1558,7 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 		for id := range conn.descendants {
 			if _, still := relays[id]; !still {
 				if uerr := RelayRoutingBulkUpsertFunc(id, nil); uerr != nil {
-					log.Printf("topology_snapshot: routing clear relay=%s: %v", id, uerr)
+					log.Printf("topology_snapshot: routing clear relay=%q: %v", id, uerr)
 				}
 			}
 		}
@@ -1578,7 +1578,7 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 			entries = append(entries, RouteChainEntry{Hostname: a.Hostname, RelayID: a.RelayID, Chain: a.RelayChain})
 		}
 		if cerr := fn(entries); cerr != nil {
-			log.Printf("topology_snapshot: route chains: relay=%s err=%v", conn.RelayID, cerr)
+			log.Printf("topology_snapshot: route chains: relay=%q err=%v", conn.RelayID, cerr)
 		}
 	}
 	conn.descendants = relays
@@ -1588,17 +1588,17 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 		Timestamp: time.Now().UTC().Format(time.RFC3339)}
 	conn.mu.Lock()
 	if werr := conn.Conn.WriteJSON(ack); werr != nil {
-		log.Printf("topology_ack write error: relay_id=%s err=%v", conn.RelayID, werr)
+		log.Printf("topology_ack write error: relay_id=%q err=%v", conn.RelayID, werr)
 	}
 	conn.mu.Unlock()
-	log.Printf("topology_snapshot: relay_id=%s relays=%d agents=%d replaced=%t", conn.RelayID, len(msg.Relays), len(msg.Agents), replacing)
+	log.Printf("topology_snapshot: relay_id=%q relays=%d agents=%d replaced=%t", conn.RelayID, len(msg.Relays), len(msg.Agents), replacing)
 	notifyTopologyChanged()
 }
 
 // handleEventForward validates an ascending event (HAUT-1) and propagates it upstream.
 func handleEventForward(conn *RelayConnection, msg RelayMessage) {
 	if !conn.helloDone {
-		log.Printf("[SECURITY WARNING] event_forward before relay_hello: relay_id=%s (dropped)", conn.RelayID)
+		log.Printf("[SECURITY WARNING] event_forward before relay_hello: relay_id=%q (dropped)", conn.RelayID)
 		return
 	}
 	now := time.Now()
@@ -1607,33 +1607,33 @@ func handleEventForward(conn *RelayConnection, msg RelayMessage) {
 	}
 	conn.evCount++
 	if conn.evCount > maxEventsPerSecond {
-		log.Printf("[RELAY] event_forward rate limit exceeded: relay_id=%s (dropped)", conn.RelayID)
+		log.Printf("[RELAY] event_forward rate limit exceeded: relay_id=%q (dropped)", conn.RelayID)
 		return
 	}
 	chain := msg.RelayChain
 	if len(chain) > maxRelayChainLen {
-		log.Printf("[SECURITY WARNING] event_forward rejected: relay_id=%s relay_chain too long (%d)", conn.RelayID, len(chain))
+		log.Printf("[SECURITY WARNING] event_forward rejected: relay_id=%q relay_chain too long (%d)", conn.RelayID, len(chain))
 		return
 	}
 	if len(chain) == 0 || chain[len(chain)-1] != conn.RelayID {
-		log.Printf("[RELAY] event_forward rejected: relay_id=%s relay_chain=%q (last element must be the authenticated peer)", conn.RelayID, chain)
+		log.Printf("[RELAY] event_forward rejected: relay_id=%q relay_chain=%q (last element must be the authenticated peer)", conn.RelayID, chain)
 		return
 	}
 	self := localRelayID()
 	for i, id := range chain {
 		if id == self {
-			log.Printf("[RELAY] event_forward rejected: relay_id=%s relay_chain contains local id (loop)", conn.RelayID)
+			log.Printf("[RELAY] event_forward rejected: relay_id=%q relay_chain contains local id (loop)", conn.RelayID)
 			return
 		}
 		if i < len(chain)-1 {
 			if _, ok := conn.descendants[id]; !ok {
-				log.Printf("[RELAY] event_forward rejected: relay_id=%s unknown descendant %q in relay_chain", conn.RelayID, id)
+				log.Printf("[RELAY] event_forward rejected: relay_id=%q unknown descendant %q in relay_chain", conn.RelayID, id)
 				return
 			}
 		}
 	}
 	if reason := eventShapeError(msg); reason != "" {
-		log.Printf("[SECURITY WARNING] event_forward rejected: relay_id=%s event=%q: %s", conn.RelayID, msg.Event, reason)
+		log.Printf("[SECURITY WARNING] event_forward rejected: relay_id=%q event=%q: %q", conn.RelayID, msg.Event, reason)
 		return
 	}
 	if !applyEventRouting(conn, msg) {
@@ -1762,7 +1762,7 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 		// declaration) ends a reported conflict.
 		if origin != conn.RelayID {
 			if err := registerRelayNode(origin); err != nil {
-				log.Printf("event_forward: register relay %s: %v", origin, err)
+				log.Printf("event_forward: register relay %q: %v", origin, err)
 			}
 		}
 		if fn := routeUpsertHook(); fn != nil {
@@ -1775,12 +1775,12 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 		// A child may only report the going down of a host of its own subtree: never of a host
 		// connected here nor routed through another peer (no alert spam / no spoofing).
 		if _, err := GetConnection(msg.Hostname); err == nil {
-			log.Printf("[SECURITY WARNING] event_forward host.down refused: relay_id=%s hostname=%q is connected locally", conn.RelayID, msg.Hostname)
+			log.Printf("[SECURITY WARNING] event_forward host.down refused: relay_id=%q hostname=%q is connected locally", conn.RelayID, msg.Hostname)
 			return false
 		}
 		if prev, err := lookupHostRoute(msg.Hostname); err == nil && prev != "" && prev != conn.RelayID {
 			if _, mine := conn.descendants[prev]; !mine {
-				log.Printf("[SECURITY WARNING] event_forward host.down refused: relay_id=%s hostname=%q is routed through another relay", conn.RelayID, msg.Hostname)
+				log.Printf("[SECURITY WARNING] event_forward host.down refused: relay_id=%q hostname=%q is routed through another relay", conn.RelayID, msg.Hostname)
 				return false
 			}
 		}
@@ -1792,7 +1792,7 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 		// Only the sender or a relay it declared may have its group vars set through it.
 		if msg.RelayID != conn.RelayID {
 			if _, mine := conn.descendants[msg.RelayID]; !mine {
-				log.Printf("[SECURITY WARNING] relay.updated refused: relay_id=%s describes %q which is not in its subtree", conn.RelayID, msg.RelayID)
+				log.Printf("[SECURITY WARNING] relay.updated refused: relay_id=%q describes %q which is not in its subtree", conn.RelayID, msg.RelayID)
 				return false
 			}
 		}

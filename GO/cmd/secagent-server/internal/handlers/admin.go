@@ -304,7 +304,7 @@ func AdminSetMinionState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Minion state forced: hostname=%q status=%s", hostname, req.Status)
+	log.Printf("Minion state forced: hostname=%q status=%q", hostname, req.Status)
 	writeJSON(w, http.StatusOK, map[string]string{"hostname": hostname, "status": req.Status})
 }
 

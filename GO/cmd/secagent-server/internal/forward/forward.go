@@ -64,7 +64,7 @@ func (f *Forwarder) Handle(ctx context.Context, raw json.RawMessage, reply func(
 
 func send(reply func(v any) error, m ws.RelayMessage) {
 	if err := reply(m); err != nil {
-		log.Printf("[FORWARD] reply failed: task_id=%s err=%v", m.TaskID, err)
+		log.Printf("[FORWARD] reply failed: task_id=%q err=%v", m.TaskID, err)
 	}
 }
 
@@ -80,11 +80,11 @@ func (f *Forwarder) run(ctx context.Context, m ws.RelayMessage) ws.RelayMessage 
 		if f.Suspended != nil {
 			suspended, err := f.Suspended(m.Hostname)
 			if err != nil {
-				log.Printf("[SECURITY WARNING] forwarded task refused: suspension state of %q unavailable: %v task_id=%s", m.Hostname, err, m.TaskID)
+				log.Printf("[SECURITY WARNING] forwarded task refused: suspension state of %q unavailable: %v task_id=%q", m.Hostname, err, m.TaskID)
 				return ws.RelayMessage{Error: ErrAgentStateUnavailable}
 			}
 			if suspended {
-				log.Printf("[SECURITY WARNING] forwarded task refused: agent %q is suspended task_id=%s", m.Hostname, m.TaskID)
+				log.Printf("[SECURITY WARNING] forwarded task refused: agent %q is suspended task_id=%q", m.Hostname, m.TaskID)
 				return ws.RelayMessage{Error: ErrAgentSuspended}
 			}
 		}
@@ -96,7 +96,7 @@ func (f *Forwarder) run(ctx context.Context, m ws.RelayMessage) ws.RelayMessage 
 	if f.NextHop != nil {
 		var err error
 		if hop, err = f.NextHop(m.Hostname); err != nil {
-			log.Printf("[FORWARD] route lookup failed: host=%s err=%v", m.Hostname, err)
+			log.Printf("[FORWARD] route lookup failed: host=%q err=%v", m.Hostname, err)
 			return ws.RelayMessage{Error: ErrRouteLookup}
 		}
 	}
@@ -106,7 +106,7 @@ func (f *Forwarder) run(ctx context.Context, m ws.RelayMessage) ws.RelayMessage 
 	if !ws.IsRelayConnected(hop) {
 		return ws.RelayMessage{Error: ErrRelayOffline}
 	}
-	log.Printf("[FORWARD] task_id=%s host=%s next_hop=%s type=%s", m.TaskID, m.Hostname, hop, m.Type)
+	log.Printf("[FORWARD] task_id=%q host=%q next_hop=%q type=%q", m.TaskID, m.Hostname, hop, m.Type)
 	ch, err := ws.DispatchToRelay(hop, m)
 	if err != nil {
 		return ws.RelayMessage{Error: ErrDispatch}
