@@ -18,7 +18,15 @@ Verifie :
 Le test de coupure (kill -9 / coupure reseau pendant une ecriture) reste MANUEL : voir README.
 Exit 0 = conforme ; 1 = NON CONFORME (stockage non supporte) ; 2 = usage.
 """
-import argparse, hashlib, json, os, sys, time
+import argparse, hashlib, json, os, re, sys, time
+
+HOST_RE = re.compile(r'[A-Za-z0-9._-]{1,64}')
+
+
+def valid_host(h):
+    """Liste blanche : le nom d'hote entre dans des noms de fichiers (jamais de separateur de chemin)."""
+    return bool(HOST_RE.fullmatch(h)) and h not in ('.', '..')
+
 
 N_EXCL = 500
 N_RENAME = 300
@@ -126,6 +134,10 @@ if __name__ == "__main__":
             s.add_argument("--host", required=True)
             s.add_argument("--start-at", type=float, required=True)
     args = ap.parse_args()
+    names = args.hosts.split(",") + ([args.host] if args.cmd == "run" else [])
+    if not all(valid_host(n) for n in names):
+        print("nom d'hote invalide (attendu [A-Za-z0-9._-]{1,64}, sans separateur)", file=sys.stderr)
+        sys.exit(2)
     if args.cmd == "run" and args.host not in args.hosts.split(","):
         sys.exit(2)
     sys.exit(run(args) if args.cmd == "run" else verify(args))
