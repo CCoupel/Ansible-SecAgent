@@ -160,15 +160,17 @@ func startMain(t *testing.T, env map[string]string) *serverProc {
 	}
 	seedState(t, stateDir, "proc-test-master-key")
 	base := map[string]string{
-		runMainEnv:           "1",
-		"TLS_DISABLE":        "true",
-		"JWT_SECRET_KEY":     "proc-test-secret",
-		"ADMIN_TOKEN":        "proc-test-admin",
-		"RSA_MASTER_KEY":     "proc-test-master-key",
-		"STATE_DIR":          stateDir,
-		"RELAY_HOOKS_CONFIG": filepath.Join(dir, "absent-hooks.json"),
-		"PATH":               os.Getenv("PATH"),
-		"HOME":               dir,
+		runMainEnv:                "1",
+		"TLS_DISABLE":             "true",
+		"ADMIN_INSECURE_HTTP":     "true", // these tests are not about the admin exposure (#175b)
+		"ADMIN_INSECURE_HTTP_ACK": "i-understand-the-risk",
+		"JWT_SECRET_KEY":          "proc-test-secret",
+		"ADMIN_TOKEN":             "proc-test-admin",
+		"RSA_MASTER_KEY":          "proc-test-master-key",
+		"STATE_DIR":               stateDir,
+		"RELAY_HOOKS_CONFIG":      filepath.Join(dir, "absent-hooks.json"),
+		"PATH":                    os.Getenv("PATH"),
+		"HOME":                    dir,
 	}
 	for k, v := range env {
 		base[k] = v
