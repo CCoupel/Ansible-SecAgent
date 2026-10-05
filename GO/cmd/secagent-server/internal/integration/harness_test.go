@@ -15,6 +15,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -215,6 +216,15 @@ func seedDatabase(t *testing.T, dbPath, masterKey string) {
 
 func startNode(t *testing.T, spec nodeSpec) *node {
 	t.Helper()
+	n := prepareNode(t, spec)
+	n.launch(nil)
+	t.Cleanup(n.stop)
+	return n
+}
+
+// prepareNode builds the node's identity, database and environment without starting it.
+func prepareNode(t *testing.T, spec nodeSpec) *node {
+	t.Helper()
 	if err := func() error { sharedOnce.Do(func() { sharedErr = initShared() }); return sharedErr }(); err != nil {
 		t.Fatalf("shared test material: %v", err)
 	}
@@ -244,9 +254,70 @@ func startNode(t *testing.T, spec nodeSpec) *node {
 		"REPEATER_UPSTREAM_URL="+spec.ParentURL,
 		"REPEATER_UPSTREAM_TOKEN="+spec.ParentToken,
 	), spec.Env...)
-	n.launch(nil)
-	t.Cleanup(n.stop)
 	return n
+}
+
+// dbScalar runs a read-only query on the node's database file and returns its first column.
+func (n *node) dbScalar(query string) string {
+	n.t.Helper()
+	path := ""
+	for _, e := range n.env {
+		if strings.HasPrefix(e, "DATABASE_URL=sqlite:///") {
+			path = strings.TrimPrefix(e, "DATABASE_URL=sqlite:///")
+		}
+	}
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		n.t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var v sql.NullString
+	if err := db.QueryRow(query).Scan(&v); err != nil {
+		n.t.Fatalf("%s: %v", query, err)
+	}
+	return v.String
+}
+
+// setEnv sets (or replaces) one environment variable of the node for its NEXT start / restart.
+func (n *node) setEnv(key, value string) {
+	for i, e := range n.env {
+		if strings.HasPrefix(e, key+"=") {
+			n.env[i] = key + "=" + value
+			return
+		}
+	}
+	n.env = append(n.env, key+"="+value)
+}
+
+// runExpectingExit starts the node process and returns its exit code and combined output; it is for
+// configurations the server must REFUSE to start with (the process is expected to exit by itself).
+func (n *node) runExpectingExit() (code int, output string) {
+	n.t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestNodeProcess$", "-test.v")
+	cmd.Env = append([]string(nil), n.env...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		n.t.Fatal(err)
+	}
+	defer func() { _ = stdin.Close() }()
+	var out syncBuf
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		n.t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if ee, ok := err.(*exec.ExitError); ok {
+			return ee.ExitCode(), out.String()
+		}
+		return 0, out.String()
+	case <-time.After(waitLimit):
+		_ = cmd.Process.Kill()
+		<-done
+		return -1, out.String() + "\n(the process did not exit: it must have started)"
+	}
 }
 
 // launch starts the node process with n.env (+ extra) and waits until it serves.

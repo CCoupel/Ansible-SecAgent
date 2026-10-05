@@ -83,6 +83,12 @@ type fakeChild struct {
 
 func newFakeChild(t *testing.T, parent *node, id string, declared ...[]string) *fakeChild {
 	t.Helper()
+	return newFakeChildWithVars(t, parent, id, nil, declared...)
+}
+
+// newFakeChildWithVars is newFakeChild whose relay_hello publishes the given group vars.
+func newFakeChildWithVars(t *testing.T, parent *node, id string, helloVars map[string]any, declared ...[]string) *fakeChild {
+	t.Helper()
 	tok := parent.registerChild(id)
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+tok)
@@ -93,7 +99,11 @@ func newFakeChild(t *testing.T, parent *node, id string, declared ...[]string) *
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	f := &fakeChild{t: t, conn: conn, closed: make(chan error, 1)}
-	f.send(map[string]any{"type": "relay_hello", "relay_id": id, "node_type": "relay", "mode": "pull", "version": "3.0", "ancestors": []string{}})
+	hello := map[string]any{"type": "relay_hello", "relay_id": id, "node_type": "relay", "mode": "pull", "version": "3.0", "ancestors": []string{}}
+	if helloVars != nil {
+		hello["group_vars"] = helloVars
+	}
+	f.send(hello)
 	f.expect("relay_ack")
 	relays := []map[string]any{}
 	for _, chain := range declared {
