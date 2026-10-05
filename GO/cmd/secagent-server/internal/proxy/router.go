@@ -117,7 +117,7 @@ func (r *ProxyRouter) RouteFetch(ctx context.Context, hostname, taskID string, r
 // enriched with relay-level status (connected/disconnected).
 // Local agents (directly connected) are NOT included — they come from the caller's DB query.
 func (r *ProxyRouter) AggregateRelayInventory() ([]RelayAgentEntry, error) {
-	nodes, err := r.store.ListRelayNodes()
+	nodes, err := r.store.ListValidRelayNodes()
 	if err != nil {
 		return nil, fmt.Errorf("AggregateRelayInventory: list nodes: %w", err)
 	}

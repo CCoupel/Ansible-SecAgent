@@ -156,6 +156,12 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_relay_id"})
 		return
 	}
+	// The id lands in logs, environment variables, hook files and Ansible group names: only
+	// [A-Za-z0-9][A-Za-z0-9_-]{0,62}. The raw value is never echoed.
+	if !relayIDPattern.MatchString(req.RelayID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_relay_id", "message": "relay_id must match [A-Za-z0-9][A-Za-z0-9_-]{0,62}"})
+		return
+	}
 
 	if req.Mode == "" {
 		req.Mode = "pull"

@@ -41,6 +41,9 @@ func nullableInt64(v *int64) interface{} {
 // UpsertRelayNode inserts or updates a relay node keyed on relay_id.
 // If the row already exists (ON CONFLICT relay_id), the mutable columns are updated.
 func (s *Store) UpsertRelayNode(node RelayNode) error {
+	if err := checkRelayID(node.RelayID); err != nil { // last line of defence for every entry point
+		return fmt.Errorf("UpsertRelayNode: %w", err)
+	}
 	s.dbMu.Lock()
 	defer s.dbMu.Unlock()
 

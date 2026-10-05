@@ -233,7 +233,7 @@ func buildInventory(opts inventoryOptions) InventoryResponse {
 
 	// Descendants: every route of relay_routing. Local agents take precedence (already seen).
 	if proxyRouter != nil {
-		nodes, nErr := adminStore.ListRelayNodes()
+		nodes, nErr := adminStore.ListValidRelayNodes()
 		routes, rErr := adminStore.ListRelayRoutes()
 		if nErr != nil || rErr != nil {
 			log.Printf("buildInventory: relay routes unavailable: nodes=%v routes=%v", nErr, rErr)

@@ -71,7 +71,7 @@ func buildSnapshot(selfID string, st *storage.Store) repeater.Snapshot {
 	for _, h := range ws.GetConnectedHostnames() {
 		snap.Agents = append(snap.Agents, repeater.TopoAgent{Hostname: h, RelayID: selfID, RelayChain: []string{selfID}})
 	}
-	nodes, err := st.ListRelayNodes()
+	nodes, err := st.ListValidRelayNodes()
 	if err != nil {
 		log.Printf("[REPEATER] snapshot: list relay nodes: %v", err)
 		return snap

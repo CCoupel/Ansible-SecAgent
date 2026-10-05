@@ -856,6 +856,12 @@ func extractRelayAuth(r *http.Request) (relayAuth, error) {
 		log.Printf("[SECURITY WARNING] relay connection refused: JWT without sub")
 		return relayAuth{}, fmt.Errorf("jwt_missing_sub")
 	}
+	// The subject becomes the relay identity (logs, environment, hook files, Ansible groups): a
+	// token whose sub is not a well-formed relay_id is refused, whoever signed it. Never echoed.
+	if !relayIDShape.MatchString(sub) {
+		log.Printf("[SECURITY WARNING] relay connection refused: JWT sub is not a valid relay_id (length %d)", len(sub))
+		return relayAuth{}, fmt.Errorf("jwt_invalid_sub")
+	}
 	// Revocation: a revoked token must not reconnect (SECURITY.md §7).
 	jti, _ := claims["jti"].(string)
 	if jti == "" {

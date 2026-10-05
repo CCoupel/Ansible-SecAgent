@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -481,3 +482,33 @@ func TestResnapshot_RelayChainsAreStoredAndCleared(t *testing.T) {
 	_ = c.Close()
 	waitUntil(t, "link end clears the chains below", func() bool { return get("r2") == "" })
 }
+
+// A token whose sub is not a well-formed relay_id is refused at the upgrade (fail closed), and the
+// raw value is never written to the logs.
+func TestRelayAuth_MalformedSubRefusedWithoutEcho(t *testing.T) {
+	setTreeHooks(t, "central", nil, nil, nil)
+	var sink strings.Builder
+	var mu sync.Mutex
+	prev := log.Writer()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) { mu.Lock(); defer mu.Unlock(); return sink.Write(p) }))
+	t.Cleanup(func() { log.SetOutput(prev) })
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	for _, sub := range []string{"a b", "a/b", "..", "a\n[SECURITY WARNING] forged", strings.Repeat("a", 64), "-x", "é"} {
+		if code := dialRelayExpectFail(t, srv, makeRelayJWT(sub, "relay")); code != 401 {
+			t.Errorf("sub %q: status %d, want 401", sub, code)
+		}
+		if code := dialRelayExpectFail(t, srv, makeRelayJWT(sub, "relay-parent")); code != 401 {
+			t.Errorf("relay-parent sub %q: status %d, want 401", sub, code)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Contains(sink.String(), "\n[SECURITY WARNING] forged") || strings.Contains(sink.String(), "a b") {
+		t.Errorf("the raw sub was echoed in the logs:\n%s", sink.String())
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
