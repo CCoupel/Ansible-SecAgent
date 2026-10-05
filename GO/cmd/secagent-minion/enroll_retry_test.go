@@ -55,10 +55,11 @@ func TestEnrollWithRetry_BackoffAndPermanentErrors(t *testing.T) {
 
 	// a 403 is permanent: one attempt, no wait
 	delays, calls = nil, 0
+	noWait := func(context.Context, time.Duration) error { return errors.New("a 403 must not be retried") }
 	_, err = enrollWithRetry(context.Background(), func(context.Context) (string, error) {
 		calls++
 		return "", &enrollment.HTTPError{Step: 1, Status: http.StatusForbidden}
-	}, wait, time.Second, time.Minute)
+	}, noWait, time.Second, time.Minute)
 	if !enrollment.IsForbidden(err) || calls != 1 || len(delays) != 0 {
 		t.Fatalf("403: err %v calls %d delays %v", err, calls, delays)
 	}
@@ -243,7 +244,9 @@ func TestFirstEnrollment_MissingTokenIsPermanentNotALoop(t *testing.T) {
 	dir := t.TempDir()
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 	cfg := agentConfig{jwtPath: filepath.Join(dir, "none.jwt"), serverURL: "https://x", serverRotor: rotorOf(t, "https://127.0.0.1:1")}
-	if _, err := loadOrEnroll(context.Background(), cfg, "h", key); !errors.Is(err, errNoEnrollmentToken) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second) // a missing check would retry forever
+	defer cancel()
+	if _, err := loadOrEnroll(ctx, cfg, "h", key); !errors.Is(err, errNoEnrollmentToken) {
 		t.Fatalf("got %v", err)
 	}
 }
