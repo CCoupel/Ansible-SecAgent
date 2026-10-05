@@ -80,6 +80,24 @@ func (s *syncBuf) count(sub string) int { return strings.Count(plain(s.String())
 
 func (s *syncBuf) has(sub string) bool { return s.count(sub) > 0 }
 
+// expectLog asserts that sub shows up in the log (bounded wait). The node is a separate process:
+// its log reaches this buffer through a pipe, ASYNCHRONOUSLY, so a line written by the server
+// BEFORE it answered (HTTP status, close frame) may not be in the buffer yet when the test
+// observes that answer — never assert a log with has() right after waiting for something else.
+func (s *syncBuf) expectLog(t *testing.T, sub, why string) {
+	t.Helper()
+	deadline := time.Now().Add(waitLimit)
+	for time.Now().Before(deadline) {
+		if s.has(sub) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !s.has(sub) {
+		t.Errorf("%s (no %q after %s):\n%s", why, sub, waitLimit, s.String())
+	}
+}
+
 type nodeSpec struct {
 	ID          string
 	ParentURL   string // pull: this node dials its parent (wss://…)

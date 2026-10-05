@@ -95,12 +95,8 @@ func TestRevocation_RelayParentToken_CutsDialedLinkAndRefusesRedial(t *testing.T
 	if got := dialRelayWith(t, relay1, tok); got != http.StatusUnauthorized {
 		t.Errorf("dial with the revoked relay-parent token = %d, want 401", got)
 	}
-	if !relay1.logs.has("token_revoked") {
-		t.Errorf("the child must log why it refuses the token:\n%s", relay1.logs.String())
-	}
-	if !relay1.logs.has("parent link closed: token revoked") {
-		t.Errorf("the child must log that it closed the live parent link:\n%s", relay1.logs.String())
-	}
+	relay1.logs.expectLog(t, "token_revoked", "the child must log why it refuses the token")
+	relay1.logs.expectLog(t, "parent link closed: token revoked", "the child must log that it closed the live parent link")
 	if u := relay1.health().Links.Upstream; u != nil && u.State == "connected" {
 		t.Error("the child must no longer report a connected parent")
 	}
@@ -117,9 +113,7 @@ func TestRevocation_RelayParentToken_DialerStopsForGood(t *testing.T) {
 	if !root.health().Degraded {
 		t.Error("the parent must report degraded when a push child refused it permanently")
 	}
-	if root.logs.count("ERROR child relay1 refused link (permanent)") == 0 {
-		t.Error("the permanent refusal must be logged at ERROR level for the operator")
-	}
+	root.logs.expectLog(t, "ERROR child relay1 refused link (permanent)", "the permanent refusal must be logged at ERROR level for the operator")
 }
 
 // (e) 4012 is a CORRECTABLE refusal: the child reconnects with backoff, every time, and never
@@ -140,9 +134,7 @@ func TestRevocation_Code4012IsRetried(t *testing.T) {
 	if relay1.health().Degraded || relay1.upstreamState() == "refused_permanent" {
 		t.Error("4012 must never be terminal")
 	}
-	if relay1.logs.count("peer closed with code 4012") < 3 {
-		t.Errorf("the child must have seen three 4012 closes:\n%s", relay1.logs.String())
-	}
+	waitFor(t, "the child logged its three 4012 closes", func() bool { return relay1.logs.count("peer closed with code 4012") >= 3 })
 }
 
 // DELETE of a relay whose token cannot be blacklisted (push) is refused with 409 unless it was

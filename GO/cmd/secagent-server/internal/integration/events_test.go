@@ -253,6 +253,7 @@ func TestEvents_PropagateUpWithExactRelayChain(t *testing.T) {
 
 	_ = m.conn.Close() // the machine goes away
 	waitFor(t, "root's hook ran for host.down", func() bool { return root.hookHas("DOWN ev-host") })
+	waitFor(t, "mid's hook ran for host.down", func() bool { return mid.hookHas("DOWN ev-host") }) // the event reaches mid BEFORE root, but its hook runs asynchronously
 	if got := root.hookLines(); got[len(got)-1] != "DOWN ev-host status=disconnected chain=leaf,mid origin=leaf enrolled=" {
 		t.Errorf("root host.down hook = %q", got)
 	}
@@ -263,6 +264,7 @@ func TestEvents_PropagateUpWithExactRelayChain(t *testing.T) {
 	// host.new: a REAL enrollment on the leaf
 	enroll(t, leaf, "enrolled-host")
 	waitFor(t, "root's hook ran for host.new", func() bool { return root.hookHas("NEW enrolled-host") })
+	waitFor(t, "mid's hook ran for host.new", func() bool { return mid.hookHas("NEW enrolled-host") })
 	for n, chain := range map[*node]string{root: "leaf,mid", mid: "leaf"} {
 		found := ""
 		for _, l := range n.hookLines() {
@@ -362,9 +364,7 @@ func TestEvents_InvalidHooksConfigIsRejectedWholeAndPreviousKept(t *testing.T) {
 
 	// at start-up: an invalid file means NO hook at all
 	bad := startNode(t, nodeSpec{ID: "n2", Hooks: invalid})
-	if !bad.logs.has("hooks config parse error") {
-		t.Errorf("the start-up refusal must be logged:\n%s", bad.logs.String())
-	}
+	bad.logs.expectLog(t, "hooks config parse error", "the start-up refusal must be logged")
 	connectMinion(t, bad, "x1")
 	bad.setHooks(hooksV("OK", "")(bad.hookOut)) // valid again: proves the earlier event ran no hook
 	bad.reloadHooks()
