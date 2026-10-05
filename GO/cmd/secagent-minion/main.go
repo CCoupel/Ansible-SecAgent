@@ -78,11 +78,18 @@ func main() {
 	}
 
 	// --- Étape 3 : JWT — reload ou enrollment ---
-	jwt, err := loadOrEnroll(cfg, hostname, privKey)
+	// SIGTERM/SIGINT stop the enrollment retries as well as the dispatcher.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+	jwt, err := loadOrEnroll(ctx, cfg, hostname, privKey)
 	if err != nil {
-		if enrollment.IsForbidden(err) {
+		if ctx.Err() != nil {
+			log.Printf("[SHUTDOWN] Stopped while enrolling")
+			return
+		}
+		if enrollment.IsForbidden(err) || errors.Is(err, errNoEnrollmentToken) {
 			// token invalid, expired or consumed: restarting cannot fix it
-			log.Printf("[FATAL] Enrollment refused by the server (403): %v", err)
+			log.Printf("[FATAL] Enrollment cannot succeed (permanent: token refused by the server, or not set): %v", err)
 			os.Exit(ws.ExitEnrollmentRefused)
 		}
 		log.Fatalf("[FATAL] Enrollment failed: %v", err)
@@ -119,10 +126,7 @@ func main() {
 		Insecure:        cfg.insecure,
 	})
 
-	// --- Étape 6 : Signal handling + run loop ---
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer cancel()
-
+	// --- Étape 6 : run loop (ctx : signal handling, créé à l'étape 3) ---
 	log.Printf("[INIT] Connecting to %s", cfg.wsURL)
 	if err := dispatcher.Run(ctx); err != nil {
 		log.Printf("[SHUTDOWN] Dispatcher stopped: %v", err)
@@ -175,7 +179,10 @@ func loadOrGenerateKey(cfg agentConfig) (*rsa.PrivateKey, error) {
 
 // loadOrEnroll retourne le JWT existant si présent, sinon effectue l'enrollment.
 // L'enrollment Phase 10 appelle POST /api/register en 2 étapes (challenge-response OAEP).
-func loadOrEnroll(cfg agentConfig, hostname string, privKey *rsa.PrivateKey) (string, error) {
+// errNoEnrollmentToken is a permanent configuration error (exit status 78): no retry can fix it.
+var errNoEnrollmentToken = errors.New("RELAY_ENROLLMENT_TOKEN is not set: cannot enroll")
+
+func loadOrEnroll(ctx context.Context, cfg agentConfig, hostname string, privKey *rsa.PrivateKey) (string, error) {
 	// Tente de recharger le JWT existant
 	if data, err := os.ReadFile(cfg.jwtPath); err == nil && len(data) > 0 {
 		token := string(data)
@@ -184,25 +191,73 @@ func loadOrEnroll(cfg agentConfig, hostname string, privKey *rsa.PrivateKey) (st
 	}
 
 	log.Printf("[INIT] No JWT found — enrolling with %s", cfg.serverURL)
+	if cfg.enrollmentToken == "" {
+		// permanent configuration error: retrying cannot fix it
+		return "", errNoEnrollmentToken
+	}
 
 	pubPEM, err := enrollment.PublicKeyPEM(privKey)
 	if err != nil {
 		return "", err
 	}
+	attempt := func(actx context.Context) (string, error) {
+		return enrollment.Enroll(actx, enrollment.Config{
+			Rotor:           cfg.serverRotor,
+			Hostname:        hostname,
+			PublicKeyPEM:    pubPEM,
+			PrivateKey:      privKey,
+			EnrollmentToken: cfg.enrollmentToken,
+			CABundle:        cfg.caBundle,
+			JWTPath:         cfg.jwtPath,
+			Insecure:        cfg.insecure,
+		})
+	}
+	return enrollWithRetry(ctx, attempt, sleepCtx, time.Second, time.Minute)
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+// enrollWithRetry runs the enrollment until it succeeds. Each call of attempt is ONE round over
+// the address list (see enrollment.Config.Rotor): the one-shot token is presented to at most one
+// server per round and never replayed on another address once the request left. Whatever fails
+// except an explicit refusal is CORRECTABLE: a first address that read the request and then cut or
+// froze (a half-dead master before a switch-over) ends the round (ErrAfterSend) and the rotation of
+// the address makes the NEXT round start on the next one; rounds are spaced by an exponential
+// backoff (base .. max). An HTTP 403 (token invalid, expired or already consumed, possibly by the
+// first address) is permanent: it is returned and the process exits 78. Nothing secret is logged.
+func enrollWithRetry(ctx context.Context, attempt func(context.Context) (string, error),
+	wait func(context.Context, time.Duration) error, base, max time.Duration) (string, error) {
+	delay := base
+	for round := 1; ; round++ {
+		actx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		jwt, err := attempt(actx)
+		cancel()
+		if err == nil {
+			return jwt, nil
+		}
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		if enrollment.IsForbidden(err) {
+			return "", err
+		}
+		log.Printf("[WARN] Enrollment round %d failed: %v — next round (next address) in %s", round, err, delay)
+		if werr := wait(ctx, delay); werr != nil {
+			return "", werr
+		}
+		if delay *= 2; delay > max {
+			delay = max
+		}
+	}
+}
 
-	return enrollment.Enroll(ctx, enrollment.Config{
-		Rotor:           cfg.serverRotor,
-		Hostname:        hostname,
-		PublicKeyPEM:    pubPEM,
-		PrivateKey:      privKey,
-		EnrollmentToken: cfg.enrollmentToken,
-		CABundle:        cfg.caBundle,
-		JWTPath:         cfg.jwtPath,
-		Insecure:        cfg.insecure,
-	})
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // ---------------------------------------------------------------------------
