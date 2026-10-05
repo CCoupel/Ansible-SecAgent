@@ -23,6 +23,18 @@ var ErrPermanentRefusal = errors.New("link refused permanently")
 // refused_permanent, so that "Status() permanent ⇒ Terminal() != nil" always holds.
 func runLoop(ctx context.Context, peer string, minBackoff, maxBackoff time.Duration, tr *linkTracker,
 	onTerminal func(error), session func(context.Context) (established bool, err error)) error {
+	return runLoopAfter(ctx, peer, minBackoff, maxBackoff, tr, onTerminal, session, nil)
+}
+
+// runLoopAfter is runLoop with the wait between two attempts injected (nil = time.After): tests
+// record the computed delays instead of measuring wall-clock gaps, which are dominated by TLS
+// handshakes and scheduling noise on a loaded machine.
+func runLoopAfter(ctx context.Context, peer string, minBackoff, maxBackoff time.Duration, tr *linkTracker,
+	onTerminal func(error), session func(context.Context) (established bool, err error),
+	after func(time.Duration) <-chan time.Time) error {
+	if after == nil {
+		after = time.After
+	}
 	backoff := minBackoff
 	for ctx.Err() == nil {
 		established, err := session(ctx)
@@ -58,7 +70,7 @@ func runLoop(ctx context.Context, peer string, minBackoff, maxBackoff time.Durat
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(wait):
+		case <-after(wait):
 		}
 	}
 	return nil

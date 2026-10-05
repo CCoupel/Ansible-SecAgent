@@ -159,6 +159,10 @@ type Options struct {
 	AgentListInterval time.Duration
 	PingInterval      time.Duration
 	HandshakeTimeout  time.Duration
+
+	// after replaces time.After for the wait between two attempts (tests only: they record the
+	// computed backoff delays instead of measuring wall-clock gaps). nil = time.After.
+	after func(time.Duration) <-chan time.Time
 }
 
 // Client is the repeater-client. Start launches exactly one goroutine.
@@ -255,7 +259,7 @@ func (c *Client) Start(ctx context.Context) error {
 }
 
 func (c *Client) run(ctx context.Context) {
-	err := runLoop(ctx, "parent", c.opts.MinBackoff, c.opts.MaxBackoff, c.tr, c.setTerminal, c.session)
+	err := runLoopAfter(ctx, "parent", c.opts.MinBackoff, c.opts.MaxBackoff, c.tr, c.setTerminal, c.session, c.opts.after)
 	if err != nil {
 		close(c.done)
 	}

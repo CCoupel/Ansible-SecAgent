@@ -361,41 +361,22 @@ func TestDefaults(t *testing.T) {
 }
 
 func TestBackoffGrowsAndCaps(t *testing.T) {
-	// Parent that always fails the HTTP upgrade → client must retry with growing gaps capped at max.
-	var times []time.Time
-	var mu atomic.Int32
-	ch := make(chan time.Time, 16)
+	// Parent that always fails the HTTP upgrade → client must retry with growing delays capped at max.
+	// The delays asked for by the loop are checked (injected clock), not measured gaps.
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Add(1)
-		ch <- time.Now()
 		http.Error(w, "no", http.StatusServiceUnavailable)
 	}))
 	defer srv.Close()
+	const minB, maxB = 20 * time.Millisecond, 80 * time.Millisecond
+	clock := newFakeAfter(7)
 	c := New(config.RepeaterConfig{ID: "dmz1", UpstreamURL: "wss" + strings.TrimPrefix(srv.URL, "https"), UpstreamToken: "t"},
-		Options{TLSConfig: &tls.Config{InsecureSkipVerify: true}, MinBackoff: 20 * time.Millisecond, MaxBackoff: 80 * time.Millisecond}) //nolint:gosec // test
+		Options{TLSConfig: &tls.Config{InsecureSkipVerify: true}, MinBackoff: minB, MaxBackoff: maxB, after: clock.after}) //nolint:gosec // test
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := c.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 5; i++ {
-		select {
-		case ts := <-ch:
-			times = append(times, ts)
-		case <-time.After(waitTimeout):
-			t.Fatal("not enough attempts")
-		}
-	}
-	gaps := make([]time.Duration, 0, 4)
-	for i := 1; i < len(times); i++ {
-		gaps = append(gaps, times[i].Sub(times[i-1]))
-	}
-	if gaps[1] < gaps[0] || gaps[2] < 60*time.Millisecond {
-		t.Errorf("backoff not growing: %v", gaps)
-	}
-	if gaps[3] > 400*time.Millisecond {
-		t.Errorf("backoff not capped: %v", gaps)
-	}
+	assertBackoffSequence(t, clock.waitN(t, 8), minB, maxB)
 }
 
 func TestStartRefusesNonWSS(t *testing.T) {

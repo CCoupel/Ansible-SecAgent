@@ -82,21 +82,17 @@ func (p *refusalPeer) attempts() int {
 	return len(p.times)
 }
 
-func (p *refusalPeer) gaps() []time.Duration {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	var g []time.Duration
-	for i := 1; i < len(p.times); i++ {
-		g = append(g, p.times[i].Sub(p.times[i-1]))
-	}
-	return g
+func refusalClient(t *testing.T, p *refusalPeer) (*Client, context.CancelFunc) {
+	t.Helper()
+	return refusalClientWith(t, p, nil)
 }
 
-func refusalClient(t *testing.T, p *refusalPeer) (*Client, context.CancelFunc) {
+// refusalClientWith is refusalClient with an injected retry clock (nil = real time).
+func refusalClientWith(t *testing.T, p *refusalPeer, after func(time.Duration) <-chan time.Time) (*Client, context.CancelFunc) {
 	t.Helper()
 	c := New(config.RepeaterConfig{ID: "dmz1", UpstreamURL: p.url(), UpstreamToken: leakToken}, Options{
 		TLSConfig:  &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test server cert
-		MinBackoff: 20 * time.Millisecond, MaxBackoff: 80 * time.Millisecond,
+		MinBackoff: 20 * time.Millisecond, MaxBackoff: 80 * time.Millisecond, after: after,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -150,17 +146,12 @@ func TestRefusal_Client4010IsPermanent(t *testing.T) {
 
 func TestRefusal_Client4012IsRetriedWithGrowingBackoff(t *testing.T) {
 	p := newRefusalPeer(t, CloseCodeRetry, "central")
-	c, _ := refusalClient(t, p)
-	deadline := time.Now().Add(5 * time.Second)
-	for p.attempts() < 5 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if p.attempts() < 5 {
+	clock := newFakeAfter(7)
+	c, _ := refusalClientWith(t, p, clock.after)
+	// 8 delays requested = 8 refused attempts (4012), each followed by a wait; the 8th wait blocks.
+	assertBackoffSequence(t, clock.waitN(t, 8), 20*time.Millisecond, 80*time.Millisecond)
+	if p.attempts() < 8 {
 		t.Fatalf("only %d attempts: 4012 must be retried", p.attempts())
-	}
-	g := p.gaps()
-	if g[1] < g[0] || g[2] < 60*time.Millisecond || g[3] > 400*time.Millisecond {
-		t.Errorf("backoff must grow then cap (20ms→80ms): %v", g)
 	}
 	select {
 	case <-c.Done():
