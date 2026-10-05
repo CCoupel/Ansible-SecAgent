@@ -53,3 +53,31 @@ func TestPush_ParentDialsChild_ExecReachesDeepAgent(t *testing.T) {
 	}
 	assertNoSecrets(t, allLogs(root, relay1, relay2), parentTok)
 }
+
+// (g) since #126: with relay2 DECLARED to the root (it is part of relay1's snapshot at link-up), the
+// host.up of a NEW agent connecting under relay2 routes it at the root at once — no new snapshot,
+// no link cut. This is the only way the root can learn it: relay1's agent_list lists direct agents
+// only, so only the forwarded event makes the deep host routable.
+func TestPush_NewDeepHostIsRoutableFromItsHostUpWithoutNewSnapshot(t *testing.T) {
+	parallel(t)
+	root := startNode(t, nodeSpec{ID: "root"})
+	relay1 := startNode(t, nodeSpec{ID: "relay1"})
+	relay2 := startNode(t, nodeSpec{ID: "relay2", ParentURL: relay1.wssURL(), ParentToken: relay1.registerChild("relay2")})
+	waitFor(t, "relay2 linked to relay1", func() bool { return relay2.upstreamState() == "connected" })
+	parentTok, _ := relay1.mintParentToken("root")
+	if code, m := root.admin("POST", "/api/admin/relays", map[string]any{"relay_id": "relay1", "mode": "push", "url": relay1.wssURL(), "token": parentTok}); code != http.StatusCreated {
+		t.Fatalf("register push: %d %v", code, m)
+	}
+	waitFor(t, "root dialer connected", func() bool { return root.pushState("relay1") == "connected" })
+	waitFor(t, "root received relay1's snapshot", func() bool { return root.logs.count("topology_snapshot: relay_id=relay1") >= 1 })
+
+	m := connectMinion(t, relay2, "deep-after-link") // connects AFTER the snapshot was sent
+	waitFor(t, "the root routes the new deep host", func() bool { return root.hasHost("deep-after-link") })
+	if n := root.logs.count("topology_snapshot: relay_id=relay1"); n != 1 {
+		t.Errorf("root received %d snapshots from relay1: the host must be learned from its host.up", n)
+	}
+	r := root.exec("deep-after-link", execBody("id"))
+	if r.Code != http.StatusOK || r.Body["stdout"] != `ran "id" on deep-after-link` || len(m.received()) != 1 {
+		t.Errorf("exec on the host learned from its event = %d %v", r.Code, r.Body)
+	}
+}
