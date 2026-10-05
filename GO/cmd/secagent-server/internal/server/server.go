@@ -187,6 +187,12 @@ func Build(cfg Config) (node *Node, err error) {
 	ws.SetRelayRevokedFunc(handlers.RelayRevokedCheck)
 	ws.SetRelayHostRouteFunc(store.GetRelayForHostname)
 	ws.SetRelayNodeRegisterFunc(func(relayID string) error { return registerPullRelay(store, relayID) })
+	// Ansible group vars of the relays (#139): stored per relay, served in the inventory.
+	ws.SetRelayGroupVarsFunc(func(relayID, groupVarsJSON string) error {
+		_, err := store.SetRelayGroupVars(relayID, groupVarsJSON)
+		return err
+	})
+	handlers.SetLocalGroupVars(cfg.GroupVars)
 
 	// Upstream publisher shared by the two ways of having a parent: we dial it (pull, #125) or it
 	// dials us (push, #140). A node has a single parent: with REPEATER_UPSTREAM_* configured,
@@ -196,6 +202,7 @@ func Build(cfg Config) (node *Node, err error) {
 	// Tasks sent down by our parent: resolve the next hop (live agent first, then relay_routing).
 	forwarder := &forward.Forwarder{NextHop: store.GetNextHopForHostname}
 	upOpts := repeater.Options{
+		GroupVars:    cfg.GroupVars,
 		DirectAgents: directAgents,
 		Snapshot:     func() repeater.Snapshot { return buildSnapshot(selfID, store) },
 		Events:       upEvents,

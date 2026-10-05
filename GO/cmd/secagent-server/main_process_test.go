@@ -170,6 +170,9 @@ func TestMainProcess_RefusesInvalidConfiguration(t *testing.T) {
 		{"malformed ADMIN_ADDR", map[string]string{"ADMIN_ADDR": "nonsense"}, "ADMIN_ADDR"},
 		{"malformed WS_ADDR", map[string]string{"WS_ADDR": "x"}, "WS_ADDR"},
 		{"incomplete repeater config", map[string]string{"REPEATER_UPSTREAM_URL": "wss://parent:7772"}, "invalid repeater configuration"},
+		{"template in RELAY_GROUP_VARS", map[string]string{"RELAY_GROUP_VARS": `{"x":"{{ lookup('pipe','id') }}"}`}, "RELAY_GROUP_VARS"},
+		{"reserved key in RELAY_GROUP_VARS", map[string]string{"RELAY_GROUP_VARS": `{"ansible_connection":"local"}`}, "RELAY_GROUP_VARS"},
+		{"RELAY_GROUP_VARS not JSON", map[string]string{"RELAY_GROUP_VARS": `env=staging`}, "RELAY_GROUP_VARS"},
 		{"ws:// upstream refused", map[string]string{"REPEATER_ID": "dmz1", "REPEATER_UPSTREAM_URL": "ws://parent:7772", "REPEATER_UPSTREAM_TOKEN": "t"}, "wss"},
 	}
 	for _, tt := range tests {

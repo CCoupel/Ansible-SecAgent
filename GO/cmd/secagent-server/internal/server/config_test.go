@@ -104,3 +104,23 @@ func TestConfigFromEnv_NeverSetsTheTuneSeam(t *testing.T) {
 		t.Error("Config.Tune is a test seam: ConfigFromEnv must never set it")
 	}
 }
+
+func TestConfigFromEnv_GroupVars(t *testing.T) {
+	setServerEnv(t)
+	t.Setenv("RELAY_GROUP_VARS", `{"env":"staging","ansible_python_interpreter":"/usr/bin/python3"}`)
+	cfg, err := ConfigFromEnv()
+	if err != nil || cfg.GroupVars["env"] != "staging" {
+		t.Fatalf("cfg.GroupVars = %v err = %v", cfg.GroupVars, err)
+	}
+	for name, bad := range map[string]string{
+		"invalid JSON": `{env: staging}`,
+		"template":     `{"x":"{{ 1 }}"}`,
+		"reserved key": `{"ansible_host":"1.2.3.4"}`,
+	} {
+		setServerEnv(t)
+		t.Setenv("RELAY_GROUP_VARS", bad)
+		if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "RELAY_GROUP_VARS") {
+			t.Errorf("%s: err = %v, want a start-up error naming RELAY_GROUP_VARS", name, err)
+		}
+	}
+}

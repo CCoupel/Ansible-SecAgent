@@ -76,9 +76,20 @@ func buildSnapshot(selfID string, st *storage.Store) repeater.Snapshot {
 		log.Printf("[REPEATER] snapshot: list relay nodes: %v", err)
 		return snap
 	}
+	groupVars, gvErr := st.ListRelayGroupVars()
+	if gvErr != nil {
+		log.Printf("[REPEATER] snapshot: group vars: %v", gvErr)
+	}
 	for _, n := range nodes {
 		chain := []string{selfID, n.RelayID}
-		snap.Relays = append(snap.Relays, repeater.TopoRelay{RelayID: n.RelayID, RelayChain: chain})
+		entry := repeater.TopoRelay{RelayID: n.RelayID, RelayChain: chain}
+		if raw, ok := groupVars[n.RelayID]; ok {
+			var gv map[string]any
+			if json.Unmarshal([]byte(raw), &gv) == nil {
+				entry.GroupVars = gv
+			}
+		}
+		snap.Relays = append(snap.Relays, entry)
 		hosts, herr := st.ListRelayRouting(n.RelayID)
 		if herr != nil {
 			log.Printf("[REPEATER] snapshot: routing for %s: %v", n.RelayID, herr)

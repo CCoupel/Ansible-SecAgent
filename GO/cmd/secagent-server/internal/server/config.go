@@ -51,6 +51,9 @@ type Config struct {
 	// surface: a too short backoff would hammer the parent). TLS settings are not exposed.
 	Tune func(*repeater.Options, *repeater.DialerOptions)
 
+	// GroupVars are this relay's Ansible group variables (RELAY_GROUP_VARS), validated.
+	GroupVars map[string]any
+
 	// Repeater is the validated child-relay configuration (REPEATER_UPSTREAM_*); nil = no pull parent.
 	Repeater *config.RepeaterConfig
 }
@@ -91,6 +94,11 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, &InvalidRepeaterConfigError{Err: err}
 	}
 	cfg.Repeater = rep
+	gv, err := config.LoadGroupVars()
+	if err != nil {
+		return Config{}, fmt.Errorf("%s: %w", config.EnvRelayGroupVars, err)
+	}
+	cfg.GroupVars = gv
 	return cfg, nil
 }
 
