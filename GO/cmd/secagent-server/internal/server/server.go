@@ -8,7 +8,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/actionlog"
@@ -50,6 +52,7 @@ type Node struct {
 	apiHandler, adminHandler, wsHandler http.Handler
 	apiRoutes, adminRoutes, wsRoutes    []string
 	apiSrv, adminSrv, wsSrv             *http.Server
+	certs                               *certStore // nil: plain HTTP (TLS_DISABLE=true)
 
 	closeOnce sync.Once
 	ready     chan struct{}
@@ -70,6 +73,12 @@ func Build(cfg Config) (node *Node, err error) {
 			n.Close()
 		}
 	}()
+
+	// TLS first (#175): a missing, partial or invalid certificate pair refuses the start before
+	// anything else is opened (unless the explicit test-only TLS_DISABLE=true).
+	if err := n.prepareTLS(); err != nil {
+		return nil, err
+	}
 
 	repeaterCfg := cfg.Repeater
 	log.Printf("[INIT] Ansible-SecAgent GO Server v1.0")
@@ -389,11 +398,15 @@ func (n *Node) Run(ctx context.Context) error {
 		ln    net.Listener
 		addr  string
 		label string // address shown in the log: the configured one, or the injected listener's
+		tls   bool
 	}
 	specs := []*srvSpec{
 		{name: "API server", srv: n.apiSrv, ln: n.cfg.APIListener, addr: n.cfg.apiAddr()},
 		{name: "Admin server", srv: n.adminSrv, ln: n.cfg.AdminListener, addr: n.cfg.adminAddr()},
 		{name: "WebSocket server", srv: n.wsSrv, ln: n.cfg.WSListener, addr: n.cfg.wsAddr()},
+	}
+	for i, s := range specs {
+		s.tls = n.applyTLS(s.srv, i == 1)
 	}
 	// Bind first: a port conflict fails here, before anything is served.
 	for _, s := range specs {
@@ -416,11 +429,39 @@ func (n *Node) Run(ctx context.Context) error {
 		s.srv.Addr = s.ln.Addr().String()
 	}
 
+	// Hot reload of the certificate pair: polling of the files' content, and SIGHUP.
+	stopTLSWatch := make(chan struct{})
+	defer close(stopTLSWatch)
+	if n.certs != nil {
+		go n.certs.watch(n.cfg.TLSReloadInterval, stopTLSWatch)
+		hup := make(chan os.Signal, 1)
+		signal.Notify(hup, syscall.SIGHUP)
+		defer signal.Stop(hup)
+		go func() {
+			for {
+				select {
+				case <-hup:
+					log.Printf("[INIT] SIGHUP received: reloading the TLS certificate")
+					n.certs.reload(true)
+				case <-stopTLSWatch:
+					return
+				}
+			}
+		}()
+	}
+
 	errCh := make(chan error, len(specs))
 	for _, s := range specs {
 		go func() {
-			log.Printf("[LISTEN] %s starting on %s", s.name, s.label)
-			if err := s.srv.Serve(s.ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			var err error
+			if s.tls {
+				log.Printf("[LISTEN] %s starting on %s (TLS)", s.name, s.label)
+				err = s.srv.ServeTLS(s.ln, "", "") // certificate from TLSConfig.GetCertificate
+			} else {
+				log.Printf("[LISTEN] %s starting on %s", s.name, s.label)
+				err = s.srv.Serve(s.ln)
+			}
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errCh <- fmt.Errorf("%s error: %w", s.name, err)
 			}
 		}()

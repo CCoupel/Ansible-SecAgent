@@ -263,6 +263,7 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 
 	n.env = append(append(os.Environ(),
 		envNodeProcess+"=1",
+		"TLS_DISABLE=true", // the harness wraps the listeners in TLS itself (injected listeners)
 		envNodeCert+"="+certPath, envNodeKey+"="+keyPath,
 		"SSL_CERT_FILE="+certPath, // the node trusts the test certificate: real TLS verification
 		"ADMIN_TOKEN="+n.adminTok,

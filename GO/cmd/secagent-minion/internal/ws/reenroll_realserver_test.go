@@ -82,7 +82,7 @@ func TestReEnrollAgainstARealServer(t *testing.T) {
 		"PATH=" + os.Getenv("PATH"), "HOME=" + dir,
 		"JWT_SECRET_KEY=realserver-jwt-secret", "ADMIN_TOKEN=" + adminToken,
 		"RSA_MASTER_KEY=realserver-master-key", "DATABASE_URL=" + filepath.Join(dir, "relay.db"),
-		"RELAY_HOOKS_CONFIG=" + filepath.Join(dir, "absent-hooks.json"),
+		"RELAY_HOOKS_CONFIG=" + filepath.Join(dir, "absent-hooks.json"), "TLS_DISABLE=true",
 		"API_ADDR=" + api, "ADMIN_ADDR=" + adminAddr, "WS_ADDR=" + wsAddr,
 	}
 	out := &syncBuffer{}

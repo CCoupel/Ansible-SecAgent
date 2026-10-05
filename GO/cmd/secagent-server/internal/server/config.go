@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 
 	"secagent-server/cmd/secagent-server/internal/config"
 	"secagent-server/cmd/secagent-server/internal/handlers"
@@ -58,6 +59,19 @@ type Config struct {
 	// X-Forwarded-For is believed; empty = never (#177). An invalid CIDR refuses the start.
 	TrustedProxyCIDRs string
 
+	// TLSCert / TLSKey (TLS_CERT / TLS_KEY) are the PEM files of the server certificate (full chain)
+	// and its key, served on the API and WebSocket ports (and on the admin port with AdminTLS).
+	// TLSDisable (TLS_DISABLE=true) serves plain HTTP: tests and local CI only. Without a complete
+	// pair and without TLSDisable, Build refuses to start (fail closed, #175).
+	TLSCert, TLSKey string
+	TLSDisable      bool
+	AdminTLS        bool
+	// TLSReloadInterval is how often the certificate files are checked for a change (0 = 60 s).
+	// Test seam: ConfigFromEnv leaves it zero.
+	TLSReloadInterval time.Duration
+	// tlsNow is the clock of the certificate validity checks (tests).
+	tlsNow func() time.Time
+
 	// Repeater is the validated child-relay configuration (REPEATER_UPSTREAM_*); nil = no pull parent.
 	Repeater *config.RepeaterConfig
 }
@@ -80,6 +94,18 @@ func ConfigFromEnv() (Config, error) {
 		APIAddr:           envOr(EnvAPIAddr, DefaultAPIAddr),
 		AdminAddr:         envOr(EnvAdminAddr, DefaultAdminAddr),
 		WSAddr:            envOr(EnvWSAddr, DefaultWSAddr),
+		TLSCert:           os.Getenv(EnvTLSCert),
+		TLSKey:            os.Getenv(EnvTLSKey),
+	}
+	var terr error
+	if cfg.TLSDisable, terr = envStrictBool(EnvTLSDisable); terr != nil {
+		return Config{}, terr
+	}
+	if cfg.AdminTLS, terr = envStrictBool(EnvAdminTLS); terr != nil {
+		return Config{}, terr
+	}
+	if err := validateTLSConfig(cfg); err != nil {
+		return Config{}, err
 	}
 	for name, addr := range map[string]string{EnvAPIAddr: cfg.APIAddr, EnvAdminAddr: cfg.AdminAddr, EnvWSAddr: cfg.WSAddr} {
 		if _, _, err := net.SplitHostPort(addr); err != nil {
@@ -116,6 +142,19 @@ func (e *InvalidRepeaterConfigError) Error() string {
 	return "invalid repeater configuration: " + e.Err.Error()
 }
 func (e *InvalidRepeaterConfigError) Unwrap() error { return e.Err }
+
+// envStrictBool reads "true" / "false" / unset (false): any other value is an error, so that
+// TLS_DISABLE=1 or =yes can never silently mean something else than intended.
+func envStrictBool(name string) (bool, error) {
+	switch v := os.Getenv(name); v {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid %s: must be \"true\" or \"false\"", name)
+	}
+}
 
 func envOr(name, def string) string {
 	if v := os.Getenv(name); v != "" {

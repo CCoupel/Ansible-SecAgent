@@ -36,7 +36,7 @@ func captureLogs(t *testing.T) *lockedBuf {
 func TestBuild_NoNATSTrace(t *testing.T) {
 	t.Setenv("NATS_URL", "")
 	buf := captureLogs(t)
-	n, err := Build(Config{JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:"})
+	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestBuild_NoNATSTrace(t *testing.T) {
 func TestBuild_ObsoleteNATSURLWarnsOnceAndStarts(t *testing.T) {
 	t.Setenv("NATS_URL", "nats://legacy.example:4222")
 	buf := captureLogs(t)
-	n, err := Build(Config{JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:"})
+	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:"})
 	if err != nil {
 		t.Fatalf("an obsolete NATS_URL must not be an error: %v", err)
 	}

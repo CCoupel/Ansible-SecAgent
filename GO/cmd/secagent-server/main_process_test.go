@@ -171,6 +171,7 @@ func startMain(t *testing.T, env map[string]string) *serverProc {
 	seedDatabase(t, dbPath, "proc-test-master-key")
 	base := map[string]string{
 		runMainEnv:           "1",
+		"TLS_DISABLE":        "true",
 		"JWT_SECRET_KEY":     "proc-test-secret",
 		"ADMIN_TOKEN":        "proc-test-admin",
 		"RSA_MASTER_KEY":     "proc-test-master-key",
@@ -425,5 +426,27 @@ func TestStateInitNeedsNoServerSecretsInTheEnvironment(t *testing.T) {
 	}
 	if out, err := run(); err == nil || !strings.Contains(out, "refusing to initialize") {
 		t.Fatalf("a second init must be refused: %v\n%s", err, out)
+	}
+}
+
+// #175: without a certificate pair and without the explicit TLS_DISABLE=true, the process refuses
+// to start (non-zero exit, explicit message, nothing listening): never a silent plain-HTTP server.
+func TestMainProcess_RefusesToStartWithoutTLS(t *testing.T) {
+	api := fmt.Sprintf("127.0.0.1:%d", freePort(t))
+	env := map[string]string{
+		"TLS_DISABLE": "", // overrides the test default
+		"API_ADDR":    api,
+		"ADMIN_ADDR":  fmt.Sprintf("127.0.0.1:%d", freePort(t)),
+		"WS_ADDR":     fmt.Sprintf("127.0.0.1:%d", freePort(t)),
+	}
+	p := startMain(t, env)
+	if code := p.wait(t, 20*time.Second); code == 0 {
+		t.Errorf("exit code 0 without TLS configuration; output:\n%s", p.out.String())
+	}
+	if !strings.Contains(p.out.String(), "TLS is required") {
+		t.Errorf("the refusal must explain TLS_CERT/TLS_KEY/TLS_DISABLE:\n%s", p.out.String())
+	}
+	if portOpen(api) {
+		t.Error("nothing may listen when the start-up is refused")
 	}
 }
