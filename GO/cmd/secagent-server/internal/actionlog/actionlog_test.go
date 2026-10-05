@@ -385,3 +385,32 @@ func TestRedactURLNeverKeepsThePath(t *testing.T) {
 		}
 	}
 }
+
+func TestListRefusesASymbolicLinkWithoutReadingTheTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "elsewhere.jsonl")
+	line, _ := json.Marshal(entry(1, "host.new", "from-the-target"))
+	if err := os.WriteFile(target, append(line, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"actions.log", "actions.log.1"} { // the journal itself, then a rotated file
+		path := filepath.Join(dir, "j", name)
+		_ = os.MkdirAll(filepath.Dir(path), 0o700)
+		j, err := Open(Options{Path: filepath.Join(dir, "j", "actions.log")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, path); err != nil {
+			t.Skipf("symlink unsupported: %v", err)
+		}
+		got, err := j.List(Filter{})
+		if err == nil || !strings.Contains(err.Error(), "symbolic link") {
+			t.Errorf("%s: a symbolic link must be refused, got entries=%v err=%v", name, got, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("%s: the target was read: %v", name, got)
+		}
+		_ = j.Close()
+		_ = os.Remove(path)
+	}
+}

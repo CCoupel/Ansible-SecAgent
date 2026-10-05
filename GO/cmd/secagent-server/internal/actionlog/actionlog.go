@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -204,6 +205,21 @@ func (j *Journal) rotateLocked() error {
 	return j.openLocked()
 }
 
+// readNoFollow reads a journal file without following a symbolic link (as openLocked does for
+// writing): a link planted in place of the journal or of a rotated file is refused, its target is
+// never read. A missing file is os.ErrNotExist.
+func readNoFollow(name string) ([]byte, error) {
+	f, err := os.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, errors.New("refusing to follow a symbolic link")
+		}
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(f)
+}
+
 // List returns the most recent entries first (current file, then the rotated ones), after the
 // filter, capped at MaxList. Unreadable lines (a torn last line after a crash) are skipped.
 func (j *Journal) List(f Filter) ([]Entry, error) {
@@ -220,7 +236,7 @@ func (j *Journal) List(f Filter) ([]Entry, error) {
 		if i > 0 {
 			name = fmt.Sprintf("%s.%d", j.opts.Path, i)
 		}
-		data, err := os.ReadFile(name)
+		data, err := readNoFollow(name)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue

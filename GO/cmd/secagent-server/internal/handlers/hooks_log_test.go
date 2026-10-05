@@ -101,3 +101,26 @@ func TestAdminHooksLog_UnreadableJournalIs503NotEmpty(t *testing.T) {
 		t.Errorf("unreadable journal: %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestAdminHooksLog_SymbolicLinkJournalIs503(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "elsewhere")
+	if err := os.WriteFile(target, []byte(`{"id":"x","event":"host.new"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "actions.log")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	j, err := actionlog.Open(actionlog.Options{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetActionJournal(j)
+	t.Cleanup(func() { SetActionJournal(nil); _ = j.Close() })
+	w := httptest.NewRecorder()
+	AdminHooksLog(w, adminReq("GET", "/api/admin/hooks/log", nil))
+	if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), `"x"`) {
+		t.Errorf("symbolic link: %d %s", w.Code, w.Body.String())
+	}
+}
