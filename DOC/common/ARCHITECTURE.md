@@ -2375,8 +2375,8 @@ central reçoit ["zone-a", "dmz1"] → hooks voient la chaîne origin-first
 - JSON valide (reject snapshot/hello si invalide)
 - `ansible_*` interdit (sauf `ansible_python_interpreter` sans `..`)
 - `secagent_*` réservé
-- Jinja markers interdits (`{{}}`, `{%%}`)
-- Bornes : max 8KB total, 100 clefs, 128 char par clef
+- Jinja markers interdits (`{{`, `{%`, `{#`) — seuls les marqueurs ouvrants sont vérifiés
+- Bornes : max 16 KiB total, ≤ 64 clefs, clef ≤ 64 car, valeur ≤ 1 024 octets, profondeur ≤ 4, liste ≤ 64 éléments
 
 **Variables hook** :
 - `{{relay_chain}}` : JSON array origin-first (ex: `["zone-a","dmz1"]`)
