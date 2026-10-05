@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"encoding/json"
@@ -14,7 +14,7 @@ import (
 func healthBody(t *testing.T) (int, map[string]any) {
 	t.Helper()
 	w := httptest.NewRecorder()
-	handleHealth(w, httptest.NewRequest("GET", "/health", nil))
+	currentNode.handleHealth(w, httptest.NewRequest("GET", "/health", nil))
 	var m map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
 		t.Fatalf("health body: %v (%s)", err, w.Body.String())
@@ -22,11 +22,14 @@ func healthBody(t *testing.T) (int, map[string]any) {
 	return w.Code, m
 }
 
+// currentNode is the Node whose /health handler the helpers exercise.
+var currentNode = &Node{}
+
 func withLinks(t *testing.T, fn func() repeater.LinksStatus) {
 	t.Helper()
-	prev := linksProvider
-	linksProvider = fn
-	t.Cleanup(func() { linksProvider = prev })
+	prev := currentNode.healthLinks
+	currentNode.healthLinks = fn
+	t.Cleanup(func() { currentNode.healthLinks = prev })
 }
 
 func TestHealth_UnchangedWithoutLinks(t *testing.T) {
@@ -59,7 +62,7 @@ func TestHealth_PermanentRefusalFlagsDegradedAndStill200(t *testing.T) {
 			})
 	})
 	w := httptest.NewRecorder()
-	handleHealth(w, httptest.NewRequest("GET", "/health", nil))
+	currentNode.handleHealth(w, httptest.NewRequest("GET", "/health", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("liveness must stay 200, got %d", w.Code)
 	}

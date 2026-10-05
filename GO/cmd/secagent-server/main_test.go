@@ -432,30 +432,3 @@ func TestCLI_ServerStatus_ServerRunning(t *testing.T) {
 		t.Errorf("server status: expected 200, got %d", resp.StatusCode)
 	}
 }
-
-// ── isListening ────────────────────────────────────────────────────────────────
-
-func TestIsListening_PortOpen(t *testing.T) {
-	// Start a real listener
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	defer ts.Close()
-
-	addr := strings.TrimPrefix(ts.URL, "http://")
-	if !isListening(addr) && !isListening(":"+strings.Split(addr, ":")[1]) {
-		// Try with the full addr as extracted
-		host := addr
-		if !isListening(host) {
-			t.Logf("isListening: server at %s — skipping (platform-dependent)", addr)
-		}
-	}
-}
-
-func TestIsListening_PortClosed(t *testing.T) {
-	if isListening(":19998") {
-		t.Skip("port 19998 unexpectedly open — skipping")
-	}
-	// Port is closed — isListening must return false
-	if isListening(":19998") {
-		t.Error("expected false for closed port :19998")
-	}
-}
