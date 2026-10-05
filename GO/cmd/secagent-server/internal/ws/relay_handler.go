@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"secagent-server/cmd/secagent-server/internal/config"
 )
 
 // Relay-specific WebSocket close codes.
@@ -137,8 +139,9 @@ type RelayAgentInfo struct {
 
 // RelayTopoEntry is a descendant relay declared in a topology_snapshot.
 type RelayTopoEntry struct {
-	RelayID    string   `json:"relay_id"`
-	RelayChain []string `json:"relay_chain"`
+	RelayID    string         `json:"relay_id"`
+	RelayChain []string       `json:"relay_chain"`
+	GroupVars  map[string]any `json:"group_vars,omitempty"` // that relay's Ansible group vars (#139)
 }
 
 // RelayTaskResult holds the outcome of a task dispatched to a relay.
@@ -194,6 +197,7 @@ var (
 	relayRouteChainsFn  func(entries []RouteChainEntry) error
 	relayConflictFn     func(c HostConflict, fromBelow bool)
 	relayEventLocalFn   func(event, hostname, status, enrolledAt string, relayChain []string)
+	relayGroupVarsFn    func(relayID, groupVarsJSON string) error
 )
 
 // SetRelayLocalIDFunc sets the provider of this node's own relay id (REPEATER_ID; "" if unset).
@@ -345,6 +349,36 @@ func SetRelayRouteChainsFunc(fn func(entries []RouteChainEntry) error) {
 	treeHooksMu.Lock()
 	relayRouteChainsFn = fn
 	treeHooksMu.Unlock()
+}
+
+// SetRelayGroupVarsFunc sets the persistence of a relay's validated, canonical JSON group vars
+// ("" clears them). Group vars reach this node in relay_hello, topology_snapshot and relay.updated.
+func SetRelayGroupVarsFunc(fn func(relayID, groupVarsJSON string) error) {
+	treeHooksMu.Lock()
+	relayGroupVarsFn = fn
+	treeHooksMu.Unlock()
+}
+
+// storeGroupVars validates and stores the group vars of relayID, then tells the parent (relay.updated,
+// origin first: chain ends with the authenticated peer, our own id is appended by the uplink).
+// An invalid payload is refused as a whole and reported.
+func storeGroupVars(conn *RelayConnection, relayID string, chainToPeer []string, vars map[string]any) error {
+	canonical, err := config.EncodeGroupVars(vars)
+	if err != nil {
+		log.Printf("[SECURITY WARNING] group_vars refused: relay_id=%s declared by %s: %v", conn.RelayID, relayID, err)
+		return err
+	}
+	treeHooksMu.RLock()
+	fn := relayGroupVarsFn
+	treeHooksMu.RUnlock()
+	if fn != nil {
+		if serr := fn(relayID, canonical); serr != nil {
+			log.Printf("group_vars: store relay=%q: %v", relayID, serr)
+		}
+	}
+	forwardEventUpstream(RelayMessage{Type: "event_forward", Event: "relay.updated", RelayID: relayID,
+		GroupVars: vars, RelayChain: chainToPeer})
+	return nil
 }
 
 // SetRelayEventLocalFunc sets the local dispatch of an event received from a child (hooks run
@@ -802,6 +836,12 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 			log.Printf("relay_hello: auto-register error: relay_id=%s err=%v", conn.RelayID, err)
 		}
 		conn.helloDone = true
+		if msg.GroupVars != nil {
+			if err := storeGroupVars(conn, conn.RelayID, []string{conn.RelayID}, msg.GroupVars); err != nil {
+				reject(conn, "invalid group_vars")
+				return
+			}
+		}
 		// relay_ack carries the PARENT's identity (this node), so the child can pin it.
 		ancestors := append([]string{localRelayID()}, localAncestors()...)
 		ack := RelayMessage{
@@ -844,12 +884,11 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		seen := make(map[string]bool, len(hostnames))
 		for _, h := range hostnames {
 			c := detectHostConflict(conn, h, []string{conn.RelayID})
+			seen[h] = true // still claimed: the reported-conflict memory is kept (an uncontested round must not re-arm it)
 			if c == nil {
-				delete(conn.reported, h)
 				routable = append(routable, h)
 				continue
 			}
-			seen[h] = true
 			reportConflictOnce(conn, *c)
 			if c.OldRelay != LocalOwner {
 				routable = append(routable, h) // relay-to-relay move: last arrival wins
@@ -1352,6 +1391,12 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 		reject(conn, "invalid topology_snapshot: "+err.Error())
 		return
 	}
+	// Group vars (#139) are validated as a whole before anything is written.
+	if err := validateSnapshotGroupVars(msg); err != nil {
+		log.Printf("[SECURITY WARNING] topology_snapshot refused: relay_id=%s: %v", conn.RelayID, err)
+		reject(conn, "invalid group_vars in topology_snapshot")
+		return
+	}
 	// Route-hijack protection (HAUT-3): refuse before any write.
 	if id, ok := claimDescendants(conn.RelayID, relays); !ok {
 		log.Printf("[SECURITY WARNING] topology_snapshot refused: relay_id=%s declares relay %q already owned elsewhere", conn.RelayID, id)
@@ -1388,6 +1433,7 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	}
 	conn.descendants = relays
 	conn.snapshotDone = true
+	applySnapshotGroupVars(conn, msg)
 	ack := RelayMessage{Type: "topology_ack", RelayID: localRelayID(), Status: "ok", Count: len(msg.Agents),
 		Timestamp: time.Now().UTC().Format(time.RFC3339)}
 	conn.mu.Lock()
@@ -1452,6 +1498,41 @@ func handleEventForward(conn *RelayConnection, msg RelayMessage) {
 	forwardEventUpstream(msg)
 }
 
+// validateSnapshotGroupVars checks the group vars of the sender and of every declared descendant.
+func validateSnapshotGroupVars(msg RelayMessage) error {
+	if msg.GroupVars != nil {
+		if err := config.ValidateGroupVars(msg.GroupVars); err != nil {
+			return err
+		}
+	}
+	for _, r := range msg.Relays {
+		if r.GroupVars != nil {
+			if err := config.ValidateGroupVars(r.GroupVars); err != nil {
+				return fmt.Errorf("relay %q: %w", r.RelayID, err)
+			}
+		}
+	}
+	return nil
+}
+
+// applySnapshotGroupVars stores the (already validated) group vars carried by a snapshot.
+func applySnapshotGroupVars(conn *RelayConnection, msg RelayMessage) {
+	if msg.GroupVars != nil {
+		_ = storeGroupVars(conn, conn.RelayID, []string{conn.RelayID}, msg.GroupVars)
+	}
+	for _, r := range msg.Relays {
+		if r.GroupVars == nil {
+			continue
+		}
+		// origin first, authenticated peer last: reverse of the top-down chain
+		chain := make([]string, len(r.RelayChain))
+		for i, id := range r.RelayChain {
+			chain[len(r.RelayChain)-1-i] = id
+		}
+		_ = storeGroupVars(conn, r.RelayID, chain, r.GroupVars)
+	}
+}
+
 // hostnameShape / enrolledAtShape bound what a child may put in an event: the values end up in
 // hook templates, environment variables and webhook bodies.
 var hostnameShape = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$`)
@@ -1460,6 +1541,20 @@ var hostnameShape = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-
 func eventShapeError(m RelayMessage) string {
 	switch m.Event {
 	case "host.up", "host.down", "host.new", "host.conflict":
+	case "relay.updated":
+		// a relay announces its Ansible group vars (#139): relay id + origin-first chain + vars
+		if !relayIDShape.MatchString(m.RelayID) {
+			return "invalid relay id"
+		}
+		if len(m.RelayChain) == 0 || m.RelayChain[0] != m.RelayID {
+			return "relay.updated chain must start with the relay it describes"
+		}
+		if m.GroupVars != nil {
+			if err := config.ValidateGroupVars(m.GroupVars); err != nil {
+				return "invalid group_vars"
+			}
+		}
+		return ""
 	default:
 		return "unsupported event kind"
 	}
@@ -1509,9 +1604,11 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 			if c.OldRelay == LocalOwner {
 				return false // a live local agent is never re-routed, nor announced as up from below
 			}
-		} else {
-			delete(conn.reported, msg.Hostname)
 		}
+		// NB: an uncontested event does NOT reset the "already reported" memory: with two relays
+		// claiming the same host, every host.up of the current owner would otherwise re-arm the
+		// conflict and bring back the event storm. Only agent_list (the authoritative, periodic
+		// declaration) ends a reported conflict.
 		if origin != conn.RelayID {
 			if err := registerRelayNode(origin); err != nil {
 				log.Printf("event_forward: register relay %s: %v", origin, err)
@@ -1539,6 +1636,27 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 		return true
 	case "host.conflict":
 		emitConflict(HostConflict{Hostname: msg.Hostname, OldRelay: msg.OldRelay, NewRelay: msg.NewRelay, RelayChain: chain}, true)
+		return true
+	case "relay.updated":
+		// Only the sender or a relay it declared may have its group vars set through it.
+		if msg.RelayID != conn.RelayID {
+			if _, mine := conn.descendants[msg.RelayID]; !mine {
+				log.Printf("[SECURITY WARNING] relay.updated refused: relay_id=%s describes %q which is not in its subtree", conn.RelayID, msg.RelayID)
+				return false
+			}
+		}
+		treeHooksMu.RLock()
+		fn := relayGroupVarsFn
+		treeHooksMu.RUnlock()
+		canonical, err := config.EncodeGroupVars(msg.GroupVars)
+		if err != nil {
+			return false
+		}
+		if fn != nil {
+			if serr := fn(msg.RelayID, canonical); serr != nil {
+				log.Printf("relay.updated: store group vars relay=%q: %v", msg.RelayID, serr)
+			}
+		}
 		return true
 	}
 	return false

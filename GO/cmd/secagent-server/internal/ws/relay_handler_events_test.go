@@ -210,3 +210,37 @@ func TestEvents_BeforeHelloAreIgnored(t *testing.T) {
 		t.Errorf("an event before relay_hello triggered hooks: %+v", got)
 	}
 }
+
+// Two relays claiming one host: host.up events of the current owner must not re-arm the conflict
+// report (they used to reset the "already reported" memory and brought the storm back).
+func TestEvents_UncontestedHostUpDoesNotRearmTheConflictReport(t *testing.T) {
+	cl := recordConflicts(t)
+	recordRoutes(t)
+	events := make(chan RelayMessage, 32)
+	setTreeHooks(t, "central", nil, nil, func(m RelayMessage) { events <- m })
+	// the route table says relay-other owns the host: every claim from dmz1 is a conflict
+	setHostRoutes(t, map[string]string{"roamer": "relay-other"})
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
+	handshake(t, c, "dmz1")
+	for i := 0; i < 5; i++ {
+		sendAgentList(t, c, "roamer")
+		readMsg(t, c)
+	}
+	if got := cl.get(); len(got) != 1 {
+		t.Fatalf("conflicts after repeated agent_list = %d, want 1", len(got))
+	}
+	// now the route says dmz1 owns it (uncontested claims), then relay-other overtakes again
+	setHostRoutes(t, map[string]string{"roamer": "dmz1"})
+	if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: "roamer", Status: "connected", RelayChain: []string{"dmz1"}}); err != nil {
+		t.Fatal(err)
+	}
+	barrier(t, c)
+	setHostRoutes(t, map[string]string{"roamer": "relay-other"})
+	sendAgentList(t, c, "roamer")
+	readMsg(t, c)
+	if got := cl.get(); len(got) != 1 {
+		t.Errorf("conflicts = %d, want still 1: an uncontested host.up must not re-arm the report", len(got))
+	}
+}
