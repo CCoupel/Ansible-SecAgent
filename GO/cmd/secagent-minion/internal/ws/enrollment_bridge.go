@@ -63,7 +63,7 @@ func defaultReEnrollOnce(ctx context.Context, ec EnrollConfig, pubPEM string) (s
 		Transport: &http.Transport{TLSClientConfig: tlsCfg},
 	}
 
-	// --- Étape 1 : POST {hostname, pubkey_pem, enrollment_token} → {challenge, server_public_key_pem} ---
+	// --- Étape 1 : POST {hostname, public_key_pem, enrollment_token} → {challenge, server_public_key_pem} ---
 	challengeB64, serverPubKeyPEM, err := reenrollStep1(ctx, client, ec, pubPEM)
 	if err != nil {
 		return "", err
@@ -107,11 +107,11 @@ func defaultReEnrollOnce(ctx context.Context, ec EnrollConfig, pubPEM string) (s
 	return jwt, nil
 }
 
-// reenrollStep1 exécute l'étape 1 : POST {hostname, pubkey_pem, enrollment_token}
+// reenrollStep1 exécute l'étape 1 : POST {hostname, public_key_pem, enrollment_token}
 func reenrollStep1(ctx context.Context, client *http.Client, ec EnrollConfig, pubPEM string) (challengeB64, serverPubKeyPEM string, err error) {
 	body, err := json.Marshal(map[string]string{
 		"hostname":         ec.Hostname,
-		"pubkey_pem":       pubPEM,
+		"public_key_pem":   pubPEM,
 		"enrollment_token": ec.EnrollmentToken,
 	})
 	if err != nil {
