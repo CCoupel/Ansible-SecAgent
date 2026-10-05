@@ -129,6 +129,16 @@ func init() {
 	}
 }
 
+// ConfigureServer sets the bootstrap JWT secret and the admin token from the server Config
+// (they are otherwise read from the environment by init()). Called by server.Build before
+// anything is served; with the same values as the environment it changes nothing in production.
+func ConfigureServer(jwtSecret, adminToken string) {
+	server.mu.Lock()
+	server.JWTSecret = jwtSecret
+	server.AdminToken = adminToken
+	server.mu.Unlock()
+}
+
 // rsaMasterKey returns the RSA_MASTER_KEY env var.
 // Returns ("", false) when the variable is absent (dev/test mode — keys stored unencrypted).
 // In production the variable must be set; InitServerState will log a warning if absent.

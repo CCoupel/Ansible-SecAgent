@@ -46,6 +46,7 @@ type Node struct {
 	healthLinks func() repeater.LinksStatus
 
 	apiHandler, adminHandler, wsHandler http.Handler
+	apiRoutes, adminRoutes, wsRoutes    []string
 	apiSrv, adminSrv, wsSrv             *http.Server
 
 	closeOnce sync.Once
@@ -75,6 +76,9 @@ func Build(cfg Config) (node *Node, err error) {
 	if repeaterCfg != nil {
 		log.Printf("[INIT] Repeater child mode: REPEATER_ID=%s upstream=%s", repeaterCfg.ID, repeaterCfg.UpstreamURL)
 	}
+
+	// Bootstrap secrets from the Config (init() read the same values from the environment).
+	handlers.ConfigureServer(cfg.JWTSecret, cfg.AdminToken)
 
 	// Initialize storage (SQLite)
 	log.Println("[INIT] Initializing SQLite database...")
@@ -310,6 +314,11 @@ func (n *Node) Close() {
 func (n *Node) APIHandler() http.Handler   { return n.apiHandler }
 func (n *Node) AdminHandler() http.Handler { return n.adminHandler }
 func (n *Node) WSHandler() http.Handler    { return n.wsHandler }
+
+// Routes returns the registered patterns of each router ("METHOD /path" or "/path").
+func (n *Node) Routes() (api, admin, wsRoutes []string) {
+	return append([]string(nil), n.apiRoutes...), append([]string(nil), n.adminRoutes...), append([]string(nil), n.wsRoutes...)
+}
 
 // Ready is closed once all listeners are up.
 func (n *Node) Ready() <-chan struct{} { return n.ready }
