@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -73,6 +74,25 @@ func TestParseTrustedProxyCIDRs(t *testing.T) {
 	for _, bad := range []string{"10.0.0.0/33", "banana", "10.0.0.0/8,300.1.1.1/8", "10.0.0.1"} {
 		if _, err := ParseTrustedProxyCIDRs(bad); err == nil {
 			t.Errorf("%q must be refused", bad)
+		}
+	}
+}
+
+// #177b: a /0 range would make every peer a trusted proxy and neutralise allowed_ips.
+func TestParseTrustedProxyCIDRs_RefusesPrefixZero(t *testing.T) {
+	for _, bad := range []string{"0.0.0.0/0", "::/0", "1.2.3.4/0", "10.0.0.0/8,0.0.0.0/0", " ::/0 ,10.0.0.0/8", "::ffff:0:0/96"} {
+		nets, err := ParseTrustedProxyCIDRs(bad)
+		if err == nil || nets != nil {
+			t.Errorf("%q must be refused, got (%v, %v)", bad, nets, err)
+		}
+		if err != nil && !strings.Contains(err.Error(), EnvTrustedProxyCIDRs) {
+			t.Errorf("%q: error should name the variable: %v", bad, err)
+		}
+	}
+	// the widest legitimate ranges stay accepted
+	for _, ok := range []string{"0.0.0.0/1", "::/1", "10.0.0.0/8", "::ffff:10.0.0.0/104", "2001:db8::/32"} {
+		if _, err := ParseTrustedProxyCIDRs(ok); err != nil {
+			t.Errorf("%q must be accepted: %v", ok, err)
 		}
 	}
 }

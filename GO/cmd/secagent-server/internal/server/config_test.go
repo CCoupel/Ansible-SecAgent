@@ -142,3 +142,18 @@ func TestConfig_InvalidTrustedProxyCIDRsRefusesToStart(t *testing.T) {
 		t.Fatalf("valid list: (%+v, %v)", cfg, err)
 	}
 }
+
+// #177b: TRUSTED_PROXY_CIDRS with a /0 range refuses to start (fail closed), in ConfigFromEnv and Build.
+func TestConfig_TrustedProxyCIDRsPrefixZeroRefusesToStart(t *testing.T) {
+	for _, bad := range []string{"0.0.0.0/0", "::/0", "10.0.0.0/8,0.0.0.0/0"} {
+		t.Setenv("JWT_SECRET_KEY", "s")
+		t.Setenv("ADMIN_TOKEN", "a")
+		t.Setenv("TRUSTED_PROXY_CIDRS", bad)
+		if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "TRUSTED_PROXY_CIDRS") {
+			t.Errorf("ConfigFromEnv(%q) error = %v, want a TRUSTED_PROXY_CIDRS error", bad, err)
+		}
+		if _, err := Build(Config{JWTSecret: "s", AdminToken: "a", DatabaseURL: ":memory:", TrustedProxyCIDRs: bad}); err == nil {
+			t.Errorf("Build(%q) must refuse a /0 range", bad)
+		}
+	}
+}

@@ -17,7 +17,9 @@ const EnvTrustedProxyCIDRs = "TRUSTED_PROXY_CIDRS"
 var trustedProxies atomic.Pointer[[]*net.IPNet]
 
 // ParseTrustedProxyCIDRs parses a comma-separated CIDR list ("" → none). A single invalid entry is
-// an error: the server must refuse to start rather than silently trust a wrong range.
+// an error: the server must refuse to start rather than silently trust a wrong range. A range with
+// prefix length 0 (0.0.0.0/0, ::/0, or an IPv4-mapped equivalent) trusts every peer, so any client
+// could forge X-Forwarded-For and defeat allowed_ips: it is refused too (fail closed).
 func ParseTrustedProxyCIDRs(list string) ([]*net.IPNet, error) {
 	var out []*net.IPNet
 	for _, part := range strings.Split(list, ",") {
@@ -28,6 +30,9 @@ func ParseTrustedProxyCIDRs(list string) ([]*net.IPNet, error) {
 		_, n, err := net.ParseCIDR(part)
 		if err != nil {
 			return nil, fmt.Errorf("%s: invalid CIDR %q: %w", EnvTrustedProxyCIDRs, part, err)
+		}
+		if ones, bits := n.Mask.Size(); ones == 0 || (bits == 128 && n.IP.To4() != nil && ones <= 96) {
+			return nil, fmt.Errorf("%s: entry #%d trusts every address (prefix length 0), refused", EnvTrustedProxyCIDRs, len(out)+1)
 		}
 		out = append(out, n)
 	}
