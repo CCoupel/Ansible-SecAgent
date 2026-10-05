@@ -134,6 +134,16 @@ curl -s http://192.168.1.218:7770/api/inventory \
 
 ---
 
+## CI : job « Inventaire Ansible »
+
+Le workflow `.github/workflows/ci.yml` contient, en plus de « Build + tests Go » et « Lint Go », un job
+bloquant **Inventaire Ansible** : il installe `ansible-core` (version épinglée dans
+`.github/ci/requirements-ansible.txt`, actuellement **2.21.4**, Python 3.12) puis exécute les tests
+`TestAnsible*` du harnais d'intégration, qui lancent `ansible-inventory -i secagent-inventory --list`
+sur la sortie réelle du binaire. `ANSIBLE_E2E=1` rend ces tests obligatoires (échec si Ansible est absent) ;
+sans cette variable (poste local, job « Build + tests Go »), ils se skippent.
+Pour changer de version : modifier uniquement `requirements-ansible.txt`.
+
 ## Gestion des Tokens Relay (v3.0.1)
 
 ### Créer un token relay-parent (pour mode push)

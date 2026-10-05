@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **CI** : job « Inventaire Ansible » (ansible-core 2.21.4 épinglé) validant la sortie réelle de `secagent-inventory` avec `ansible-inventory --list`, via `ANSIBLE_E2E=1`
 - (future features for next milestone)
 
 ---
