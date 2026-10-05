@@ -297,7 +297,7 @@ func RunInstance(ctx context.Context, cfg Config) (int, error) {
 func finish(rerr error, ctx context.Context, lostErr func() *error, lost func(error) (int, error),
 	fail func(error) (int, error), cleanStop func() (int, error)) (int, error) {
 	if lerr := lostErr(); lerr != nil || errors.Is(rerr, ErrLockLost) {
-		var e error = ErrLockLost
+		e := ErrLockLost
 		if lerr != nil {
 			e = *lerr
 		}
