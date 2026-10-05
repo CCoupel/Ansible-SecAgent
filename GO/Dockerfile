@@ -4,7 +4,7 @@ FROM golang:1.25-alpine AS builder
 WORKDIR /build
 
 # Install build dependencies
-RUN apk add --no-cache git make gcc musl-dev
+RUN apk add --no-cache git make
 
 # Copy go mod files
 COPY go.mod go.sum ./
@@ -15,8 +15,8 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the binary — CGO required by go-sqlite3
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+# Build the binary — pure Go, no CGO (the relay state is a file, no SQLite since v3.0.3)
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-s -w" -o secagent-server ./cmd/secagent-server
 
 # Runtime stage
@@ -25,7 +25,7 @@ FROM alpine:3.18
 WORKDIR /app
 
 # Install runtime dependencies
-RUN apk add --no-cache ca-certificates sqlite-libs
+RUN apk add --no-cache ca-certificates
 
 # Copy binary from builder
 COPY --from=builder /build/secagent-server /app/secagent-server

@@ -30,6 +30,13 @@ jobs:
         working-directory: GO
         run: go build ./...
 
+      # Le serveur est pur Go depuis #160 (plus de SQLite) : la compilation sans CGO doit rester verte.
+      - name: Build sans CGO
+        working-directory: GO
+        env:
+          CGO_ENABLED: "0"
+        run: go build ./...
+
       # Tests bloquants : aucun contournement. -race exige CGO (actif sur ubuntu-latest).
       # -timeout 300s par package : marge x8 sur le package le plus lent (handlers ~37 s en local
       # sous -race), un runner GitHub etant 2 a 3 fois plus lent.

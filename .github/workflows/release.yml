@@ -220,8 +220,8 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cd GO
-          # server : CGO (go-sqlite3), comme GO/Dockerfile
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "../dist/secagent-server-${VERSION}-linux-amd64" ./cmd/secagent-server
+          # server : pur Go, sans CGO (l'état du relay est un fichier, plus de SQLite : #160), comme GO/Dockerfile
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "../dist/secagent-server-${VERSION}-linux-amd64" ./cmd/secagent-server
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "../dist/secagent-minion-${VERSION}-linux-amd64" ./cmd/secagent-minion
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "../dist/secagent-inventory-${VERSION}-linux-amd64" ./cmd/secagent-inventory
           cd ../dist
