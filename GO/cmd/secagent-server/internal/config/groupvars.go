@@ -63,6 +63,23 @@ func ParseGroupVars(data []byte) (map[string]any, error) {
 	return m, nil
 }
 
+// validInterpreter accepts auto, auto_silent or a clean absolute path: no "." / ".." / empty
+// component (path traversal such as /usr/bin/../../tmp/x, double or trailing slash).
+func validInterpreter(s string) bool {
+	if !pythonInterpreterExpr.MatchString(s) {
+		return false
+	}
+	if !strings.HasPrefix(s, "/") {
+		return true // auto / auto_silent
+	}
+	for _, c := range strings.Split(s[1:], "/") {
+		if c == "" || c == "." || c == ".." {
+			return false
+		}
+	}
+	return true
+}
+
 // ValidateGroupVars checks the variables a relay may publish for its Ansible group. They end up in
 // the inventory consumed by Ansible on the controller, so the rules are strict:
 //   - keys are plain identifiers; connection / privilege / delegation variables (ansible_*, except
@@ -86,7 +103,7 @@ func ValidateGroupVars(m map[string]any) error {
 				return fmt.Errorf("%w: variable %q is reserved (connection / privilege settings cannot be set by a relay)", ErrInvalidGroupVars, k)
 			}
 			s, ok := v.(string)
-			if !ok || !pythonInterpreterExpr.MatchString(s) {
+			if !ok || !validInterpreter(s) {
 				return fmt.Errorf("%w: ansible_python_interpreter must be an absolute path, auto or auto_silent", ErrInvalidGroupVars)
 			}
 		}

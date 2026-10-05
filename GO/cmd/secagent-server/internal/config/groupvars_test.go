@@ -94,6 +94,19 @@ func TestValidateGroupVars_AllowedInterpreters(t *testing.T) {
 	}
 }
 
+func TestValidateGroupVars_InterpreterPathTraversalRefused(t *testing.T) {
+	for _, v := range []string{"/usr/bin/../bin/python", "../x", "", "/..", "/usr/./bin/python", "/usr//bin/python", "/usr/bin/", "/", "/usr/bin/..", "./python"} {
+		if err := ValidateGroupVars(map[string]any{"ansible_python_interpreter": v}); err == nil {
+			t.Errorf("%q must be refused", v)
+		}
+	}
+	for _, v := range []string{"/usr/bin/python3", "/opt/py-3.11/bin/python", "/usr/bin/python3.11", "/a/..b/c", "/a/b..c"} {
+		if err := ValidateGroupVars(map[string]any{"ansible_python_interpreter": v}); err != nil {
+			t.Errorf("%q: %v", v, err)
+		}
+	}
+}
+
 func TestEncodeGroupVars(t *testing.T) {
 	if s, err := EncodeGroupVars(nil); s != "" || err != nil {
 		t.Errorf("nil: %q %v", s, err)
