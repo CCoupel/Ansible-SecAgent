@@ -36,7 +36,15 @@ const (
 	EnvTLSKey     = "TLS_KEY"
 	EnvTLSDisable = "TLS_DISABLE" // "true" only: tests and local CI, never a default
 	EnvAdminTLS   = "ADMIN_TLS"   // "true": the admin port also serves TLS
+	// EnvAdminInsecureHTTP + EnvAdminInsecureHTTPAck: the explicit, double-confirmed derogation that
+	// lets the admin port serve plain HTTP on a NON-loopback address (same model as the inventory's
+	// RELAY_INSECURE_TLS + RELAY_INSECURE_TLS_ACK). Never a default.
+	EnvAdminInsecureHTTP    = "ADMIN_INSECURE_HTTP"
+	EnvAdminInsecureHTTPAck = "ADMIN_INSECURE_HTTP_ACK"
 )
+
+// AdminInsecureHTTPAckValue is the exact phrase ADMIN_INSECURE_HTTP_ACK must carry.
+const AdminInsecureHTTPAckValue = "i-understand-the-risk"
 
 // DefaultTLSReloadInterval is how often the certificate files are checked for a change.
 const DefaultTLSReloadInterval = 60 * time.Second
@@ -202,6 +210,13 @@ func (n *Node) prepareTLS() error {
 	if err := validateTLSConfig(n.cfg); err != nil {
 		return err
 	}
+	warn, err := adminExposure(n.cfg)
+	if err != nil {
+		return err
+	}
+	if warn != "" {
+		log.Print(warn)
+	}
 	if n.cfg.TLSCert == "" {
 		log.Printf("[SECURITY WARNING] TLS_DISABLE=true: every listener serves PLAIN HTTP/WS. For tests and local CI only: never in production")
 		return nil
@@ -214,10 +229,45 @@ func (n *Node) prepareTLS() error {
 		return err
 	}
 	n.certs = cs
-	if !n.cfg.AdminTLS && !isLoopbackAddr(n.cfg.adminAddr(), n.cfg.AdminListener) {
-		log.Printf("[SECURITY WARNING] the admin API (%s) serves plain HTTP on a non-loopback address: bind ADMIN_ADDR to loopback or the admin network only, or set ADMIN_TLS=true", n.cfg.adminAddr())
-	}
 	return nil
+}
+
+// adminExposure applies the rule of the admin port (#175b): it carries the ADMIN_TOKEN, so plain
+// HTTP is only accepted on loopback (127.0.0.0/8, ::1, localhost: the local CLI). On any other
+// address the server REFUSES to start unless the admin port serves TLS (ADMIN_TLS=true with a
+// certificate pair) or the operator wrote the explicit derogation (ADMIN_INSECURE_HTTP=true AND
+// ADMIN_INSECURE_HTTP_ACK=<exact phrase>); the derogation is a [SECURITY WARNING] at every start
+// and is ignored when the port is TLS. The message names the two solutions and echoes no value
+// other than the (non-secret) address.
+func adminExposure(cfg Config) (warning string, err error) {
+	haveCert := cfg.TLSCert != "" && cfg.TLSKey != ""
+	if cfg.AdminTLS && !haveCert {
+		return "", fmt.Errorf("%s=true needs %s and %s (the admin port serves the same certificate pair)", EnvAdminTLS, EnvTLSCert, EnvTLSKey)
+	}
+	addr := cfg.adminAddr()
+	if cfg.AdminListener != nil {
+		addr = cfg.AdminListener.Addr().String()
+	}
+	if cfg.AdminTLS {
+		if cfg.AdminInsecureHTTP {
+			return fmt.Sprintf("[SECURITY WARNING] %s=true is ignored: the admin port serves TLS (%s=true)", EnvAdminInsecureHTTP, EnvAdminTLS), nil
+		}
+		return "", nil
+	}
+	if isLoopbackAddr(addr, nil) {
+		return "", nil
+	}
+	if !cfg.AdminInsecureHTTP {
+		return "", fmt.Errorf("the admin API (%s) would serve plain HTTP on a non-loopback address: it carries the admin token. "+
+			"Either serve it over TLS (%s=true, with %s/%s), or bind %s to loopback / publish it only on the admin network, "+
+			"or, if the network is protected by other means, declare the derogation explicitly: %s=true and %s=%s",
+			addr, EnvAdminTLS, EnvTLSCert, EnvTLSKey, EnvAdminAddr, EnvAdminInsecureHTTP, EnvAdminInsecureHTTPAck, AdminInsecureHTTPAckValue)
+	}
+	if cfg.AdminInsecureHTTPAck != AdminInsecureHTTPAckValue {
+		return "", fmt.Errorf("%s=true refused: the admin API (%s) is not loopback; confirm the plain-HTTP exposure with %s=%s",
+			EnvAdminInsecureHTTP, addr, EnvAdminInsecureHTTPAck, AdminInsecureHTTPAckValue)
+	}
+	return fmt.Sprintf("[SECURITY WARNING] the admin API serves PLAIN HTTP on %s (derogation %s): the admin token crosses the network in clear; restrict access to the admin network", addr, EnvAdminInsecureHTTP), nil
 }
 
 // isLoopbackAddr reports whether the admin listener is loopback-only.

@@ -279,7 +279,7 @@ func TestTLS_FailClosedOnEveryBadConfiguration(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := Config{JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites, TLSCert: tc.cert, TLSKey: tc.key, TLSDisable: tc.disable}
+			cfg := Config{AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites, TLSCert: tc.cert, TLSKey: tc.key, TLSDisable: tc.disable}
 			n, err := Build(cfg)
 			if err == nil {
 				n.Close()
@@ -299,7 +299,7 @@ func TestTLS_FailClosedOnEveryBadConfiguration(t *testing.T) {
 
 func TestTLS_DisableIsExplicitAndLoud(t *testing.T) {
 	logs := captureStdLog(t)
-	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
+	n, err := Build(Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestTLS_KeyPermissionsAreChecked(t *testing.T) {
 	if err := os.Chmod(p.keyPath, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	n, err := Build(Config{TLSCert: p.certPath, TLSKey: p.keyPath, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
+	n, err := Build(Config{TLSCert: p.certPath, TLSKey: p.keyPath, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,18 +353,8 @@ func TestTLS_KeyPermissionsAreChecked(t *testing.T) {
 	}
 }
 
-func TestTLS_AdminPlainOnANonLoopbackAddressIsReported(t *testing.T) {
-	logs := captureStdLog(t)
-	p := validPair(t)
-	n, err := Build(Config{TLSCert: p.certPath, TLSKey: p.keyPath, AdminAddr: "0.0.0.0:7771", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
-	if err != nil {
-		t.Fatal(err)
-	}
-	n.Close()
-	if !strings.Contains(logs.String(), "admin API") || !strings.Contains(logs.String(), "non-loopback") {
-		t.Errorf("expected the non-loopback admin warning:\n%s", logs.String())
-	}
-	for addr, want := range map[string]bool{"127.0.0.1:7771": true, "[::1]:7771": true, "localhost:7771": true, ":7771": false, "0.0.0.0:7771": false, "10.0.0.5:7771": false} {
+func TestTLS_IsLoopbackAddr(t *testing.T) {
+	for addr, want := range map[string]bool{"127.0.0.1:7771": true, "127.0.0.9:1": true, "[::1]:7771": true, "localhost:7771": true, ":7771": false, "0.0.0.0:7771": false, "10.0.0.5:7771": false, "[::]:7771": false, "nonsense": false} {
 		if got := isLoopbackAddr(addr, nil); got != want {
 			t.Errorf("isLoopbackAddr(%q) = %v", addr, got)
 		}
@@ -477,4 +467,124 @@ func hostIn(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// ── #175b: the admin port never serves plain HTTP on a non-loopback address without an explicit derogation ──
+
+func adminCfg(t *testing.T, mut func(*Config)) Config {
+	t.Helper()
+	c := Config{JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites, TLSDisable: true, AdminAddr: "0.0.0.0:0"}
+	mut(&c)
+	return c
+}
+
+func TestAdminExposure_NonLoopbackPlainIsRefusedBeforeAnythingOpens(t *testing.T) {
+	logs := captureStdLog(t)
+	for _, addr := range []string{"0.0.0.0:7771", ":7771", "10.1.2.3:7771", "[::]:7771"} {
+		n, err := Build(adminCfg(t, func(c *Config) { c.AdminAddr = addr }))
+		if err == nil {
+			n.Close()
+			t.Fatalf("%s: Build must refuse", addr)
+		}
+		for _, want := range []string{"ADMIN_TLS=true", "ADMIN_INSECURE_HTTP=true", "ADMIN_INSECURE_HTTP_ACK=" + AdminInsecureHTTPAckValue, "loopback"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: the message must name %q: %v", addr, want, err)
+			}
+		}
+	}
+	// refused BEFORE the database or any component: nothing of the start-up was logged
+	if strings.Contains(logs.String(), "[INIT]") {
+		t.Errorf("the refusal must come before the start-up sequence:\n%s", logs.String())
+	}
+}
+
+func TestAdminExposure_Loopback_TLS_And_Derogation(t *testing.T) {
+	p := validPair(t)
+	for name, tc := range map[string]struct {
+		mut     func(*Config)
+		wantErr string
+		warn    string
+	}{
+		"loopback v4":                     {mut: func(c *Config) { c.AdminAddr = "127.0.0.1:0" }},
+		"loopback 127.0.0.5":              {mut: func(c *Config) { c.AdminAddr = "127.0.0.5:0" }},
+		"loopback v6":                     {mut: func(c *Config) { c.AdminAddr = "[::1]:0" }},
+		"localhost":                       {mut: func(c *Config) { c.AdminAddr = "localhost:0" }},
+		"non loopback + TLS":              {mut: func(c *Config) { c.TLSDisable = false; c.TLSCert, c.TLSKey = p.certPath, p.keyPath; c.AdminTLS = true }},
+		"exact derogation":                {mut: func(c *Config) { c.AdminInsecureHTTP = true; c.AdminInsecureHTTPAck = AdminInsecureHTTPAckValue }, warn: "[SECURITY WARNING] the admin API serves PLAIN HTTP on 0.0.0.0:0"},
+		"flag without the ack":            {mut: func(c *Config) { c.AdminInsecureHTTP = true }, wantErr: "confirm the plain-HTTP exposure"},
+		"wrong ack":                       {mut: func(c *Config) { c.AdminInsecureHTTP = true; c.AdminInsecureHTTPAck = "yes" }, wantErr: "confirm the plain-HTTP exposure"},
+		"ack without the flag":            {mut: func(c *Config) { c.AdminInsecureHTTPAck = AdminInsecureHTTPAckValue }, wantErr: "ADMIN_INSECURE_HTTP=true"},
+		"ADMIN_TLS without a certificate": {mut: func(c *Config) { c.AdminTLS = true }, wantErr: "needs TLS_CERT"},
+		"derogation ignored under ADMIN_TLS": {mut: func(c *Config) {
+			c.TLSDisable = false
+			c.TLSCert, c.TLSKey = p.certPath, p.keyPath
+			c.AdminTLS = true
+			c.AdminInsecureHTTP, c.AdminInsecureHTTPAck = true, AdminInsecureHTTPAckValue
+		}, warn: "is ignored: the admin port serves TLS"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			logs := captureStdLog(t)
+			n, err := Build(adminCfg(t, tc.mut))
+			if tc.wantErr != "" {
+				if err == nil {
+					n.Close()
+					t.Fatal("Build must refuse")
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("error %q lacks %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			n.Close()
+			if tc.warn != "" && !strings.Contains(logs.String(), tc.warn) {
+				t.Errorf("expected %q in the logs:\n%s", tc.warn, logs.String())
+			}
+			if tc.warn == "" && strings.Contains(logs.String(), "the admin API serves PLAIN HTTP") {
+				t.Errorf("no warning expected:\n%s", logs.String())
+			}
+		})
+	}
+}
+
+func TestAdminExposure_ConfigFromEnvAppliesTheSameRule(t *testing.T) {
+	setServerEnv(t)
+	t.Setenv("ADMIN_INSECURE_HTTP", "")
+	t.Setenv("ADMIN_INSECURE_HTTP_ACK", "")
+	t.Setenv("ADMIN_ADDR", "0.0.0.0:7771")
+	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "ADMIN_INSECURE_HTTP") {
+		t.Fatalf("default admin exposure must be refused: %v", err)
+	}
+	for _, v := range []string{"1", "yes", "TRUE", "on"} {
+		t.Setenv("ADMIN_INSECURE_HTTP", v)
+		t.Setenv("ADMIN_INSECURE_HTTP_ACK", AdminInsecureHTTPAckValue)
+		if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "invalid ADMIN_INSECURE_HTTP") {
+			t.Errorf("ADMIN_INSECURE_HTTP=%q must be rejected: %v", v, err)
+		}
+	}
+	t.Setenv("ADMIN_INSECURE_HTTP", "true")
+	t.Setenv("ADMIN_INSECURE_HTTP_ACK", "i-understand")
+	if _, err := ConfigFromEnv(); err == nil {
+		t.Error("a wrong ack must be refused")
+	}
+	t.Setenv("ADMIN_INSECURE_HTTP_ACK", AdminInsecureHTTPAckValue)
+	if cfg, err := ConfigFromEnv(); err != nil || !cfg.AdminInsecureHTTP {
+		t.Fatalf("exact derogation: %+v %v", cfg, err)
+	}
+	t.Setenv("ADMIN_INSECURE_HTTP", "")
+	t.Setenv("ADMIN_INSECURE_HTTP_ACK", "")
+	t.Setenv("ADMIN_ADDR", "127.0.0.1:7771")
+	if _, err := ConfigFromEnv(); err != nil {
+		t.Fatalf("loopback needs no condition: %v", err)
+	}
+}
+
+// the real node: loopback admin works (plain), exactly as before.
+func TestAdminExposure_RealNodeOnLoopback(t *testing.T) {
+	_, _, admin, _ := startNode(t, nil)
+	if code, _ := adminCall(t, admin, "GET", "/api/admin/minions", nil); code != http.StatusOK {
+		t.Errorf("admin on loopback: %d", code)
+	}
 }

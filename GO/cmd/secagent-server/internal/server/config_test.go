@@ -14,6 +14,8 @@ func setServerEnv(t *testing.T) {
 	t.Setenv("JWT_SECRET_KEY", "s")
 	t.Setenv("ADMIN_TOKEN", "a")
 	t.Setenv("TLS_DISABLE", "true")
+	t.Setenv("ADMIN_INSECURE_HTTP", "true")
+	t.Setenv("ADMIN_INSECURE_HTTP_ACK", AdminInsecureHTTPAckValue) // these tests are not about the admin exposure
 	for _, k := range []string{EnvAPIAddr, EnvAdminAddr, EnvWSAddr, "DATABASE_URL", "STATE_DIR", "STATE_MAX_BYTES", "RELAY_SINGLE_INSTANCE", "LOG_LEVEL",
 		"REPEATER_ID", "REPEATER_UPSTREAM_URL", "REPEATER_UPSTREAM_TOKEN"} {
 		t.Setenv(k, "")
@@ -134,11 +136,13 @@ func TestConfig_InvalidTrustedProxyCIDRsRefusesToStart(t *testing.T) {
 	t.Setenv("JWT_SECRET_KEY", "s")
 	t.Setenv("ADMIN_TOKEN", "a")
 	t.Setenv("TLS_DISABLE", "true")
+	t.Setenv("ADMIN_INSECURE_HTTP", "true")
+	t.Setenv("ADMIN_INSECURE_HTTP_ACK", AdminInsecureHTTPAckValue) // these tests are not about the admin exposure
 	t.Setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8,not-a-cidr")
 	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "TRUSTED_PROXY_CIDRS") {
 		t.Fatalf("ConfigFromEnv error = %v, want a TRUSTED_PROXY_CIDRS error", err)
 	}
-	if _, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites, TrustedProxyCIDRs: "10.0.0.0/99"}); err == nil {
+	if _, err := Build(Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites, TrustedProxyCIDRs: "10.0.0.0/99"}); err == nil {
 		t.Fatal("Build must refuse an invalid CIDR")
 	}
 	t.Setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8, 192.168.0.0/16")
@@ -158,7 +162,7 @@ func TestConfig_TrustedProxyCIDRsPrefixZeroRefusesToStart(t *testing.T) {
 		if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "TRUSTED_PROXY_CIDRS") {
 			t.Errorf("ConfigFromEnv(%q) error = %v, want a TRUSTED_PROXY_CIDRS error", bad, err)
 		}
-		if _, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites, TrustedProxyCIDRs: bad}); err == nil {
+		if _, err := Build(Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites, TrustedProxyCIDRs: bad}); err == nil {
 			t.Errorf("Build(%q) must refuse a /0 range", bad)
 		}
 	}

@@ -66,7 +66,7 @@ func buildWith(t *testing.T, dbPath string, tune func(*Config)) *Node {
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
 	repeater.UnsafeAllowInternalDialTargets(true) // the stored push targets are loopback test servers
 	t.Cleanup(func() { repeater.UnsafeAllowInternalDialTargets(false) })
-	cfg := Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: dbPath, InsecureTestState: true, WriteGuard: allowWrites}
+	cfg := Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: dbPath, InsecureTestState: true, WriteGuard: allowWrites}
 	if tune != nil {
 		tune(&cfg)
 	}
@@ -131,7 +131,7 @@ func TestBuild_RefusesAStateSealedUnderAnotherMasterKey(t *testing.T) {
 	})
 	t.Setenv("RSA_MASTER_KEY", "another-key")
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
-	if _, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: db, WriteGuard: allowWrites}); err == nil {
+	if _, err := Build(Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: db, WriteGuard: allowWrites}); err == nil {
 		t.Fatal("a state that does not open with the configured master key must refuse to start")
 	}
 	time.Sleep(100 * time.Millisecond)
@@ -153,7 +153,7 @@ func TestBuild_RefusesAnUnusableCAFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
-	cfg := Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: seedDB(t, func(*storage.Store) {}), InsecureTestState: true, WriteGuard: allowWrites, CAFile: bad}
+	cfg := Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: seedDB(t, func(*storage.Store) {}), InsecureTestState: true, WriteGuard: allowWrites, CAFile: bad}
 	if n, err := Build(cfg); err == nil {
 		n.Close()
 		t.Fatal("Build must refuse an unusable CA file")

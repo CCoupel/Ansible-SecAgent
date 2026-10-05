@@ -37,7 +37,7 @@ func TestBuild_NoNATSTrace(t *testing.T) {
 	t.Setenv("NATS_URL", "")
 	buf := captureLogs(t)
 	dir := testStateDir(t)
-	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: dir, InsecureTestState: true, WriteGuard: allowWrites})
+	n, err := Build(Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: dir, InsecureTestState: true, WriteGuard: allowWrites})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestBuild_NoNATSTrace(t *testing.T) {
 func TestBuild_ObsoleteNATSURLWarnsOnceAndStarts(t *testing.T) {
 	t.Setenv("NATS_URL", "nats://legacy.example:4222")
 	buf := captureLogs(t)
-	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
+	n, err := Build(Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
 	if err != nil {
 		t.Fatalf("an obsolete NATS_URL must not be an error: %v", err)
 	}

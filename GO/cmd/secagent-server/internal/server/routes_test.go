@@ -79,7 +79,7 @@ func equalSets(t *testing.T, name string, got, want []string) {
 }
 
 func TestRoutes_ExposedSurfaceIsExactlyTheDeclaredOne(t *testing.T) {
-	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
+	n, err := Build(Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestRoutes_ExposedSurfaceIsExactlyTheDeclaredOne(t *testing.T) {
 // #176: /api/async_status was removed (its in-memory cache was unbounded and racy, and async jobs
 // are polled through exec → async_status.py on the minion). It must never come back unnoticed.
 func TestRoutes_NoAsyncStatusEndpoint(t *testing.T) {
-	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
+	n, err := Build(Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
 	if err != nil {
 		t.Fatal(err)
 	}

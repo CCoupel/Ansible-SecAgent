@@ -45,7 +45,7 @@ func TestBuild_AppliesTuneToUplinkAndDialerOptions(t *testing.T) {
 
 func TestBuild_WithoutTuneKeepsTheProductionDefaults(t *testing.T) {
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
-	n, err := Build(Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
+	n, err := Build(Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
 	if err != nil {
 		t.Fatal(err)
 	}

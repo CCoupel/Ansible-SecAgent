@@ -88,6 +88,10 @@ type Config struct {
 	TLSCert, TLSKey string
 	TLSDisable      bool
 	AdminTLS        bool
+	// AdminInsecureHTTP / AdminInsecureHTTPAck: the explicit derogation for a plain-HTTP admin port
+	// on a non-loopback address (see adminExposure).
+	AdminInsecureHTTP    bool
+	AdminInsecureHTTPAck string
 	// TLSReloadInterval is how often the certificate files are checked for a change (0 = 60 s).
 	// Test seam: ConfigFromEnv leaves it zero.
 	TLSReloadInterval time.Duration
@@ -138,7 +142,14 @@ func ConfigFromEnv() (Config, error) {
 	if cfg.SingleInstance, terr = envStrictBool("RELAY_SINGLE_INSTANCE"); terr != nil {
 		return Config{}, terr
 	}
+	if cfg.AdminInsecureHTTP, terr = envStrictBool(EnvAdminInsecureHTTP); terr != nil {
+		return Config{}, terr
+	}
+	cfg.AdminInsecureHTTPAck = os.Getenv(EnvAdminInsecureHTTPAck)
 	if err := validateTLSConfig(cfg); err != nil {
+		return Config{}, err
+	}
+	if _, err := adminExposure(cfg); err != nil {
 		return Config{}, err
 	}
 	cfg.CAFile = strings.TrimSpace(os.Getenv(tlsca.EnvCAFile))
