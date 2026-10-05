@@ -2,6 +2,9 @@ package server
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"secagent-server/cmd/secagent-server/internal/tlsca"
 	"strings"
 	"testing"
 )
@@ -203,5 +206,24 @@ func TestConfigFromEnv_SingleInstanceIsAnExplicitOptIn(t *testing.T) {
 		if _, err := ConfigFromEnv(); err == nil {
 			t.Errorf("RELAY_SINGLE_INSTANCE=%q must be refused", bad)
 		}
+	}
+}
+
+func TestConfigFromEnv_CAFile(t *testing.T) {
+	setServerEnv(t)
+	if cfg, err := ConfigFromEnv(); err != nil || cfg.CAFile != "" {
+		t.Fatalf("unset: %+v %v", cfg.CAFile, err)
+	}
+	bad := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(bad, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REPEATER_CA_FILE", bad)
+	if _, err := ConfigFromEnv(); !errors.Is(err, tlsca.ErrInvalidCAFile) {
+		t.Fatalf("an unusable CA file must refuse the start, got %v", err)
+	}
+	t.Setenv("REPEATER_CA_FILE", filepath.Join(t.TempDir(), "absent.pem"))
+	if _, err := ConfigFromEnv(); !errors.Is(err, tlsca.ErrInvalidCAFile) {
+		t.Fatalf("a missing CA file must refuse the start, got %v", err)
 	}
 }

@@ -342,6 +342,7 @@ secagent-server server stats
 |---|---|---|
 | `REPEATER_ID` | — | Identifiant du relay (`dmz1`) — requis en mode repeater enfant |
 | `REPEATER_UPSTREAM_URL` | — | URL(s) WSS du parent (`wss://central:7772[,wss://central2:7772]`) — requise si enfant ouvre vers parent |
+| `REPEATER_CA_FILE` | — | Bundle PEM des CA de confiance pour **tous les liens sortants** (lien pull vers le parent, dial-out push vers les enfants, CLI `secagent-server` vers l'API admin). Il **remplace** les CA système (rien d'autre n'est de confiance) ; il n'existe aucune option de non-vérification. Lu au démarrage (redémarrer pour le changer) ; fichier illisible, vide, > 1 Mio, contenant autre chose que des blocs `CERTIFICATE` (une clé privée est refusée) ou sans aucun certificat actuellement valide ⇒ le démarrage est refusé. |
 | `REPEATER_UPSTREAM_TOKEN` | — | Token d'authentification du relay enfant — requis si enfant ouvre vers parent |
 | `RELAY_GROUP_VARS` | — | Variables Ansible JSON injectées pour ce relay : `{"region":"dmz"}` |
 

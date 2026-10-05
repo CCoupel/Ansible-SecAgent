@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"secagent-server/cmd/secagent-server/internal/tlsca"
 )
 
 // apiURLs returns the admin API base URLs: RELAY_API_URL is a comma-separated list (one per relay
@@ -75,6 +77,22 @@ func adminToken() string {
 // httpClient is the shared HTTP client with a reasonable timeout.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
+// apiClient returns the HTTP client of the admin API calls. With REPEATER_CA_FILE set, the relay API
+// certificate is verified against that CA bundle ONLY (the system roots are replaced, #147); a CA file
+// that cannot be used is an error, never a silent fallback to the system roots.
+func apiClient() (*http.Client, error) {
+	tlsCfg, err := tlsca.FromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if tlsCfg == nil {
+		return httpClient, nil
+	}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSClientConfig = tlsCfg
+	return &http.Client{Timeout: httpClient.Timeout, Transport: tr}, nil
+}
+
 // apiRequest performs an authenticated HTTP request to the admin API.
 // With several RELAY_API_URL addresses: a read (GET/HEAD) moves to the next address on any transport
 // failure; a write only does so when the request provably left nothing on the wire (failure before
@@ -130,7 +148,11 @@ func apiRequestOnce(base, method, path string, payload []byte) (data []byte, sta
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := httpClient.Do(req)
+	client, err := apiClient()
+	if err != nil {
+		return nil, 0, false, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, sent, fmt.Errorf("http: %w", err)
 	}

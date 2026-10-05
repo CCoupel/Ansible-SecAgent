@@ -1,9 +1,11 @@
 package server
 
 import (
+	"errors"
 	"net"
 	"os"
 	"secagent-server/cmd/secagent-server/internal/repeater"
+	"secagent-server/cmd/secagent-server/internal/tlsca"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -142,4 +144,20 @@ func TestBuild_RefusesAStateSealedUnderAnotherMasterKey(t *testing.T) {
 func openSeedStore(dir string) (*storage.Store, error) {
 	return storage.Open(state.Options{Dir: dir, MasterKey: os.Getenv("RSA_MASTER_KEY"), InsecureTestMode: os.Getenv("RSA_MASTER_KEY") == "",
 		BeforeWrite: func() error { return nil }})
+}
+
+// Build refuses an unusable CA file (fail closed): no node is started with the system roots instead.
+func TestBuild_RefusesAnUnusableCAFile(t *testing.T) {
+	bad := t.TempDir() + "/ca.pem"
+	if err := os.WriteFile(bad, []byte("garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
+	cfg := Config{TLSDisable: true, JWTSecret: "s", AdminToken: "a", StateDir: seedDB(t, func(*storage.Store) {}), InsecureTestState: true, WriteGuard: allowWrites, CAFile: bad}
+	if n, err := Build(cfg); err == nil {
+		n.Close()
+		t.Fatal("Build must refuse an unusable CA file")
+	} else if !errors.Is(err, tlsca.ErrInvalidCAFile) {
+		t.Fatalf("err = %v", err)
+	}
 }

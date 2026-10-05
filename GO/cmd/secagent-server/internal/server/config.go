@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"secagent-server/cmd/secagent-server/internal/tlsca"
+	"strings"
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/config"
@@ -92,6 +94,11 @@ type Config struct {
 	// tlsNow is the clock of the certificate validity checks (tests).
 	tlsNow func() time.Time
 
+	// CAFile is REPEATER_CA_FILE: the PEM bundle of the CAs trusted by every outbound link (pull link
+	// to the parent, push dial-out to children). It REPLACES the system roots; set but unusable =
+	// the start is refused. There is no skip-verify option (#147).
+	CAFile string
+
 	// Repeater is the validated child-relay configuration (REPEATER_UPSTREAM_*); nil = no pull parent.
 	Repeater *config.RepeaterConfig
 }
@@ -132,6 +139,10 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, terr
 	}
 	if err := validateTLSConfig(cfg); err != nil {
+		return Config{}, err
+	}
+	cfg.CAFile = strings.TrimSpace(os.Getenv(tlsca.EnvCAFile))
+	if _, err := tlsca.Load(cfg.CAFile); err != nil {
 		return Config{}, err
 	}
 	for name, addr := range map[string]string{EnvAPIAddr: cfg.APIAddr, EnvAdminAddr: cfg.AdminAddr, EnvWSAddr: cfg.WSAddr} {

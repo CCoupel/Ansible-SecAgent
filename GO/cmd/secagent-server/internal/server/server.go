@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"secagent-server/cmd/secagent-server/internal/tlsca"
 	"sync"
 	"syscall"
 	"time"
@@ -262,6 +263,12 @@ func Build(cfg Config) (node *Node, err error) {
 		WouldLoop: ws.RelayWouldLoop,
 		Serve:     ws.ServeDialedRelay,
 	}
+	// Custom CA for the outbound links (#147): replaces the system roots; unusable = no start.
+	outboundTLS, caErr := tlsca.Load(cfg.CAFile)
+	if caErr != nil {
+		return nil, caErr
+	}
+	upOpts.TLSConfig, dialerOpts.TLSConfig = outboundTLS, outboundTLS
 	if cfg.Tune != nil { // test seam: durations only, applied before anything is created
 		cfg.Tune(&upOpts, &dialerOpts)
 	}
