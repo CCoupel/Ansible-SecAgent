@@ -124,3 +124,20 @@ func TestLoadConfig_ScopeFromEnv(t *testing.T) {
 		t.Errorf("scopeRelay = %q", got)
 	}
 }
+
+func TestCmdList_PassesGroupVarsThrough(t *testing.T) {
+	srv := serveInventory(t, `{"_meta":{"hostvars":{}},"all":{"hosts":["a"],"children":["dmz1"]},
+		"dmz1":{"hosts":["a"],"vars":{"env":"staging","replicas":3,"flags":{"x":true}}},"zone2":{"hosts":[]}}`, nil)
+	out := captureList(t, config{serverURL: srv.URL})
+	var res AnsibleInventory
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	v := res.Groups["dmz1"].Vars
+	if string(v["env"]) != `"staging"` || string(v["replicas"]) != `3` || !strings.Contains(string(v["flags"]), `"x"`) {
+		t.Errorf("vars altered: %v", v)
+	}
+	if len(res.Groups["zone2"].Vars) != 0 || strings.Contains(out, `"zone2": {`+"\n"+`    "hosts": [],`+"\n"+`    "vars"`) {
+		t.Errorf("a group without vars must not grow a vars key:\n%s", out)
+	}
+}

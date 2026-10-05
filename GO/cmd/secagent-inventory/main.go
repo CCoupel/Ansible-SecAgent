@@ -134,6 +134,9 @@ func (a *AnsibleInventory) UnmarshalJSON(data []byte) error {
 type AnsibleGroup struct {
 	Hosts    []string `json:"hosts"`
 	Children []string `json:"children,omitempty"`
+	// Vars sont les group vars Ansible publiées par le relay (#139) ; absentes sans RELAY_GROUP_VARS.
+	// Les valeurs gardent leur type JSON.
+	Vars map[string]json.RawMessage `json:"vars,omitempty"`
 }
 
 // AnsibleMeta contient les hostvars de tous les hôtes
