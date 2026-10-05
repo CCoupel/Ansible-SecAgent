@@ -2,7 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -13,6 +19,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"secagent-server/cmd/secagent-server/internal/crypto"
+	"secagent-server/cmd/secagent-server/internal/storage"
 )
 
 // ── main() exercised as a real process (#155, qa): the test binary re-executes itself ──
@@ -54,26 +63,115 @@ type serverProc struct {
 	done chan error
 }
 
+// ── ports: no bind-close-reuse window with the kernel's ephemeral allocations ──
+//
+// A port obtained with ":0" and released is an EPHEMERAL port: the kernel hands it to the next
+// ":0" listener or outgoing connection of any test running in parallel, before the server process
+// binds it. Ports are therefore drawn OUTSIDE the kernel's ephemeral range, never handed out
+// twice by this process, and checked free right before use.
+var (
+	portMu   sync.Mutex
+	portUsed = map[int]bool{}
+)
+
+func ephemeralRangeStart() int {
+	b, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
+	if err != nil {
+		return 32768
+	}
+	var lo, hi int
+	if _, err := fmt.Sscanf(string(b), "%d %d", &lo, &hi); err != nil || lo < 2048 {
+		return 32768
+	}
+	return lo
+}
+
 func freePort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	portMu.Lock()
+	defer portMu.Unlock()
+	top := ephemeralRangeStart() - 1
+	bottom := 12000
+	if top-bottom < 1000 {
+		bottom = 1100
+	}
+	for i := 0; i < 500; i++ {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(top-bottom)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := bottom + int(n.Int64())
+		if portUsed[port] {
+			continue
+		}
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue
+		}
+		_ = ln.Close()
+		portUsed[port] = true
+		return port
+	}
+	t.Fatal("no free port outside the ephemeral range")
+	return 0
+}
+
+// ── pre-seeded database: no RSA-4096 generation (minutes under -race and load) ──
+
+var (
+	rsaOnce sync.Once
+	rsaPEM  string
+	rsaErr  error
+)
+
+// seedDatabase gives the process a database that already holds its RSA key (encrypted with
+// RSA_MASTER_KEY like in production): InitServerState loads it instead of generating a 4096-bit one.
+func seedDatabase(t *testing.T, dbPath, masterKey string) {
+	t.Helper()
+	rsaOnce.Do(func() {
+		k, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			rsaErr = err
+			return
+		}
+		der, err := x509.MarshalPKCS8PrivateKey(k)
+		if err != nil {
+			rsaErr = err
+			return
+		}
+		rsaPEM = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	})
+	if rsaErr != nil {
+		t.Fatal(rsaErr)
+	}
+	st, err := storage.NewStore(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = ln.Close() }()
-	return ln.Addr().(*net.TCPAddr).Port
+	enc, err := crypto.EncryptAESGCM(rsaPEM, masterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ConfigSet(context.Background(), "rsa_key_current", "enc:"+enc); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // startMain starts main() in a subprocess with a minimal environment plus the given overrides.
 func startMain(t *testing.T, env map[string]string) *serverProc {
 	t.Helper()
 	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "relay.db")
+	seedDatabase(t, dbPath, "proc-test-master-key")
 	base := map[string]string{
 		runMainEnv:           "1",
 		"JWT_SECRET_KEY":     "proc-test-secret",
 		"ADMIN_TOKEN":        "proc-test-admin",
 		"RSA_MASTER_KEY":     "proc-test-master-key",
-		"DATABASE_URL":       filepath.Join(dir, "relay.db"),
+		"DATABASE_URL":       dbPath,
 		"NATS_URL":           "nats://127.0.0.1:1",
 		"RELAY_HOOKS_CONFIG": filepath.Join(dir, "absent-hooks.json"),
 		"PATH":               os.Getenv("PATH"),
@@ -209,31 +307,55 @@ func TestMainProcess_PortAlreadyInUseExitsNonZero(t *testing.T) {
 
 // ── a configured start: environment honoured, health answers, SIGTERM stops cleanly ──
 
-func TestMainProcess_ServesOnConfiguredAddressesAndStopsCleanlyOnSIGTERM(t *testing.T) {
-	api := fmt.Sprintf("127.0.0.1:%d", freePort(t))
-	admin := fmt.Sprintf("127.0.0.1:%d", freePort(t))
-	wsAddr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
-	p := startMain(t, map[string]string{"API_ADDR": api, "ADMIN_ADDR": admin, "WS_ADDR": wsAddr})
-
-	deadline := time.Now().Add(30 * time.Second)
-	var healthy bool
-	for time.Now().Before(deadline) {
-		resp, err := http.Get("http://" + api + "/health")
-		if err == nil {
-			_ = resp.Body.Close()
-			healthy = resp.StatusCode == http.StatusOK
-			break
+// startServing starts the server on three fresh ports and waits (by condition, generous timeout)
+// until it answers /health. A port taken by another process between the check and the bind makes
+// the server exit with "address already in use": the start is then retried on new ports.
+func startServing(t *testing.T) (p *serverProc, api, admin, wsAddr string) {
+	t.Helper()
+	for attempt := 1; attempt <= 4; attempt++ {
+		api = fmt.Sprintf("127.0.0.1:%d", freePort(t))
+		admin = fmt.Sprintf("127.0.0.1:%d", freePort(t))
+		wsAddr = fmt.Sprintf("127.0.0.1:%d", freePort(t))
+		p = startMain(t, map[string]string{"API_ADDR": api, "ADMIN_ADDR": admin, "WS_ADDR": wsAddr})
+		deadline := time.Now().Add(90 * time.Second)
+		for time.Now().Before(deadline) {
+			resp, err := http.Get("http://" + api + "/health")
+			if err == nil {
+				_ = resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					return p, api, admin, wsAddr
+				}
+			}
+			select {
+			case <-p.done:
+				if strings.Contains(p.out.String(), "address already in use") && attempt < 4 {
+					goto retry
+				}
+				t.Fatalf("process exited early:\n%s", p.out.String())
+			default:
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
-		select {
-		case err := <-p.done:
-			t.Fatalf("process exited early (%v):\n%s", err, p.out.String())
-		default:
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if !healthy {
 		t.Fatalf("/health did not answer 200 on %s:\n%s", api, p.out.String())
+	retry:
 	}
+	t.Fatal("no start succeeded")
+	return
+}
+
+func waitLog(t *testing.T, p *serverProc, sub string, d time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for !strings.Contains(p.out.String(), sub) {
+		if time.Now().After(deadline) {
+			t.Fatalf("log %q never appeared:\n%s", sub, p.out.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestMainProcess_ServesOnConfiguredAddressesAndStopsCleanlyOnSIGTERM(t *testing.T) {
+	p, api, admin, wsAddr := startServing(t)
 	// the three configured addresses are the ones in use
 	for name, addr := range map[string]string{"api": api, "admin": admin, "ws": wsAddr} {
 		if !portOpen(addr) {
@@ -244,13 +366,7 @@ func TestMainProcess_ServesOnConfiguredAddressesAndStopsCleanlyOnSIGTERM(t *test
 	if err := p.cmd.Process.Signal(syscall.SIGHUP); err != nil {
 		t.Fatal(err)
 	}
-	reloadDeadline := time.Now().Add(5 * time.Second)
-	for !strings.Contains(p.out.String(), "SIGHUP received") && time.Now().Before(reloadDeadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !strings.Contains(p.out.String(), "SIGHUP received") {
-		t.Errorf("SIGHUP not handled:\n%s", p.out.String())
-	}
+	waitLog(t, p, "SIGHUP received", 30*time.Second)
 	if !portOpen(api) {
 		t.Error("the server must keep running after SIGHUP")
 	}
@@ -258,7 +374,7 @@ func TestMainProcess_ServesOnConfiguredAddressesAndStopsCleanlyOnSIGTERM(t *test
 	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	if code := p.wait(t, 40*time.Second); code != 0 {
+	if code := p.wait(t, 60*time.Second); code != 0 {
 		t.Errorf("exit code = %d after SIGTERM, want 0; output:\n%s", code, p.out.String())
 	}
 	out := p.out.String()
@@ -273,21 +389,13 @@ func TestMainProcess_ServesOnConfiguredAddressesAndStopsCleanlyOnSIGTERM(t *test
 }
 
 func TestMainProcess_SIGINTAlsoStopsCleanly(t *testing.T) {
-	api := fmt.Sprintf("127.0.0.1:%d", freePort(t))
-	p := startMain(t, map[string]string{"API_ADDR": api,
-		"ADMIN_ADDR": fmt.Sprintf("127.0.0.1:%d", freePort(t)), "WS_ADDR": fmt.Sprintf("127.0.0.1:%d", freePort(t))})
-	deadline := time.Now().Add(30 * time.Second)
-	for !portOpen(api) && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-	}
-	if !portOpen(api) {
-		t.Fatalf("server not up:\n%s", p.out.String())
-	}
-	time.Sleep(300 * time.Millisecond) // let Run reach its wait loop
+	p, _, _, _ := startServing(t)
+	// signals are handled once Run is waiting: the readiness line is logged right before
+	waitLog(t, p, "Ansible-SecAgent GO Server ready", 30*time.Second)
 	if err := p.cmd.Process.Signal(syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
-	if code := p.wait(t, 40*time.Second); code != 0 {
+	if code := p.wait(t, 60*time.Second); code != 0 {
 		t.Errorf("exit code = %d after SIGINT, want 0; output:\n%s", code, p.out.String())
 	}
 }
