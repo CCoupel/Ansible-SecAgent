@@ -108,4 +108,13 @@ jobs:
           JWT_SECRET_KEY: test
           ADMIN_TOKEN: test
           ANSIBLE_E2E: '1'
-        run: go test -race -run 'Ansible' -v ./cmd/secagent-server/internal/integration/... -timeout 300s
+        # Convention : test-writer ecrit TestAnsibleInventory_* dans internal/integration, lit ANSIBLE_E2E=1.
+        # Garde anti-faux-vert : « no tests to run » et les skips sortent en succes ; on exige donc
+        # qu'au moins un test « Ansible » ait reellement PASSE.
+        run: |
+          set -o pipefail
+          go test -race -run 'Ansible' -v ./cmd/secagent-server/internal/integration/... -timeout 300s | tee ansible-test.log
+          if ! grep -qE '^--- PASS: .*Ansible' ansible-test.log; then
+            echo "::error::Aucun test Ansible execute et passe (absent ou skippe) : le job ne valide rien."
+            exit 1
+          fi
