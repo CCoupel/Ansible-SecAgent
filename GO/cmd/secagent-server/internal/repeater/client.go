@@ -82,6 +82,7 @@ type Event struct {
 	RelayChain []string       `json:"relay_chain"`
 	GroupVars  map[string]any `json:"group_vars,omitempty"`
 	Timestamp  string         `json:"timestamp,omitempty"`
+	EnrolledAt string         `json:"enrolled_at,omitempty"` // host.new only
 	// host.conflict only
 	OldRelay string `json:"old_relay,omitempty"`
 	NewRelay string `json:"new_relay,omitempty"`

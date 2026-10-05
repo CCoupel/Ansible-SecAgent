@@ -226,7 +226,23 @@ func Build(cfg Config) (node *Node, err error) {
 			return
 		}
 		queueUpstream(upEvents, repeater.Event{Event: m.Event, Hostname: m.Hostname, RelayID: m.RelayID, Status: m.Status,
-			RelayChain: m.RelayChain, GroupVars: m.GroupVars, Timestamp: m.Timestamp, OldRelay: m.OldRelay, NewRelay: m.NewRelay})
+			RelayChain: m.RelayChain, GroupVars: m.GroupVars, Timestamp: m.Timestamp, OldRelay: m.OldRelay, NewRelay: m.NewRelay,
+			EnrolledAt: m.EnrolledAt})
+	})
+
+	// Event propagation (#126). Local events of this node (agent connect / disconnect, enrollment)
+	// go up to the parent; the uplink appends this node's id to relay_chain. A link that is not
+	// established drops them: the snapshot sent at the next connection re-synchronizes the parent.
+	dispatcher.SetUpstream(func(event, hostname, status, enrolledAt string) {
+		if !n.uplink.Active() {
+			return
+		}
+		queueUpstream(upEvents, repeater.Event{Event: event, Hostname: hostname, Status: status,
+			EnrolledAt: enrolledAt, Timestamp: time.Now().UTC().Format(time.RFC3339)})
+	})
+	// Events received from a child run THIS node's hooks with the received relay_chain.
+	ws.SetRelayEventLocalFunc(func(event, hostname, status, enrolledAt string, relayChain []string) {
+		dispatcher.DispatchChain(event, hostname, status, enrolledAt, relayChain)
 	})
 
 	// Hierarchical routing (#127): chains of snapshot routes, event-driven routes, host.conflict.
