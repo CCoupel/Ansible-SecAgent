@@ -75,6 +75,10 @@ func (s *Store) getRelayRouteLocked(hostname string) (*RelayRoute, error) {
 		return nil, fmt.Errorf("GetRelayRoute %q: %w", hostname, err)
 	}
 	r.RelayChain = parseChain(chain)
+	if !validRoute(r.Hostname, r.RelayID, r.RelayChain) { // legacy / hostile row: never served
+		warnIgnoredOnce("relay route", hostname)
+		return nil, nil
+	}
 	return &r, nil
 }
 
@@ -152,6 +156,10 @@ func (s *Store) ListRelayRoutes() ([]RelayRoute, error) {
 			return nil, fmt.Errorf("ListRelayRoutes scan: %w", err)
 		}
 		r.RelayChain = parseChain(chain)
+		if !validRoute(r.Hostname, r.RelayID, r.RelayChain) {
+			warnIgnoredOnce("relay route", r.Hostname)
+			continue
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()

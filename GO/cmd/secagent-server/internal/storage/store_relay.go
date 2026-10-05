@@ -224,6 +224,10 @@ func (s *Store) GetRelayForHostname(hostname string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("GetRelayForHostname %q: %w", hostname, err)
 	}
+	if !hostnameShape.MatchString(hostname) || !ValidRelayID(relayID) {
+		warnIgnoredOnce("relay route", hostname)
+		return "", nil
+	}
 	return relayID, nil
 }
 
@@ -287,7 +291,7 @@ func (s *Store) DeleteRelayRoutingByRelay(relayID string) error {
 		return fmt.Errorf("DeleteRelayRoutingByRelay %q: %w", relayID, err)
 	}
 	n, _ := result.RowsAffected()
-	log.Printf("DeleteRelayRoutingByRelay: relay_id=%s deleted=%d", relayID, n)
+	log.Printf("DeleteRelayRoutingByRelay: relay_id=%q deleted=%d", relayID, n)
 	return nil
 }
 
@@ -309,6 +313,10 @@ func (s *Store) ListRelayRouting(relayID string) ([]string, error) {
 		var h string
 		if err := rows.Scan(&h); err != nil {
 			return nil, fmt.Errorf("ListRelayRouting scan: %w", err)
+		}
+		if !hostnameShape.MatchString(h) {
+			warnIgnoredOnce("relay route", h)
+			continue
 		}
 		hostnames = append(hostnames, h)
 	}

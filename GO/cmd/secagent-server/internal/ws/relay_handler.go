@@ -947,9 +947,14 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		// Relay announces its connected agents → update relay_routing
 		hostnames := make([]string, 0, len(msg.Agents))
 		for _, a := range msg.Agents {
-			if a.Hostname != "" {
-				hostnames = append(hostnames, a.Hostname)
+			if a.Hostname == "" {
+				continue
 			}
+			if !hostnameShape.MatchString(a.Hostname) {
+				log.Printf("[SECURITY WARNING] agent_list: malformed hostname ignored: relay_id=%q hostname=%q", conn.RelayID, a.Hostname)
+				continue
+			}
+			hostnames = append(hostnames, a.Hostname)
 		}
 		if n := len(msg.Agents); n > maxAgentListHosts() {
 			log.Printf("[SECURITY WARNING] agent_list refused: relay_id=%s hosts=%d limit=%d", conn.RelayID, n, maxAgentListHosts())
@@ -1171,7 +1176,7 @@ func CloseRelay(relayID string, code int, reason string) bool {
 	if rc == nil || rc.wsConn == nil {
 		return false
 	}
-	log.Printf("Relay force-closed: relay_id=%s code=%d reason=%s", relayID, code, reason)
+	log.Printf("Relay force-closed: relay_id=%q code=%d reason=%s", relayID, code, reason)
 	closeWithRejection(rc.wsConn, &relayRejection{code: code, reason: reason})
 	_ = rc.wsConn.Close()
 	return true

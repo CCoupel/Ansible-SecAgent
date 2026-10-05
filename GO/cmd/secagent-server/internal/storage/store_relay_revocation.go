@@ -91,7 +91,7 @@ func (s *Store) RevokeRelayNode(ctx context.Context, relayID, reason string) (in
 	if err = tx.Commit(); err != nil {
 		return RelayTokenInfo{}, false, fmt.Errorf("RevokeRelayNode commit: %w", err)
 	}
-	log.Printf("Relay revoked: relay_id=%s jti_known=%v", relayID, info.JTI != "")
+	log.Printf("Relay revoked: relay_id=%q jti_known=%v", relayID, info.JTI != "")
 	return info, true, nil
 }
 

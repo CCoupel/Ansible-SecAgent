@@ -512,3 +512,19 @@ func TestRelayAuth_MalformedSubRefusedWithoutEcho(t *testing.T) {
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// agent_list hostnames are shaped like every other identifier: a malformed one is ignored (never
+// written to relay_routing) and reported with the value quoted.
+func TestAgentList_MalformedHostnameIgnored(t *testing.T) {
+	fr := newFakeRouting(t)
+	setTreeHooks(t, "central", nil, nil, nil)
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	c := dialRelay(t, srv, makeRelayJWT("relay1", "relay"))
+	handshake(t, c, "relay1")
+	sendAgentList(t, c, "good-host", "bad\nhost", "bad host", "x;rm")
+	readMsg(t, c)
+	if got := fr.get("relay1"); len(got) != 1 || got[0] != "good-host" {
+		t.Errorf("routes = %v, want only good-host", got)
+	}
+}

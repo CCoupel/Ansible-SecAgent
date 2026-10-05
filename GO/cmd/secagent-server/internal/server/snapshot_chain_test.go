@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"secagent-server/cmd/secagent-server/internal/logsafe"
 	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/storage"
 )
@@ -268,5 +269,13 @@ func TestResnapshot_MiddleNodePublishesTheRealChains(t *testing.T) {
 		if got := chainOfEntry(c.key, c.field, c.id); got != c.want {
 			t.Errorf("%s %s chain = %s, want %s", c.key, c.id, got, c.want)
 		}
+	}
+}
+
+// Build installs the log-forging guard on the standard logger.
+func TestBuild_InstallsTheLogSanitizer(t *testing.T) {
+	startNode(t, nil)
+	if !logsafe.Installed() {
+		t.Error("the log sanitizer must be installed by Build")
 	}
 }

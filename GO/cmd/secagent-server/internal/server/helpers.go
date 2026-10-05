@@ -106,7 +106,7 @@ func buildSnapshot(selfID string, st *storage.Store) repeater.Snapshot {
 		snap.Relays = append(snap.Relays, entry)
 		hosts, herr := st.ListRelayRouting(n.RelayID)
 		if herr != nil {
-			log.Printf("[REPEATER] snapshot: routing for %s: %v", n.RelayID, herr)
+			log.Printf("[REPEATER] snapshot: routing for %q: %v", n.RelayID, herr)
 			continue
 		}
 		for _, h := range hosts {
@@ -155,14 +155,14 @@ func startPushDialers(st *storage.Store, mgr pushStarter) {
 		}
 		token, terr := handlers.OpenPushToken(n.TokenHash)
 		if terr != nil {
-			log.Printf("[WARN] push relay %s skipped: %v", n.RelayID, terr)
+			log.Printf("[WARN] push relay %q skipped: %v", n.RelayID, terr)
 			continue
 		}
 		if serr := mgr.Start(repeater.DialTarget{RelayID: n.RelayID, URL: n.URL, Token: token}); serr != nil {
-			log.Printf("[WARN] push relay %s skipped: %v", n.RelayID, serr)
+			log.Printf("[WARN] push relay %q skipped: %v", n.RelayID, serr)
 			continue
 		}
-		log.Printf("[RELAY] dial-out started: relay_id=%s mode=push", n.RelayID)
+		log.Printf("[RELAY] dial-out started: relay_id=%q mode=push", n.RelayID)
 	}
 }
 

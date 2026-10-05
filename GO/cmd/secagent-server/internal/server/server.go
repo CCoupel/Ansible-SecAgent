@@ -16,6 +16,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/forward"
 	"secagent-server/cmd/secagent-server/internal/handlers"
 	"secagent-server/cmd/secagent-server/internal/hooks"
+	"secagent-server/cmd/secagent-server/internal/logsafe"
 	"secagent-server/cmd/secagent-server/internal/proxy"
 	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/storage"
@@ -61,6 +62,7 @@ type Node struct {
 // blacklist checks BEFORE any listener exists) and returns the Node. It does not listen.
 // On error everything already opened is released.
 func Build(cfg Config) (node *Node, err error) {
+	logsafe.Install() // one log call = one line, whatever a peer or a legacy row put in a value
 	n := &Node{cfg: cfg, ready: make(chan struct{})}
 	defer func() {
 		if err != nil {

@@ -4,7 +4,37 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sync"
 )
+
+// hostnameShape mirrors the hostnames accepted from relays (events, snapshots).
+var hostnameShape = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$`)
+
+// ignoredWarned remembers which malformed identifiers were already reported: a legacy row is read
+// on every inventory / snapshot, the operator needs ONE warning per id and process, not a flood.
+var ignoredWarned sync.Map
+
+func warnIgnoredOnce(kind, id string) {
+	if _, seen := ignoredWarned.LoadOrStore(kind+"\x00"+id, struct{}{}); seen {
+		return
+	}
+	log.Printf("[SECURITY WARNING] %s with a malformed identifier ignored (never routed, delete it): %q", kind, id)
+}
+
+// validRoute reports whether a relay_routing row is made of well-formed identifiers only: the
+// hostname, the declaring relay and every element of its chain end up in Ansible group names,
+// hostvars, logs and task routing.
+func validRoute(hostname, relayID string, chain []string) bool {
+	if !hostnameShape.MatchString(hostname) || !ValidRelayID(relayID) {
+		return false
+	}
+	for _, c := range chain {
+		if !ValidRelayID(c) {
+			return false
+		}
+	}
+	return true
+}
 
 // relayIDShape is the only accepted form of a relay_id (the same as REPEATER_ID, token subjects,
 // snapshots and events): it ends up in logs, environment variables, hook files and Ansible group
@@ -25,7 +55,7 @@ func (s *Store) ListValidRelayNodes() ([]RelayNode, error) {
 	out := nodes[:0:0]
 	for _, n := range nodes {
 		if !ValidRelayID(n.RelayID) {
-			log.Printf("[SECURITY WARNING] relay node with a malformed relay_id ignored: relay_id=%q (delete it: it is never routed)", n.RelayID)
+			warnIgnoredOnce("relay node", n.RelayID)
 			continue
 		}
 		out = append(out, n)

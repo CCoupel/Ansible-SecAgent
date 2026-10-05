@@ -183,7 +183,7 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		}
 		// wss:// only, no userinfo, valid id (the error never echoes url userinfo or the token).
 		if err := repeater.ValidateDialTarget(repeater.DialTarget{RelayID: req.RelayID, URL: req.URL, Token: req.Token}); err != nil {
-			log.Printf("AdminCreateRelay push target rejected: relay_id=%s: %v", req.RelayID, err)
+			log.Printf("AdminCreateRelay push target rejected: relay_id=%q: %v", req.RelayID, err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_push_target"})
 			return
 		}
@@ -273,7 +273,7 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("Relay registered: relay_id=%s mode=%s id=%s", req.RelayID, req.Mode, id)
+	log.Printf("Relay registered: relay_id=%q mode=%s id=%s", req.RelayID, req.Mode, id)
 
 	// Push mode: start the dial-out immediately, without restart.
 	if req.Mode == "push" {
@@ -282,7 +282,7 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		pushHooksMu.RUnlock()
 		if start != nil {
 			if err := start(req.RelayID, req.URL, req.Token); err != nil {
-				log.Printf("AdminCreateRelay: dialer start failed: relay_id=%s: %v", req.RelayID, err)
+				log.Printf("AdminCreateRelay: dialer start failed: relay_id=%q: %v", req.RelayID, err)
 			}
 		}
 	}
@@ -408,7 +408,7 @@ func AdminDeleteRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if info.JTI == "" && !info.Revoked {
-		log.Printf("[SECURITY WARNING] relay delete refused: relay_id=%s has no tracked token and is not revoked", node.RelayID)
+		log.Printf("[SECURITY WARNING] relay delete refused: relay_id=%q has no tracked token and is not revoked", node.RelayID)
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error":   "relay_not_revoked",
 			"message": "revoke the relay first (POST /api/admin/relays/{id}/revoke): its token cannot be blacklisted on delete",
@@ -446,7 +446,7 @@ func AdminDeleteRelay(w http.ResponseWriter, r *http.Request) {
 	// A deleted relay must not keep a live link: cut it (permanent code, #148).
 	disconnected := ws.CloseRelay(node.RelayID, ws.WSRelayCloseRevoked, "relay deleted")
 
-	log.Printf("Relay deleted: id=%s relay_id=%s link_closed=%v", id, node.RelayID, disconnected)
+	log.Printf("Relay deleted: id=%s relay_id=%q link_closed=%v", id, node.RelayID, disconnected)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -536,7 +536,7 @@ func revokeRelayNode(r *http.Request, node *storage.RelayNode) (RelayRevokeRespo
 		resp.LegacyToken = info.JTI == ""
 	}
 	resp.Disconnected = ws.CloseRelay(node.RelayID, ws.WSRelayCloseRevoked, "token revoked")
-	log.Printf("Relay revoked: relay_id=%s mode=%s blacklisted=%v legacy=%v link_closed=%v",
+	log.Printf("Relay revoked: relay_id=%q mode=%s blacklisted=%v legacy=%v link_closed=%v",
 		node.RelayID, node.Mode, resp.Blacklisted, resp.LegacyToken, resp.Disconnected)
 	return resp, nil
 }
