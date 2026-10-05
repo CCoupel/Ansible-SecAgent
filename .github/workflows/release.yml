@@ -293,6 +293,7 @@ jobs:
           mkdir -p dist "stage/secagent-compose-${VERSION}"
           cp -r DEPLOYMENT/prod/. "stage/secagent-compose-${VERSION}/"
           rm -f "stage/secagent-compose-${VERSION}"/{prod.env,.env}
+          cp scripts/ci/check_compose.py "stage/secagent-compose-${VERSION}/tools/check_compose.py"
           SRV="$(cat digests/secagent-server)"
           for f in "stage/secagent-compose-${VERSION}"/docker-compose*.yml; do
             sed -i -E "s#^([[:space:]]*image:[[:space:]]*)ghcr\.io/ccoupel/secagent-server:.*#\1ghcr.io/ccoupel/secagent-server:${TAG}@${SRV}#" "$f"

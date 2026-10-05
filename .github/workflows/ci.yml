@@ -153,7 +153,9 @@ jobs:
           cache-from: type=gha,scope=secagent-minion
 
       - name: Autotest du controle de rendu
-        run: python3 scripts/ci/check_compose_selftest.py
+        run: |
+          python3 scripts/ci/check_compose_selftest.py
+          python3 scripts/ci/test_shared_storage_hosts.py
 
       # Variables d'exemple NON secretes : uniquement pour que `docker compose config` puisse interpoler.
       - name: Rendu et controles de chaque Compose prod et qualif

@@ -68,7 +68,15 @@ les redémarrages OOM (`docker inspect -f '{{.State.OOMKilled}}'`). La limite es
 2. **Initialiser l'état une seule fois**, depuis un seul hôte, avant de démarrer les autres :
    `docker compose run --rm --no-deps secagent-server state init` (nécessite `RSA_MASTER_KEY`).
 3. `docker compose -p secagent-prod-<relay_id> up -d` sur chaque hôte.
-4. Contrôle : exactement **un** hôte écoute sur 7770/7772 ; `docker ps` : tous `healthy`.
+4. **Vérification de déploiement (obligatoire, avant et après `up`)**, sur l'hôte, dans le répertoire du Compose :
+
+       docker compose config --format json | python3 tools/check_compose.py --require-memory-limit -
+       # sans Python : le seul port 7771 publié doit porter une adresse d'hôte non joker
+       docker compose config | grep -B2 -A3 'target: 7771'        # attendu : host_ip: 127.0.0.1 (ou réseau d'admin)
+       docker compose ps --format '{{.Name}} {{.Ports}}' | grep 7771   # jamais 0.0.0.0:7771 ni :::7771
+
+   (`check_compose.py` est livré dans l'archive à côté de ce README.) Toute erreur = ne pas déployer.
+5. Contrôle : exactement **un** hôte écoute sur 7770/7772 ; `docker ps` : tous `healthy`.
 
 ## Bascule manuelle
 
