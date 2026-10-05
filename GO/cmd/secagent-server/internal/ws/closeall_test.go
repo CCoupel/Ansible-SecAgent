@@ -76,15 +76,18 @@ func TestCloseAllLinks_AgentsRelaysAndParentLinksGetTheCodeAndNever4001(t *testi
 	}
 }
 
-func TestCloseAllLinks_RefusesTheCodesThatForbidReconnecting(t *testing.T) {
+func TestCloseAllLinks_ForbiddenCodesAreReplacedBy1001(t *testing.T) {
 	for _, code := range []int{WSCloseRevoked, WSRelayCloseRevoked} {
-		func() {
-			defer func() {
-				if recover() == nil {
-					t.Errorf("close code %d must be refused: it forbids reconnecting to the next master", code)
-				}
-			}()
-			CloseAllLinks(code, "x")
-		}()
+		srvConn, cl := serverConn(t)
+		connectionsMu.Lock()
+		wsConnections["agent-forbidden"] = &AgentConnection{Hostname: "agent-forbidden", Conn: srvConn}
+		connectionsMu.Unlock()
+		CloseAllLinks(code, "x")
+		connectionsMu.Lock()
+		delete(wsConnections, "agent-forbidden")
+		connectionsMu.Unlock()
+		if got := closeCodeOf(t, cl); got != 1001 {
+			t.Errorf("code %d was sent as %d, want it replaced by 1001 (it would forbid reconnecting to the next master)", code, got)
+		}
 	}
 }

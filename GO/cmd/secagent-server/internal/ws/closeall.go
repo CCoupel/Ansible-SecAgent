@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"log"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -12,13 +13,15 @@ import (
 //
 // The code must be one the peers reconnect on: 1001 (Going Away) or 4000. Never WSCloseRevoked
 // (4001, "agent must not reconnect") nor the permanent relay refusal 4010: a minion or a relay that
-// received them would stop trying to join the new master.
+// received them would stop trying to join the new master. Such a code is replaced by 1001.
 //
 // Frames are written with WriteControl (safe next to a concurrent writer, bounded by a short
 // deadline: a stuck peer must not delay the exit); the connection is then closed whatever happened.
 func CloseAllLinks(code int, reason string) int {
 	if code == WSCloseRevoked || code == WSRelayCloseRevoked {
-		panic("ws.CloseAllLinks: a permanent close code would forbid reconnection to the next master")
+		// a permanent code would forbid reconnecting to the next master: never send it from here
+		log.Printf("[WARN] CloseAllLinks: close code %d forbids reconnection, using 1001 instead", code)
+		code = websocket.CloseGoingAway
 	}
 	var conns []*websocket.Conn
 

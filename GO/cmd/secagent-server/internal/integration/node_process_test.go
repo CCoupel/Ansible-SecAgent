@@ -53,8 +53,8 @@ type nodeReady struct {
 // selects the production values.
 func lockProfileFast() lock.Params {
 	return lock.Params{
-		Beat: 400 * time.Millisecond, Check: 200 * time.Millisecond, SelfRetire: 3 * time.Second, MasterStale: 4 * time.Second,
-		CandidateStale: 1500 * time.Millisecond, PauseMin: 350 * time.Millisecond, PauseMax: 600 * time.Millisecond,
+		Beat: 400 * time.Millisecond, Check: 200 * time.Millisecond, SelfRetire: 5 * time.Second, MasterStale: 7 * time.Second,
+		CandidateStale: 2500 * time.Millisecond, PauseMin: 350 * time.Millisecond, PauseMax: 600 * time.Millisecond,
 		MaxWriteLatency: 250 * time.Millisecond,
 	}
 }
@@ -104,10 +104,19 @@ func TestNodeProcess(t *testing.T) {
 		cfg.LockParams = lockProfileFast()
 	}
 
-	// NODE_LOCK_DELAY_REMOVE_MS: this instance sleeps between judging a lock stale and deleting it
+	// NODE_LOCK_REMOVE_GATE: this instance waits between judging a lock stale and deleting it
 	// (case 5 of #162: a process frozen at that exact point erases a lock someone else just took).
-	if v, _ := strconv.Atoi(os.Getenv("NODE_LOCK_DELAY_REMOVE_MS")); v > 0 {
-		cfg.LockHooks.BeforeRemove = func() { time.Sleep(time.Duration(v) * time.Millisecond) }
+	// NODE_LOCK_REMOVE_GATE=<file>: the deletion waits until that file exists (the test releases it
+	// once the other instance is master and serving: deterministic whatever the machine load).
+	if gate := os.Getenv("NODE_LOCK_REMOVE_GATE"); gate != "" {
+		cfg.LockHooks.BeforeRemove = func() {
+			for i := 0; i < 6000; i++ {
+				if _, err := os.Stat(gate); err == nil {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
 	}
 
 	var ctlLn net.Listener

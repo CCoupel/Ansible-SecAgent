@@ -264,6 +264,17 @@ func startNode(t *testing.T, spec nodeSpec) *node {
 	n := prepareNode(t, spec)
 	n.launch(nil)
 	t.Cleanup(n.stop)
+	t.Cleanup(func() { // registered last = runs first: a failed test keeps the node's life-cycle lines
+		if t.Failed() {
+			var keep []string
+			for _, l := range strings.Split(n.logs.String(), "\n") {
+				if strings.Contains(l, "lock") || strings.Contains(l, "SHUTDOWN") || strings.Contains(l, "SECURITY") || strings.Contains(l, "INIT") || strings.Contains(l, "ERROR") {
+					keep = append(keep, l)
+				}
+			}
+			t.Logf("life-cycle lines of node %s:\n%s", n.id, strings.Join(keep, "\n"))
+		}
+	})
 	return n
 }
 

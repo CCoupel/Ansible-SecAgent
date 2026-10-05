@@ -62,7 +62,7 @@ Fichier ≈ 10 Mio ; chargement ≈ 150 ms ; écriture complète ≈ 150 ms ; 10
 
 Tokens de relay : `token_hash` (pull, SHA-256 du JWT) et `token_secret` (push : jeton scellé `enc:` lié au relay par AAD, `relay_nodes/<id>/token_secret`) sont deux champs distincts. Un relay révoqué sans JTI (déclaré automatiquement à sa connexion) reçoit un JTI synthétique `no-token:<relay_id>`, blacklisté dans la même mutation (le drapeau `revoked` seul refuse ses connexions).
 
-**Sans garde d'écriture** (`Config.WriteGuard` nul : l'instance n'est pas encore le maître confirmé, #163), le serveur démarre en **lecture seule**, sauf si l'opérateur déclare `RELAY_SINGLE_INSTANCE=true` (« une seule instance sur ce `STATE_DIR`, pas de verrou » : la garde laisse alors passer toutes les écritures ; jamais avec deux instances sur le même répertoire) : toute écriture échoue (`storage.ErrReadOnly`), aucun fichier n'est créé. Le serveur ne crée jamais l'état : `relay.state` absent = `FATAL: relay.state not found in STATE_DIR=<dir> — run 'secagent-server state init' to initialize`. `DATABASE_URL` définie = erreur de démarrage.
+**Sans garde d'écriture** (`Config.WriteGuard` nul) le moteur est en **lecture seule** : toute écriture échoue (`storage.ErrReadOnly`), aucun fichier n'est créé. En production la garde est toujours `CheckOwnership` du verrou (#163) : le processus n'écrit qu'une fois **maître confirmé**, et chaque écriture revérifie le verrou (avant la création du fichier temporaire et juste avant le rename). `RELAY_SINGLE_INSTANCE` n'existe plus (ignorée avec un avertissement) : le verrou est toujours actif, même pour une instance unique, et protège contre un double démarrage. Le serveur ne crée jamais l'état : `relay.state` absent = `FATAL: relay.state not found in STATE_DIR=<dir> — run 'secagent-server state init' to initialize`. `DATABASE_URL` définie = erreur de démarrage.
 
 ## Reprise : `state verify` et `state restore --from` (#187)
 
@@ -90,3 +90,14 @@ Applique toutes les vérifications du serveur (schéma, HMAC avec la clé dériv
 
 Redémarrer ensuite les instances. La garde `write_seq` en mémoire des secondaires (#163) peut refuser un état restauré plus ancien que ce qu'elles ont observé : c'est voulu, d'où **l'arrêt de toutes les instances avant la restauration**. Il n'y a pas de `state init --force` : la réinitialisation complète déplace `STATE_DIR` puis relance `state init` (nouvelle identité, ré-enrôlement de tous les agents).
 
+
+
+## Anti-rejeu : garde de `write_seq` (#163)
+
+Le HMAC interdit de **forger** un état, pas de **rejouer une copie authentique plus ancienne** de `relay.state` (ou de supprimer `relay.state` pour forcer la reprise sur un `.prev` plus ancien). Garde :
+
+- le maître écrit le `write_seq` courant de l'état dans `relay.lock` (champ `write_seq`) : après chaque écriture d'état, publié au plus tard au contrôle d'identité suivant (~5 s), jamais décroissant, et à chaque battement ;
+- chaque secondaire mémorise le plus grand `write_seq` lu dans le verrou, **y compris dans un verrou périmé juste avant de le supprimer**, et le reporte dans le verrou qu'il crée en devenant maître ;
+- à la promotion, le chargement refuse un `relay.state` (ou un `.prev` de repli) dont le `write_seq` est inférieur : `[SECURITY WARNING]`, démarrage refusé (code de sortie 1, aucun port ouvert, verrou supprimé, état local `failed`).
+
+**Limite résiduelle** : la garde vit dans la mémoire des instances. Après un **arrêt à froid de toutes les instances**, elle est perdue et le rejeu d'une copie authentique reste possible ; la protection repose alors sur le contrôle d'accès à `STATE_DIR` et sur les sauvegardes (`state verify` / `state restore --from --min-write-seq`, #187).

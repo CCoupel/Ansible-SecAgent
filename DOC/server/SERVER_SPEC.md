@@ -927,3 +927,22 @@ lecture (GET) passe à l'adresse suivante sur tout échec de transport ; une éc
 une autre adresse que si l'échec a eu lieu AVANT l'écriture de la requête (connexion refusée, DNS, TLS) :
 une requête partie peut avoir été appliquée et n'est jamais rejouée ailleurs. `relays add --url` prend
 une liste séparée par des virgules (corps `urls`).
+
+
+## 10. Actif/passif : cycle de vie d'une instance (#163)
+
+Plusieurs instances d'un même relay partagent `STATE_DIR` ; **une seule** est maître (elle ouvre les ports et écrit l'état), les autres attendent. Une racine n'est jamais active en plusieurs exemplaires : on passe à l'échelle par l'arbre de relays.
+
+**Démarrage** (`internal/server.RunInstance`) : 1. configuration et **certificats TLS validés avant tout** (un certificat invalide ne devient même pas candidat : aucun `relay.lock` créé) ; 2. boucle de verrou : tant qu'il n'est pas maître, le processus n'ouvre **aucun port** (7770, 7771, 7772), ne charge pas l'état, ne lance ni lien montant, ni dialer push, ni hooks, et n'écrit **rien** dans `STATE_DIR` hors `relay.lock` ; 3. promu : battement et contrôles du verrou démarrent, l'état est chargé (rejeu refusé, cf. STATE_SPEC) puis `Build` ; 4. les ports ne s'ouvrent qu'après promotion **et** chargement de l'état ; `BeforeWrite` est branché sur `CheckOwnership`. Un échec de `Build` (état invalide, rejeu) supprime le propre `relay.lock` de l'instance et sort avec le code 1.
+
+**Perte du verrou** (identité changée, verrou supprimé, auto-retrait) : arrêt du processus, pas de rétrogradation en mémoire. Dans l'ordre : hooks et liens annulés (**sans vidage de la file** : aucune action n'est exécutée au nom d'un ancien maître), listeners fermés, **toutes les WebSockets fermées en `1001 Going Away`** (jamais `4001`, qui interdit la reconnexion : les minions et les relays rebouclent sur leur liste d'adresses, #165/#166), aucune écriture d'état, code de sortie **75**. La policy de redémarrage du Compose relance l'instance en secondaire. Les appels REST du plugin en cours pendant la bascule **échouent** (le plugin ne rejoue pas, #168).
+
+**Arrêt propre** (SIGTERM / SIGINT) : WebSockets fermées en 1001, ports fermés, file des hooks vidée (bornée), état fermé, puis **suppression de `relay.lock`** : un secondaire reprend aussitôt (< 5 s).
+
+**Observabilité** : `/health` (maître seul) ajoute `role` et `instance_id`. Fichier de statut **local** `RELAY_STATUS_FILE` (défaut `/run/secagent/status.json`, `0600`, refusé s'il est dans `STATE_DIR`) : rôle (`secondary` / `candidate` / `master` / `lost`), `instance_id`, état (`waiting`, `loading`, `ready`, `failed`, `lost`), compteur de battement, horodatages du dernier battement réussi (maître) ou du dernier contrôle (secondaire) tirés du verrou lui-même, périodes du verrou ; aucun secret. `secagent-server status --local` le lit sans ouvrir de port ni appeler l'API : code **0** pour un maître dont le dernier battement a moins de 2 × la période de battement ou un secondaire dont le dernier contrôle a moins de 3 × la période de contrôle ; non nul si le fichier est absent, trop ancien (processus figé), `failed` ou `lost`. C'est le healthcheck du conteneur.
+
+| Code de sortie | Sens |
+|---|---|
+| 0 | arrêt demandé (SIGTERM/SIGINT) |
+| 1 | démarrage refusé (configuration, certificat, état invalide, rejeu) ou erreur serveur |
+| 75 | verrou maître perdu : relancer (en secondaire) |

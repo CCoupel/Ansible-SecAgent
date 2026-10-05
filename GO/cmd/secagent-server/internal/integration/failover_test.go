@@ -2,7 +2,7 @@ package integration
 
 // Active/passive tests with REAL processes (#163): two (or three) instances of the same node share
 // one STATE_DIR. The children run the fast lock calibration (lockProfileFast: beat 400 ms, check
-// 200 ms, master stale 4 s) so that a crash is recovered in seconds.
+// 200 ms, master stale 7 s) so that a crash is recovered in seconds.
 
 import (
 	"bufio"
@@ -234,9 +234,10 @@ func TestFailover_Kill9TakeoverAfterTheStalenessDelayStateIntact(t *testing.T) {
 	if !b.awaitPromotion(30 * time.Second) {
 		t.Fatalf("the secondary never took over; logs:\n%s", b.logs.String())
 	}
-	t.Logf("takeover after the crash: %v (master stale = 4 s)", time.Since(start))
-	if time.Since(start) < 3*time.Second {
-		t.Errorf("took over after %v: too early for a 4 s staleness", time.Since(start))
+	stale := lockProfileFast().MasterStale
+	t.Logf("takeover after the crash: %v (master stale = %v)", time.Since(start), stale)
+	if time.Since(start) < stale-time.Second {
+		t.Errorf("took over after %v: too early for a %v staleness", time.Since(start), stale)
 	}
 	m := connectMinionWithToken(t, b, "survivor", tok) // same enrollment, no re-enrollment
 	waitFor(t, "the agent is connected to the new master", func() bool { return b.hasHost("survivor") })
@@ -403,7 +404,8 @@ func TestFailover_DelayedStaleDeletionErasesAFreshLockNoWriteIsLost(t *testing.T
 	parallel(t)
 	a := startNode(t, nodeSpec{ID: "root"})
 	b := a.sibling()
-	b.launchSecondary([]string{"NODE_LOCK_DELAY_REMOVE_MS=3000"})
+	gate := filepath.Join(t.TempDir(), "release-b")
+	b.launchSecondary([]string{"NODE_LOCK_REMOVE_GATE=" + gate})
 	t.Cleanup(b.stop)
 	c := a.sibling()
 	c.launchSecondary(nil)
@@ -420,12 +422,18 @@ func TestFailover_DelayedStaleDeletionErasesAFreshLockNoWriteIsLost(t *testing.T
 	if !c.awaitPromotion(30 * time.Second) {
 		t.Fatalf("C never took over; logs:\n%s", c.logs.String())
 	}
-	// hammer C with writes (admin authorize) until it is evicted; remember what it acknowledged
+	// hammer C with writes (admin authorize) until it is evicted; remember what it acknowledged.
+	// B's deletion is released only once C has acknowledged a few writes (C is master and serving).
 	acked := map[string]bool{}
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for i := 0; time.Now().Before(deadline); i++ {
 		if _, ok := c.waitExit(0); ok {
 			break
+		}
+		if len(acked) == 5 {
+			if err := os.WriteFile(gate, []byte("go"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
 		host := fmt.Sprintf("w%03d", i)
 		code, _, err := c.callErr("POST", c.adminURL(), "/api/admin/authorize", c.adminTok,
