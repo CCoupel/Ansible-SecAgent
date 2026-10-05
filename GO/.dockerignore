@@ -1,0 +1,8 @@
+*.exe
+relay-server
+relay-server-linux
+relay.db*
+test_results.txt
+**/*_test.go
+**/.git
+**/testdata
