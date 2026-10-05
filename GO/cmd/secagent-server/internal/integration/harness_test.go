@@ -38,7 +38,10 @@ import (
 	"secagent-server/cmd/secagent-server/internal/storage"
 )
 
-const waitLimit = 30 * time.Second // generous: only reached on failure, avoids flakes on a loaded CI runner
+// waitLimit is only ever reached on failure (every wait polls every 5 ms), so it costs nothing when
+// green. Each node is a separate process: on a machine at load average 40+ (QA, shared runners) a
+// process start / reconnection alone can stall for more than 30 s.
+const waitLimit = 60 * time.Second
 
 func waitFor(t *testing.T, what string, fn func() bool) {
 	t.Helper()
