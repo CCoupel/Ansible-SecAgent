@@ -70,11 +70,23 @@ func TestStatus_ClientConnectedThenRetryingWhenLinkLost(t *testing.T) {
 func TestStatus_ClientCancelIsNotTerminal(t *testing.T) {
 	p := newRefusalPeer(t, 0, "central")
 	c, cancel := refusalClient(t, p)
-	waitStatus(t, c.Status, LinkConnected)
+	// connected BEFORE the cancellation: the following transition is caused by it, not by a
+	// retrying state that merely preceded it
+	if st := waitStatus(t, c.Status, LinkConnected); st.Reason != "" {
+		t.Fatalf("connected status carries a reason: %+v", st)
+	}
 	cancel()
 	st := waitStatus(t, c.Status, LinkRetrying)
+	if st.Reason != "stopped" {
+		t.Errorf("reason = %q, want \"stopped\" (the transition must come from the cancellation)", st.Reason)
+	}
 	if st.State == LinkRefusedPermanent || c.Terminal() != nil {
 		t.Errorf("cancel must not look like a refusal: %+v / %v", st, c.Terminal())
+	}
+	select {
+	case <-c.Done():
+		t.Error("Done() must stay open after a cancellation")
+	default:
 	}
 }
 

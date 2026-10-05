@@ -18,8 +18,11 @@ var ErrPermanentRefusal = errors.New("link refused permanently")
 // mismatch) stops the loop and is returned (wrapping ErrPermanentRefusal): the peer must not be
 // hammered and an operator must act. A CORRECTABLE one (close 4012) is retried with the normal
 // exponential backoff.
+//
+// onTerminal (optional) is called with the terminal error BEFORE the status flips to
+// refused_permanent, so that "Status() permanent ⇒ Terminal() != nil" always holds.
 func runLoop(ctx context.Context, peer string, minBackoff, maxBackoff time.Duration, tr *linkTracker,
-	session func(context.Context) (established bool, err error)) error {
+	onTerminal func(error), session func(context.Context) (established bool, err error)) error {
 	backoff := minBackoff
 	for ctx.Err() == nil {
 		established, err := session(ctx)
@@ -32,8 +35,12 @@ func runLoop(ctx context.Context, peer string, minBackoff, maxBackoff time.Durat
 		switch {
 		case errors.As(err, &ref) && ref.permanent:
 			log.Printf("[REPEATER] ERROR %s refused link (permanent), giving up — operator action required: %s", peer, sanitizeText(errText(err)))
+			terr := fmt.Errorf("%w: %s: %s", ErrPermanentRefusal, peer, ref.reason)
+			if onTerminal != nil {
+				onTerminal(terr)
+			}
 			tr.set(LinkRefusedPermanent, ref.reason)
-			return fmt.Errorf("%w: %s: %s", ErrPermanentRefusal, peer, ref.reason)
+			return terr
 		case errors.As(err, &ref):
 			log.Printf("[REPEATER] %s refused link (correctable), retrying: %s", peer, sanitizeText(errText(err)))
 			tr.set(LinkRetrying, ref.reason)

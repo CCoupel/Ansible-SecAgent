@@ -219,13 +219,17 @@ func (c *Client) Start(ctx context.Context) error {
 }
 
 func (c *Client) run(ctx context.Context) {
-	err := runLoop(ctx, "parent", c.opts.MinBackoff, c.opts.MaxBackoff, c.tr, c.session)
-	c.mu.Lock()
-	c.terminal = err
-	c.mu.Unlock()
+	err := runLoop(ctx, "parent", c.opts.MinBackoff, c.opts.MaxBackoff, c.tr, c.setTerminal, c.session)
 	if err != nil {
 		close(c.done)
 	}
+}
+
+// setTerminal records the permanent refusal; runLoop calls it before the status flips.
+func (c *Client) setTerminal(err error) {
+	c.mu.Lock()
+	c.terminal = err
+	c.mu.Unlock()
 }
 
 // Status returns the observable state of the link to the parent (#154).

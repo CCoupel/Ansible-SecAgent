@@ -56,6 +56,13 @@ type Dialer struct {
 	tr       *linkTracker
 }
 
+// setTerminal records the permanent refusal; runLoop calls it before the status flips.
+func (d *Dialer) setTerminal(err error) {
+	d.mu.Lock()
+	d.terminal = err
+	d.mu.Unlock()
+}
+
 // Status returns the observable state of the link to this child (#154).
 func (d *Dialer) Status() LinkStatus { return d.tr.get() }
 
@@ -120,10 +127,8 @@ func (d *Dialer) Start(ctx context.Context) error {
 	}
 	d.started = true
 	go func() {
-		err := runLoop(ctx, "child "+d.target.RelayID, d.opts.MinBackoff, d.opts.MaxBackoff, d.tr, d.session)
-		d.mu.Lock()
-		d.terminal = err
-		d.mu.Unlock()
+		// terminal is assigned (by the callback) BEFORE the status becomes refused_permanent
+		_ = runLoop(ctx, "child "+d.target.RelayID, d.opts.MinBackoff, d.opts.MaxBackoff, d.tr, d.setTerminal, d.session)
 	}()
 	return nil
 }
