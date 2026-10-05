@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"strings"
 	"testing"
@@ -68,7 +69,7 @@ func TestListValidRelayNodes_IgnoresLegacyMalformedRows(t *testing.T) {
 // relay_routing rows written before the validation (or by a hostile peer on an older version) are
 // never served: the hostname, the declaring relay and every chain element must be well formed.
 func TestRelayRouting_MalformedRowsAreNeverServed(t *testing.T) {
-	ignoredWarned.Range(func(k, _ any) bool { ignoredWarned.Delete(k); return true })
+	resetIgnored()
 	s, err := NewStore(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -117,4 +118,44 @@ func TestRelayRouting_MalformedRowsAreNeverServed(t *testing.T) {
 	if strings.Contains(buf.String(), "\n[SECURITY WARNING] forged") {
 		t.Errorf("hostile value forged a log line: %q", buf.String())
 	}
+}
+
+func resetIgnored() {
+	ignoredMu.Lock()
+	ignoredWarned = make(map[string]struct{})
+	ignoredOverflow = 0
+	ignoredMu.Unlock()
+}
+
+// The memory of reported identifiers is bounded: beyond maxIgnoredWarned distinct ids there is ONE
+// aggregated warning, the rest is only counted; filtering is not affected.
+func TestWarnIgnoredOnce_IsBounded(t *testing.T) {
+	resetIgnored()
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+	for i := 0; i < maxIgnoredWarned+1000; i++ {
+		warnIgnoredOnce("relay route", fmt.Sprintf("bad\n%d", i))
+	}
+	ignoredMu.Lock()
+	n := len(ignoredWarned)
+	ignoredMu.Unlock()
+	if n != maxIgnoredWarned {
+		t.Errorf("memory holds %d ids, want exactly %d", n, maxIgnoredWarned)
+	}
+	if lines := strings.Count(buf.String(), "\n"); lines != maxIgnoredWarned+1 {
+		t.Errorf("%d log lines, want %d (one per id + one aggregate)", lines, maxIgnoredWarned+1)
+	}
+	if IgnoredOverflow() != 1000 {
+		t.Errorf("overflow = %d, want 1000", IgnoredOverflow())
+	}
+	// a known id stays silent, and an unknown one beyond the bound adds neither entry nor line
+	before := buf.Len()
+	warnIgnoredOnce("relay route", "bad\n0")
+	warnIgnoredOnce("relay route", "brand-new-bad\n")
+	if buf.Len() != before {
+		t.Error("no further line expected past the bound")
+	}
+	resetIgnored()
 }
