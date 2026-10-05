@@ -93,7 +93,7 @@ func TestRun_BackoffGrowsWhenEnrollmentWorksButWSStays401(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer srv.Close()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) // safety net: a missing backoff fails here instead of spinning
 	defer cancel()
 	rec := &recorder{max: 9, cancel: cancel}
 	d := newLoopDispatcher(t, srv.URL, rec)
@@ -132,7 +132,7 @@ func TestRun_BackoffGrowsWhenEnrollmentWorksButWSStays401(t *testing.T) {
 func TestRun_BackoffResetsAfterASuccessfulWebSocket(t *testing.T) {
 	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	var n atomic.Int32
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) // safety net: a missing backoff fails here instead of spinning
 	defer cancel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch n.Add(1) {
@@ -169,7 +169,7 @@ func TestRun_TransientEnrollmentFailuresRetryWithBackoffForever(t *testing.T) {
 	logs := captureLog(t)
 	var wsConnects atomic.Int32
 	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) // safety net: a missing backoff fails here instead of spinning
 	defer cancel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if wsConnects.Add(1) <= 5 {
