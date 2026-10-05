@@ -72,3 +72,40 @@ jobs:
           version: v2.14.0
           working-directory: GO
           args: --timeout=5m
+
+  ansible-inventory:
+    name: Inventaire Ansible
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Bloquant. Valide la sortie reelle du binaire secagent-inventory avec le vrai
+    # `ansible-inventory --list` (plugin `script`). ANSIBLE_E2E=1 rend le test OBLIGATOIRE :
+    # ansible-inventory introuvable => echec (jamais de skip silencieux). Le job « Build + tests Go »
+    # n'installe pas Ansible : les tests TestAnsible* s'y skippent (ANSIBLE_E2E absent).
+    # ansible-core est epingle strictement dans .github/ci/requirements-ansible.txt
+    # (cle de cache pip) ; Python 3.12 est supporte par ansible-core 2.21 (controleur).
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: .github/ci/requirements-ansible.txt
+
+      - name: Installer ansible-core (version epinglee)
+        run: |
+          python -m pip install -r .github/ci/requirements-ansible.txt
+          ansible-inventory --version
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: GO/go.work
+          cache-dependency-path: GO/go.sum
+
+      - name: Tests Go Ansible
+        working-directory: GO
+        env:
+          JWT_SECRET_KEY: test
+          ADMIN_TOKEN: test
+          ANSIBLE_E2E: '1'
+        run: go test -race -run 'Ansible' -v ./cmd/secagent-server/internal/integration/... -timeout 300s
