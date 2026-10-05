@@ -267,12 +267,21 @@ RSA_MASTER_KEY=dev-rsa-master-key-for-push-tokens-change-in-prod
 RELAY_PLUGIN_TOKEN=dev-plugin-token-change-in-prod
 ```
 
+### Server Network Binding (v3.0.2)
+```
+API_ADDR=:7770                     # Écoute API publique + WS agent/relay (défaut :7770)
+ADMIN_ADDR=:7771                   # Écoute API admin (défaut :7771, JAMAIS exposé)
+WS_ADDR=:7772                      # Écoute WebSocket (défaut :7772)
+TLS_CERT=/path/to/cert.pem         # Certificat TLS (optionnel, sinon Caddy)
+TLS_KEY=/path/to/key.pem           # Clef TLS (optionnel, sinon Caddy)
+```
+
 ### Server Repeater Mode (enfant pull)
 ```
-REPEATER_ID=dmz1                               # ID unique du relay enfant
+REPEATER_ID=dmz1                               # ID unique du relay enfant (format ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$)
 REPEATER_UPSTREAM_URL=wss://central:7772      # URL WSS du parent
 REPEATER_UPSTREAM_TOKEN=<jwt-relay-child>     # Token JWT rôle relay-child
-RELAY_GROUP_VARS={"region":"dmz"}             # Variables Ansible JSON
+RELAY_GROUP_VARS={"region":"dmz"}             # Variables Ansible JSON (v3.0.2+)
 ```
 
 ### Server Repeater Mode (enfant push - parent déclaré)
@@ -287,15 +296,32 @@ RELAY_GROUP_VARS={"region":"dmz"}             # Variables Ansible JSON
 # }
 ```
 
-### Limites (Repeater)
+### Server Limits (Repeater)
 ```
-MAX_SNAPSHOT_HOSTS=10000           # Limite hôtes dans topology_snapshot (défaut 10000)
-MAX_SNAPSHOT_RELAYS=1000           # Limite relays dans topology_snapshot (défaut 1000)
-MAX_AGENT_LIST_HOSTS=10000         # Limite hôtes dans agent_list heartbeat (défaut 10000)
-MAX_WS_MESSAGE_SIZE_RELAY=10MB     # Taille max message WebSocket relay
+MAX_SNAPSHOT_HOSTS=10000                        # Limite hôtes dans topology_snapshot (défaut 10000)
+MAX_SNAPSHOT_RELAYS=1000                        # Limite relays dans topology_snapshot (défaut 1000)
+MAX_AGENT_LIST_HOSTS=10000                      # Limite hôtes dans agent_list heartbeat (défaut 10000)
+MAX_WS_MESSAGE_SIZE_RELAY=10485760              # Taille max message WebSocket relay (défaut 10MB)
 ```
 
-### Agents (définis dans docker-compose.yml)
+### Server Hooks (v3.0.2)
+```
+RELAY_HOOKS_CONFIG=/etc/secagent/hooks.json     # Chemin fichier hooks (optionnel)
+RELAY_HOOKS_MAX_CONCURRENT_ACTIONS=64           # Limit goroutines hook actions (défaut 64)
+```
+
+### Client `secagent-inventory` (v3.0.2)
+```
+RELAY_SERVER_URL=https://relay.example.com:7770  # URL du relay server
+RELAY_TOKEN=secagent_plugin_xxxxx                # Bearer token (RELAY_PLUGIN_TOKEN du serveur)
+RELAY_SCOPE=zone-a                              # ID du relay (optionnel, v3.0.2+) — limite inventaire à ce sous-arbre
+RELAY_CA_BUNDLE=/path/to/ca.pem                 # CA custom (optionnel)
+RELAY_INSECURE_TLS=false                        # true = skip vérif TLS (DEV/QUALIF SEULEMENT)
+RELAY_INSECURE_TLS_ACK=i-understand-the-risk    # Confirmation si RELAY_INSECURE_TLS=true et serveur non-loopback
+RELAY_ONLY_CONNECTED=false                      # true = hôtes connectés uniquement
+```
+
+### Agents (definis dans docker-compose.yml)
 ```
 RELAY_SERVER_URL=http://localhost:7770
 RELAY_HOSTNAME=qualif-host-01

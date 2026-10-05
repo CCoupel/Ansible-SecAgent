@@ -35,11 +35,12 @@ All notable changes to this project will be documented in this file.
   - Variables `API_ADDR` (défaut `:7770`), `ADMIN_ADDR` (défaut `:7771`), `WS_ADDR` (défaut `:7772`)
   - Validation `relay_id` partout : API admin `POST /api/admin/relays` 400 `invalid_relay_id`, `/ws/relay` upgrade 401, stockage
 - **CI job « Inventaire Ansible »** : ansible-core 2.21.4 épinglé, `ANSIBLE_E2E=1 go test -race -run 'Ansible'` valide la sortie réelle de `secagent-inventory`
+- **Test de migration v3.0.0 → v3.0.2** (9229c74) : migration de base couverte par test permanent, idempotente, aucune perte de ligne, relays hérités et routes utilisables
 
 ### Changed
 - Plugin d'inventaire Python (`inventory_plugins/secagent_inventory.py`) est **DEPRECATED** — utiliser le binaire GO `secagent-inventory` (v3.0.2+)
 - Table SQLite `relay_nodes` : colonne `group_vars` TEXT (JSON des variables pour ce relay), `relay_chain` TEXT (chaîne JSON pour ce relay)
-- Table SQLite `relay_routing` : `relay_chain` TEXT (chaîne JSON) — désormais sérialisée correctement pour les profondeurs > 3 niveaux (était aplatie avant, cf. #126)
+- Table SQLite `relay_routing` : `relay_chain` TEXT (chaîne JSON) — désormais sérialisée correctement pour les profondeurs > 3 niveaux
 - Documentation :
   - DOC/server/SERVER_SPEC.md §9.5 : ordre chaîne corrigé, `secagent_next_hop` explicité, paramètre `?relay=<id>` documenté, avertissement noms Ansible et configuration (§9.5b)
   - DOC/inventory/INVENTORY_SPEC.md : RELAY_SCOPE variable, exemples avec ordre correct et `secagent_next_hop`
@@ -48,14 +49,15 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - #155 : extraction du câblage (API_ADDR, ADMIN_ADDR, WS_ADDR défauts précis — la variable SERVER_ADDR n'existait pas)
 - Validation `relay_id` cohérente partout (format `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
-- Chaînes de relays vraies jusqu'à 5+ niveaux (avant #126, décodeur les aplatissait au 3e niveau)
+- buildSnapshot (server/helpers.go) déclare maintenant les chaînes réelles (relay_nodes.relay_chain) au lieu d'aplatir à [self, relay] : profondeur 5+ niveaux correcte (46a68fa)
 
 ### Known Limitations
-- #146 : `tokens create --role relay-child` via API (aujourd'hui non disponible)
-- #147 : Migration bases entre versions à couvrir avec fixture v3.0.1 figée
-- #151 : Monitoring et métriques (aucune infra existante)
-- #152 : Colonne `relay_nodes.token_hash` mal nommée (stocke hash pull, token chiffré push)
-- #156 : Rate limit trop strict pour certains déploiements (à affiner)
+- #141 : Signature des tokens par la racine (actuellement chaque relay signe avec sa propre clé)
+- #146 : Rôles JWT relay-child / relay-parent : aligner le code (rôle unique « relay ») sur SECURITY.md §2 (décision arbitrage)
+- #147 : Option de CA personnalisée pour le TLS du client repeater vers le parent (sans skip-verify)
+- #151 : Filtrage SSRF des cibles de dial du Dialer push (loopback, link-local, métadonnées cloud)
+- #152 : Colonne `relay_nodes.token_hash` : séparer hash (pull) et token chiffré (push)
+- #156 : Rate limit des topology_snapshot par identité (relay_id) et non par lien : reconnexion doit refaire compter
 
 ---
 

@@ -509,7 +509,118 @@ En mode push, le parent (WS client) ouvre vers l'enfant (WS serveur). L'authenti
 
 ---
 
-## 10. Matrice des menaces
+## 10. Événements, hooks et group vars (v3.0.2)
+
+### Propagation d'événements — Validation de la chaîne côté parent
+
+Lors de la remontée d'un événement par un relay enfant, la chaîne d'événement est construite par accumulation :
+1. L'enfant envoie `event_forward` avec une chaîne de son sous-arbre (ex: `[relay-A, relay-B]`)
+2. Le parent ajoute son ID et relaie vers son propre parent (ex: `[relay-A, relay-B, relay-parent]`)
+
+**Validation côté parent de la chaîne reçue (server/relay_handler.go, handleEventForward)** :
+- Vérifier que le dernier élément de la chaîne (`chain[-1]`) correspond au `relay_id` du client (même en mode push)
+- Vérifier que les intermédiaires de la chaîne (`chain[0..n-2]`) sont tous dans `conn.descendants` (relays déclarés en `topology_snapshot`)
+- Rejet de l'événement si validation échoue (pas d'ascension vers le parent, log WARNING)
+- Anti-boucle : refuse de relayer si l'ID du parent est déjà dans la chaîne (`relay_id ∈ chain`)
+
+**Fail-closed** : les événements invalides sont silencieusement ignorés (ne bloquent pas le lien).
+
+### Filtrage des hooks — relay_chain_contains (v3.0.2)
+
+Les hooks configurés via `RELAY_HOOKS_CONFIG` JSON peuvent filtrer sur la chaîne d'événement :
+
+```json
+{
+  "hooks": [
+    {
+      "event": "host.conflict",
+      "filter": "relay_chain_contains:dmz1",
+      "cmd": "alert-mgmt.sh {{hostname}}"
+    }
+  ]
+}
+```
+
+**Validation du filtre au chargement** :
+- **Fail-closed** : si le JSON est invalide ou un filtre malformé → tout le fichier est rejeté, configuration précédente conservée
+- Format : `relay_chain_contains:<relay_id>`
+- `relay_id` validé avec `relayIDShape` (format `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
+- Rejet du fichier en bloc au SIGHUP (HUP) → config précédente reste active
+
+**Sémaphore d'actions** (RELAY_HOOKS_MAX_CONCURRENT_ACTIONS) :
+- Limite : défaut 64 goroutines simultanées pour l'exécution des actions (webhook, shell, etc.)
+- Au-delà : actions excédentaires rejetées silencieusement (ne bloquent pas le dispatcher)
+- Compteur `DroppedActions()` incrémenté
+- Log [SECURITY WARNING] 1 sur 100 (pour ne pas saturer les logs) : hostname en format sûr (%q), ID relay, pas d'exposition d'identifiants tiers
+
+### Group vars — Validation et refus de liste
+
+`RELAY_GROUP_VARS` est un JSON optionnel contenant les variables Ansible pour un relay :
+
+```
+RELAY_GROUP_VARS='{"env":"prod", "region":"dmz"}'
+```
+
+**Validation au chargement du `relay_hello` et `topology_snapshot`** :
+- **JSON invalide** → rejet du hello/snapshot en bloc (close 4012 si relais enfant ; log ERROR)
+- **Interdits** :
+  - Préfixe `ansible_*` (réservé à Ansible) — **sauf** `ansible_python_interpreter` si sa valeur ne contient pas `..` (prévention path traversal)
+  - Préfixe `secagent_*` (réservé à secagent)
+  - Marqueurs Jinja (`{{ }}`, `{%` `%}`) — refus du snapshot entier si présent
+- **Bornes** (longueur totale, nombre de clefs) :
+  - JSON total ≤ 8 KB (ajustable)
+  - Nombre de clefs ≤ 100
+  - Toute clef > 128 caractères → rejet
+  - Toute valeur > 4 KB → rejet
+
+**Stockage** : persisté dans `relay_nodes.group_vars` TEXT (JSON sérialisé), une fois validé.
+
+**Publication dans l'inventaire** :
+- Chaque groupe Ansible (relay) expose ses `vars` depuis le `relay_nodes.group_vars` correspondant
+- Omis si vide ou NULL
+
+### Validité de relay_id partout (v3.0.2)
+
+Le format de `relay_id` est **uniformément validé** partout dans le code :
+
+| Contexte | Validation | Erreur |
+|---|---|---|
+| `POST /api/admin/relays` (enregistrement) | relayIDShape `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$` | **400 `invalid_relay_id`** |
+| `/ws/relay` upgrade (handshake) | `relay_hello.relay_id` == jwt.sub | **401** (avant upgrade TLS) ou **4010** (après) |
+| `topology_snapshot` validation (relay enfant) | chainOK valide tous les IDs | **4012** (rejet corrigible) |
+| Événements `event_forward` | relay_id de chaque maillon de la chaîne | **silencieusement rejeté** si invalide |
+
+**Fail-closed** : un relay_id invalide génère un rejet sans accepter la connexion ou l'événement.
+
+### Assainissement des textes du pair — Fermetures WebSocket (v3.0.2)
+
+Quand un lien relay se termine avec un code de fermeture 4010 ou 4012, le texte de fermeture peut contenir des données envoyées par le pair distant (motif d'erreur, détail technique).
+
+**Assainissement** (relay_handler.go, setRelayStatusFromClose) :
+- Remplace les caractères de contrôle (newline, tab, `\x00`) par des espaces
+- Borne la longueur : **200 octets max** (tronqué sur une frontière UTF-8)
+- Jamais de révélation d'identifiants tiers (relay_id du pair ne figure jamais dans closeReason logué)
+
+**Exposition** (server status CLI/API) :
+- `/api/admin/status` (port 7771) et `secagent-server server status` : affichent le texte assaini
+- `/health` (port 7770, public) : **aucun détail** — seulement le flag `degraded` booléen ; pas d'exposition de topologie ni d'état du lien
+
+### RELAY_INSECURE_TLS — Accepter certificats auto-signés (v3.0.2, client repeater)
+
+Le binaire `secagent-inventory` utilise `RELAY_INSECURE_TLS` pour désactiver la vérification TLS vers le relay server (utile en dev/qualif avec certificats auto-signés).
+
+**Garde** :
+- À chaque appel (`--list` ou `--host`), si `RELAY_INSECURE_TLS=true` → log stderr `[SECURITY WARNING] TLS verification disabled …` ; stdout reste du JSON pur
+- Si `RELAY_SERVER_URL` n'est **pas** une adresse de loopback (`localhost`, `127.0.0.0/8`, `::1`) ET `RELAY_INSECURE_TLS=true` :
+  - Refuse d'exécuter (exit 1) **sauf si** `RELAY_INSECURE_TLS_ACK=i-understand-the-risk`
+  - Message explicite sur stderr
+- Token n'apparaît jamais dans ces messages
+
+**Recommandation** : Utiliser des certificats signés (Let's Encrypt, PKI interne) en production. `RELAY_INSECURE_TLS=true` uniquement pour les environnements isolés (tests locaux).
+
+---
+
+## 11. Matrice des menaces
 
 | Menace | Contremesure |
 |---|---|
