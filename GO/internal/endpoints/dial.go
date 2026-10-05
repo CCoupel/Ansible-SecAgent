@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http/httptrace"
 	"net/url"
+	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,6 +28,31 @@ var ErrAfterSend = errors.New("endpoints: failure after send, no other address t
 // ErrAllFailed marks (via errors.Is) a round where every address failed
 // BEFORE sending anything. Safe to retry after rotor.Wait.
 var ErrAllFailed = errors.New("endpoints: all addresses failed before send")
+
+type sentKey struct{}
+
+// MarkSent records, on a ctx received by a dial function, that request bytes
+// are about to leave (or have left). From then on a timeout is an after-send
+// failure and DialFirst will not try another address. A dial function that
+// writes a request itself (raw conn, WebSocket upgrade, ...) must call it
+// right before the first write; net/http requests are tracked automatically
+// (httptrace) when made with the received ctx. No-op on a foreign ctx.
+func MarkSent(ctx context.Context) {
+	if f, ok := ctx.Value(sentKey{}).(*atomic.Bool); ok {
+		f.Store(true)
+	}
+}
+
+// isTimeout reports a timeout-like error: deadline/context expiry, net
+// timeout, or the net/http TLS handshake timeout.
+func isTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	// Includes net/http's "TLS handshake timeout" (a net.Error with Timeout()).
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
 
 type beforeSendError struct{ err error }
 
@@ -113,6 +141,15 @@ func redact(err error) string {
 //     NO other address is tried and the rotor is untouched. Callers replaying
 //     idempotent requests may call DialFirst again; others must not.
 //
+// A timeout (per-address timeout, net timeout, "TLS handshake timeout") is
+// also treated as before-send when no request byte has left: net/http
+// requests made with the received ctx are tracked automatically; a dial
+// function that writes the request itself must call MarkSent(ctx) before the
+// first write. A dial that wraps the whole exchange and does neither would see
+// its after-send timeouts replayed: do not rely on DialFirst for that without
+// MarkSent. Every case not explicitly recognised stays after-send (fail safe).
+// A frozen WebSocket handshake is after-send only once the Upgrade request left.
+//
 // If every address failed before send, the error satisfies
 // errors.Is(err, ErrAllFailed); call rotor.Wait(ctx) before the next round.
 // If ctx is done, ctx.Err() is returned.
@@ -132,7 +169,11 @@ func DialFirst[T any](ctx context.Context, r *Rotor, timeout time.Duration,
 			return zero, nil, err
 		}
 		u := r.URL(i)
-		actx, cancel := context.WithTimeout(ctx, timeout)
+		var sent atomic.Bool
+		actx, cancel := context.WithTimeout(context.WithValue(ctx, sentKey{}, &sent), timeout)
+		actx = httptrace.WithClientTrace(actx, &httptrace.ClientTrace{
+			WroteHeaderField: func(string, []string) { sent.Store(true) },
+		})
 		res, err := dial(actx, u)
 		cancel()
 		if err == nil {
@@ -142,7 +183,9 @@ func DialFirst[T any](ctx context.Context, r *Rotor, timeout time.Duration,
 		if cerr := ctx.Err(); cerr != nil {
 			return zero, nil, cerr
 		}
-		if !IsBeforeSend(err) {
+		// Timeouts (frozen master: TCP accepted, TLS/handshake never answered)
+		// are before-send as long as no request byte left.
+		if !IsBeforeSend(err) && (sent.Load() || !isTimeout(err)) {
 			return zero, nil, &afterSendError{index: i, err: err}
 		}
 		r.Failure(i)

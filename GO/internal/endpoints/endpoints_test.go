@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,6 +32,11 @@ func TestParse(t *testing.T) {
 		{"empty item", "wss://a.example,,wss://b.example", nil, ErrInvalid},
 		{"trailing comma", "wss://a.example,", nil, ErrInvalid},
 		{"duplicate", "wss://a.example,wss://b.example, wss://A.example", nil, ErrDuplicate},
+		{"duplicate default port https", "https://a.example,https://a.example:443", nil, ErrDuplicate},
+		{"duplicate default port http", "http://a.example:80,http://a.example", nil, ErrDuplicate},
+		{"duplicate default port wss", "wss://a.example:443,wss://a.example", nil, ErrDuplicate},
+		{"duplicate default port ipv6", "https://[::1]:443,https://[::1]", nil, ErrDuplicate},
+		{"different port is distinct", "https://a.example,https://a.example:8443", []string{"https://a.example", "https://a.example:8443"}, nil},
 		{"duplicate trailing slash", "https://a.example/,https://a.example", nil, ErrDuplicate},
 		{"userinfo", "wss://user:s3cret@a.example", nil, ErrUserinfo},
 		{"userinfo no password", "wss://tok3n@a.example", nil, ErrUserinfo},
@@ -455,5 +461,141 @@ func TestIsBeforeSend(t *testing.T) {
 	}
 	if MarkBeforeSend(nil) != nil {
 		t.Fatal("MarkBeforeSend(nil) must be nil")
+	}
+}
+
+// mute starts a TCP listener that accepts connections and never answers
+// (frozen former master): the TLS handshake can never complete.
+func mute(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conns []net.Conn
+	var mu sync.Mutex
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = l.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	return l.Addr().String()
+}
+
+// TestDialFirst_FrozenMasterRealHTTPClient: real http.Client against a host
+// that accepts TCP but never answers the TLS handshake -> next address tried.
+func TestDialFirst_FrozenMasterRealHTTPClient(t *testing.T) {
+	var second atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		second.Add(1)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer srv.Close()
+	pool := trustPool(srv)
+	for _, tc := range []struct {
+		name        string
+		hsTimeout   time.Duration // http.Transport.TLSHandshakeTimeout
+		attemptWait time.Duration
+	}{
+		{"transport TLS handshake timeout", 100 * time.Millisecond, 3 * time.Second},
+		{"per-address context timeout", 0, 200 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			second.Store(0)
+			r := mustRotor(t, "https://"+mute(t)+","+srv.URL, Backoff{})
+			client := &http.Client{Transport: &http.Transport{
+				TLSClientConfig:     &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+				TLSHandshakeTimeout: tc.hsTimeout,
+				DisableKeepAlives:   true,
+			}}
+			guard, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			got, u, err := DialFirst(guard, r, tc.attemptWait, func(ctx context.Context, u *url.URL) (string, error) {
+				req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+				resp, err := client.Do(req)
+				if err != nil {
+					return "", err
+				}
+				defer func() { _ = resp.Body.Close() }()
+				b, err := io.ReadAll(resp.Body)
+				return string(b), err
+			})
+			if err != nil || got != "ok" || u.String() != srv.URL {
+				t.Fatalf("got %q from %v, err %v", got, u, err)
+			}
+		})
+	}
+}
+
+// TestDialFirst_FrozenMasterTLSDialer: same with a tls.Dialer (connection phase only).
+func TestDialFirst_FrozenMasterTLSDialer(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	r := mustRotor(t, "https://"+mute(t)+","+srv.URL, Backoff{})
+	guard, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, u, err := DialFirst(guard, r, 200*time.Millisecond, func(ctx context.Context, u *url.URL) (net.Conn, error) {
+		d := tls.Dialer{Config: &tls.Config{RootCAs: trustPool(srv), MinVersion: tls.VersionTLS12}}
+		return d.DialContext(ctx, "tcp", u.Host) // no MarkBeforeSend: recognised as timeout before send
+	})
+	if err != nil || u.String() != srv.URL {
+		t.Fatalf("u=%v err=%v", u, err)
+	}
+}
+
+// TestDialFirst_TimeoutAfterRequestSentIsAfterSend: the request left, the server
+// never answers -> timeout is NOT replayed on the next address.
+func TestDialFirst_TimeoutAfterRequestSentIsAfterSend(t *testing.T) {
+	var got1, got2 atomic.Int32
+	release := make(chan struct{})
+	srv1 := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		got1.Add(1)
+		<-release // never answers
+	}))
+	defer srv1.Close()
+	defer close(release)
+	srv2 := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		got2.Add(1)
+		_, _ = io.WriteString(w, "second")
+	}))
+	defer srv2.Close()
+	r := urlsOf(t, srv1, srv2)
+	get := getFn(trustPool(srv1, srv2))
+	_, _, err := DialFirst(context.Background(), r, 300*time.Millisecond, get)
+	if !errors.Is(err, ErrAfterSend) || errors.Is(err, ErrAllFailed) {
+		t.Fatalf("err = %v, want ErrAfterSend", err)
+	}
+	if got1.Load() != 1 || got2.Load() != 0 {
+		t.Fatalf("server1=%d server2=%d, want 1 and 0", got1.Load(), got2.Load())
+	}
+}
+
+// TestDialFirst_MarkSentKeepsTimeoutAfterSend: a raw dial that calls MarkSent
+// before writing keeps its timeouts after-send.
+func TestDialFirst_MarkSentKeepsTimeoutAfterSend(t *testing.T) {
+	r := mustRotor(t, "https://a.invalid,https://b.invalid", Backoff{})
+	var calls int
+	_, _, err := DialFirst(context.Background(), r, 50*time.Millisecond, func(ctx context.Context, _ *url.URL) (int, error) {
+		calls++
+		MarkSent(ctx)
+		<-ctx.Done()
+		return 0, ctx.Err()
+	})
+	if !errors.Is(err, ErrAfterSend) || calls != 1 {
+		t.Fatalf("err=%v calls=%d", err, calls)
 	}
 }

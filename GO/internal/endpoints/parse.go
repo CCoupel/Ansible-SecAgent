@@ -108,7 +108,7 @@ func ParseSchemes(value string, schemes ...string) ([]*url.URL, error) {
 		if len(allowed) > 0 && !allowed[u.Scheme] {
 			return nil, fmt.Errorf("%w: address #%d", ErrScheme, pos)
 		}
-		key := u.Scheme + "://" + u.Host + strings.TrimRight(u.EscapedPath(), "/") + "?" + u.RawQuery
+		key := u.Scheme + "://" + dedupHost(u) + strings.TrimRight(u.EscapedPath(), "/") + "?" + u.RawQuery
 		if first, dup := seen[key]; dup {
 			return nil, fmt.Errorf("%w: address #%d repeats #%d", ErrDuplicate, pos, first)
 		}
@@ -116,4 +116,18 @@ func ParseSchemes(value string, schemes ...string) ([]*url.URL, error) {
 		out = append(out, u)
 	}
 	return out, nil
+}
+
+// dedupHost returns the lowercase host[:port] with the scheme's default port
+// removed, so https://a and https://a:443 are the same address.
+func dedupHost(u *url.URL) string {
+	def := map[string]string{"http": "80", "ws": "80", "https": "443", "wss": "443"}[u.Scheme]
+	if def != "" && u.Port() == def {
+		h := u.Hostname()
+		if strings.Contains(h, ":") {
+			return "[" + h + "]"
+		}
+		return h
+	}
+	return u.Host
 }
