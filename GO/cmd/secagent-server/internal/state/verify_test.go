@@ -157,6 +157,9 @@ func TestRestore_ReplacesWithBackupsJournalAndAtomicWrite(t *testing.T) {
 	if m := mode(t, filepath.Join(dir, StateFile)); m != 0o600 {
 		t.Errorf("relay.state mode %o", m)
 	}
+	if got := mustFile(t, filepath.Join(dir, PrevFile)); string(got) != string(prevBytes) {
+		t.Error("relay.state.prev must be kept as is (the replaced relay.state is only in the backup)")
+	}
 	if res.BackupFile != "relay.state.bak-20261005T120000Z" || res.BackupPrev != "relay.state.prev.bak-20261005T120000Z" {
 		t.Errorf("backups %q %q", res.BackupFile, res.BackupPrev)
 	}
