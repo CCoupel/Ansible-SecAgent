@@ -181,3 +181,28 @@ func TestNoSecondEnrollmentClientInTheMinion(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// #192: the minion never calls POST /api/token/refresh (it re-enrolls on a 401 and applies the WS
+// "rekey" message). If a future change makes it call that route, this test fails on purpose: the
+// request must then send `Authorization: Bearer <current JWT>` (the server requires it since #192),
+// treat a 401/403 as a verdict (a revocation ends in exit status 77, never a retry loop), and the
+// contract DOC/contracts/REST_ENROLLMENT.md must be updated together.
+func TestMinionDoesNotCallTokenRefresh(t *testing.T) {
+	root := filepath.Join("..", "..")
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		b, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		if strings.Contains(string(b), "token/refresh") {
+			t.Errorf("%s references /api/token/refresh: update the #192 contract (Bearer, 401/403 handling) and this test", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
