@@ -466,18 +466,19 @@ func AdminRevokeMinion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Blacklist current JTI (expires in 25 hours — beyond any normal JWT TTL)
-	if agent.TokenJTI != "" {
-		expiresAt := time.Now().Add(25 * time.Hour).UTC().Format(time.RFC3339)
-		reason := "admin_revoke"
-		if err := adminStore.AddToBlacklist(ctx, agent.TokenJTI, hostname, expiresAt, &reason); err != nil {
-			// The revocation is not persisted (state read-only after a lost lock, disk error): do NOT
-			// close the link with 4001 ("must not reconnect") — the new master would not know the
-			// revocation and the agent would be cut for nothing. The caller retries the revoke.
-			log.Printf("AdminRevokeMinion blacklist: %v", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+	// Revoke in ONE state write (#193): the persistent Revoked flag and the blacklist of the current JTI
+	// (kept 25 hours, beyond any JWT TTL; the flag outlives it). If the write is refused (state
+	// read-only after a lost lock, disk error) do NOT close the link with 4001 ("must not
+	// reconnect"): the new master would not know the revocation and the agent would be cut for
+	// nothing. The caller retries the revoke.
+	if found, err := adminStore.RevokeAgent(ctx, hostname, agent.TokenJTI, "admin_revoke", time.Now().Add(25*time.Hour)); err != nil || !found {
+		if err == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent_not_found"})
 			return
 		}
+		log.Printf("AdminRevokeMinion: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		return
 	}
 
 	// Close WS with 4001

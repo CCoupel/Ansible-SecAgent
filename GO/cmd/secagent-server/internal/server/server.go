@@ -150,6 +150,14 @@ func Build(cfg Config) (node *Node, err error) {
 		log.Println("[WARN] no write guard connected: the state is READ-ONLY until this instance is the confirmed master (#163)")
 	}
 	log.Println("[OK] State loaded")
+	// Agents revoked before the persistent flag existed (#193): their blacklisted JTI is the only trace;
+	// flag them now (one write, none when there is nothing to repair). Non-fatal: the blacklist still
+	// protects them until it expires.
+	if writeGuard != nil {
+		if _, err := store.RepairRevokedFlags(context.Background()); err != nil {
+			log.Printf("[WARN] revoked flags repair: %v", err)
+		}
+	}
 
 	// Inject store into admin handlers
 	handlers.SetAdminStore(store)

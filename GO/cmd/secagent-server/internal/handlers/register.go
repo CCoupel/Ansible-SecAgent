@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -491,6 +492,17 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 		return
 	}
 
+	// A revoked host never gets a challenge nor a token (#193): refused before anything is consumed,
+	// whatever the token (a reusable one included) until an admin lifts the revocation.
+	if revoked, err := registerStore.IsAgentRevoked(ctx, req.Hostname); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		return
+	} else if revoked {
+		log.Printf("[SECURITY WARNING] enrollment refused: hostname=%q is revoked", req.Hostname)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "agent_revoked"})
+		return
+	}
+
 	server.mu.RLock()
 	serverPrivKey := server.PrivateKey
 	pubPEM := server.PublicPEM
@@ -562,6 +574,11 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 		// or nothing happens (a failure between the steps can not leave a consumed token without
 		// agent, nor an agent without key).
 		if err := registerStore.EnrollAgent(ctx, tok.ID, req.Hostname, req.PublicKeyPEM, jti, "enrollment_token:"+tok.ID); err != nil {
+			if errors.Is(err, storage.ErrAgentRevoked) { // revoked between the two phases: token not consumed
+				log.Printf("[SECURITY WARNING] enrollment refused: hostname=%q is revoked", req.Hostname)
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "agent_revoked"})
+				return
+			}
 			log.Printf("RegisterAgent EnrollAgent: %v", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 			return

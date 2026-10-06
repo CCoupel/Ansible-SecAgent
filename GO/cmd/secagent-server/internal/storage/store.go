@@ -272,15 +272,13 @@ func putEnrolledAgent(tx *state.Tx, hostname, publicKeyPEM, tokenJTI string, now
 }
 
 // EnrollAgent performs a whole enrollment in ONE mutation (one rename): the enrollment token is
-// consumed, the public key is authorized and the agent is registered, or nothing happens at all
+// consumed, the public key is authorized and the agent is registered (a revoked host is refused by
+// putEnrolledAgent, and the rollback leaves the token unconsumed), or nothing happens at all
 // (#160: a failure between the steps leaves neither a consumed token without agent nor an agent
 // without key). tokenID may be empty for the legacy flow without enrollment token.
 func (s *Store) EnrollAgent(ctx context.Context, tokenID, hostname, publicKeyPEM, tokenJTI, approvedBy string) error {
 	now := nowUTC()
 	err := s.mutate(func(tx *state.Tx) error {
-		if a, ok := tx.Agent(hostname); ok && a.Revoked {
-			return ErrAgentRevoked // first, before anything is consumed
-		}
 		if tokenID != "" {
 			tok, ok := tx.EnrollmentToken(tokenID)
 			if !ok {

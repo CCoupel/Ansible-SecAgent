@@ -175,6 +175,11 @@ func sendRekeyToAgent(ctx context.Context, hostname, jwtSecret string, jwtTTL ti
 		return false
 	}
 
+	if agent.Revoked { // a revoked host never gets a new token (#193)
+		log.Printf("[SECURITY WARNING] sendRekeyToAgent: %q is revoked, no token issued", hostname)
+		return false
+	}
+
 	// Sign new JWT with the new current secret
 	rawJWT, newJTI, err := signAgentJWT(hostname, jwtSecret, jwtTTL)
 	if err != nil {

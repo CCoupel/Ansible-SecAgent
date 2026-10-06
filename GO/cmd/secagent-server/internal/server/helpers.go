@@ -211,6 +211,9 @@ func agentJTICheck(store *storage.Store) func(hostname, jti string, usedPrevious
 		if agent == nil {
 			return fmt.Errorf("unknown_agent")
 		}
+		if agent.Revoked { // the persistent revocation does not depend on the blacklist retention (#193)
+			return fmt.Errorf("token_revoked")
+		}
 		if !usedPrevious && agent.TokenJTI != jti {
 			return fmt.Errorf("token_replaced")
 		}
