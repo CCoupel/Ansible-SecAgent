@@ -12,7 +12,7 @@
 Le secagent-server est le **hub central** du système. Il :
 - Expose une API REST HTTPS pour les plugins Ansible
 - Maintient les connexions WebSocket avec les agents
-- Route les tâches via NATS JetStream (HA multi-nodes)
+- Route les tâches par WebSocket direct (actif/passif HA avec verrou exclusif)
 - Gère l'authentification (JWT agents, tokens plugin, ADMIN_TOKEN)
 - Expose une CLI d'administration (même binaire, mode cobra)
 
@@ -30,10 +30,10 @@ GO/cmd/secagent-server/
 │   ├── ws/
 │   │   ├── handler.go               — WSS /ws/agent, ws_connections map
 │   │   └── jwt.go                   — validation dual-key JWT HMAC-HS256
-│   ├── broker/
-│   │   └── nats.go                  — NATS JetStream, streams RELAY_TASKS/RESULTS
+│   ├── state/
+│   │   └── engine.go                — fichier d'état JSON (HMAC-SHA256, AES-256-GCM, write_seq anti-rejeu)
 │   ├── storage/
-│   │   └── store.go                 — SQLite (modernc), toutes les tables
+│   │   └── store.go                 — interface storage sur state engine (pas de SQLite, aucun CGO)
 │   └── cli/
 │       ├── root.go                  — cobra root command
 │       ├── minions.go               — secagent-server minions *
@@ -48,9 +48,9 @@ GO/cmd/secagent-server/
 
 | Port | Exposition | Rôle |
 |---|---|---|
-| `7770` | Publique (via Caddy HTTPS) | API REST agents + plugins + enrollment |
-| `7771` | **Container-interne uniquement** (`expose:`, jamais `ports:`) | Endpoints admin CLI |
-| `7772` | Publique (via Caddy WSS) | WebSocket agents uniquement |
+| `7770` | Publique (WSS/TLS natif) | API REST agents + plugins + enrollment + `/ws/agent` |
+| `7771` | **Admin seulement** — loopback par défaut, TLS obligatoire si non-loopback (`ADMIN_TLS=true` ou `ADMIN_INSECURE_HTTP + ACK`) | Endpoints admin CLI + API admin |
+| `7772` | Historique (compat) — redondant avec 7770 `/ws/agent` | (déprécié) |
 
 Le port 7771 ne doit **jamais** être exposé hors du container.
 
