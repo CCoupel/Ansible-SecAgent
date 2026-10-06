@@ -1,8 +1,8 @@
-# Ansible-SecAgent — Spécifications Techniques v1.1
+# Ansible-SecAgent — Spécifications Techniques v3.0.3
 
-> Document issu de la session de brainstorming architecture.
-> Décrit les décisions validées pour le MVP et les axes v2.
-> v1.1 : ajout déploiement systemd/Docker Compose/Kubernetes, persistance des données.
+> Spécifications pour la version stable v3.0.3.
+> Relay sans NATS (WebSocket direct dispatch), état fichier (STATE_DIR), déploiement Compose multi-hôtes actif/passif.
+> Voir SECURITY.md (modèle sécurité), STATE_SPEC.md (persistance), DEPLOYMENT/README.md (déploiement).
 
 ---
 
@@ -61,84 +61,80 @@ Modèle Ansible-SecAgent :
 
 ```
 ansible-secagent/
-├── agent/                    # CLIENT : daemon sur chaque hôte géré
-│   ├── secagent_agent.py        # Daemon principal (WebSocket + task runner)
-│   ├── facts_collector.py    # Collecte des facts Ansible
-│   ├── async_registry.py     # Registre des tâches async persisté
-│   └── secagent-minion.service   # Unité systemd
+├── GO/
+│   ├── cmd/secagent-minion/      # CLIENT : daemon sur chaque hôte géré (GO binaire)
+│   ├── cmd/secagent-server/      # SERVEUR : relay TLS natif, état fichier (GO binaire)
+│   └── cmd/secagent-inventory/   # Inventaire Ansible (GO binaire)
 │
-├── server/                   # SERVEUR : relay + broker
-│   ├── api/
-│   │   ├── main.py           # Application FastAPI
-│   │   ├── routes_exec.py    # POST /api/exec/{hostname}
-│   │   ├── routes_register.py# POST /api/register
-│   │   ├── routes_inventory.py# GET /api/inventory
-│   │   └── ws_handler.py     # Handler WebSocket agents
-│   ├── broker/
-│   │   └── nats_client.py    # Client NATS JetStream
-│   └── db/
-│       └── agent_store.py    # SQLite : agents, tokens, blacklist
+├── SECAGENT-PYTHON/              # Plugins Ansible (Python — contrainte Ansible)
+│   ├── ansible_plugins/connection_plugins/relay.py
+│   └── ansible_plugins/inventory_plugins/secagent.py
 │
-├── ansible_plugins/
-│   ├── connection_plugins/
-│   │   └── secagent.py          # Plugin de connexion Ansible
-│   └── inventory_plugins/
-│       └── secagent_inventory.py# Plugin d'inventaire dynamique
+├── DOC/                          # Documentation (technique et opérationnelle)
+│   ├── common/ARCHITECTURE.md    # Ce fichier
+│   ├── security/SECURITY.md      # Modèle sécurité (enrollment, tokens, rotation)
+│   ├── server/STATE_SPEC.md      # Format et codes état persistant
+│   ├── project/DEPLOYMENT.md     # Guide déploiement
+│   └── project/QUICKSTART.md     # Démarrage rapide
 │
-└── playbooks/
-    ├── ansible.cfg           # Configuration Ansible
-    └── site.yml              # Playbook de test
+└── DEPLOYMENT/
+    ├── docker-compose.yml        # Stack locale (TLS, état, multi-hôtes)
+    ├── prod/docker-compose.yml   # Stack production actif/passif NFS
+    └── qualif/                   # Configuration qualification
 ```
 
-### Rôles des composants
+### Rôles des composants (v3.0.3)
 
 | Composant | Rôle | Langage | Notes |
 |---|---|---|---|
-| `secagent-minion` | Daemon client, maintient la WSS, exécute les tâches | GO (Phase 8) | Binaire standalone |
-| `secagent-server` | Bridge WSS↔NATS, expose REST API, gère l'authentification | GO (Phase 7) | Binaire standalone |
-| `NATS JetStream` | Bus de messages persistant, routing inter-nodes | GO (binaire) | Composant externe |
-| `secagent-inventory` | Binaire inventaire compatible Ansible `--list`/`--host` | GO (Phase 9) | Binaire standalone |
-| `connection_plugins/secagent.py` | Remplace SSH dans Ansible, appels REST bloquants | Python (Phase 3) | **Contrainte Ansible** : API `ConnectionBase` Python uniquement |
-| `inventory_plugins/secagent.py` | Expose les agents enregistrés à Ansible | Python (Phase 3) | **Contrainte Ansible** : API `InventoryModule` Python uniquement |
+| `secagent-minion` (GO) | Daemon client, maintient WSS vers relay, exécute tâches | GO | Binaire standalone, unit systemd, reconnexion multi-adresses |
+| `secagent-server` (GO) | Relay central, WebSocket direct (7770/7772), API REST, admin CLI | GO | Binaire standalone, état fichier (STATE_DIR), TLS natif, actif/passif |
+| `secagent-inventory` (GO) | Inventaire compatible Ansible `--list`/`--host` | GO | Binaire standalone, multi-adresses, support repeater |
+| `relay.py` (Ansible plugin) | Connection plugin — remplace SSH, appels REST bloquants | Python | **Contrainte Ansible** : API `ConnectionBase` Python |
+| `secagent.py` (Ansible plugin) | Inventory plugin — expose agents et relays hiérarchiques | Python | **Contrainte Ansible** : API `InventoryModule` Python |
 
-**Note architecture** : Les plugins Ansible (`connection_plugins/`, `inventory_plugins/`) **DOIVENT** rester en Python car Ansible n'expose que des API Python pour l'extension des plugins. Les plugins sont chargés dynamiquement par Ansible et doivent hériter de `ConnectionBase` ou `BaseInventoryPlugin`. L'alternative GO (`secagent-inventory` binaire) est fournie pour les cas où le plugin Python n'est pas disponible (ex: restrictions environnement, automatisation externes).
+**Stack technique v3.0.3** (plus de NATS, SQLite, FastAPI, Kubernetes) :
+- **Agent** : GO, gorilla/websocket, subprocess, RSA-4096, JWT
+- **Serveur** : GO, net/http, gorilla/websocket, TLS natif, état fichier
+- **Plugins** : Python, PEP 8, type hints
+- **Transport** : WSS (WebSocket over TLS), HTTPS (REST)
+- **Déploiement** : Docker Compose multi-hôtes (actif/passif NFS), systemd agents
 
 ---
 
 ## 3. Architecture réseau et flux de données
 
-### Topologie haute disponibilité
+### Topologie haute disponibilité v3.0.3
 
 ```
-                    ┌─────────────────────────────┐
-                    │       Load Balancer          │
-                    │   (HAProxy / nginx / AWS)    │
-                    │   sticky session optionnel   │
-                    └──────────┬──────┬────────────┘
-                               │      │
-                ┌──────────────▼──┐  ┌▼──────────────────┐
-                │  Relay Server   │  │  Relay Server      │
-                │  Node #1        │  │  Node #2           │
-                │  WS: host-A,C   │  │  WS: host-B,D      │
-                └──────────┬──────┘  └──────┬─────────────┘
-                           │                │
-                ┌──────────▼────────────────▼───────────────┐
-                │              NATS JetStream Cluster        │
-                │  Stream: RELAY_TASKS   (tasks.{hostname})  │
-                │  Stream: RELAY_RESULTS (results.{task_id}) │
-                │  Replicas: 3, Retention: WorkQueue         │
-                └────────────────────────────────────────────┘
+          ┌─────────────────────────────────┐
+          │  Agents se reconnectent auto    │
+          │  (multi-adresses, backoff)      │
+          └────────┬──────────┬─────────────┘
+                   │          │
+          ┌────────▼──┐   ┌───▼──────────┐
+          │ Relay #1  │   │  Relay #2    │
+          │ (ACTIF)   │   │  (PASSIF)    │
+          │ Port 7770 │   │  Port 7770   │
+          │ Port 7772 │   │  Port 7772   │
+          └────────┬──┘   └───┬──────────┘
+                   │          │
+          ┌────────▼──────────▼────────┐
+          │    STATE_DIR (NFS)         │
+          │  relay.state + relay.lock  │
+          │  Partage actif/passif      │
+          └────────────────────────────┘
 ```
 
-### Les trois connexions du système
+### Les trois connexions du système (v3.0.3)
 
 | # | Connexion | Initiée par | Vers | Protocole |
 |---|---|---|---|---|
 | 1 | Session agent | `secagent-minion` | Relay Server | WSS (WebSocket over TLS) |
-| 2 | Bus messages | Relay Server | NATS Cluster | NATS TCP |
-| 3 | Exécution tâche | Connection Plugin | Relay Server API | HTTPS (REST bloquant) |
+| 2 | Exécution tâche | Connection Plugin | Relay Server API | HTTPS (REST bloquant) |
+| 3 | Relay-to-Relay (repeater) | Relay enfant ou parent | Relay parent | WSS (port 7772) |
 
-**L'agent ne connaît pas NATS.** NATS est une infrastructure serveur transparente pour le client.
+**v3.0.3 remplace NATS par WebSocket direct.** État persistant centralisé en fichier (STATE_DIR) avec verrou actif/passif.
 
 ---
 
@@ -303,65 +299,50 @@ Envoyé immédiatement après le démarrage du subprocess, avant tout stdout.
 
 ---
 
-## 5. Bus de messages — NATS JetStream
+## 5. Routage WebSocket Direct
 
-### Streams
+**v3.0.3 retire NATS JetStream.** Le dispatch des tâches se fait directement via WebSocket persistant entre les relays.
 
-#### RELAY_TASKS
+### Principes (v3.0.3)
 
-```
-Nom         : RELAY_TASKS
-Subjects    : tasks.{hostname}
-Retention   : WorkQueue (message supprimé après ack)
-MaxAge      : 300s (5 minutes)
-MaxMsgSize  : 1MB (MVP)
-Replicas    : 3
-```
+#### Connexion directe agent-relay
 
-**WorkQueue** : chaque message est délivré à exactement un consumer (l'agent du hostname cible). Après ack, le message est supprimé.
-
-#### RELAY_RESULTS
+Chaque agent maintient **une seule connexion WebSocket (WSS)** vers son relay (7770 ou 7772). Toutes les tâches sont multiplexées via ce canal unique en utilisant le champ `task_id`.
 
 ```
-Nom         : RELAY_RESULTS
-Subjects    : results.{task_id}
-Retention   : Limits (message supprimé après consommation ou TTL)
-MaxAge      : 60s
-MaxMsgSize  : 5MB (MVP — taille max stdout)
-Replicas    : 3
+secagent-minion (host-A)
+  ↓ WSS persistant (TLS, /ws/agent)
+secagent-server (relay)
+  • Reçoit tâche `task_id=uuid-1` → envoi via WS
+  • Agent répond `task_id=uuid-1` → relay capture résultat
+  • Multiplexage par task_id (pas d'ordre, pas de file d'attente)
 ```
 
-### Consumer par agent
+#### Relay actif unique (multi-adresses)
+
+Pour la haute disponibilité, un **agent peut avoir plusieurs adresses de relay** (RELAY_SERVER_URL + RELAY_WS_URL). Il tente chaque adresse séquentiellement jusqu'à connexion réussie.
 
 ```
-Nom         : secagent-minion-{hostname}
-Type        : Push (le serveur pousse à l'agent via WS)
-AckPolicy   : Explicit
-AckWait     : 30s
-MaxDeliver  : 1 (pas de retry — Ansible gère le retry au niveau playbook)
+RELAY_SERVER_URL="https://relay1:7770,https://relay2:7770"
+RELAY_WS_URL="wss://relay1:7772,wss://relay2:7772"
+→ tente relay1, si échec → tente relay2
 ```
 
-**MaxDeliver: 1** est un choix délibéré : si l'agent ne peut pas prendre en charge une tâche (crash, reconnexion), le message expire et Ansible reçoit un timeout. L'opérateur relance le playbook. Pas de retry silencieux qui pourrait créer des états incohérents.
+Voir DEPLOYMENT/README.md pour la configuration multi-adresses.
 
-### Routage inter-nodes (HA)
+#### Routage relay-to-relay
 
-```
-Problème : Plugin envoie POST à Node #2
-           Agent host-A est connecté à Node #1
+Pour les topologies hiérarchiques (repeater), voir §23. Chaque relay enfant ouvre une connexion WSS vers son parent et expose `/ws/relay` (port 7772) pour les enfants.
 
-Solution :
-  Node #2 reçoit le POST
-    → publie dans NATS tasks.host-A
-  Node #1 est subscriber de tasks.host-A
-    → reçoit le message NATS
-    → le forward à host-A via sa WebSocket
-  Agent répond via WS à Node #1
-    → Node #1 publie dans NATS results.{task_id}
-  Node #2 est subscriber de results.{task_id}
-    → reçoit le résultat
-    → résout la future() bloquante du POST
-    → retourne HTTP 200 au plugin
-```
+#### Persistance avec file-based state (v3.0.3)
+
+Le serveur maintient l'état dans un fichier persistant (STATE_DIR, voir §20), pas en base de données. Cela permet le failover actif/passif via un verrou en fichier.
+
+**Impact** : pas de "message en transit". Les tâches non reçues par l'agent reviennent en HTTP 503/504 — Ansible s'en charge du retry.
+
+### Format d'enveloppe
+
+Voir §4 pour le protocole WebSocket détaillé. Tous les messages utilisent `task_id` pour démultiplexage.
 
 ---
 
@@ -1017,42 +998,57 @@ Les agents `secagent_status: disconnected` sont inclus. Ansible les marquera UNR
 
 ---
 
-## 15. Haute disponibilité et scalabilité
+## 15. Relay Actif/Passif v3.0.3
 
-### Relay server stateless
+### Architecture sans NATS (file-based state)
 
-Les relay server nodes sont **stateless** grâce à NATS.
-Un node peut redémarrer sans perte de tâches en transit (MessageAge < 5min).
-
-### Gestion des connexions WebSocket en HA
+Les relay servers **ne sont pas stateless**. Un seul relay est actif à la fois, détenant le verrou sur le fichier d'état (STATE_DIR/relay.lock).
 
 ```
-Agent host-A se connecte à Node #1
-  → Node #1 stocke en mémoire : ws_connections["host-A"] = ws_object
+Relay #1 (actif) → lock détient STATE_DIR/relay.lock + STATE_DIR/relay.state
+Relay #2 (passif) → attend le verrou
 
-Node #1 redémarre
-  → Agent détecte WS fermée → reconnecte (backoff expo)
-  → Se reconnecte à Node #2 (load balancer)
-  → Node #2 maintenant maître de la connexion host-A
+Agent maintient connexion à Relay #1.
 
-Tâche en transit au moment du restart Node #1 :
-  → Message dans NATS tasks.host-A (TTL 5min)
-  → Node #2 reçoit le message NATS (subscriber)
-  → Forward via WS à host-A (maintenant connecté à Node #2)
+Relay #1 crash → le verrou est libéré
+  → Relay #2 acquiert le verrou
+  → Redevient actif, restaure l'état depuis relay.state
+  → Agent se reconnecte automatiquement (backoff, tentatives multi-adresses)
 ```
 
-### Capacité estimée
+### Gestion des connexions WebSocket (failover)
+
+Les agents se reconnectent **automatiquement** quand la connexion se ferme :
+
+```
+Agent tente RELAY_SERVER_URL[0], puis RELAY_SERVER_URL[1], etc (multi-adresses)
+  → Connexion établie → maintenue longtemps
+  → Déconnexion → backoff exponentiel 1s → 2s → ... → 60s max
+  → Tente toutes les adresses à chaque retry
+```
+
+### Synchronisation d'état via fichier
+
+Voir §20 pour les détails de persistance. Le fichier d'état contient :
+- Liste des agents enregistrés + tokens JTI
+- Blacklist JTI (révocations)
+- authorized_keys (clefs d'enrollment)
+- Action log JSON Lines (non-persistant, nettoyage par le serveur)
+
+### Capacité estimée (v3.0.3)
 
 | Composant | Capacité indicative |
 |---|---|
-| Relay server node (FastAPI async) | ~5000 connexions WS simultanées |
-| NATS JetStream | Millions de messages/sec |
-| Pour 1000 agents | 1 node suffit, 2-3 nodes pour HA |
+| Relay server (GO natif) | ~5000-10000 connexions WSS simultanées (TLS native) |
+| État fichier (NFS) | Adapté à 1000+ agents ; latence réseau si distant |
+| Pour 1000 agents | 2 relays en actif/passif, NFS partagé |
+| Pour 10000+ agents | Voir phase v4 (sharding geographique) |
 
-### Base de données
+### Limitations connues
 
-SQLite pour le MVP (mono-node, Docker Compose).
-PostgreSQL pour la production multi-nodes (Kubernetes). Voir section 20.
+- **Pas de "tâches en transit"** : une tâche perd sa réponse si l'agent se déconnecte (timeout → relay retourne HTTP 504 → Ansible retry)
+- **Pas de rejeu** : au failover du relay, les agents ne re-exécutent pas les tâches déjà faites (write_seq anti-rejeu dans STATE_SPEC.md)
+- **Verrou réseau** : si le NFS est lent/hors ligne, les deux relays se bloquent (accès exclusif) — voir DEPLOYMENT.md pour les bonnes pratiques
 
 ---
 
@@ -1265,232 +1261,194 @@ journalctl -u secagent-minion -f
 
 ---
 
-## 19. Déploiement — relay server (Compose / Kubernetes)
+## 19. Déploiement — relay server Docker Compose Multi-Hôtes
 
-### Docker Compose — tests et qualification
+**Kubernetes déprecié en v3.0.3.** Déploiement via Docker Compose multi-hôtes avec état persistant partagé.
 
-Cible : environnement mono-host, tests, CI, démonstration.
+### Docker Compose — Qualification mono-hôte
+
+Cible : tests, CI, démonstration, petits déploiements.
 
 ```yaml
-# docker-compose.yml
+# DEPLOYMENT/docker-compose.yml
 
 services:
-
-  nats:
-    image: nats:2-alpine
-    command: ["-js", "-sd", "/data", "-m", "8222"]
-    volumes:
-      - nats_data:/data
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  relay-api:
-    build:
-      context: ./server
-      dockerfile: Dockerfile
-    depends_on:
-      nats:
-        condition: service_healthy
+  relay:
+    image: registry/secagent-server:3.0.3
     environment:
-      NATS_URL: nats://nats:4222
-      DATABASE_URL: sqlite:////data/relay.db
+      STATE_DIR: /data/relay
+      RELAY_STATUS_FILE: /data/relay.status
+      TLS_CERT: /certs/server.crt
+      TLS_KEY: /certs/server.key
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       ADMIN_TOKEN: ${ADMIN_TOKEN}
-      TLS_CERT: /etc/relay/certs/server.crt
-      TLS_KEY: /etc/relay/certs/server.key
+      RSA_MASTER_KEY: ${RSA_MASTER_KEY}  # v3.0.3+ encryption pour relay state
     volumes:
-      - secagent_data:/data
-      - ./certs:/etc/relay/certs:ro
-    expose:
-      - "8443"
-
-  caddy:
-    image: caddy:2-alpine
+      - ./data:/data
+      - ./certs:/certs:ro
     ports:
-      - "443:443"
-      - "80:80"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-    depends_on:
-      - relay-api
-
-volumes:
-  nats_data:
-  secagent_data:
-  caddy_data:
+      - "7770:7770"    # API REST + WebSocket /ws/agent (7772 redéclaré par le serveur)
+      - "7771:7771"    # Admin CLI (loopback par défaut)
+      - "7772:7772"    # WebSocket relay-to-relay (repeater)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--cert", "/certs/client.crt", "--key", "/certs/client.key",
+             "--cacert", "/certs/ca.crt", "https://localhost:7770/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 ```
 
-```
-# Caddyfile
-relay.example.com {
-    reverse_proxy relay-api:8443 {
-        transport http {
-            tls
-            tls_insecure_skip_verify  # TLS interne auto-signé
-        }
-    }
-}
-```
+### Docker Compose — Production Actif/Passif
 
-```
-# .env (ne pas committer)
-JWT_SECRET_KEY=<secret HMAC-SHA256>
-ADMIN_TOKEN=<token admin>
-```
-
-### Kubernetes — production
-
-Cible : infrastructure > 100 agents, haute disponibilité, multi-nodes.
-
-#### Schéma des ressources K8s
-
-```
-Namespace: ansible-secagent
-─────────────────────────────────────────────────────────────────
-
-Deployment: relay-api
-  replicas: 3
-  image: registry/ansible-secagent-api:tag
-  envFrom:
-    - secretRef: relay-secrets          # JWT_SECRET_KEY, ADMIN_TOKEN, DB_URL
-  resources:
-    requests: { cpu: 100m, memory: 128Mi }
-    limits:   { cpu: 500m, memory: 512Mi }
-
-StatefulSet: nats
-  replicas: 3
-  image: nats:2-alpine
-  command: ["-js", "-sd", "/data", "--cluster", "--cluster_name", "relay"]
-  volumeClaimTemplates:
-    - name: nats-data
-      storageClassName: fast-ssd
-      accessModes: [ReadWriteOnce]
-      size: 20Gi
-
-Service: relay-api-svc       (ClusterIP → port 8443)
-Service: nats-svc            (ClusterIP → port 4222)
-Service: nats-cluster-svc    (ClusterIP → port 6222, inter-nats)
-
-Ingress: relay-ingress
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"  # WS longues
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-  tls:
-    - secretName: relay-tls
-      hosts: [relay.example.com]
-  rules:
-    - host: relay.example.com
-      http:
-        paths:
-          - path: /
-            backend: relay-api-svc:8443
-
-Secret: relay-secrets
-  JWT_SECRET_KEY: <base64>
-  ADMIN_TOKEN: <base64>
-  DATABASE_URL: <base64>  # postgresql://...
-
-ExternalService: postgresql
-  (RDS / CloudSQL / CrunchyData PGO)
-  Base: relay
-  Tables: agents, blacklist, authorized_keys
-```
-
-#### WebSocket et ingress
-
-Les connexions WebSocket agents sont **longues durées** (heures/jours).
-L'ingress nginx doit être configuré pour les supporter :
+Cible : haute disponibilité multi-hôtes, état partagé sur NFS.
 
 ```yaml
-annotations:
-  nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-  nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-  nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
-  nginx.ingress.kubernetes.io/configuration-snippet: |
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
+# DEPLOYMENT/prod/docker-compose.yml
+
+services:
+  relay-1:
+    image: registry/secagent-server:3.0.3
+    environment:
+      STATE_DIR: /nfs/relay/state        # NFS partagé, hard mount mode=0700
+      RELAY_STATUS_FILE: /nfs/relay/relay-1.status
+      TLS_CERT: /certs/server.crt
+      TLS_KEY: /certs/server.key
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      RSA_MASTER_KEY: ${RSA_MASTER_KEY}
+    volumes:
+      - nfs-relay:/nfs/relay
+      - ./certs:/certs:ro
+    ports:
+      - "7770:7770"
+      - "7771:7771"
+      - "7772:7772"
+    depends_on:
+      - nfs-server
+
+  relay-2:
+    image: registry/secagent-server:3.0.3
+    environment:
+      STATE_DIR: /nfs/relay/state        # Même NFS
+      RELAY_STATUS_FILE: /nfs/relay/relay-2.status
+      TLS_CERT: /certs/server.crt
+      TLS_KEY: /certs/server.key
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      RSA_MASTER_KEY: ${RSA_MASTER_KEY}
+    volumes:
+      - nfs-relay:/nfs/relay
+      - ./certs:/certs:ro
+    ports:
+      - "7771:7770"    # Port décalé pour éviter conflits
+      - "7772:7771"
+      - "7773:7772"
+    depends_on:
+      - nfs-server
+
+  nfs-server:
+    # Services NFS externes (ex: NAS, NFS v4) — ici exemple simplifié
+    # En prod : utiliser NFS dédié, hardmounts, timeouts élevés
+    image: nfs-server:latest
+    volumes:
+      - relay-data:/export/relay
+    environment:
+      EXPORT_PATH: /export/relay
+
+volumes:
+  nfs-relay:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr=nfs-server,vers=4,soft,timeo=30,retrans=3"  # Soft mount = plus flexible
+      device: ":/export/relay"
+  relay-data:
 ```
+
+### Points clés du déploiement
+
+1. **STATE_DIR** : répertoire NFS partagé (mode 0700, prop root:secagent)
+2. **Verrou fichier** : `STATE_DIR/relay.lock` — un seul relay peut l'acquérir
+3. **Multi-adresses agent** : 
+   ```
+   RELAY_SERVER_URL="https://relay1:7770,https://relay2:7770"
+   RELAY_WS_URL="wss://relay1:7772,wss://relay2:7772"
+   ```
+   → Les agents tentent les deux et s'adaptent automatiquement au failover
+4. **Certificats TLS** : générés une fois, bind-mounted sur les deux relays
+5. **Timeouts réseau** : configurés pour NFS (voir DEPLOYMENT/README.md)
+
+Voir **DEPLOYMENT/README.md** pour les procédures de promotion QUALIF → PROD avec health checks.
 
 ---
 
-## 20. Persistance des données
+## 20. État Persistant Fichier (STATE_DIR)
 
-### Inventaire complet des données
+**v3.0.3 remplace SQLite/PostgreSQL par un fichier d'état persistant** (STATE_DIR).
 
-| Donnée | Nature | Sensible | Mutable | Stockage Compose | Stockage K8s |
-|---|---|---|---|---|---|
-| Agent registry | DB relationnelle | Non | Fréquent | SQLite (volume) | PostgreSQL externe |
-| Token blacklist | DB relationnelle | Non | Fréquent | SQLite (volume) | PostgreSQL externe |
-| authorized_keys | Table DB | Oui | Fréquent | SQLite (volume) | PostgreSQL externe |
-| JWT signing secret | Secret | Oui | Rare | `.env` / bind mount | Secret K8s |
-| Admin token | Secret | Oui | Rare | `.env` / bind mount | Secret K8s |
-| TLS cert/key serveur | Secret | Oui | Rare (renouvellement) | bind mount `./certs` | cert-manager |
-| NATS JetStream state | Binaire NATS | Non | Continu | Volume nommé | PVC StatefulSet |
-| Async jobs (agent) | Fichier JSON | Non | Par tâche | `/var/lib/ansible-secagent/` (hôte) | `/var/lib/ansible-secagent/` (hôte) |
+### Localisation et structure
 
-### Schéma de base de données
-
-```sql
--- Table principale des agents
-CREATE TABLE agents (
-    hostname        TEXT PRIMARY KEY,
-    public_key_pem  TEXT NOT NULL,
-    token_jti       TEXT,           -- JTI du token actif
-    enrolled_at     TIMESTAMP,
-    last_seen       TIMESTAMP,
-    status          TEXT DEFAULT 'disconnected'  -- connected | disconnected
-);
-
--- Clefs autorisées pour l'enrollment
-CREATE TABLE authorized_keys (
-    hostname        TEXT PRIMARY KEY,
-    public_key_pem  TEXT NOT NULL,
-    approved_at     TIMESTAMP NOT NULL,
-    approved_by     TEXT NOT NULL    -- "terraform-pipeline", "admin", etc.
-);
-
--- Tokens révoqués
-CREATE TABLE blacklist (
-    jti             TEXT PRIMARY KEY,
-    hostname        TEXT NOT NULL,
-    revoked_at      TIMESTAMP NOT NULL,
-    reason          TEXT,
-    expires_at      TIMESTAMP NOT NULL  -- nettoyage auto des entrées expirées
-);
+```
+STATE_DIR/                       # Répertoire configuré via $STATE_DIR (défaut: /data)
+├── relay.state                  # Fichier état principal (JSON), chiffré au repos (RSA_MASTER_KEY)
+├── relay.lock                   # Verrou en fichier (exclusivité actif/passif)
+├── relay.state.backup           # Sauvegarde auto (rotate daily)
+├── write_seq                    # Compteur anti-rejeu (simple entier)
+└── action_log.jsonl             # JSON Lines — logs d'actions (cleanup serveur)
 ```
 
-### Gestion des authorized_keys dynamiques
+### Format de l'état (relay.state)
 
-Les nouvelles clefs sont enregistrées **avant** le boot du serveur via l'API admin.
-Le relay server vérifie la table `authorized_keys` à chaque enrollment.
+Fichier JSON, signé HMAC-SHA256 et chiffré RSA (RSA_MASTER_KEY). Voir STATE_SPEC.md pour le schéma détaillé.
+
+Contient :
+- Liste des agents enregistrés + tokens JTI actifs
+- Blacklist JTI (révocations)
+- authorized_keys (clefs d'enrollment)
+- Champ `write_seq` (compteur anti-rejeu)
+
+### Persistance authorized_keys
+
+Les clefs autorisées pour l'enrollment sont stockées **dans le fichier d'état**, pas en base de données. Alimentées via l'API admin `/api/admin/authorize` **avant** que l'agent ne s'enrôle.
 
 ```
 Pipeline de provisioning
   → POST /api/admin/authorize { hostname, public_key_pem, approved_by }
-  → INSERT INTO authorized_keys
+  → Édite relay.state : ajoute à authorized_keys
 
-Serveur boot → agent démarre → POST /api/register
-  → relay server : SELECT FROM authorized_keys WHERE hostname = ?
+Serveur démarre → agent appelle POST /api/register
+  → relay server : lookup authorized_keys dans relay.state
   → clef trouvée et correspondante → enrollment accepté ✓
-  → clef absente ou non correspondante → HTTP 403 ✗
+  → sinon → HTTP 403 ✗
 ```
+
+### Verrou fichier (relay.lock)
+
+Exclusivité actif/passif :
+- Relay acquiert un verrou exclusif sur `relay.lock`
+- Seul le relay détenant le verrou peut servir les requêtes
+- Si le relay crash → verrou automatiquement libéré par le système de fichiers
+- Le relay passif peut alors acquérir le verrou et redémarrer le service
+
+Voir DEPLOYMENT/README.md pour la configuration NFS (hard mount recommandé).
+
+### Codes de vérification/restauration de l'état
+
+Voir STATE_SPEC.md pour les codes détaillés (0-8) :
+- `secagent-server state verify` : vérifier l'intégrité
+- `secagent-server state restore --from <backup>` : restaurer depuis sauvegarde
 
 ### Backup et reprise
 
-| Environnement | Stratégie backup |
+| Envir. | Stratégie |
 |---|---|
-| Compose (qualif) | `docker cp` du volume SQLite, snapshot VM |
-| K8s (prod) | pg_dump PostgreSQL via CronJob, snapshots PVC NATS |
+| Compose (qualif) | Copie volumne `data/`, snapshots disque VM |
+| Prod (NFS) | Snapshots NFS quotidiens, `relay.state.backup` auto |
 
-En cas de perte complète du relay server :
-- Les agents reconnectent dès que le serveur est de retour (backoff expo)
-- Si la DB est perdue : les agents doivent se ré-enrôler (token blacklist perdue = reset)
-- Les tâches NATS en transit (< 5min) sont perdues si les PVC NATS sont perdus — Ansible retourne FAILED, l'opérateur relance le playbook
+En cas de perte :
+- Les agents se reconnectent quand le serveur revient (backoff exponentiel)
+- Si l'état est perdu : les agents doivent se ré-enrôler (tokens perdus)
+- Pas de "tâches perdues" — elles retournent HTTP 503/504 → Ansible retry
 
 ---
 
