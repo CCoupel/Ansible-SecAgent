@@ -14,7 +14,8 @@ package handlers
 //   - The old JTI is replaced and blacklisted in ONE state write (storage.RotateAgentJTI); a write
 //     failure refuses the refresh and no new token is issued.
 //   - The new JWT is returned encrypted with the agent's RSA public key (only the key holder reads it).
-//   - Rate limited per client address and per hostname (429).
+//   - Rate limited: failed attempts per client address (cheap 429, valid tokens never blocked by
+//     others behind the same address) and refreshes per authenticated hostname (429).
 //   - Every authentication failure is the same 401 {"error":"unauthorized"} (no oracle); the reason is
 //     logged as a [SECURITY WARNING] with the hostname quoted, never the token.
 //
@@ -96,7 +97,16 @@ var (
 	refreshNow = time.Now
 )
 
-func refuseRefresh(w http.ResponseWriter, hostname, why string) {
+// refuseRefresh answers an authentication failure. The per-address limiter counts FAILURES only: a
+// flooding address is cut with a cheap 429 (and stops filling the log), while a valid token is never
+// blocked by what other callers behind the same address (NAT) do.
+func refuseRefresh(w http.ResponseWriter, r *http.Request, hostname, why string) {
+	client, _ := clientAddr(r)
+	if !refreshIPLimiter.allow(client, refreshNow()) {
+		w.Header().Set("Retry-After", "60")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
+		return
+	}
 	log.Printf("[SECURITY WARNING] token refresh refused: hostname=%q reason=%s", hostname, why)
 	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 }
@@ -156,41 +166,34 @@ func TokenRefresh(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = r.Body.Close() }()
 	now := refreshNow()
 
-	client, _ := clientAddr(r)
-	if !refreshIPLimiter.allow(client, now) {
-		w.Header().Set("Retry-After", "60")
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
-		return
-	}
-
 	// 1. authentication BEFORE anything else
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") || len(auth) <= len("Bearer ") {
-		refuseRefresh(w, "", "missing bearer token")
+		refuseRefresh(w, r, "", "missing bearer token")
 		return
 	}
 	claims, usedPrevious, err := verifyRefreshToken(strings.TrimSpace(auth[len("Bearer "):]))
 	if err != nil {
-		refuseRefresh(w, "", "invalid token signature")
+		refuseRefresh(w, r, "", "invalid token signature")
 		return
 	}
 	hostname, _ := claims["sub"].(string)
 	jti, _ := claims["jti"].(string)
 	if role, _ := claims["role"].(string); role != "agent" || hostname == "" || jti == "" {
-		refuseRefresh(w, hostname, "not an agent token")
+		refuseRefresh(w, r, hostname, "not an agent token")
 		return
 	}
 	exp, ok := numericDate(claims, "exp")
 	if !ok {
-		refuseRefresh(w, hostname, "no expiry")
+		refuseRefresh(w, r, hostname, "no expiry")
 		return
 	}
 	if now.After(exp.Add(TokenRefreshGrace)) {
-		refuseRefresh(w, hostname, "token expired beyond the refresh grace")
+		refuseRefresh(w, r, hostname, "token expired beyond the refresh grace")
 		return
 	}
 	if iat, ok := numericDate(claims, "iat"); ok && iat.After(now.Add(refreshIATSkew)) {
-		refuseRefresh(w, hostname, "token issued in the future")
+		refuseRefresh(w, r, hostname, "token issued in the future")
 		return
 	}
 
@@ -206,7 +209,7 @@ func TokenRefresh(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.Hostname != "" && req.Hostname != hostname {
-		refuseRefresh(w, hostname, "body hostname differs from the token subject")
+		refuseRefresh(w, r, hostname, "body hostname differs from the token subject")
 		return
 	}
 
@@ -229,7 +232,7 @@ func TokenRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if agent == nil {
-		refuseRefresh(w, hostname, "unknown agent")
+		refuseRefresh(w, r, hostname, "unknown agent")
 		return
 	}
 
@@ -260,11 +263,11 @@ func TokenRefresh(w http.ResponseWriter, r *http.Request) {
 	if err := registerStore.RotateAgentJTI(r.Context(), hostname, jti, newJTI, !usedPrevious, blacklistUntil); err != nil {
 		switch {
 		case errors.Is(err, storage.ErrRefreshRevoked):
-			refuseRefresh(w, hostname, "token revoked")
+			refuseRefresh(w, r, hostname, "token revoked")
 		case errors.Is(err, storage.ErrRefreshReplaced):
-			refuseRefresh(w, hostname, "token replaced")
+			refuseRefresh(w, r, hostname, "token replaced")
 		case errors.Is(err, storage.ErrRefreshUnknownAgent):
-			refuseRefresh(w, hostname, "unknown agent")
+			refuseRefresh(w, r, hostname, "unknown agent")
 		case errors.Is(err, storage.ErrRefreshSuspended):
 			log.Printf("[SECURITY WARNING] token refresh refused: hostname=%q reason=agent suspended", hostname)
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "agent_suspended"})

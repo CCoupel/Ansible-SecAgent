@@ -333,3 +333,22 @@ func TestTokenRefresh_ResponseNeverEchoesTheToken(t *testing.T) {
 		t.Error("the response echoes a token")
 	}
 }
+
+// The per-address limiter counts FAILURES: an address (or a NAT) that floods forged requests gets cheap
+// 429s for its failures, but a VALID token coming from the same address is never blocked.
+func TestTokenRefresh_AFloodOfFailuresFromTheSameAddressDoesNotBlockAValidToken(t *testing.T) {
+	_, token, _ := refreshFixture(t)
+	const addr = "203.0.113.77:4000"
+	var limited int
+	for i := 0; i < 3*refreshPerIP; i++ {
+		if w := doRefresh("forged", "", addr); w.Code == http.StatusTooManyRequests {
+			limited++
+		}
+	}
+	if limited == 0 {
+		t.Fatal("the flood of failures must be rate limited")
+	}
+	if w := doRefresh(token, "", addr); w.Code != http.StatusOK {
+		t.Fatalf("a valid token from the flooding address must still be served: %d %s", w.Code, w.Body.String())
+	}
+}
