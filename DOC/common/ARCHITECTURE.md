@@ -1136,34 +1136,32 @@ only_connected = false
 | secagent-minion : max_concurrent_tasks | MVP |
 | secagent-minion : reconnexion avec backoff expo | MVP |
 | secagent-minion : systemd unit file | MVP |
-| relay server : FastAPI + WebSocket handler | MVP |
-| relay server : NATS JetStream (RELAY_TASKS + RELAY_RESULTS) | MVP |
-| relay server : REST API exec/upload/fetch | MVP |
-| relay server : JWT auth (rôles agent/plugin/admin) | MVP |
-| relay server : enrollment + blacklist révocation | MVP |
-| relay server : authorized_keys en DB (table) | MVP |
-| relay server : endpoint admin /api/admin/authorize | MVP |
-| relay server : SQLite | MVP |
-| relay server : Docker Compose (API + NATS + Caddy) | MVP |
+| relay server : GO + WebSocket handler (TLS natif) | v3.0.3 ✅ |
+| relay server : WebSocket direct (pas NATS) | v3.0.3 ✅ |
+| relay server : REST API exec/upload/fetch | v3.0.3 ✅ |
+| relay server : JWT auth (rôles agent/plugin/admin) | v3.0.3 ✅ |
+| relay server : enrollment + blacklist révocation | v3.0.3 ✅ |
+| relay server : authorized_keys en état fichier | v3.0.3 ✅ |
+| relay server : endpoint admin /api/admin/authorize | v3.0.3 ✅ |
+| relay server : État fichier (plus SQLite) | v3.0.3 ✅ |
+| relay server : Docker Compose actif/passif (pas Caddy) | v3.0.3 ✅ |
 | connection plugin : exec_command + put_file + fetch_file | MVP |
 | connection plugin : pipelining | MVP |
 | inventory plugin : tous agents + only_connected | MVP |
 | Scope OS | Linux uniquement |
 
-### V2
+### V4+ Roadmap
 
-| Fonctionnalité | Priorité |
-|---|---|
-| Chunking fichiers > 1MB | Haute |
-| Stdout streaming (HTTP chunked) | Haute |
-| PostgreSQL + déploiement Kubernetes | Haute |
-| NATS StatefulSet K8s + PVC | Haute |
-| mTLS (certificats client) | Moyenne |
-| Token rotation automatique (SPIFFE-style) | Moyenne |
-| Groupes et tags dynamiques dans l'inventaire | Moyenne |
-| K8s Job runner (hybride subprocess/pod) | Basse |
-| Support Windows (PowerShell) | Basse |
-| Dashboard de monitoring des agents | Basse |
+| Fonctionnalité | Priorité | Note |
+|---|---|---|
+| Chunking fichiers > 1MB | Haute | MVP 5MB max |
+| Stdout streaming (HTTP chunked) | Haute | MVP buffer 5MB |
+| Sharding géographique (multi-relay) | Haute | v3.0.3 repeater base |
+| mTLS (certificats client) | Moyenne | v3.0.3 TLS serveur suffisant |
+| Token rotation automatique (SPIFFE-style) | Moyenne | v3.0.3 rotation manuelle |
+| Groupes et tags dynamiques dans l'inventaire | Moyenne | v3.0.2+ group_vars base |
+| Support Windows (PowerShell) | Basse | Scope v1 = Linux |
+| Dashboard de monitoring des agents | Basse | CLI suffisant |
 
 ---
 
