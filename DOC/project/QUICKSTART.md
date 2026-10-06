@@ -183,8 +183,9 @@ docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent
 | Rien n'écoute sur 7770 | Cette instance est secondaire (aucun port ouvert) | Interroger l'autre instance (`8770`) ; `status --local` indique le rôle |
 | Agent : requête `GET /` / pas de WebSocket | `RELAY_WS_URL` sans `/ws/agent` | Ajouter le chemin `/ws/agent` |
 | Agent : arrêt (code 78) à l'enrôlement | Jeton d'enrôlement refusé (403) | Créer un nouveau jeton ; aucun retry n'est fait sur un refus |
-| 401 sur `/api/inventory` | Jeton absent, expiré ou révoqué | `tokens create --role plugin` |
-| 403 sur `/api/inventory` | Jeton non plugin (ex. `ADMIN_TOKEN`) | Utiliser un jeton plugin |
+| 401 sur `/api/inventory` (`missing_authorization`) | En-tête `Authorization: Bearer` absent ou vide | Envoyer le jeton plugin |
+| 403 sur `/api/inventory` (`token_not_found`, `token_revoked`, `token_expired`, `ip_not_allowed`…) | Jeton inconnu ou non plugin (ex. `ADMIN_TOKEN`), **révoqué**, expiré, ou IP hors `allowed_ips` (`handlers/plugin_auth.go`) | `tokens list --role plugin` ; en créer un nouveau : `tokens create --role plugin` |
+| Retour arrière vers une version antérieure à #193 : `state: corrupt state file: payload: json: unknown field "revoked"` | L'état contient un agent révoqué (`"revoked": true`) que l'ancien binaire ne connaît pas. **Ce n'est pas une corruption** : le fichier est valide, c'est le décodeur strict de l'ancien binaire qui le refuse | Ne pas « réparer » le fichier. Avant le retour arrière, supprimer les agents révoqués (`DELETE /api/admin/minions/<hostname>`, cela lève leur révocation) ou rester sur la version courante. Attention : l'ancien binaire peut basculer sur `relay.state.prev` (un état plus ancien, parfois sans la révocation) avec un `[SECURITY WARNING]` : ne pas s'y fier, vérifier ensuite avec `minions list` |
 | Inventaire vide | Agent non connecté | Vérifier les logs de l'agent |
 
 ---
