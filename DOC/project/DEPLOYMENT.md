@@ -142,6 +142,26 @@ RestartPreventExitStatus=77 78
 
 ## Gestion des Erreurs et Reprise
 
+### Révoquer un agent, lever la révocation, retour arrière (#193)
+
+```bash
+# Révoquer : drapeau persistant + blacklist du JTI en une écriture, WS fermée en 4001, le minion sort en code 77
+docker exec secagent-server secagent-server minions revoke <hostname>
+# (ou : curl --cacert tls.crt -X POST -H "Authorization: Bearer $ADMIN_TOKEN" https://localhost:7771/api/admin/revoke/<hostname>)
+
+# Effet : l'hôte est refusé à l'enrôlement (403 agent_revoked, jeton non consommé, même avec un jeton réutilisable),
+# au rekey et à la connexion WS, sans limite de durée (le drapeau survit à la blacklist de 25 h).
+
+# Lever la révocation : seule voie = supprimer l'agent (pas de « unrevoke ») ; ses variables sont perdues
+curl --cacert tls.crt -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" https://localhost:7771/api/admin/minions/<hostname>
+# puis créer un jeton d'enrôlement et ré-enrôler le minion (RELAY_ENROLLMENT_TOKEN ; effacer son token.jwt)
+docker exec secagent-server secagent-server tokens create --role enrollment --hostname-pattern "<hostname>" --expires 1h
+```
+
+- Si l'écriture est refusée (instance secondaire / état en lecture seule), la révocation répond une erreur et la WS n'est **pas** fermée : réessayer sur le maître.
+- **Retour arrière vers une version antérieure à #193** : un état contenant au moins un agent révoqué est **refusé au démarrage** (décodeur strict). Lever d'abord les révocations (`DELETE` ci-dessus) ou restaurer un état antérieur (`state verify`, `state restore --from`).
+- **Mise à jour depuis un état sans drapeau** : au démarrage, le maître pose le drapeau aux agents dont le JTI courant est encore en blacklist (25 h). Une révocation plus ancienne est oubliée : **révoquer à nouveau** l'hôte.
+
 ## Gestion des Tokens Relay (v3.0.1)
 
 ### Créer un token relay-parent (pour mode push)
