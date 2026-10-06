@@ -68,12 +68,12 @@ Le port 7771 ne doit **jamais** être publié sur une interface publique (hôte 
 
 | Endpoint | Auth requise |
 |---|---|
-| `POST /api/register` | Aucune en-tête (jeton d'enrôlement `secagent_enr_…` dans le body, ou clef pré-autorisée) |
+| `POST /api/register` | Aucune en-tête ; **jeton d'enrôlement** `secagent_enr_…` obligatoire dans le body (sans lui : 403 `enrollment_token_required`, #192c) |
 | `GET /api/inventory` | `Bearer <jeton plugin>` (`secagent_plg_…`) — un `ADMIN_TOKEN` y est refusé (403) ; la variante admin est `GET /api/inventory` sur 7771 |
 | `POST /api/exec/{host}` | `Bearer <jeton plugin>` |
 | `POST /api/upload/{host}` | `Bearer <jeton plugin>` |
 | `POST /api/fetch/{host}` | `Bearer <jeton plugin>` |
-| `POST /api/token/refresh` | JWT agent expiré (challenge RSA) |
+| `POST /api/token/refresh` | **Supprimée (#192)** : 404 pour tout appelant ; le renouvellement passe par le ré-enrôlement (401) ou le message WS `rekey` |
 | `/api/admin/*` | `Bearer <ADMIN_TOKEN>` (port 7771 ; `POST /api/admin/authorize` aussi sur 7770 par compatibilité) |
 | `WSS /ws/agent` | `Bearer <JWT agent>` (rôle `agent` uniquement) |
 | `WSS /ws/relay` | `Bearer <JWT rôle `relay` ou `relay-parent`>` |
@@ -98,7 +98,7 @@ Réponse : { "jwt_encrypted": "<OAEP(jwt, agent_pubkey) base64>", "token_encrypt
 Le jeton d'enrôlement est revalidé à **chaque** étape. Preuve : `handlers/register.go` (`RegisterRequest`, `ChallengeResponse`, `RegisterResponse`, `registerAgentWithToken`).
 
 **Codes d'erreur** (`handlers/register.go`) :
-- `403` : jeton invalide / expiré / déjà utilisé / hostname non autorisé (`unauthorized_hostname`), challenge expiré ou invalide (`challenge_*`), clef différente (`public_key_mismatch`)
+- `403` : `enrollment_token_required` (requête sans jeton : aucun JWT, aucun JTI posé, réponse identique quels que soient hostname et clef), `token_not_found`, `token_expired`, `token_already_used`, `hostname_not_allowed`, challenge expiré ou invalide (`challenge_*`) (`handlers/register.go:462-475`, `validateEnrollmentToken`)
 - `400` : `invalid_request`, `missing_fields`, `invalid_public_key`
 - `500` : `db_error`
 
@@ -179,7 +179,7 @@ Il n'y a **plus de SQL** (SQLite retiré en v3.0.3, #159/#160). Les données per
 | Section | Contenu |
 |---|---|
 | `agents` | hostname, `public_key_pem`, `token_jti`, `enrolled_at`, `suspended`, `vars`, `last_seen` |
-| `authorized_keys` | hostname, `public_key_pem`, `approved_at`, `approved_by` |
+| `authorized_keys` | hostname, `public_key_pem`, `approved_at`, `approved_by` — écrite par l'enrôlement (`EnrollAgent`) et par `POST /api/admin/authorize` ; **n'est plus consultée par `/api/register`** (#192c) |
 | `enrollment_tokens` | id, `token_hash` (SHA-256), `hostname_pattern`, `reusable`, `use_count`, `expires_at`, `created_by` |
 | `plugin_tokens` | id, `token_hash`, `description`, `role`, `allowed_ips`, `allowed_hostname_pattern`, `expires_at`, `revoked`, `last_used_at/ip` |
 | `relay_parent_tokens` | id, `jti`, `parent_id`, `expires_at`, `revoked_at` (jamais le token) |
@@ -224,7 +224,7 @@ docker exec <conteneur-du-maitre> secagent-server <commande>
 # Minions
 secagent-server minions list [--format table|json|yaml]
 secagent-server minions get <hostname>
-secagent-server minions authorize <hostname> --key-file <clef_publique.pem>   # pré-autorise une clef (pas un jeton)
+secagent-server minions authorize <hostname> --key-file <clef_publique.pem>   # mémorise une clef dans authorized_keys ; ne donne AUCUN droit d'enrôlement (créer un jeton : tokens create --role enrollment)
 secagent-server minions revoke <hostname>
 secagent-server minions suspend <hostname>
 secagent-server minions resume <hostname>
