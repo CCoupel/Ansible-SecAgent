@@ -177,10 +177,13 @@ func TestMulti_FailoverBeforeSendThenBackToTheFirstOnSwitchOver(t *testing.T) {
 		}
 	}()
 	waitFor(t, "the WebSocket on A after the switch-over", func() bool { return a.conns.Load() == 1 })
-	// and the last good address is now the head: a later drop of A reconnects on A first
-	if !strings.Contains(logs.String(), "Connected to "+a.addr) || !strings.Contains(logs.String(), "Connected to "+b.addr) {
-		t.Errorf("the chosen address (host:port) must be logged:\n%s", logs.String())
-	}
+	// and the last good address is now the head: a later drop of A reconnects on A first.
+	// The minion logs "Connected to <addr>" AFTER its dial returned, i.e. after the relay's handler
+	// counted the upgrade (conns): wait for the log itself instead of asserting it right away.
+	waitFor(t, "the chosen address (host:port) of A and of B to be logged", func() bool {
+		l := logs.String()
+		return strings.Contains(l, "Connected to "+a.addr) && strings.Contains(l, "Connected to "+b.addr)
+	})
 	for _, s := range []string{secretJWT, secretToken} {
 		if strings.Contains(logs.String(), s) {
 			t.Errorf("secret in the logs: %q", s)
