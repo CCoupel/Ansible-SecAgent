@@ -5,6 +5,7 @@
 #   failover-test.sh setup-ci            # CI uniquement : certificats auto-signes, qualif.env, `state init`
 #   failover-test.sh run stop            # arret propre du maitre : reprise rapide
 #   failover-test.sh run kill            # docker kill : reprise apres la peremption du verrou (~5-6 min)
+#   failover-test.sh run freeze          # SIGSTOP du maitre : doit passer `unhealthy`, puis SIGCONT : un seul maitre
 #   failover-test.sh teardown            # docker compose down -v
 #
 # Variables : COMPOSE_FILE (defaut docker-compose.server.yml de ce repertoire), PROJECT (secagent-failover),
@@ -22,8 +23,10 @@ DC=(docker compose -p "$PROJECT" -f "$COMPOSE_FILE")
 fail() { echo "ECHEC: $*" >&2; exit 1; }
 now() { date +%s.%N; }
 
-listening() { # $1 conteneur, $2 port : 0 si le conteneur ecoute sur le port
-  docker exec "$1" sh -c "netstat -ltn 2>/dev/null | grep -q ':$2 '"
+listening() { # $1 conteneur, $2 port : 0 si le conteneur ecoute sur le port (lecture de /proc/net/tcp{,6} :
+  # aucune dependance a netstat/ss ; etat 0A = LISTEN, port en hexadecimal sur 4 chiffres)
+  local hex; hex=$(printf '%04X' "$2")
+  docker exec "$1" sh -c "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk -v p=':$hex' '\$4==\"0A\" && index(\$2,p) && substr(\$2,length(\$2)-3)==substr(p,2) {f=1} END{exit !f}'"
 }
 is_master() { listening "$1" 7770 && listening "$1" 7772; }
 is_silent() { ! listening "$1" 7770 && ! listening "$1" 7772 && ! listening "$1" 7771; }
@@ -42,10 +45,11 @@ wait_for() { # $1 description, $2 delai max, $3... commande
 setup_ci() {
   local d="${QUALIF_TLS_DIR:-$HERE/.ci-tls}"
   mkdir -p "$d"
-  openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=localhost" \
+  openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=localhost" \
     -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -keyout "$d/tls.key" -out "$d/tls.crt" 2>/dev/null
   chmod 644 "$d/tls.key"   # lisible par l'UID 10001 du conteneur ; certificat jetable de CI
-  # Secrets ALEATOIRES et JETABLES de CI (jamais ceux de qualif/prod). Format de RSA_MASTER_KEY : voir STATE_SPEC.
+  # Secrets ALEATOIRES et JETABLES de CI (jamais ceux de qualif/prod). RSA_MASTER_KEY : toute chaine non vide
+  # convient (SHA-256 / HKDF du texte, internal/crypto) ; 32 octets aleatoires en hexadecimal en CI.
   umask 077
   { echo "JWT_SECRET_KEY=$(openssl rand -hex 32)"; echo "ADMIN_TOKEN=$(openssl rand -hex 24)"
     echo "RSA_MASTER_KEY=$(openssl rand -hex 32)"; } > "$HERE/qualif.env"
@@ -73,15 +77,26 @@ hooks() {
 }
 
 run() {
-  local mode="$1"
+  local mode="$1" t max
   up_and_identify
   hooks
+  if [ "$mode" = freeze ]; then
+    docker kill -s STOP "$MASTER" >/dev/null
+    t=$(wait_for "$MASTER unhealthy (process fige)" 180 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $MASTER)\" = unhealthy ]")
+    echo "$MASTER unhealthy apres ${t}s de gel"
+    docker kill -s CONT "$MASTER" >/dev/null
+    wait_for "$MASTER de nouveau healthy" 180 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $MASTER)\" = healthy ]" >/dev/null
+    sleep 5
+    local ma=0 mb=0
+    is_master "$C_A" && ma=1; is_master "$C_B" && mb=1
+    [ $((ma+mb)) -le 1 ] || fail "deux maitres apres le degel"
+    echo "OK (freeze)"; return 0
+  fi
   case "$mode" in
     stop) docker stop -t 30 "$MASTER" >/dev/null; max=$STOP_MAX_S ;;
     kill) docker kill "$MASTER" >/dev/null; max=$KILL_MAX_S ;;
     *) fail "mode inconnu: $mode" ;;
   esac
-  local t
   t=$(wait_for "reprise par $SECOND" "$max" is_master "$SECOND")
   echo "reprise par $SECOND en ${t}s (mode $mode, limite ${max}s)"
   [ "$(lock_count "$SECOND")" = 1 ] || fail "plusieurs fichiers relay.lock apres la bascule"

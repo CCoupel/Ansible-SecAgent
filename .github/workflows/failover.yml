@@ -29,6 +29,11 @@ jobs:
           QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
           KILL_MAX_S: '600'
         run: DEPLOYMENT/qualif/failover-test.sh run kill
+      - name: "Process fige (SIGSTOP), doit passer unhealthy"
+        env:
+          SECAGENT_IMAGE: secagent-server:ci
+          QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
+        run: DEPLOYMENT/qualif/failover-test.sh run freeze
       - name: Journaux et nettoyage
         if: always()
         env:
