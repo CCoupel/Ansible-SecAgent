@@ -1194,7 +1194,7 @@ Pipeline de provisioning (Terraform / Packer / cloud-init)
 Étape 1 : génère paire RSA-4096 pour le nouveau serveur
 Étape 2 : stocke la clef privée dans le secret manager (Vault / AWS SSM)
 Étape 3 : appelle POST /api/admin/authorize sur le relay server
-           → enregistre la clef publique en DB avant le boot
+           → enregistre la clef publique dans relay.state (authorized_keys) avant le boot
 Étape 4 : provisionne le serveur avec la clef privée injectée
            (cloud-init / user-data)
 Étape 5 : au premier boot, l'agent démarre et s'enrôle automatiquement
@@ -1204,10 +1204,10 @@ Pipeline de provisioning (Terraform / Packer / cloud-init)
 
 ```ini
 # /etc/systemd/system/secagent-minion.service
+# (modèle complet : DOC/agent/AGENT_SPEC.md §13)
 
 [Unit]
 Description=Ansible-SecAgent Agent
-Documentation=https://github.com/org/ansible-secagent
 After=network-online.target
 Wants=network-online.target
 
@@ -1215,50 +1215,37 @@ Wants=network-online.target
 Type=simple
 User=secagent-minion
 Group=secagent-minion
-ExecStart=/usr/bin/python3 /opt/secagent-minion/secagent_agent.py \
-    --config /etc/ansible-secagent/agent.conf
+ExecStart=/usr/local/bin/secagent-minion
 Restart=on-failure
 RestartSec=5s
-TimeoutStopSec=30s
-
-# Sécurité
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ReadWritePaths=/var/lib/ansible-secagent /var/log/ansible-secagent
-
-# Logs
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=secagent-minion
-
-# Variables d'environnement
-EnvironmentFile=-/etc/ansible-secagent/agent.env
+# 77 / 78 = arrêts définitifs du minion (révoqué, enrôlement refusé) : ne pas relancer
+RestartPreventExitStatus=77 78
+Environment=RELAY_SERVER_URL=https://relay.example.com:7770
+Environment=RELAY_WS_URL=wss://relay.example.com:7772/ws/agent
+EnvironmentFile=-/etc/secagent-minion/env
 
 [Install]
 WantedBy=multi-user.target
 ```
 
+Le minion est un binaire GO unique (pas de script Python) et n'a pas de fichier `--config` : tout passe par les
+variables d'environnement (§16).
+
 ### Structure fichiers sur l'hôte
 
 ```
-/opt/secagent-minion/
-  secagent_agent.py          # daemon principal
-  async_registry.py       # registre jobs async
-  facts_collector.py      # collecte facts
+/usr/local/bin/secagent-minion      # binaire
 
-/etc/ansible-secagent/
-  agent.conf              # configuration
-  id_rsa                  # clef privée (mode 600, owner secagent-minion)
-  token.jwt               # JWT courant (renouvelé automatiquement)
-  server.pub              # clef publique du relay server
+/etc/secagent-minion/
+  env                     # variables d'environnement (EnvironmentFile)
+  id_rsa                  # clef privée (RELAY_PRIVATE_KEY, mode 600, owner secagent-minion)
+  token.jwt               # JWT courant (RELAY_JWT_PATH, renouvelé automatiquement)
 
-/var/lib/ansible-secagent/
-  async/                  # registres JSON des jobs async
-
-/var/log/ansible-secagent/
-  agent.log               # logs applicatifs (si pas journald)
+/var/lib/secagent-minion/
+  async/                  # registres JSON des jobs async (RELAY_ASYNC_DIR)
 ```
+
+Les journaux sont écrits sur la sortie standard/erreur (journald) ; il n'y a pas de fichier `agent.log`.
 
 ### Activation
 
