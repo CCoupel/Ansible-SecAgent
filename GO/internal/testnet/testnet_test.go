@@ -2,6 +2,7 @@ package testnet
 
 import (
 	"net"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -14,6 +15,14 @@ func TestClosedAddrRefusesConnectionsAndIsNotReused(t *testing.T) {
 			t.Fatalf("%s handed out twice", a)
 		}
 		seen[a] = true
+		_, ps, _ := net.SplitHostPort(a)
+		port, _ := strconv.Atoi(ps)
+		mu.Lock()
+		reserved := used[port]
+		mu.Unlock()
+		if !reserved {
+			t.Fatalf("%s is not reserved: ListenOutsideEphemeralRange could hand it out again while the test relies on it being closed", a)
+		}
 		if c, err := net.DialTimeout("tcp", a, time.Second); err == nil {
 			_ = c.Close()
 			t.Fatalf("%s accepted a connection: it must be closed", a)
