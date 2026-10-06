@@ -1,4 +1,18 @@
 #!/usr/bin/env bash
+#
+# ============================================================================================
+# OBSOLETE v3.0.3 : appartient a l'ancienne topologie relay-proxy / relay-dmz1 / relay-dmz2
+# (DEPLOYMENT/qualif/docker-compose.proxy.yml, elle-meme obsolete). Les conteneurs, le CLI
+# (`tokens create`, `relays add`), la base de tokens et les jetons d'enrolement qu'il suppose ne
+# correspondent plus au serveur actuel (etat sur fichier, `state init` + RSA_MASTER_KEY, TLS natif,
+# jetons d'enrolement obligatoires, plugin avec fichier de jeton 0600 / RELAY_TOKEN_FILE).
+# Le script REFUSE de s'executer sans I_KNOW_THIS_IS_OBSOLETE=1 ; il sera remplace avec la
+# topologie en chaine de relais (issue dediee).
+# ============================================================================================
+if [ "${I_KNOW_THIS_IS_OBSOLETE:-}" != "1" ]; then
+  echo "OBSOLETE v3.0.3 : bootstrap-qualif.sh ne correspond plus au serveur actuel ; arret." >&2
+  exit 2
+fi
 # bootstrap-qualif.sh — Initialise les tokens et relay nodes pour la qualif multi-zones.
 #
 # À exécuter APRÈS `docker compose up -d`, une fois tous les services healthy.
