@@ -78,7 +78,8 @@ func linkPush(t *testing.T, parent, child *node) {
 type fakeChild struct {
 	t      *testing.T
 	conn   *websocket.Conn
-	closed chan error // the error that ended the reader (a *websocket.CloseError for a close frame)
+	closed chan error    // the error that ended the reader (a *websocket.CloseError for a close frame)
+	acks   chan struct{} // one token per topology_ack received after the handshake (see snapshotAcked)
 }
 
 func newFakeChild(t *testing.T, parent *node, id string, declared ...[]string) *fakeChild {
@@ -98,7 +99,7 @@ func newFakeChildWithVars(t *testing.T, parent *node, id string, helloVars map[s
 		t.Fatalf("fake child %s: %v", id, err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	f := &fakeChild{t: t, conn: conn, closed: make(chan error, 1)}
+	f := &fakeChild{t: t, conn: conn, closed: make(chan error, 1), acks: make(chan struct{}, 256)}
 	hello := map[string]any{"type": "relay_hello", "relay_id": id, "node_type": "relay", "mode": "pull", "version": "3.0", "ancestors": []string{}}
 	if helloVars != nil {
 		hello["group_vars"] = helloVars
@@ -114,9 +115,19 @@ func newFakeChildWithVars(t *testing.T, parent *node, id string, helloVars map[s
 	// keep reading so that pings are answered and the link stays up; remember how it ended
 	go func() {
 		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
+			_, raw, err := conn.ReadMessage()
+			if err != nil {
 				f.closed <- err
 				return
+			}
+			var m struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(raw, &m) == nil && m.Type == "topology_ack" {
+				select {
+				case f.acks <- struct{}{}:
+				default:
+				}
 			}
 		}
 	}()
@@ -155,6 +166,25 @@ func (f *fakeChild) snapshot(relays, agents []map[string]any) {
 		agents = []map[string]any{}
 	}
 	f.send(map[string]any{"type": "topology_snapshot", "relays": relays, "agents": agents})
+}
+
+// snapshotAcked sends a topology_snapshot and waits until the parent either acknowledges it (true) or
+// ends the link (false: the close is then still available to waitClosed). Writing only AFTER the previous
+// snapshot was answered means nothing is ever written into a link the parent has already closed: such a
+// write makes the parent's kernel answer with a TCP reset that can destroy the close frame before it is read.
+func (f *fakeChild) snapshotAcked() bool {
+	f.t.Helper()
+	f.send(map[string]any{"type": "topology_snapshot", "relays": []any{}, "agents": []any{}})
+	select {
+	case <-f.acks:
+		return true
+	case err := <-f.closed:
+		f.closed <- err // keep it for waitClosed
+		return false
+	case <-time.After(waitLimit):
+		f.t.Fatal("the parent neither acknowledged the snapshot nor ended the link")
+		return false
+	}
 }
 
 // waitClosed waits for the parent to end the link and returns the close code (0 if it was not a close frame).

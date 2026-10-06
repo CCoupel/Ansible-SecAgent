@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // A relay that joins AFTER the link above it was established makes its parent re-send a full
@@ -163,14 +162,9 @@ func TestTopology_SnapshotBurstIsRateLimited(t *testing.T) {
 	root := startNode(t, nodeSpec{ID: "root"})
 	f := newFakeChild(t, root, "burst")
 	for i := 0; i < 60; i++ { // far above the limit (40 per minute); the parent closes the link at some point
-		if err := f.conn.WriteJSON(map[string]any{"type": "topology_snapshot", "relays": []any{}, "agents": []any{}}); err != nil {
+		if !f.snapshotAcked() {
 			break
 		}
-		// The parent now handles a snapshot in microseconds (the state is in memory): without a
-		// pause the client keeps writing into a link the parent has already closed, and the
-		// resulting TCP reset can discard the close frame before it is read. A legitimate child is
-		// never that fast; 40 per minute is what is limited, not the pace of the writes.
-		time.Sleep(2 * time.Millisecond)
 	}
 	if code := f.waitClosed(); code != 4012 {
 		t.Fatalf("the burst must end with a 4012 close, got %d", code)
