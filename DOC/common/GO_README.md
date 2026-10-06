@@ -130,7 +130,7 @@ No more NATS JetStream. Direct WebSocket dispatch to agents.
 ### Go Standard Library
 - `crypto/rsa`, `crypto/x509`, `crypto/sha256`: Cryptography
 - `encoding/json`, `encoding/pem`, `encoding/base64`: Encoding
-- `database/sql`: SQLite connectivity
+- `database/sql`: (removed v3.0.3 — file-based state)
 - `net/http`: HTTP server
 - `context`, `sync`: Concurrency primitives
 
@@ -328,7 +328,7 @@ docker-compose down
 - ✅ Same JWT and RSA encryption
 - ✅ Identical request/response formats
 - ✅ WebSocket protocol unchanged
-- ✅ NATS stream configuration identical
+- ⚠️ NATS removed v3.0.3 (direct WebSocket dispatch)
 
 ### Behavioral Changes
 - Goroutines instead of asyncio (no observable difference)
@@ -344,15 +344,16 @@ docker-compose down
 
 ## Completed Phases
 
-### Phase 7 — Server Rewrite ✅
-- ✅ handlers/register.go — Enrollment, JWT, RSA-4096
-- ✅ handlers/exec.go — Task execution, file transfer
-- ✅ handlers/inventory.go — Ansible inventory format
-- ✅ handlers/admin.go — Admin endpoints (minions, status)
-- ✅ ws/handler.go — WebSocket connections, dispatch
-- ✅ storage/store.go — SQLite persistence
-- ✅ broker/nats.go — NATS JetStream client
-- ✅ main.go — HTTP server setup, request routing
+### Phase 7 — Server Rewrite ✅ (v2.x historical)
+**Note**: Phase 7-8 used SQLite and NATS. v3.0.3 replaces these with file-based state and direct WebSocket dispatch.
+- ✅ handlers/register.go — Enrollment, JWT, RSA-4096 (kept)
+- ✅ handlers/exec.go — Task execution, file transfer (kept)
+- ✅ handlers/inventory.go — Ansible inventory format (kept)
+- ✅ handlers/admin.go — Admin endpoints (minions, status) (kept)
+- ✅ ws/handler.go — WebSocket connections, dispatch (kept, direct WS in v3.0.3)
+- ⚠️ storage/store.go — SQLite persistence (removed v3.0.3)
+- ⚠️ broker/nats.go — NATS JetStream client (removed v3.0.3)
+- ✅ main.go — HTTP server setup, request routing (kept)
 - ✅ Unit tests — 80%+ coverage
 - ✅ Docker — Dockerfile + docker-compose.yml
 - ✅ go.mod/go.sum — Dependency lock files
@@ -389,16 +390,16 @@ docker-compose down
 - **Bearer tokens**: Admin authorization
 - **JTI blacklist**: Token revocation
 - **Constant-time comparison**: Timing attack prevention
-- **mTLS**: NATS connections in production (configurable)
+- **TLS 1.3**: Native HTTP/WSS (no reverse proxy required)
 
 ## Performance Optimization
 
 - **Compiled binary**: No Python startup overhead
 - **Goroutine pooling**: Efficient WebSocket handling
 - **Channel buffering**: Non-blocking result delivery
-- **SQLite WAL**: Concurrent read support
-- **Connection pooling**: Reduced DB overhead
-- **NATS batching**: Efficient message bus
+- **File-based state**: Lock-free reads (v3.0.3)
+- **Atomic writes**: Verrou prevents split-brain (STATE_DIR)
+- **Direct WebSocket**: No message broker (v3.0.3)
 
 ## Contributing
 
