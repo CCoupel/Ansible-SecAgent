@@ -5,9 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -313,119 +311,6 @@ func TestAdminAuthorizeMethodNotAllowed(t *testing.T) {
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", w.Code)
-	}
-}
-
-// TestTokenRefreshSuccess tests successful token refresh with encrypted response
-func TestTokenRefreshSuccess(t *testing.T) {
-	if server == nil || server.PrivateKey == nil {
-		t.Skip("server state not initialized")
-	}
-
-	// Pre-enroll an agent so TokenRefresh can look up the public key
-	_, agentPubPEM := genRSAPubPEM(t, 4096)
-	hostname := "test-agent-05"
-	preAuthorize(t, hostname, agentPubPEM)
-	if _, err := registerStore.RegisterAgent(context.Background(), hostname, agentPubPEM, "initial-jti"); err != nil {
-		t.Fatalf("RegisterAgent (setup): %v", err)
-	}
-
-	// Create a challenge encrypted with server's public key using SHA-256
-	challenge := "test-challenge"
-	ciphertext, err := rsa.EncryptOAEP(
-		sha256.New(),
-		rand.Reader,
-		&server.PrivateKey.PublicKey,
-		[]byte(challenge),
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("failed to encrypt challenge: %v", err)
-	}
-
-	req := TokenRefreshRequest{
-		Hostname:           hostname,
-		ChallengeEncrypted: base64.StdEncoding.EncodeToString(ciphertext),
-	}
-
-	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest("POST", "/api/token/refresh", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-
-	TokenRefresh(w, httpReq)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("TokenRefresh: expected 200, got %d — body: %s", w.Code, w.Body.String())
-		return
-	}
-
-	var resp map[string]string
-	mustUnmarshal(t, w.Body.Bytes(), &resp)
-
-	if resp["token_encrypted"] == "" {
-		t.Error("expected token_encrypted in response, got empty")
-	}
-	if resp["server_public_key_pem"] == "" {
-		t.Error("expected server_public_key_pem in response, got empty")
-	}
-	// Ensure plain token is NOT returned
-	if resp["token"] != "" {
-		t.Error("response must not contain plaintext 'token' field")
-	}
-}
-
-// TestTokenRefreshAgentNotFound tests token refresh for unknown agent
-func TestTokenRefreshAgentNotFound(t *testing.T) {
-	if server == nil || server.PrivateKey == nil {
-		t.Skip("server state not initialized")
-	}
-
-	challenge := "test"
-	ciphertext, _ := rsa.EncryptOAEP(sha256.New(), rand.Reader, &server.PrivateKey.PublicKey, []byte(challenge), nil)
-
-	req := TokenRefreshRequest{
-		Hostname:           "nonexistent-host-xyz",
-		ChallengeEncrypted: base64.StdEncoding.EncodeToString(ciphertext),
-	}
-
-	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest("POST", "/api/token/refresh", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-
-	TokenRefresh(w, httpReq)
-
-	if w.Code != http.StatusForbidden {
-		t.Errorf("expected 403, got %d", w.Code)
-	}
-}
-
-// TestTokenRefreshInvalidChallenge tests invalid challenge encoding
-func TestTokenRefreshInvalidChallenge(t *testing.T) {
-	req := TokenRefreshRequest{
-		Hostname:           "test-agent-06",
-		ChallengeEncrypted: "not-base64!!!",
-	}
-
-	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest("POST", "/api/token/refresh", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-
-	TokenRefresh(w, httpReq)
-
-	if w.Code != http.StatusForbidden {
-		t.Errorf("expected 403, got %d", w.Code)
-	}
-}
-
-// TestTokenRefreshInvalidJSON tests invalid JSON body
-func TestTokenRefreshInvalidJSON(t *testing.T) {
-	httpReq := httptest.NewRequest("POST", "/api/token/refresh", bytes.NewBufferString("invalid"))
-	w := httptest.NewRecorder()
-
-	TokenRefresh(w, httpReq)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", w.Code)
 	}
 }
 

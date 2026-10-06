@@ -57,10 +57,12 @@ type AdminAuthorizeRequest struct {
 	ApprovedBy   string `json:"approved_by"`
 }
 
-// TokenRefreshRequest refreshes an agent JWT
+// TokenRefreshRequest is the (optional) body of POST /api/token/refresh (#192). The caller is
+// identified by its Bearer JWT, never by the body: Hostname, when present, must equal the JWT subject.
+// ChallengeEncrypted is DEPRECATED and ignored (the old challenge proved nothing).
 type TokenRefreshRequest struct {
-	Hostname           string `json:"hostname"`
-	ChallengeEncrypted string `json:"challenge_encrypted"`
+	Hostname           string `json:"hostname,omitempty"`
+	ChallengeEncrypted string `json:"challenge_encrypted,omitempty"`
 }
 
 // ServerState holds global server state (RSA keypair + JWT secrets).
@@ -721,102 +723,6 @@ func AdminAuthorize(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"hostname": req.Hostname,
 		"status":   "authorized",
-	})
-}
-
-// TokenRefresh refreshes an agent JWT
-// POST /api/token/refresh
-func TokenRefresh(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	defer func() { _ = r.Body.Close() }()
-
-	var req TokenRefreshRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
-		return
-	}
-
-	server.mu.RLock()
-	privKey := server.PrivateKey
-	pubPEM := server.PublicPEM
-	jwtSecret := server.JWTSecret
-	jwtTTL := server.JWTttl
-	server.mu.RUnlock()
-
-	if privKey == nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_key_not_initialized"})
-		return
-	}
-
-	// Step 1: Decrypt challenge with server private key
-	ciphertextBytes, err := base64.StdEncoding.DecodeString(req.ChallengeEncrypted)
-	if err != nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "challenge_decryption_failed"})
-		return
-	}
-
-	_, err = rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, ciphertextBytes, nil)
-	if err != nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "challenge_decryption_failed"})
-		return
-	}
-
-	// Step 2: Issue new JWT with current secret
-	newJTI := uuid.New().String()
-	now := time.Now()
-	claims := jwt.MapClaims{
-		"sub":  req.Hostname,
-		"role": "agent",
-		"jti":  newJTI,
-		"iat":  now.Unix(),
-		"exp":  now.Add(jwtTTL).Unix(),
-	}
-
-	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	rawJWT, err := jwtToken.SignedString([]byte(jwtSecret))
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "jwt_generation_failed"})
-		return
-	}
-
-	// Step 3: Lookup agent public key from DB to encrypt the new JWT
-	if registerStore == nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "store_not_initialized"})
-		return
-	}
-
-	agent, err := registerStore.GetAgent(r.Context(), req.Hostname)
-	if err != nil {
-		log.Printf("TokenRefresh GetAgent: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
-		return
-	}
-	if agent == nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "agent_not_found"})
-		return
-	}
-
-	// Step 4: Encrypt new JWT with agent's RSA public key (RSA-OAEP / SHA-256)
-	tokenEncrypted, err := encryptWithPublicKey(rawJWT, agent.PublicKeyPEM)
-	if err != nil {
-		log.Printf("TokenRefresh encrypt: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "encryption_failed"})
-		return
-	}
-
-	// Step 5: Update token JTI in DB
-	if _, err := registerStore.UpdateTokenJTI(r.Context(), req.Hostname, newJTI); err != nil {
-		log.Printf("TokenRefresh UpdateTokenJTI: %v", err)
-		// Non-fatal: token was issued, log and continue
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{
-		"token_encrypted":       tokenEncrypted,
-		"server_public_key_pem": pubPEM,
 	})
 }
 
