@@ -97,3 +97,11 @@ ADMIN_TOKEN=<token> bash smoke-proxy.sh
 | 7782 | relay-proxy WS | WebSocket agents |
 | 7783 | relay-dmz1 API | Smoke test uniquement |
 | 7784 | relay-dmz2 API | Smoke test uniquement |
+
+## Promotion QUALIF des images serveur et minion (sans rebuild)
+
+Un push ne fait que des tests : **aucune image n'est publiée par `ci.yml`**. La publication sur GHCR est réservée
+(1) à la promotion QUALIF, lancée **manuellement** : GitHub → Actions → *Candidate images (QUALIF promotion)* →
+*Run workflow* (`ref` = branche ou commit, `publish` = `true`) ; (2) au tag `vX.Y.Z` (`release.yml`, PROD).
+Le résumé du run donne `ghcr.io/ccoupel/<image>:sha-<commit>@sha256:<digest>` : c'est la valeur de `SECAGENT_IMAGE`
+de `docker-compose.server.yml`.
