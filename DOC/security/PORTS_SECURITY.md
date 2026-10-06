@@ -9,147 +9,154 @@
 ## Vue d'ensemble
 
 ```
-┌──────────────────────────────────────────────────────┐
-│ Serveur Ansible-SecAgent (secagent-server GO)        │
-│                                                      │
-│  Port 7770 — API REST + WebSocket agent (TLS natif) │
-│             ├─ POST /api/register (enrollment)      │
-│             ├─ GET /ws/agent (persistent WS)        │
-│             └─ GET /health (liveness)               │
-│                                                      │
-│  Port 7771 — Admin CLI (loopback par défaut)        │
-│             ├─ HTTP local (loopback)                │
-│             └─ HTTPS si ADMIN_TLS=true              │
-│                                                      │
-│  Port 7772 — WebSocket agent historique (compat)    │
-│             └─ Redondant avec 7770 (TLS natif)      │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ secagent-server (GO) — instance MAÎTRE                       │
+│                                                              │
+│  Port 7770 — API REST (TLS natif)         [API_ADDR]         │
+│     ├─ GET  /health                       (public)           │
+│     ├─ POST /api/register                 (enrôlement)       │
+│     ├─ POST /api/token/refresh                               │
+│     ├─ GET  /api/inventory                (jeton plugin)     │
+│     ├─ POST /api/exec|upload|fetch/{host} (jeton plugin)     │
+│     ├─ GET  /ws/agent, /ws/relay          (WebSocket)        │
+│     └─ POST /api/admin/authorize          (compat, ADMIN_TOKEN)│
+│                                                              │
+│  Port 7771 — Admin (ADMIN_TOKEN)          [ADMIN_ADDR]       │
+│     └─ /api/admin/*, GET /api/inventory   (HTTPS ou loopback)│
+│                                                              │
+│  Port 7772 — WebSocket dédié (TLS natif)  [WS_ADDR]          │
+│     └─ /ws/agent, /ws/relay                                  │
+└──────────────────────────────────────────────────────────────┘
 ```
+
+Seul le maître ouvre ces ports : une instance secondaire (passive) **n'ouvre aucun port** tant qu'elle n'a pas acquis le verrou (voir `DEPLOYMENT/prod/README.md`). Les trois adresses sont configurables (`API_ADDR`, `ADMIN_ADDR`, `WS_ADDR` ; défauts `:7770`, `:7771`, `:7772`, `server/config.go:27-36`). Les routes sont définies dans `GO/cmd/secagent-server/internal/server/routers.go`.
 
 ---
 
-## Port 7770 — Agent & Plugin (API REST + WebSocket)
+## Port 7770 — API REST (agents, plugins Ansible)
 
-**Rôle** : Canal unique pour agents (minion) et plugins Ansible (connection + inventory)
+**Rôle** : enrôlement des agents, API REST bloquante utilisée par les plugins Ansible (connexion + inventaire), et — par compatibilité — WebSocket `/ws/agent` et `/ws/relay`.
 
-**Interfaces** :
+**Interfaces** (`routers.go:35-43,101`) :
 ```
-POST   /api/register           → Enrollment agent (pre-authorized)
-GET    /ws/agent               → WebSocket persistante (agents + plugins)
-GET    /health                 → Health check (public)
-GET    /api/agents             → List agents (admin JWT)
-POST   /api/inventory          → Dynamic inventory (admin JWT)
+GET    /health                    → Liveness (public, sans authentification)
+POST   /api/register              → Enrôlement agent (jeton d'enrôlement ou clef pré-autorisée)
+POST   /api/token/refresh         → Renouvellement de JWT agent
+GET    /api/inventory             → Inventaire dynamique (jeton PLUGIN)
+POST   /api/exec/{hostname}       → Exécution de commande (jeton PLUGIN, bloquant)
+POST   /api/upload/{hostname}     → Envoi de fichier (jeton PLUGIN, bloquant)
+POST   /api/fetch/{hostname}      → Récupération de fichier (jeton PLUGIN, bloquant)
+GET    /ws/agent                  → WebSocket persistante des agents (JWT rôle agent)
+GET    /ws/relay                  → WebSocket entre relays
+POST   /api/admin/authorize       → Pré-autorisation d'une clef (ADMIN_TOKEN ; aussi sur 7771)
 ```
+
+Il n'existe **pas** de route `GET /healthz`, `GET /api/agents` ni `POST /api/inventory` : ces chemins répondent `404`.
 
 **Authentification** :
-- `/api/register` : **Pré-autorisé** par clef publique (RSA-4096 agent, stockée en mémoire au démarrage depuis `STATE_DIR`)
-- `/ws/agent` : **JWT signé** (rôle `agent` pour minion, rôle `plugin` pour Ansible, rôle `admin` pour inventory)
-- Health : **Publique** (aucune auth)
+- `/api/register` : jeton d'enrôlement (`secagent_enr_…`, opaque) + challenge RSA-OAEP, ou clef publique pré-autorisée par `POST /api/admin/authorize` (flux historique) — voir `DOC/contracts/REST_ENROLLMENT.md`
+- `/ws/agent` : **JWT signé de rôle `agent` uniquement** ; un JWT d'un autre rôle est refusé (`ws/handler.go:409`)
+- `/api/inventory`, `/api/exec`, `/api/upload`, `/api/fetch` : **jeton plugin** `secagent_plg_…` (chaîne opaque, **pas un JWT**), vérifié contre l'empreinte SHA-256 de l'état, avec expiration, révocation, `allowed_ips` et `allowed_hostname_pattern` (`handlers/plugin_auth.go`). Un `ADMIN_TOKEN` y est refusé (`403`)
+- `/health` : publique
 
 **Flux nominal (agent)** :
 ```
-1. Agent : POST /api/register {hostname, pubkey_pem, enrollment_token}
-2. Serveur : Valide enrollment_token + pubkey_pem
-3. Serveur : Répond challenge RSA-OAEP
-4. Agent : Déchiffre, répond nonce
-5. Serveur : Valide, émet JWT(rôle=agent)
-6. Agent : Ouvre WebSocket /ws/agent avec JWT Bearer
-7. Serveur : Accepte WS, dispatch les tâches par `task_id` (multiplexe)
-8. Agent : Reçoit exec/put_file/fetch_file/cancel, exécute, répond
+1. Agent : POST /api/register {hostname, public_key_pem, enrollment_token}
+2. Serveur : valide le jeton et le hostname, répond {challenge, server_public_key_pem}
+3. Agent : déchiffre le nonce, renvoie challenge_response chiffré avec la clef du serveur
+4. Serveur : valide, émet un JWT (rôle agent) chiffré avec la clef publique de l'agent
+5. Agent : ouvre la WebSocket /ws/agent avec le JWT en Bearer
+6. Serveur : dispatche exec/put_file/fetch_file/cancel par `task_id` (multiplexé)
 ```
 
-**Flux nominal (plugin)** :
+**Flux nominal (plugin Ansible)** — REST bloquant, pas de WebSocket côté plugin :
 ```
-1. Plugin Ansible : POST /api/register pour obtenirJWT(rôle=plugin)
-   OR : Inclure JWT(rôle=plugin) en header Authorization
-2. Plugin : POST /ws/agent avec JWT(rôle=plugin) (WebSocket)
-3. Serveur : Accepte WS, démultiplexe par task_id
-4. Plugin : Envoie exec pour un host
-5. Serveur : Route vers minion via sa WS /ws/agent
-6. Minion : Exécute, envoie résultat
-7. Serveur : Route résultat vers plugin WS
+1. Plugin : POST /api/exec/{hostname} avec Authorization: Bearer <jeton plugin>
+2. Serveur : valide le jeton plugin, route la tâche vers la WebSocket /ws/agent du minion
+3. Minion : exécute, répond sur sa WebSocket
+4. Serveur : renvoie le résultat dans la réponse HTTP de l'étape 1
+(idem pour /api/upload/{hostname} et /api/fetch/{hostname})
 ```
 
-**Flux nominal (inventory)** :
+**Flux nominal (inventaire)** :
 ```
-1. Control Node Ansible : GET /api/inventory avec JWT(rôle=admin)
-2. Serveur : Valide JWT, retourne liste agents + facts (JSON)
-3. Ansible : Popule inventory dynamique
+1. Contrôleur Ansible (secagent-inventory) : GET /api/inventory avec le jeton plugin
+2. Serveur : valide le jeton, renvoie l'inventaire JSON (agents + variables)
 ```
 
 **Cas de sécurité** :
-- ✓ Seuls agents avec clef pré-autorisée + enrollment_token valide → JWT(rôle=agent)
-- ✓ Seuls plugins avec JWT(rôle=plugin) ou enrollment_token → WebSocket dispatch
-- ✓ JWT signé + validé à chaque message, révocation via JTI blacklist
-- ✓ Tokens expirés → fermeture WS code 4002 (re-enrollment)
-- ✓ Tokens révoqués → fermeture WS code 4001 (arrêt définitif, exit code 77)
-- ✓ Enrollment refusé (403) → exit code 78 (ne pas redémarrer, créer nouveau token)
+- ✓ Seuls les agents enrôlés (jeton d'enrôlement valide, ou clef pré-autorisée) obtiennent un JWT de rôle `agent`
+- ✓ Les plugins n'ont jamais de WebSocket : `/ws/agent` n'accepte que le rôle `agent`
+- ✓ JWT agent signé, révocation par blacklist de JTI
+- ✓ Agent révoqué → fermeture WS code `4001` (arrêt définitif, code de sortie 77)
+- ✓ Enrôlement refusé (`403`) → code de sortie 78 (pas de redémarrage ; créer un nouveau jeton)
+- ✓ Le serveur n'émet que `4000` (agent supprimé), `4001` (révocation) et `1001` (arrêt/perte du verrou) vers les agents ; `4002` existe comme constante mais n'est jamais émis, et `4003`/`4004` n'existent pas (`DOC/contracts/WEBSOCKET.md` §5)
 
 ---
 
-## Port 7771 — Admin CLI
+## Port 7771 — Admin
 
-**Rôle** : Interface d'administration locale (opérateurs)
+**Rôle** : API d'administration utilisée par le CLI `secagent-server` et par les opérateurs.
 
-**Interfaces** :
-```
-GET    /healthz                 → Healthcheck (aucune auth)
-EXEC   secagent-server admin    → CLI cobra (local stdin/stdout)
-```
+**Interfaces** : toutes les routes `/api/admin/*` (agents, jetons, relays, rotation des clefs, statut, journal des hooks) et `GET /api/inventory` (version administrateur de l'inventaire). Liste complète : `DOC/contracts/REST_ADMIN.md`. Il n'y a pas de route `/healthz` ni de `/health` sur ce port.
 
-**Authentification** :
-- Loopback (`127.0.0.1`, `::1`) : **HTTP** (aucune auth requise)
-- Réseau admin (non-loopback) : **HTTPS** (TLS obligatoire, `ADMIN_TLS=true`)
+**Authentification** : **toujours** `Authorization: Bearer <ADMIN_TOKEN>`. Il n'existe **aucune exemption pour la boucle locale** : une requête sans jeton reçoit `401` (`missing_authorization`), un jeton faux `401` (`invalid_admin_token`) (`handlers/admin.go` `requireAdminAuth`). `ADMIN_TOKEN` est une chaîne secrète partagée, pas un JWT.
 
-**Comportement** :
-- Si `ADMIN_ADDR=127.0.0.1:7771` (défaut) : loopback uniquement, HTTP accepté
-- Si `ADMIN_ADDR=0.0.0.0:7771` : réseau ouvert, HTTPS obligatoire (`ADMIN_TLS=true`)
-- Si `ADMIN_INSECURE_HTTP=true` : HTTP accepté partout (tests uniquement) + `ADMIN_INSECURE_HTTP_ACK=i-understand-the-risk` exact requis
+**Exposition** (`server/tls.go` `adminExposure`) — le serveur **refuse de démarrer** si l'API admin servirait du HTTP clair sur une adresse non loopback sans dérogation :
+- `ADMIN_ADDR` : **défaut `:7771`** (toutes les interfaces). Avec ce défaut et sans `ADMIN_TLS=true`, le démarrage échoue (message « the admin API (:7771) would serve plain HTTP on a non-loopback address »)
+- `ADMIN_ADDR=127.0.0.1:7771` : loopback, HTTP accepté
+- `ADMIN_TLS=true` (avec `TLS_CERT`/`TLS_KEY`) : le port admin sert le même certificat que 7770/7772 ; requis pour toute adresse non loopback
+- `ADMIN_INSECURE_HTTP=true` **et** `ADMIN_INSECURE_HTTP_ACK=i-understand-the-risk` : dérogation explicite (HTTP clair sur un réseau, `[SECURITY WARNING]` au démarrage) — le jeton admin circule en clair, à réserver à un réseau d'administration protégé par ailleurs
 
-**Fonctionnalités** :
+**Commandes courantes** :
 ```bash
-# Gestion des tokens
-secagent-server admin token create --role agent --duration 1h
-secagent-server admin token revoke <jti>
+# Jetons (rôles : enrollment, plugin, relay-parent)
+secagent-server tokens create --role enrollment --hostname-pattern "web[0-9]+" --expires 1h
+secagent-server tokens create --role plugin --description "ansible-control" --expires 365d
+secagent-server tokens revoke <id>            # jetons plugin / relay-parent
 
-# Gestion de l'état
-secagent-server state init                    # Initialiser une fois
-secagent-server state verify                  # Vérifier cohérence
-secagent-server state restore --from backup   # Restaurer depuis backup
+# Gestion de l'état (hors ligne, sans API)
+secagent-server state init                    # une seule fois ; exige RSA_MASTER_KEY
+secagent-server state verify <file>           # vérifie un fichier d'état (exige RSA_MASTER_KEY)
+secagent-server state restore --from <file>   # restaure depuis une sauvegarde (arrêter toutes les instances)
 
-# Statut du relay
-secagent-server status --local                # Statut local (verrou, agents, uptime)
+# Statut
+secagent-server status --local                # statut local (fichier RELAY_STATUS_FILE, sans port ni API)
+secagent-server server status                 # vue API du maître (GET /api/admin/status)
 ```
 
+`secagent-server admin …` n'existe pas : `admin` n'est pas une sous-commande, et le binaire lancé avec un argument inconnu démarre le serveur au lieu d'afficher une erreur.
+
 **Cas de sécurité** :
-- ✓ Loopback uniquement par défaut (admin local sur la machine du relay)
-- ✓ Si réseau admin : TLS obligatoire (ADMIN_TLS=true) + certificat identique au 7770/7772
-- ✓ Pas d'authentification requise sur loopback (confiance système)
+- ✓ Authentification par `ADMIN_TOKEN` sur chaque requête, y compris depuis la machine locale
+- ✓ Pas de HTTP clair sur un réseau sans dérogation explicite (double accusé) ; avertissement `[SECURITY WARNING]` quand elle est utilisée
+- ✓ Si `ADMIN_TLS=true` : même certificat que 7770/7772
 
 ---
 
-## Port 7772 — WebSocket Agent (Compatibilité historique)
+## Port 7772 — WebSocket dédié
 
-**Rôle** : Redondance avec port 7770, même interface WebSocket
+**Rôle** : listener WebSocket dédié (`WS_ADDR`). C'est la valeur **par défaut** de `RELAY_WS_URL` côté minion (`wss://localhost:7772/ws/agent`, `secagent-minion/main.go:407`) ; le code ne le marque pas comme déprécié.
 
-**Interfaces** :
+**Interfaces** (`routers.go:97-101`) :
 ```
-GET    /ws/agent               → WebSocket persistante (identique à 7770)
+GET    /ws/agent               → WebSocket persistante des agents
+GET    /ws/relay               → WebSocket entre relays
 ```
+Les deux mêmes routes sont aussi servies sur 7770.
 
-**Authentification** : Identique à 7770 (`JWT` rôle `agent` ou `plugin`)
+**Authentification** : identique à 7770 — `/ws/agent` n'accepte que le JWT de rôle `agent` (aucun jeton plugin ni admin).
 
-**TLS** : Natif (WSS, même certificat que 7770)
-
-**Raison** : Certains déploiements héritents pointent vers 7772. Supporté pour compatibilité v3.0.3, sera supprimé en v4.0.0.
+**TLS** : natif (WSS, même certificat que 7770).
 
 **Configuration agents** :
 ```bash
-# Agents peuvent utiliser soit 7770 soit 7772 pour WebSocket
-export RELAY_WS_URL="wss://relay:7772/ws/agent"  # Historique
-# OU
-export RELAY_WS_URL="wss://relay:7770/ws/agent"  # Préféré v3.0.3+
+# Défaut du minion :
+export RELAY_WS_URL="wss://relay:7772/ws/agent"
+# Ou via le port API :
+export RELAY_WS_URL="wss://relay:7770/ws/agent"
 ```
+Le chemin `/ws/agent` est **obligatoire** dans `RELAY_WS_URL` : le minion se connecte à l'URL telle quelle.
 
 ---
 
@@ -157,55 +164,47 @@ export RELAY_WS_URL="wss://relay:7770/ws/agent"  # Préféré v3.0.3+
 
 | Port | Endpoint | Auth | Agent | Plugin | Admin | Notes |
 |------|----------|------|-------|--------|-------|-------|
-| **7770** | POST /api/register | Pre-authorized | ✓ | ✗ | ✗ | RSA-OAEP challenge |
-| **7770** | GET /ws/agent | JWT(agent) | ✓ | ✗ | ✗ | Task dispatch |
-| **7770** | GET /ws/agent | JWT(plugin) | ✗ | ✓ | ✗ | Task proxy |
-| **7770** | GET /api/agents | JWT(admin) | ✗ | ✗ | ✓ | List agents |
-| **7770** | GET /api/inventory | JWT(admin) | ✗ | ✗ | ✓ | Dynamic inventory |
-| **7770** | GET /health | None | ✓ | ✓ | ✓ | Liveness probe |
-| **7771** | /healthz | None (loopback) | ✓ | ✗ | ✓ | Admin health |
-| **7771** | CLI (state/admin) | Local stdin | ✗ | ✗ | ✓ | Opérateurs |
-| **7772** | GET /ws/agent | JWT(agent/plugin) | ✓ | ✓ | ✗ | Compat v3.0.3 only |
+| **7770** | POST /api/register | jeton d'enrôlement ou clef pré-autorisée | ✓ | ✗ | ✗ | Challenge RSA-OAEP |
+| **7770 / 7772** | GET /ws/agent | JWT(rôle agent) | ✓ | ✗ | ✗ | Dispatch de tâches ; autre rôle refusé |
+| **7770** | POST /api/exec, /api/upload, /api/fetch | jeton plugin | ✗ | ✓ | ✗ | REST bloquant |
+| **7770** | GET /api/inventory | jeton plugin | ✗ | ✓ | ✗ | `ADMIN_TOKEN` refusé (403) |
+| **7770** | GET /health | aucune | ✓ | ✓ | ✓ | Liveness |
+| **7771** | /api/admin/*, GET /api/inventory | ADMIN_TOKEN | ✗ | ✗ | ✓ | Aucun accès sans jeton, même en loopback |
 
 ---
 
 ## Variables de Configuration
 
-### Relay Server (secagent-server)
+### Serveur (secagent-server)
 
 ```bash
-# Ports (non configurables, défauts fixes)
-# 7770 : API + WebSocket
-# 7771 : Admin CLI
-# 7772 : WebSocket compat
-
-# Adresse admin
-ADMIN_ADDR="127.0.0.1:7771"         # Loopback par défaut
-ADMIN_ADDR="0.0.0.0:7771"           # Réseau ouvert (TLS requis)
+# Adresses d'écoute (configurables)
+API_ADDR=":7770"       # défaut
+WS_ADDR=":7772"        # défaut
+ADMIN_ADDR=":7771"     # défaut : toutes les interfaces -> impose ADMIN_TLS=true (sinon le serveur refuse de démarrer)
+ADMIN_ADDR="127.0.0.1:7771"   # loopback : HTTP admin accepté
 
 # TLS
 TLS_CERT="/etc/secagent/tls.crt"    # Certificat PEM
 TLS_KEY="/etc/secagent/tls.key"     # Clef privée PEM
-TLS_DISABLE=                        # À ne jamais définir (sauf test local)
+TLS_DISABLE=                        # Ne jamais définir en production (tests uniquement)
 
-# Admin TLS (si ADMIN_ADDR non-loopback)
-ADMIN_TLS=false                     # Loopback : HTTP OK
-ADMIN_TLS=true                      # Réseau : HTTPS obligatoire
-ADMIN_INSECURE_HTTP=true            # Tests seul, avec ACK
-ADMIN_INSECURE_HTTP_ACK="i-understand-the-risk"
+# Admin
+ADMIN_TLS=true                      # TLS sur le port admin (même certificat)
+ADMIN_INSECURE_HTTP=true            # dérogation : HTTP clair hors loopback (réseau protégé)
+ADMIN_INSECURE_HTTP_ACK="i-understand-the-risk"   # accusé obligatoire avec la dérogation
 ```
 
 ### Agents (secagent-minion)
 
 ```bash
-# Enrollment API (HTTPS)
-RELAY_SERVER_URL="https://relay:7770"          # Défaut
+# Enrôlement (HTTPS)
+RELAY_SERVER_URL="https://relay:7770"          # Défaut : https://localhost:7770
 RELAY_SERVER_URL="https://relay1:7770,https://relay2:7770"  # Multi-adresses
 
-# WebSocket (WSS)
-RELAY_WS_URL="wss://relay:7770/ws/agent"       # Préféré
-RELAY_WS_URL="wss://relay:7772/ws/agent"       # Compat historique
-RELAY_WS_URL="wss://relay1:7770/ws/agent,wss://relay2:7770/ws/agent"  # Failover
+# WebSocket (WSS) — défaut : wss://localhost:7772/ws/agent
+RELAY_WS_URL="wss://relay:7772/ws/agent"
+RELAY_WS_URL="wss://relay1:7772/ws/agent,wss://relay2:7772/ws/agent"  # Failover
 ```
 
 **Important** : `RELAY_SERVER_URL` et `RELAY_WS_URL` doivent avoir le même nombre d'adresses (pairées par position).
@@ -219,11 +218,11 @@ RELAY_WS_URL="wss://relay1:7770/ws/agent,wss://relay2:7770/ws/agent"  # Failover
 ufw allow from 192.168.1.0/24 to any port 7770   # Réseau agents
 ufw allow from 10.0.0.0/8 to any port 7770       # Réseau control nodes
 
-# Port 7771 — Admin (loopback par défaut, réseau admin si ADMIN_ADDR défini)
+# Port 7771 — Admin (hôte local ou réseau d'administration ; jamais le réseau agents)
 ufw allow from 127.0.0.1 to any port 7771        # Loopback
 ufw allow from 10.0.1.0/24 to any port 7771      # Réseau admin (opt.)
 
-# Port 7772 — WebSocket compat (si utilisé, même règles que 7770)
+# Port 7772 — WebSocket dédié (même règles que 7770 ; défaut du minion)
 ufw allow from 192.168.1.0/24 to any port 7772
 ufw allow from 10.0.0.0/8 to any port 7772
 
@@ -240,12 +239,14 @@ secagent-server:
   ports:
     # API + WebSocket — publié, TLS natif
     - "7770:7770"
-    # Admin CLI — loopback par défaut
+    # Admin — publié sur la boucle locale de l'hôte seulement
     - "127.0.0.1:7771:7771"
-    # WebSocket compat — publié
+    # WebSocket dédié — publié
     - "7772:7772"
   environment:
-    ADMIN_ADDR: "127.0.0.1:7771"
+    # Dans le conteneur, l'API admin écoute sur toutes les interfaces : TLS obligatoire
+    ADMIN_ADDR: "0.0.0.0:7771"
+    ADMIN_TLS: "true"
     TLS_CERT: "/run/secrets/tls.crt"
     TLS_KEY: "/run/secrets/tls.key"
 ```
@@ -266,8 +267,8 @@ environment:
 | Code | Condition | Comportement | Mitigations |
 |------|-----------|--------------|-------------|
 | 77 | Agent révoqué (JTI blacklisté, WS close 4001) | Arrêt définitif — `RestartPreventExitStatus=77` | L'opérateur crée nouveau token d'enrôlement |
-| 78 | Enrollment refusé (403 persistant) | Arrêt définitif — `RestartPreventExitStatus=78` | L'opérateur crée nouveau token d'enrôlement |
-| 75 | Verrou perdu (master crash) | Redémarrage (relay passif) | Failover automatique (multi-hôtes) |
+| 78 | Enrollment refusé (403 : jeton invalide, expiré ou consommé) ou absence de `RELAY_ENROLLMENT_TOKEN` | Arrêt définitif — `RestartPreventExitStatus=78` | L'opérateur crée nouveau token d'enrôlement |
+| 75 | Verrou maître **perdu par une instance vivante** (`server/instance.go:38`) — un crash ne produit pas ce code | Redémarrage en secondaire | Failover automatique (multi-hôtes) |
 
 ---
 
@@ -293,16 +294,19 @@ ss -tulpn | grep 777
 # Vérifier les certificats TLS
 openssl x509 -in $TLS_CERT -text -noout
 
-# Tester l'enrollment
-curl -X POST -k https://relay:7770/api/register \
+# Tester l'enrollment (--cacert : vérification TLS ; n'utiliser `-k` qu'en dev/qualif avec certificat auto-signé)
+curl -X POST --cacert ca.pem https://relay:7770/api/register \
   -H "Content-Type: application/json" \
-  -d '{"hostname":"test","pubkey_pem":"...","enrollment_token":"..."}'
+  -d '{"hostname":"test","public_key_pem":"...","enrollment_token":"..."}'
 
-# Tester l'admin healthz (loopback)
-curl http://127.0.0.1:7771/healthz
+# Tester la liveness (public)
+curl --cacert ca.pem https://relay:7770/health
 
-# Tester l'inventaire
-curl -k -H "Authorization: Bearer $ADMIN_JWT" https://relay:7770/api/inventory
+# Tester l'API admin (ADMIN_TOKEN obligatoire, HTTPS si ADMIN_TLS=true)
+curl --cacert ca.pem -H "Authorization: Bearer $ADMIN_TOKEN" https://127.0.0.1:7771/api/admin/status
+
+# Tester l'inventaire (jeton plugin, port 7770)
+curl --cacert ca.pem -H "Authorization: Bearer $PLUGIN_TOKEN" https://relay:7770/api/inventory
 ```
 
 ---
