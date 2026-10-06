@@ -8,7 +8,7 @@
 # meme preuve) ; l'enfant PUSH (optionnel dans #188) n'est pas deploye ici.
 # Images : SECAGENT_IMAGE (serveur) et SECAGENT_MINION_IMAGE (minion), references promues
 # (`sha-<commit>@sha256:<digest>`) ; aucun `build:`, aucun `latest`. TLS de bout en bout avec une CA privee :
-# REPEATER_CA_FILE / RELAY_CA_BUNDLE, jamais RELAY_INSECURE_TLS.
+# REPEATER_CA_FILE / RELAY_CA_BUNDLE, aucune desactivation de la verification TLS.
 # Les jetons sont produits par `chain-test.sh bootstrap` dans ./chain/ (ignore par git, fichiers 0600) :
 # jamais dans le depot, jamais dans les logs. Le poste de controle Ansible est HORS Compose (voir README).
 include:

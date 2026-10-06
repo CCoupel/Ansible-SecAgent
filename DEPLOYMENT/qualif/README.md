@@ -2,7 +2,24 @@
 
 Topologie qualif v3.0.3 : **un relay en actif/passif**, deux instances (`secagent-server-a`, `secagent-server-b`) sur **un même volume d'état** `secagent_state`, définies dans `docker-compose.server.yml`. Exactement une instance est maître (ports 7770/7771/7772 ouverts) ; l'autre est secondaire et **n'ouvre aucun port** tant qu'elle n'a pas pris le verrou. Les ports d'hôte du service b sont décalés (8770/8771/8772) parce que les deux conteneurs tournent sur la même machine.
 
-> **Obsolète** : la topologie « relay-proxy + relay-dmz1 + relay-dmz2 » (ports 7780-7784, `.env.proxy`, `/api/agents` agrégés) n'existe plus. Les Compose `docker-compose.minion.yml`, `docker-compose.proxy.yml` et `docker-compose.ansible.yml` portent un bandeau **OBSOLETE v3.0.3** : non fonctionnels avec le serveur actuel (état sur fichier, TLS natif), conservés comme outillage de référence, **à ne pas utiliser** (la chaîne de relais sera reconstruite par une issue dédiée). `scripts/bootstrap-qualif.sh` appartient à cette ancienne topologie.
+> La topologie « relay-proxy + relay-dmz1 + relay-dmz2 » (ports 7780-7784, `.env.proxy`, `/api/agents` agrégés), ses Compose (`proxy`, `minion`, `ansible`), les smoke-tests associés, `deploy.sh`/`deploy.bat` et `bootstrap-qualif.sh` ont été **supprimés** (#188) : ils sont remplacés par la chaîne ci-dessous.
+
+## Topologie en chaîne (#188) : `docker-compose.chain.yml`
+
+Racine actif/passif (`secagent-server-a/-b`, incluse depuis `docker-compose.server.yml`), **un relay enfant pull** (`secagent-child`, `REPEATER_ID=dmz1`, `REPEATER_UPSTREAM_URL` = liste des 2 adresses de la racine, `REPEATER_CA_FILE`), **deux minions** (`minion-root`, `minion-child`) avec listes d'adresses et `RELAY_CA_BUNDLE`. TLS de bout en bout avec une CA privée de test (`pki/gen.sh`), jamais `RELAY_INSECURE_TLS`. L'enfant push (optionnel) n'est pas déployé ; l'enfant pull est une seule instance (l'actif/passif testé est celui de la racine).
+Le poste de contrôle Ansible (plugin `SECAGENT-PYTHON`, `secagent-inventory`, `ansible-core`) est le poste qui lance les scripts : il joint la racine par `127.0.0.1:7770` et `:8770` (jeton plugin en **fichier 0600**, jamais en variable d'environnement partagée).
+
+```bash
+export SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-<commit>@sha256:<digest>
+export SECAGENT_MINION_IMAGE=ghcr.io/ccoupel/secagent-minion:sha-<commit>@sha256:<digest>
+export INVENTORY_BIN=/chemin/secagent-inventory     # binaire du poste de controle
+bash chain-test.sh ci-prepare   # CI/essai : PKI de test (pki/out) + qualif.env jetable ; en qualif : vos propres secrets
+bash chain-test.sh bootstrap    # state init, relays add, jetons d'enrolement et plugin (./chain/, 0600), demarrage
+bash chain-test.sh smoke        # relais, minions, inventaire hierarchique, ansible -m ping
+bash chain-test.sh failover     # arret propre du maitre de la racine puis smoke ; kill : failover-test.sh run kill
+bash chain-test.sh down
+```
+Les secrets (`qualif.env`, `chain/`, `pki/out/`) sont ignorés par git. En CI, le job « Chaîne en conteneurs » rejoue ce scénario à chaque push.
 
 ## Prérequis
 
