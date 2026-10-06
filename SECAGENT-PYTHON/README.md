@@ -9,7 +9,7 @@ SECAGENT-PYTHON/
 └── tests/unit/test_relay.py                      # tests pytest
 ```
 
-Spécification : `DOC/plugins/PLUGINS_SPEC.md` · contrat REST : `DOC/contracts/REST_PLUGIN.md` · guide de poste de contrôle : `DEPLOYMENT/ANSIBLE_DEPLOYMENT.md`.
+Spécification : `DOC/plugins/PLUGINS_SPEC.md` · contrat REST : `DOC/contracts/REST_PLUGIN.md` · poste de contrôle Ansible de la chaîne de qualif : `DEPLOYMENT/qualif/README.md` (`chain-test.sh smoke`).
 
 ## Fonctionnement
 

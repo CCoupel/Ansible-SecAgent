@@ -27,7 +27,7 @@ Ansible_SecAgent/
 │   ├── cmd/secagent-minion/     # agent ; internal/{enrollment,ws,executor,registry,facts,files}
 │   └── cmd/secagent-inventory/  # binaire d'inventaire dynamique Ansible
 ├── SECAGENT-PYTHON/             # plugin de connexion Ansible (ansible_plugins/connection_plugins/relay.py) + tests
-├── DEPLOYMENT/                  # qualif/ (Compose actif/passif), prod/, ANSIBLE_DEPLOYMENT.md
+├── DEPLOYMENT/                  # qualif/ (racine actif/passif + chaîne de relais, docker-compose.chain.yml), prod/
 └── RELEASE/                     # historique des phases (archive)
 ```
 

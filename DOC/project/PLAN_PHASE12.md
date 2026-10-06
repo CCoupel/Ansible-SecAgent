@@ -1,5 +1,7 @@
 # Plan d'implémentation — Phase 12 : Proxy/Gateway Multi-Zone
 
+> **ARCHIVE HISTORIQUE** — plan d'une phase passée, conservé pour mémoire ; ne reflète plus l'architecture v3.0.3 (état fichier, TLS natif, actif/passif, plus de NATS/SQLite/Caddy). Références vivantes : `DOC/common/ARCHITECTURE.md`, `DOC/server/STATE_SPEC.md`.
+
 > Architecte : planner  
 > Date : 2026-05-22  
 > Issue GitHub : #99  

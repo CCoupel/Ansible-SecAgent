@@ -8,10 +8,10 @@ pour l'implémentation, les tests et la validation de cohérence.
 | Fichier | Interface | Initiateur → Récepteur | Port |
 |---|---|---|---|
 | [`REST_PLUGIN.md`](REST_PLUGIN.md) | REST HTTPS | Plugin Ansible / secagent-inventory → secagent-server | 7770 |
-| [`REST_ENROLLMENT.md`](REST_ENROLLMENT.md) | REST HTTPS | secagent-minion → secagent-server (enrollment + refresh) | 7770 |
-| [`REST_ADMIN.md`](REST_ADMIN.md) | HTTP (interne) | CLI cobra → secagent-server | 7771 |
+| [`REST_ENROLLMENT.md`](REST_ENROLLMENT.md) | REST HTTPS | secagent-minion → secagent-server (enrôlement ; la route de refresh a été supprimée) | 7770 |
+| [`REST_ADMIN.md`](REST_ADMIN.md) | HTTPS (`ADMIN_TLS=true`) ou HTTP sur boucle locale | CLI cobra → secagent-server | 7771 |
 | [`WEBSOCKET.md`](WEBSOCKET.md) | WSS | secagent-server ↔ secagent-minion (opérationnel) | 7772 |
-| [`NATS.md`](NATS.md) | NATS JetStream | secagent-server ↔ secagent-server (HA interne) | 4222 |
+| [`NATS.md`](NATS.md) | **RETIRÉ en v3.0.3 (#178)** — archive historique, pas un contrat vivant | — | — |
 
 ## Schéma global
 
@@ -27,7 +27,7 @@ secagent-minion ◀─── WEBSOCKET (7772) ───────────�
                                                       │                       │
                                                       └───────────┬───────────┘
                                                                   │
-                                                        NATS (4222) entre nœuds
+                                       actif/passif : état fichier (STATE_DIR) + verrou, sans bus de messages
 ```
 
 ## Règle de cohérence
