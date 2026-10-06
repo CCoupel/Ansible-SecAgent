@@ -34,7 +34,7 @@ GO/
 │       └── main.go                          # Standalone inventory binary
 ├── go.mod                                   # Module definition
 ├── go.sum                                   # Dependency lock
-├── Dockerfile / Dockerfile.agent / Dockerfile.ansible   # Container images
+├── Dockerfile / Dockerfile.agent / Dockerfile.ansible   # Container images (Dockerfile.ansible : OBSOLETE v3.0.3, voir #188 pour le remplaçant)
 └── internal/endpoints/, internal/testnet/               # Shared packages (address lists, test helpers)
 
 (Compose files are NOT under GO/: see ../DEPLOYMENT/qualif/ and ../DEPLOYMENT/prod/.)
