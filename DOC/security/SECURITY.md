@@ -31,7 +31,7 @@ Défense en profondeur        : IP binding + hostname claim + token secret + TLS
 |---|---|---|---|
 | `agent` | secagent-minion (hôte cible) | `POST /api/register`, `WSS /ws/agent` | JWT HMAC-HS256 chiffré RSA-OAEP |
 | `plugin` | Ansible Control Node | `GET /api/inventory`, `POST /api/exec`, `/api/upload`, `/api/fetch` | Token statique hashé (SHA-256) |
-| `relay-child` | repeater-enfant (présenté au handshake) | `WSS /ws/relay` (relay_hello, agent_list, event_forward, task_forward) | JWT HMAC-HS256 (créé et signé par le relay parent avec sa JWT_SECRET_KEY) |
+| `relay` (dit « relay-child ») | repeater-enfant (présenté au handshake) | `WSS /ws/relay` (relay_hello, agent_list, event_forward, task_forward) | JWT HMAC-HS256 (créé et signé par le relay parent avec sa JWT_SECRET_KEY) |
 | `relay-parent` | repeater-parent en mode push (présenté au handshake) | `WSS /ws/relay` (ouvrir connexion vers enfant) | JWT HMAC-HS256 (créé et signé par le relay enfant avec sa JWT_SECRET_KEY) |
 | `admin` | CLI dans le container serveur | Port 7771 — tous les endpoints d'administration | `ADMIN_TOKEN` env var (container-interne) |
 
@@ -39,7 +39,7 @@ Défense en profondeur        : IP binding + hostname claim + token secret + TLS
 
 - Un token `role: agent` ne peut **pas** appeler `/api/exec` ni `/api/inventory` ni ouvrir `/ws/relay`
 - Un token `role: plugin` ne peut **pas** ouvrir `/ws/agent` ni `/ws/relay`
-- Un token `role: relay-child` ne peut **pas** accéder `/api/inventory`, `/api/exec`, `/api/upload`, `/api/fetch`, ni `/ws/agent` (repeater-to-repeater uniquement)
+- Un token `role: relay` (dit relay-child) ne peut **pas** accéder `/api/inventory`, `/api/exec`, `/api/upload`, `/api/fetch`, ni `/ws/agent` (repeater-to-repeater uniquement)
 - Un token `role: relay-parent` ne peut **pas** accéder `/api/inventory`, `/api/exec`, `/api/upload`, `/api/fetch`, ni `/ws/agent` (repeater-to-repeater uniquement)
 - Le port 7771 (admin) n'est **jamais** exposé hors du container (`expose:` uniquement, pas `ports:`)
 - L'admin CLI s'authentifie via `localhost:7771` en lisant `ADMIN_TOKEN` depuis l'environnement du container
@@ -213,10 +213,9 @@ Le serveur n'émet vers les agents que `4000`, `4001` et `1001`. `4002` existe c
 | Code | Nature | Signification | Comportement du pair qui reçoit le close |
 |---|---|---|---|
 | `4010` | **Refus permanent** | Identité non autorisée pour ce lien : token révoqué, `relay_id` ≠ `jwt.sub`, identité du pair différente de celle attendue, boucle détectée (C ∈ {P} ∪ ancêtres(P)) | **Ne pas reconnecter** : le client/dialer s'arrête (état terminal, log ERROR) ; une action opérateur est nécessaire |
-| `4011` | Token expiré | Token relay expiré (TTL dépassé) | Rafraîchir le token puis reconnecter |
+| `4011` | **Non émis** | Constante réservée (`ws/relay_handler.go:37`), jamais envoyée ni traitée : un token expiré est refusé par un 401 avant l'upgrade | — |
 | `4012` | **Refus corrigible** | Erreur protocolaire ou de validation pouvant se résoudre : `topology_snapshot` invalide / déjà reçu / reçu avant `relay_hello`, conflit de routage ou de relay déclaré, slot « parent unique » occupé | Reconnexion avec backoff exponentiel (5 s → 60 s max) |
-| `4000` | Normal | Fermeture normale ou initiée par le client | — |
-| `1000` | Normal | Fermeture WebSocket standard | — |
+| `4000` | Constante définie, non émise sur les liens relay | — | — |
 
 > Un refus HTTP 401 avant l'upgrade (token invalide, révoqué à la reconnexion, secret non configuré) n'a pas de code de fermeture : le client le traite comme une erreur de connexion (backoff 5 s → 60 s).
 
