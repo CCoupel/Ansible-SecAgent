@@ -7,7 +7,7 @@ Système permettant d'exécuter des playbooks Ansible sur des hôtes distants sa
 ## Fonctionnalités principales
 
 - **Connexions inversées** — les agents initient la connexion sortante vers le serveur (NAT/firewall friendly)
-- **Auth JWT + RSA-4096** — enrollment sécurisé, rôles RBAC (`agent` / `plugin` / `admin` / `relay`)
+- **Auth JWT + RSA-4096** — enrollment sécurisé par jeton opaque, JWT agent après enrôlement, jetons `enrollment` / `plugin` / `relay-parent`, API d'administration protégée par `ADMIN_TOKEN`
 - **Event Hooks** — actions configurables via JSON (webhook, shell, file, API) déclenchées par événements agent
 - **Repeater Relay Chain** — topologie arbre hiérarchique (v3.0.1+) : relays enfants se connectent au parent (pull) ou parent se connecte aux enfants (push), inventaire unifié par héritage
 - **Propagation d'événements** (v3.0.2+) — événements remontant l'arbre (host.up/down/new/conflict, relay.updated) avec chaînes d'origine exactes, hooks et variables configurables
@@ -16,35 +16,31 @@ Système permettant d'exécuter des playbooks Ansible sur des hôtes distants sa
 
 ## Quick Start
 
-**Prérequis** : Docker, Docker Compose, certificats TLS auto-signés
+**Prérequis** : Docker, Docker Compose, openssl, binaire `secagent-minion`.
 
-### 1. Initialiser l'état du relay
+Le parcours complet et commenté (certificat auto-signé avec SAN, `state init`, jetons, agent,
+inventaire, exécution) est dans **[DOC/project/QUICKSTART.md](./DOC/project/QUICKSTART.md)**. En résumé :
+
 ```bash
-cd DEPLOYMENT/qualif
-mkdir -p state && docker compose run --rm secagent-server state init
+cd DEPLOYMENT/qualif   # Compose réel : docker-compose.server.yml (SECAGENT_IMAGE et QUALIF_TLS_DIR requis)
+
+# 1. État initial (RSA_MASTER_KEY requis dans qualif.env ; le serveur refuse de démarrer sans relay.state)
+docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent-server-a state init
+
+# 2. Démarrer (deux instances actif/passif sur un volume partagé ; le secondaire n'ouvre aucun port)
+docker compose -p secagent-qualif -f docker-compose.server.yml up -d
+curl -s --cacert tls/tls.crt https://localhost:7770/health
+
+# 3. Jetons (CLI du serveur ; rôles : enrollment | plugin | relay-parent)
+docker compose -p secagent-qualif -f docker-compose.server.yml exec \
+  -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
+  secagent-server-a secagent-server tokens create --role enrollment --expires 1h
 ```
 
-### 2. Démarrer le relay
-```bash
-docker compose up -d relay
-curl -k https://localhost:7770/health  # Vérifier la santé
-```
-
-### 3. Enrôler et démarrer les agents
-```bash
-TOKEN=$(docker compose exec relay secagent-server admin token create --role agent --duration 1h | tail -1)
-export RELAY_ENROLLMENT_TOKEN=$TOKEN
-docker compose up -d minion-01 minion-02 minion-03
-docker compose logs minion-01 | grep -i "enrolled"
-```
-
-### 4. Vérifier l'inventaire
-```bash
-ADMIN_JWT=$(docker compose exec relay secagent-server admin token create --role admin --duration 1h | tail -1)
-curl -k -H "Authorization: Bearer $ADMIN_JWT" https://localhost:7770/api/inventory | jq .
-```
-
-Voir [DEPLOYMENT/README.md](./DEPLOYMENT/README.md) pour un guide complet.
+L'agent (`secagent-minion`) se configure par variables d'environnement
+(`RELAY_ENROLLMENT_TOKEN`, `RELAY_SERVER_URL`, `RELAY_WS_URL` avec le chemin `/ws/agent`…) ;
+`GET /api/inventory` exige un jeton **plugin**. Voir [DEPLOYMENT/README.md](./DEPLOYMENT/README.md)
+pour un guide complet.
 
 ## Structure du Projet v3.0.3
 
@@ -62,8 +58,10 @@ ansible-secagent/
 │   └── README.md
 │
 ├── DEPLOYMENT/                  # Configs Docker Compose
-│   ├── qualif/docker-compose.yml    - Single-host Compose avec certificats self-signed
-│   ├── prod/docker-compose.yml      - Multi-host Compose actif/passif
+│   ├── qualif/docker-compose.server.yml - Qualif : 2 instances actif/passif, certificat self-signed
+│   │                                      (les autres Compose de qualif/ sont OBSOLETES en v3.0.3)
+│   ├── prod/docker-compose.server.yml   - Prod : relay racine, identique sur N hôtes (actif/passif)
+│   ├── prod/docker-compose.child.yml    - Surcharge pour un relay enfant
 │   ├── prod/.env.example            - Variables non-secrets
 │   ├── prod/prod.env.example        - Secrets (TLS_*, RSA_MASTER_KEY, JWT_*)
 │   └── README.md                    - Guide déploiement complet
@@ -79,8 +77,7 @@ ansible-secagent/
 │   ├── inventory/INVENTORY_SPEC.md  - Specs secagent-inventory
 │   └── project/                     - Guides opérationnels
 │       ├── DEPLOYMENT.md
-│       ├── QUICKSTART.md
-│       └── RELEASE_NOTES.md
+│       └── QUICKSTART.md
 │
 ├── README.md                    # Ce fichier
 └── CLAUDE.md                    # Instructions Claude Code
@@ -139,19 +136,18 @@ ansible-secagent/
 - **Plugins Ansible** : Python, ConnectionBase, InventoryModule (contrainte Ansible)
 - **Transport** : WSS (TLS obligatoire sur 7770/7772), HTTPS/REST
 - **Authentification** : JWT HMAC-SHA256, RSA-4096 challenge-response, JTI blacklist
-- **État** : Fichier (relay.state), signé HMAC, chiffré RSA, verrou multi-hôtes (NFS)
+- **État** : Fichier (relay.state), authentifié HMAC-SHA-256 (les secrets y sont chiffrés AES-256-GCM, dérivés de `RSA_MASTER_KEY`), verrou fichier (`relay.lock`, battement) sur stockage partagé (NFS)
 - **Orchestration** : Docker Compose multi-hôtes (qualif + prod actif/passif)
 
-## Sécurité MVP
+## Sécurité
 
-✅ **Validé par security review** (0 findings CRITICAL/HAUT)
+Voir [DOC/security/SECURITY.md](./DOC/security/SECURITY.md) pour le modèle complet et ses limites connues.
 
-- JWT signé HMAC-SHA256
-- RSA-4096 key exchange à l'enrollment
-- Challenge-response pour token refresh
-- JTI blacklist (revocation)
-- TLS obligatoire pour production
-- Rôles RBAC (agent/plugin/admin)
+- JWT signé HMAC-SHA256 (agents) ; jetons d'enrôlement et plugin opaques (`secagent_enr_…`, `secagent_plg_…`), jeton `relay-parent` signé
+- RSA-4096 à l'enrôlement, challenge-response pour le renouvellement du jeton
+- Blacklist JTI (révocation)
+- TLS natif obligatoire en production (`TLS_DISABLE` : tests uniquement)
+- API d'administration (7771) : jeton `ADMIN_TOKEN` toujours exigé
 
 ## Phases de Développement
 
@@ -171,7 +167,7 @@ ansible-secagent/
 - **Architecture** : Voir `ARCHITECTURE.md` et `HLD.md`
 - **Déploiement** : Voir `DEPLOYMENT.md`
 - **Développement** : Voir `CLAUDE.md` pour les conventions
-- **Tests** : `pytest tests/ -v`
+- **Tests** : `cd GO && JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v` (Go) ; `pytest` dans `SECAGENT-PYTHON/` (plugins)
 
 ---
 
