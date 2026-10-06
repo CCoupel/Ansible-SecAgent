@@ -677,6 +677,31 @@ Le binaire `secagent-inventory` utilise `RELAY_INSECURE_TLS` pour désactiver la
 - Revoir la liste des détenteurs de tokens admin
 - Mettre à jour vers v3.0.3
 
+### Avis 3 — `POST /api/token/refresh` non authentifiée et enrôlement sans jeton (v1.0.0, v2.0.0)
+
+**Versions affectées** : toutes les versions antérieures à v3.0.3, dont v1.0.0 et v2.0.0 (défaut présent depuis v1.0.0).
+
+**Description** : deux chemins émettaient un JWT agent **sans prouver l'identité de l'appelant** et **sans consulter la blacklist des JTI** :
+- **`POST /api/token/refresh`** : le seul contrôle était qu'un champ `challenge_encrypted` se déchiffre avec la clef du serveur (clef publique, donc fabricable par n'importe qui). Aucun en-tête `Authorization` n'était vérifié.
+- **`POST /api/register` sans `enrollment_token`** (flux historique « clef pré-autorisée ») : il suffisait de présenter un hostname et la clef publique enregistrée dans `authorized_keys`, sans preuve de possession de la clef privée.
+
+**Scénarios d'exploitation** :
+- **Contournement de la révocation** : un agent révoqué (JTI blacklisté) qui conserve sa clef privée obtenait un nouveau JTI non blacklisté et un nouveau JWT (chiffré pour sa clef, qu'il peut donc lire), puis se reconnectait à `/ws/agent`.
+- **Remplacement de JTI / déni de service** : toute personne connaissant un hostname (et, pour `/api/register`, sa clef publique, qui n'est pas secrète) remplaçait le JTI courant d'un agent légitime ; l'ancien JWT de l'agent était alors refusé (`token_replaced`) jusqu'à son ré-enrôlement. L'appelant ne pouvait pas lire le nouveau JWT (chiffré pour la clef de l'agent) : pas d'usurpation, mais une interruption répétable.
+
+**Versions corrigées** : **v3.0.3** (#192, #192c) :
+- la route `POST /api/token/refresh` est **supprimée** (`404` pour tout appelant) ; elle n'avait aucun client, le renouvellement se fait par ré-enrôlement ou message `rekey` ;
+- `POST /api/register` **sans jeton d'enrôlement est refusé** (`403 enrollment_token_required`, identique quels que soient hostname et clef) ; le flux avec jeton exige le challenge RSA-OAEP, dont la preuve de possession de la clef privée est comparée côté serveur.
+
+**Exposition tant que v2.0.0 est en service** : l'environnement de qualification resté en v2.0.0 est exposé jusqu'à sa migration vers v3.0.3.
+
+**Mitigation réseau (déploiements v1.0.0 / v2.0.0)** :
+- bloquer l'accès à `POST /api/token/refresh` et restreindre `POST /api/register` aux réseaux d'enrôlement (pare-feu ou reverse proxy en frontal) ;
+- ne pas considérer la révocation comme définitive pour un agent qui conserve sa clef privée : rendre l'hôte inutilisable (réinstallation ou retrait de la clef privée) ;
+- mettre à jour vers v3.0.3.
+
+**Recommandation** : mettre à jour vers v3.0.3 ; après la mise à jour, tous les agents se ré-enrôlent avec un jeton d'enrôlement (état vierge).
+
 ### Limites connues — v3.0.3
 
 #### Anti-rejeu limité : arrêt à froid
@@ -714,6 +739,12 @@ La rotation de la clé maître exige une **réécriture complète de l'état** (
 4. Monitorer les erreurs de déchiffrement (clé mal propagée)
 
 Le serveur **ne** redéploiera **jamais** une ancienne clé en cas d'erreur : il s'arrêtera avec un message d'erreur explicite.
+
+#### Fichier de jeton du plugin Ansible : `O_NOFOLLOW` ne protège que le dernier composant
+
+Le plugin de connexion lit son jeton plugin dans un fichier (défaut `/etc/ansible/secagent_plugin.jwt`, `SECAGENT-PYTHON/ansible_plugins/connection_plugins/relay.py`). Il l'ouvre en `O_NOFOLLOW`, vérifie sur le descripteur (`fstat`) que c'est un fichier **régulier** (lien symbolique, FIFO, socket, périphérique refusés), appartenant à l'utilisateur effectif, sans droit pour le groupe ni les autres (`mode & 0o077` refusé, donc `0600` ou `0400`).
+
+**Limite** : `O_NOFOLLOW` ne s'applique qu'au **dernier** composant du chemin. Un lien symbolique placé sur un répertoire parent est suivi. **Mitigation** : protéger le répertoire parent (propriétaire root ou utilisateur Ansible, non modifiable par les autres) et ne jamais placer le fichier dans un répertoire partagé comme `/tmp`.
 
 #### REPEATER_CA_FILE n'est pas rechargé à chaud
 
