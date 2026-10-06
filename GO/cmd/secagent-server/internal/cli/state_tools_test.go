@@ -2,11 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -307,22 +307,22 @@ func TestStateRestore_RefusesWhileAnInstanceHoldsAFreshLock(t *testing.T) {
 		_ = os.WriteFile(lockPath, pad, 0o700)
 	}
 	writeLockFile(1)
-	var beat atomic.Uint64
-	stop := make(chan struct{})
-	go func() { // a live master: the beat counter keeps changing
-		for {
-			select {
-			case <-stop:
-				return
-			case <-time.After(15 * time.Millisecond):
-				writeLockFile(2 + beat.Add(1))
-			}
+	// A live master: its beat counter changes every 3rd poll of the probe (15 ms of VIRTUAL time, the
+	// limit being 120 ms). The probe runs on a virtual clock: the former goroutine rewriting the lock
+	// every 15 ms of real time could be stalled for 120 ms on a loaded machine, and the probe then
+	// (rightly) judged the lock stale.
+	var beat uint64
+	prevClock := stateLockClock
+	stateLockClock = &virtualClock{now: time.Unix(1000, 0), onSleep: func(n int) {
+		if n%3 == 0 {
+			beat++
+			writeLockFile(2 + beat)
 		}
-	}()
+	}}
+	t.Cleanup(func() { stateLockClock = prevClock })
 	before := snapshotDir(t, dir)
 	out, code := execRestore(t, dir, filepath.Join(dir, state.PrevFile), false)
 	if code != ExitInstanceAlive || !strings.Contains(out, "nothing modified") {
-		close(stop)
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 	// the live lock keeps changing the directory: compare only what restore could have touched
@@ -340,13 +340,34 @@ func TestStateRestore_RefusesWhileAnInstanceHoldsAFreshLock(t *testing.T) {
 
 	// the explicit option passes over it, loudly, and the journal records it
 	out, code = execRestore(t, dir, filepath.Join(dir, state.PrevFile), true)
-	close(stop)
 	if code != 0 || !strings.Contains(out, "[SECURITY WARNING]") {
 		t.Fatalf("with the override: exit %d:\n%s", code, out)
 	}
 	if !strings.Contains(string(mustRead(t, filepath.Join(dir, state.RestoreLogFile))), `"lock_override":true`) {
 		t.Error("the override must be recorded in the journal")
 	}
+}
+
+// virtualClock is a lock.Clock whose Sleep advances the time instantly, then runs onSleep(n) (n =
+// number of sleeps so far): another instance acts at an exact poll of the probe.
+type virtualClock struct {
+	now     time.Time
+	n       int
+	onSleep func(n int)
+}
+
+func (c *virtualClock) Now() time.Time { return c.now }
+
+func (c *virtualClock) Sleep(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.n++
+	c.now = c.now.Add(d)
+	if c.onSleep != nil {
+		c.onSleep(c.n)
+	}
+	return nil
 }
 
 func itoa(n uint64) string {
