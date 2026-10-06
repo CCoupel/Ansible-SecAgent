@@ -708,7 +708,7 @@ Le binaire `secagent-inventory` utilise `RELAY_INSECURE_TLS` pour désactiver la
 
 #### Révocation d'agent : drapeau persistant, retour arrière et révocations anciennes (#193)
 
-- **Retour arrière** : le décodeur d'état est strict ; un binaire antérieur à #193 refuse de démarrer sur un état contenant `"revoked": true`. Avant un rollback : lever les révocations (`DELETE` des agents) ou restaurer un état antérieur (`schema_version` reste 1).
+- **Retour arrière** : le décodeur d'état est strict ; un binaire antérieur à #193 rejette un état contenant `"revoked": true` (`unknown field "revoked"`, classé corruption). **Il peut alors basculer sur `relay.state.prev`** (`[SECURITY WARNING]`), génération plus ancienne qui peut ne pas contenir la révocation : **la révocation est perdue silencieusement** et l'hôte révoqué peut se ré-enrôler. Avant tout retour arrière : noter les agents révoqués, les supprimer (`DELETE`), puis ré-appliquer les révocations avec l'ancien binaire. Avant un rollback : lever les révocations (`DELETE` des agents) ou restaurer un état antérieur (`schema_version` reste 1).
 - **Révocations antérieures à #193** : réparées au démarrage du maître seulement si le JTI courant est encore en blacklist (25 h). Les plus anciennes sont oubliées : **révoquer à nouveau** ces hôtes.
 - **Levée** : `DELETE /api/admin/minions/{hostname}` supprime aussi les variables de l'hôte et sa clef autorisée ; il n'y a pas de levée qui les conserve.
 
