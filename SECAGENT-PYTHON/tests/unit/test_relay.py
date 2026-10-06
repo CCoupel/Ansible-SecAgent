@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Tests of the relay connection plugin: multi-address failover (#168)."""
+import base64
 import datetime
 import io
 import json
@@ -20,6 +21,7 @@ from ansible.playbook.play_context import PlayContext
 from ansible_plugins.connection_plugins import relay
 
 TOKEN = "SECRET-JWT-TOKEN-xyz"
+SEEN = []  # JSON bodies received by the "echo-stdin" test server
 
 
 class Counter:
@@ -42,8 +44,16 @@ def _make_handler(counter, behaviour):
         def do_POST(self):
             counter.hit()
             length = int(self.headers.get("Content-Length", 0))
-            self.rfile.read(length)
-            if behaviour == "ok":
+            raw = self.rfile.read(length)
+            if behaviour == "echo-stdin":
+                req = json.loads(raw)
+                SEEN.append(req)
+                body = json.dumps({"rc": 0, "stdout": "", "stderr": ""}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif behaviour == "ok":
                 body = json.dumps({"rc": 0, "stdout": "hello", "stderr": ""}).encode()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(body)))
@@ -328,3 +338,22 @@ def test_5xx_address_not_remembered(servers, make_conn):
     with pytest.raises(AnsibleConnectionFailure):
         _exec(make_conn(_url(srv)))
     assert relay._LAST_GOOD_URL is None
+
+
+# --- #190: stdin travels base64-encoded --------------------------------------
+
+def test_stdin_is_base64_encoded(servers, make_conn):
+    SEEN.clear()
+    srv, _ = servers("echo-stdin")
+    module = b"#!/usr/bin/env python3\nprint('x & y')\n\xff\x00binary"
+    make_conn(_url(srv)).exec_command("python3 -", in_data=module, sudoable=False)
+    assert base64.b64decode(SEEN[0]["stdin"], validate=True) == module
+
+
+def test_no_stdin_field_without_in_data(servers, make_conn):
+    SEEN.clear()
+    srv, _ = servers("echo-stdin")
+    conn = make_conn(_url(srv))
+    conn.exec_command("true", sudoable=False)
+    conn.exec_command("true", in_data=b"", sudoable=False)
+    assert all("stdin" not in r for r in SEEN) and len(SEEN) == 2

@@ -443,10 +443,13 @@ class ConnectionPlugin(ConnectionBase):
         super().exec_command(cmd, in_data=in_data, sudoable=sudoable)
 
         hostname = self._hostname()
-        payload = {
-            "cmd": cmd,
-            "stdin": (in_data or b"").decode("utf-8", errors="replace"),
-        }
+        payload = {"cmd": cmd}
+        if in_data:
+            # The server contract (handlers/exec.go) expects stdin base64-encoded;
+            # raw bytes (pipelined module, binary data) must survive untouched.
+            if isinstance(in_data, str):
+                in_data = in_data.encode("utf-8")
+            payload["stdin"] = base64.b64encode(in_data).decode("ascii")
 
         result = self._post_relay(f"/api/exec/{hostname}", payload)
 
