@@ -180,7 +180,31 @@ Envoyé immédiatement après démarrage du subprocess, avant tout stdout.
 
 ---
 
-## 7. Gestion de la concurrence
+## 7. Codes de sortie du processus
+
+L'agent quitte avec un code de sortie distinctif dans les cas critiques (enrôlement/révocation) :
+
+| Code | Cause | Comportement container/systemd |
+|---|---|---|
+| 0 | Shutdown propre (coupure de WS normale) | Redémarrage par policy |
+| 1 | Erreur générique ou état critique | Redémarrage par policy |
+| 77 | **Agent révoqué** (token JTI blacklisté, close 4001) | **NE PAS redémarrer** — état terminal, l'opérateur doit intervenir |
+| 78 | **Enrôlement refusé définitivement** (403 persistant, enrollment_token expiré/invalide) | **NE PAS redémarrer** — état terminal, l'opérateur doit créer un nouveau jeton d'enrôlement |
+
+**Configuration systemd recommandée** (pour éviter les redémarrages inutiles) :
+```ini
+Restart=on-failure
+RestartSec=30s
+StartLimitIntervalSec=600
+StartLimitBurst=5
+RestartPreventExitStatus=77 78
+```
+
+Avec cette config, l'unité s'arrête définitivement (passe en état `failed`) après 5 redémarrages en 10 min, ou immédiatement si le code est 77/78, forçant l'intervention manuelle.
+
+---
+
+## 8. Gestion de la concurrence
 
 ```
 MAX_CONCURRENT_TASKS = 10  (configurable via RELAY_MAX_TASKS)
@@ -283,8 +307,8 @@ if stdinData != nil {
 
 | Variable | Défaut | Description |
 |---|---|---|
-| `RELAY_SERVER_URL` | `wss://localhost:7772/ws/agent` | URL WSS du relay server |
-| `RELAY_API_URL` | `https://localhost:7770` | URL HTTPS pour enrollment |
+| `RELAY_SERVER_URL` | `wss://localhost:7772/ws/agent` | URL(s) WSS du relay server — liste séparée par virgules pour failover (ex: `wss://relay1:7772/ws/agent,wss://relay2:7772/ws/agent`) |
+| `RELAY_API_URL` | `https://localhost:7770` | URL(s) HTTPS pour enrollment — liste séparée par virgules, pairées par position avec `RELAY_SERVER_URL` |
 | `RELAY_PRIVATE_KEY` | `/etc/secagent-minion/id_rsa` | Chemin clef privée RSA-4096 |
 | `RELAY_JWT_PATH` | `/etc/secagent-minion/token.jwt` | Chemin token JWT |
 | `RELAY_MAX_TASKS` | `10` | Tâches simultanées max |
