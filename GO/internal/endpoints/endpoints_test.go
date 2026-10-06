@@ -503,10 +503,19 @@ func mute(t *testing.T) string {
 // that accepts TCP but never answers the TLS handshake -> next address tried.
 func TestDialFirst_FrozenMasterRealHTTPClient(t *testing.T) {
 	var second atomic.Int32
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		second.Add(1)
 		_, _ = io.WriteString(w, "ok")
 	}))
+	// The healthy master is SLOW but alive: its TLS handshake takes goodHandshake (a loaded machine
+	// does that to any handshake). The timeouts below must only ever fire on the FROZEN address; a
+	// timeout of the order of the handshake itself (100/200 ms before) failed the healthy one too.
+	const goodHandshake = 300 * time.Millisecond
+	srv.TLS = &tls.Config{GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		time.Sleep(goodHandshake)
+		return nil, nil
+	}}
+	srv.StartTLS()
 	defer srv.Close()
 	pool := trustPool(srv)
 	for _, tc := range []struct {
@@ -514,8 +523,8 @@ func TestDialFirst_FrozenMasterRealHTTPClient(t *testing.T) {
 		hsTimeout   time.Duration // http.Transport.TLSHandshakeTimeout
 		attemptWait time.Duration
 	}{
-		{"transport TLS handshake timeout", 100 * time.Millisecond, 3 * time.Second},
-		{"per-address context timeout", 0, 200 * time.Millisecond},
+		{"transport TLS handshake timeout", 1500 * time.Millisecond, 6 * time.Second},
+		{"per-address context timeout", 0, 2 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			second.Store(0)
