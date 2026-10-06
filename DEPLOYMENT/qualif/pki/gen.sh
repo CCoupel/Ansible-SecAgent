@@ -15,7 +15,7 @@ DAYS="${PKI_DAYS:-30}"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 # Garde : refuse d'ecrire des cles dans un depot git hors d'un chemin IGNORE (une cle ne doit jamais etre versionnee).
-if git -C "$OUT" rev-parse --is-inside-work-tree >/dev/null 2>&1 && ! git -C "$OUT" check-ignore -q "$OUT/tls.key" "$OUT/ca.key"; then
+if git -C "$OUT" rev-parse --is-inside-work-tree >/dev/null 2>&1 && ! { git -C "$OUT" check-ignore -q "$OUT/tls.key" && git -C "$OUT" check-ignore -q "$OUT/ca.key"; }; then
   echo "ERREUR : $OUT est dans un depot git et n'est pas ignore : refus de generer des cles (utiliser pki/out ou un repertoire hors depot)." >&2
   exit 1
 fi
