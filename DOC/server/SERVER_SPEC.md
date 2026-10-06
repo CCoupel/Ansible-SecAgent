@@ -3,7 +3,7 @@
 > Référence complète pour le composant secagent-server (GO).
 > Source canonique : `DOC/common/ARCHITECTURE.md` §2, §5, §6, §15, §20, §21, §22
 > Sécurité : `DOC/security/SECURITY.md` §2 (rôles), §5 (rotation), §6 (tokens plugin)
-> **Contrats d'interface** : `DOC/contracts/REST_PLUGIN.md` · `DOC/contracts/REST_ENROLLMENT.md` · `DOC/contracts/REST_ADMIN.md` · `DOC/contracts/WEBSOCKET.md` · `DOC/contracts/NATS.md`
+> **Contrats d'interface** : `DOC/contracts/REST_PLUGIN.md` · `DOC/contracts/REST_ENROLLMENT.md` · `DOC/contracts/REST_ADMIN.md` · `DOC/contracts/WEBSOCKET.md` · (`DOC/contracts/NATS.md` : déprécié, NATS retiré en v3.0.3)
 
 ---
 
@@ -25,19 +25,25 @@ GO/cmd/secagent-server/
 │   ├── handlers/
 │   │   ├── register.go              — POST /api/register (enrollment agent)
 │   │   ├── exec.go                  — POST /api/exec|upload|fetch/{hostname}
-│   │   ├── inventory.go             — GET /api/inventory
-│   │   └── admin.go                 — tous les endpoints /api/admin/*
+│   │   ├── inventory.go             — GET /api/inventory (jeton plugin) et variante admin
+│   │   ├── plugin_auth.go           — authentification des jetons plugin (IP, hostname)
+│   │   ├── admin.go, admin_relays.go, admin_tokens.go — endpoints /api/admin/*
+│   │   └── security.go              — rotation des clefs, blacklist
 │   ├── ws/
 │   │   ├── handler.go               — WSS /ws/agent, ws_connections map
+│   │   ├── relay_handler.go         — WSS /ws/relay (liens relay ↔ relay)
 │   │   └── jwt.go                   — validation dual-key JWT HMAC-HS256
+│   ├── lock/                        — verrou actif/passif (relay.lock)
 │   ├── state/
-│   │   └── engine.go                — fichier d'état JSON (HMAC-SHA256, AES-256-GCM, write_seq anti-rejeu)
+│   │   └── engine.go, file.go, model.go … — fichier d'état JSON (HMAC-SHA256, secrets AES-256-GCM, write_seq anti-rejeu)
 │   ├── storage/
 │   │   └── store.go                 — interface storage sur state engine (pas de SQLite, aucun CGO)
 │   └── cli/
 │       ├── root.go                  — cobra root command
 │       ├── minions.go               — secagent-server minions *
-│       ├── security.go              — secagent-server security keys|tokens *
+│       ├── security.go              — secagent-server security keys|tokens|blacklist *
+│       ├── tokens.go, relays.go, hooks.go — tokens *, relays *, hooks *
+│       ├── state.go, state_tools.go, status_local.go — state init|verify|restore, status --local
 │       ├── inventory.go             — secagent-server inventory list
 │       └── server.go                — secagent-server server status|stats
 ```
@@ -49,10 +55,10 @@ GO/cmd/secagent-server/
 | Port | Exposition | Rôle |
 |---|---|---|
 | `7770` | Publique (WSS/TLS natif) | API REST agents + plugins + enrollment + `/ws/agent` |
-| `7771` | **Admin seulement** — loopback par défaut, TLS obligatoire si non-loopback (`ADMIN_TLS=true` ou `ADMIN_INSECURE_HTTP + ACK`) | Endpoints admin CLI + API admin |
-| `7772` | Historique (compat) — redondant avec 7770 `/ws/agent` | (déprécié) |
+| `7771` | **Admin seulement** — défaut `:7771` (toutes interfaces) ; une adresse non loopback exige `ADMIN_TLS=true` (ou `ADMIN_INSECURE_HTTP` + `ADMIN_INSECURE_HTTP_ACK`), sinon le serveur refuse de démarrer (`server/tls.go` `adminExposure`) | Endpoints admin CLI + API admin |
+| `7772` | Publique (TLS natif) | Listener WebSocket dédié : `/ws/agent` et `/ws/relay` (`server/routers.go`) ; port par défaut de `RELAY_WS_URL` du minion. Pas déprécié |
 
-Le port 7771 ne doit **jamais** être exposé hors du container.
+Le port 7771 ne doit **jamais** être publié sur une interface publique (hôte : boucle locale ou réseau d'administration). Seul le **maître** ouvre ces ports ; un secondaire n'en ouvre aucun (§10).
 
 ---
 
@@ -62,51 +68,62 @@ Le port 7771 ne doit **jamais** être exposé hors du container.
 
 | Endpoint | Auth requise |
 |---|---|
-| `POST /api/register` | Aucune (enrollment token dans le body) |
-| `GET /api/inventory` | `Bearer <PLUGIN_TOKEN>` |
-| `POST /api/exec/{host}` | `Bearer <PLUGIN_TOKEN>` |
-| `POST /api/upload/{host}` | `Bearer <PLUGIN_TOKEN>` |
-| `POST /api/fetch/{host}` | `Bearer <PLUGIN_TOKEN>` |
-| `POST /api/token/refresh` | JWT agent expiré |
-| `POST /api/admin/*` | `Bearer <ADMIN_TOKEN>` (port 7771) |
-| `WSS /ws/agent` | `Bearer <JWT agent>` |
+| `POST /api/register` | Aucune en-tête (jeton d'enrôlement `secagent_enr_…` dans le body, ou clef pré-autorisée) |
+| `GET /api/inventory` | `Bearer <jeton plugin>` (`secagent_plg_…`) — un `ADMIN_TOKEN` y est refusé (403) ; la variante admin est `GET /api/inventory` sur 7771 |
+| `POST /api/exec/{host}` | `Bearer <jeton plugin>` |
+| `POST /api/upload/{host}` | `Bearer <jeton plugin>` |
+| `POST /api/fetch/{host}` | `Bearer <jeton plugin>` |
+| `POST /api/token/refresh` | JWT agent expiré (challenge RSA) |
+| `/api/admin/*` | `Bearer <ADMIN_TOKEN>` (port 7771 ; `POST /api/admin/authorize` aussi sur 7770 par compatibilité) |
+| `WSS /ws/agent` | `Bearer <JWT agent>` (rôle `agent` uniquement) |
+| `WSS /ws/relay` | `Bearer <JWT relay-child / relay-parent>` |
+
+Les jetons plugin et d'enrôlement sont des **jetons opaques** (`secagent_plg_` / `secagent_enr_` + 64 hex), enregistrés (hachés) dans l'état — pas des JWT. Preuve : `handlers/plugin_auth.go`, `handlers/inventory.go`.
 
 ### `POST /api/register` — Enrollment agent (multi-étapes)
 
 **Étape 1 — Initiation :**
 ```json
-Requête : { "hostname": "host-A", "pubkey_pem": "...", "enrollment_token": "secagent_enr_..." }
-Réponse : { "challenge": "<OAEP(nonce, agent_pubkey) base64>" }
+Requête : { "hostname": "host-A", "public_key_pem": "...", "enrollment_token": "secagent_enr_..." }
+Réponse : { "challenge": "<OAEP(nonce, agent_pubkey) base64>", "server_public_key_pem": "..." }
 ```
 
 **Étape 2 — Vérification :**
 ```json
-Requête : { "hostname": "host-A", "response": "<OAEP(nonce+token, server_pubkey) base64>" }
-Réponse : { "jwt_encrypted": "<OAEP(jwt, agent_pubkey) base64>" }
+Requête : { "hostname": "host-A", "public_key_pem": "...", "enrollment_token": "secagent_enr_...",
+            "challenge_response": "<OAEP(nonce+token, server_pubkey) base64>" }
+Réponse : { "jwt_encrypted": "<OAEP(jwt, agent_pubkey) base64>", "token_encrypted": "<même valeur>", "server_public_key_pem": "..." }
 ```
 
-**Codes d'erreur :**
-- `403` : token invalide/expiré/déjà utilisé
-- `409` : hostname déjà enregistré avec une autre clef
-- `400` : challenge incorrect
+Le jeton d'enrôlement est revalidé à **chaque** étape. Preuve : `handlers/register.go` (`RegisterRequest`, `ChallengeResponse`, `RegisterResponse`, `registerAgentWithToken`).
+
+**Codes d'erreur** (`handlers/register.go`) :
+- `403` : jeton invalide / expiré / déjà utilisé / hostname non autorisé (`unauthorized_hostname`), challenge expiré ou invalide (`challenge_*`), clef différente (`public_key_mismatch`)
+- `400` : `invalid_request`, `missing_fields`, `invalid_public_key`
+- `500` : `db_error`
+
+Un refus `403` est **permanent** pour le minion (exit 78, pas de retry : voir `DOC/contracts/REST_ENROLLMENT.md`).
 
 ### `POST /api/exec/{hostname}` — Exécution (bloquant)
 
 ```json
 Requête : {
-  "task_id": "uuid-v4",
+  "task_id": "uuid-v4",          // optionnel (généré si absent)
   "cmd": "python3 /tmp/.ansible/tmp/module.py",
-  "stdin": "<base64|null>",
+  "stdin": "<chaîne|null>",      // transmise telle quelle à l'agent
   "timeout": 30,
   "become": false,
   "become_method": "sudo"
 }
 Réponse 200 : { "rc": 0, "stdout": "...", "stderr": "", "truncated": false }
-Réponse 503  : { "error": "agent_offline" }
-Réponse 504  : { "error": "timeout" }
-Réponse 500  : { "error": "agent_disconnected" }
+Réponse 503  : { "error": "agent_offline" | "agent_disconnected" | <agent suspendu / état indisponible> }
+Réponse 504  : { "error": "task_timeout" }
 Réponse 429  : { "error": "agent_busy" }
+Réponse 500  : { "error": "<erreur renvoyée par l'agent>" }
+Réponse 508  : { "error": "relay_loop_detected" }
 ```
+
+Preuve : `handlers/exec.go` (`writeAgentError`, lignes 232-244 ; `task_timeout` ligne 353). Upload : en plus `400 invalid_base64`, `413 payload_too_large` (`handlers/exec.go:404`).
 
 ### `POST /api/upload/{hostname}` — Transfert fichier
 
@@ -144,92 +161,35 @@ Query param : `?only_connected=true`
 
 ---
 
-## 4. NATS JetStream
+## 4. Dispatch des tâches (WebSocket direct)
 
-```
-Stream RELAY_TASKS
-  Subjects    : tasks.{hostname}
-  Retention   : WorkQueue (supprimé après ack)
-  MaxAge      : 300s
-  MaxMsgSize  : 1MB
-  Replicas    : 3
-
-Stream RELAY_RESULTS
-  Subjects    : results.{task_id}
-  Retention   : Limits
-  MaxAge      : 60s
-  MaxMsgSize  : 5MB
-  Replicas    : 3
-```
-
-**Routage HA :** Plugin POST sur Node #2 → publie `tasks.host-A` → Node #1 (qui a la WS) reçoit → forward à l'agent → résultat via `results.{task_id}` → Node #2 résout le futur bloquant.
+NATS JetStream est **retiré** (v3.0.3). Le plugin envoie un `POST /api/exec|upload|fetch/{host}` bloquant au relay **maître** ;
+celui-ci écrit la tâche sur la WebSocket persistante de l'agent (multiplexage par `task_id`) et attend le résultat. Pour un hôte
+situé sous un relay enfant, la tâche est transmise (`task_forward`) le long de la chaîne de relays (§9). Il n'y a ni file, ni
+persistance de tâche : une requête en cours pendant une bascule échoue (le plugin ne rejoue pas, #168).
 
 ---
 
-## 5. Persistance — (historique) schéma SQLite
+## 5. Persistance — fichier d'état `relay.state`
 
-> **Remplacé en v3.0.3 (#159/#160)** par le fichier d'état unique `relay.state` : voir `DOC/server/STATE_SPEC.md`. Le schéma ci-dessous n'est conservé que pour l'historique. Données volatiles (statut et `last_seen` des agents et relays, routage `relay_routing`, `relay_chain`, `last_used_*` des tokens plugin) : en mémoire seulement ; `last_used_at` / `last_used_ip` des tokens plugin sont **approximatifs** (persistés avec la prochaine écriture du fichier, donc en retard de plusieurs minutes, voire perdus lors d'un arrêt brutal : l'API les signale par `last_used_approximate: true`).
+Il n'y a **plus de SQL** (SQLite retiré en v3.0.3, #159/#160). Les données permanentes sont dans le fichier d'état unique
+`relay.state` (JSON, authentifié HMAC-SHA-256, secrets chiffrés AES-256-GCM) : voir `DOC/server/STATE_SPEC.md`. Sections du fichier
+(`internal/state/model.go`, `Payload`) :
 
-```sql
--- Agents enregistrés
-CREATE TABLE agents (
-    hostname      TEXT PRIMARY KEY,
-    pubkey_pem    TEXT NOT NULL,
-    enrolled_at   INTEGER NOT NULL,
-    last_seen_at  INTEGER,
-    status        TEXT DEFAULT 'disconnected'
-);
+| Section | Contenu |
+|---|---|
+| `agents` | hostname, `public_key_pem`, `token_jti`, `enrolled_at`, `suspended`, `vars`, `last_seen` |
+| `authorized_keys` | hostname, `public_key_pem`, `approved_at`, `approved_by` |
+| `enrollment_tokens` | id, `token_hash` (SHA-256), `hostname_pattern`, `reusable`, `use_count`, `expires_at`, `created_by` |
+| `plugin_tokens` | id, `token_hash`, `description`, `role`, `allowed_ips`, `allowed_hostname_pattern`, `expires_at`, `revoked`, `last_used_at/ip` |
+| `relay_parent_tokens` | id, `jti`, `parent_id`, `expires_at`, `revoked_at` (jamais le token) |
+| `blacklist` | `jti`, `hostname`, `revoked_at`, `reason`, `expires_at` (purge automatique) |
+| `relay_nodes` | configuration d'un relay enfant : `relay_id`, `urls`, `mode` (pull/push), `jti`, `token_exp`, `revoked`, `group_vars`, `token_hash`/`token_secret` (secret chiffré `enc:`) |
+| `server_config` | secrets chiffrés : `jwt_secret_current`, `jwt_secret_previous`, `key_rotation_deadline`, clefs RSA du serveur |
 
--- Tokens d'enrollment
-CREATE TABLE enrollment_tokens (
-    id               TEXT PRIMARY KEY,
-    token_hash       TEXT NOT NULL UNIQUE,      -- SHA-256(token)
-    hostname_pattern TEXT NOT NULL,             -- regexp Go validée, ancrée ^(?:pattern)$ à la validation
-                                                 -- ex: "vp.*", "web[0-9]+", "web1|db"
-                                                 -- invalide si ne compile pas → rejet 400 "invalid_hostname_pattern"
-    reusable         INTEGER DEFAULT 0,         -- 0 = one-shot, 1 = permanent
-    use_count        INTEGER DEFAULT 0,         -- nb d'enrollements via ce token
-    last_used_at     INTEGER,                   -- horodatage dernier usage
-    created_at       INTEGER NOT NULL,
-    expires_at       INTEGER,                   -- NULL = jamais expiré
-    created_by       TEXT                       -- "admin-cli", "terraform", etc.
-);
+Les regexp `hostname_pattern` / `allowed_hostname_pattern` sont validées et ancrées `^(?:pattern)$` à la création (400 `invalid_hostname_pattern` si invalide).
 
--- Tokens plugin (connection + inventory)
-CREATE TABLE plugin_tokens (
-    id                      TEXT PRIMARY KEY,
-    token_hash              TEXT NOT NULL UNIQUE,  -- SHA-256(token)
-    description             TEXT,
-    role                    TEXT NOT NULL,         -- "plugin"
-    allowed_ips             TEXT,                  -- CIDRs CSV | NULL
-    allowed_hostname_pattern TEXT,                 -- regexp Go validée, ancrée ^(?:pattern)$ à la validation
-                                                    -- ex: "ansible-control-[0-9]+", "web1|db"
-                                                    -- invalide si ne compile pas → rejet 400 "invalid_hostname_pattern"
-                                                    -- NULL = aucune restriction hostname
-    created_at              INTEGER NOT NULL,
-    expires_at              INTEGER,
-    last_used_at            INTEGER,
-    last_used_ip            TEXT,
-    revoked                 INTEGER DEFAULT 0
-);
-
--- Blacklist JTI (révocation agents)
-CREATE TABLE blacklist (
-    jti         TEXT PRIMARY KEY,
-    hostname    TEXT,
-    revoked_at  INTEGER NOT NULL,
-    reason      TEXT,
-    expires_at  INTEGER NOT NULL           -- pour purge automatique
-);
-
--- Configuration serveur (secrets chiffrés AES-256-GCM)
-CREATE TABLE server_config (
-    key    TEXT PRIMARY KEY,
-    value  TEXT NOT NULL                   -- chiffré avec RSA_MASTER_KEY
-);
--- Clefs stockées : jwt_secret_current, jwt_secret_previous,
---                  key_rotation_deadline, rsa_private_key_pem, rsa_public_key_pem
-```
+Données volatiles (statut et `last_seen` des agents et relays, routage `relay_routing`, `relay_chain`, `last_used_*` des tokens plugin) : en mémoire seulement ; `last_used_at` / `last_used_ip` des tokens plugin sont **approximatifs** (persistés avec la prochaine écriture du fichier, donc en retard de plusieurs minutes, voire perdus lors d'un arrêt brutal : l'API les signale par `last_used_approximate: true`).
 
 ---
 
@@ -258,25 +218,27 @@ Validation JWT dual-key (dans `ws/jwt.go`) :
 > Specs complètes : `DOC/server/MANAGEMENT_CLI_SPECS.md`
 
 ```bash
-# Accès exclusif depuis le container (port 7771 interne)
-docker exec relay-api secagent-server <commande>
+# Depuis le container du maître (la CLI lit ADMIN_TOKEN dans son environnement ; RELAY_API_URL = liste d'adresses admin)
+docker exec <conteneur-du-maitre> secagent-server <commande>
 
 # Minions
 secagent-server minions list [--format table|json|yaml]
 secagent-server minions get <hostname>
-secagent-server minions authorize <hostname>    # enrollment token
+secagent-server minions authorize <hostname> --key-file <clef_publique.pem>   # pré-autorise une clef (pas un jeton)
 secagent-server minions revoke <hostname>
 secagent-server minions suspend <hostname>
 secagent-server minions resume <hostname>
-secagent-server minions vars get|set|delete <hostname> [key] [value]
+secagent-server minions set-state <hostname> connected|disconnected
+secagent-server minions vars get <hostname> | set <hostname> key=value [key=value…] | delete <hostname> <key>
 
 # Tokens
-secagent-server tokens create --role plugin --description "..." --allowed-ips "..." --allowed-hostname "..." --expires 365d
+secagent-server tokens create --role enrollment --hostname-pattern "vp.*" [--reusable] --expires 30d
+secagent-server tokens create --role plugin --description "..." --allowed-ips "..." --allowed-hostname-pattern "..." --expires 365d   # --expires : défaut never
 secagent-server tokens create --role relay-parent --sub <parent_relay_id> --expires 90d   # #150 : minté sur l'ENFANT, --expires obligatoire (max 365d)
 secagent-server tokens list [--role plugin|enrollment|relay-parent|all]
 secagent-server tokens revoke <id>      # relay-parent : blacklist du JTI + fermeture (4010) du lien parent actif
 secagent-server tokens delete <id>
-secagent-server tokens purge --expired
+secagent-server tokens purge [--expired] [--used]     # au moins un des deux
 
 # Sécurité
 secagent-server security keys status
@@ -291,6 +253,12 @@ secagent-server inventory list [--only-connected]
 # Serveur
 secagent-server server status [--format json]
 secagent-server server stats
+secagent-server status --local            # santé locale (fichier de statut), sans API : healthcheck du conteneur
+
+# Relays enfants / hooks / état
+secagent-server relays add|list|remove|status      # voir §9.3
+secagent-server hooks status|log
+secagent-server state init|verify <fichier>|restore --from <fichier>   # voir STATE_SPEC.md
 ```
 
 ---
@@ -305,22 +273,29 @@ secagent-server server stats
 | `STATE_DIR` | — | Répertoire du fichier d'état `relay.state` (défaut `/data`), créé par `secagent-server state init` — voir `STATE_SPEC.md` (#160) |
 | `STATE_MAX_BYTES` | — | Plafond dur de taille du fichier d'état (défaut 64 Mio) |
 | `DATABASE_URL` | — | **Retirée (#160)** : SQLite n'existe plus. Si la variable est définie, le serveur **refuse de démarrer** (aucune migration d'un ancien `relay.db`) |
-| `RSA_MASTER_KEY` | — | Clef AES-256-GCM pour chiffrer les secrets en DB (tokens push relay) — obligatoire seulement pour enregistrer un relay en mode push |
+| `RSA_MASTER_KEY` | ✅ en production | Secret (chaîne, pas une clef RSA) dont dérivent le HMAC du fichier d'état et le chiffrement AES-256-GCM des secrets ; exigé par `state init` (sauf `--insecure-test-mode`) et par le serveur ; identique sur tous les nœuds candidats |
 | `REPEATER_ID` | — | Identifiant du relay (ex: `dmz1`) — requis en mode enfant |
 | `REPEATER_UPSTREAM_URL` | — | URL WSS du parent (ex: `wss://central:7772`) — requis en mode enfant pull. Liste séparée par des virgules (une adresse par instance du parent, `wss://` uniquement, 16 max) : essayées dans l'ordre, la dernière qui a répondu en premier ; un échec avant envoi passe à l'adresse suivante, un échec après envoi de la requête d'upgrade ne rejoue pas sur une autre |
-| `REPEATER_UPSTREAM_TOKEN` | — | Token JWT relay-child du relay enfant — requis en mode enfant pull |
+| `REPEATER_UPSTREAM_TOKEN` | — | Token JWT du relay enfant (rôle `relay`, émis par `relays add` sur le parent) — requis en mode enfant pull |
 | `RELAY_GROUP_VARS` | — | Variables Ansible JSON injectées pour ce relay (ex: `{"env":"prod"}`) |
 | `API_ADDR` | — | Adresse d'écoute de l'API publique + WS agent/relay (défaut `:7770`) |
 | `ADMIN_ADDR` | — | Adresse d'écoute de l'API admin (défaut `:7771`) — ne jamais l'exposer publiquement ; les handlers admin ne sont servis que sur cette adresse (sauf `POST /api/admin/authorize`, par compatibilité) |
 | `WS_ADDR` | — | Adresse d'écoute WebSocket (défaut `:7772`) |
-| `TLS_CERT` / `TLS_KEY` | — | Certificats TLS directs (sinon Caddy) |
+| `TLS_CERT` / `TLS_KEY` | ✅ | Certificat (chaîne complète) et clef PEM : TLS natif sur 7770/7772 (et 7771 avec `ADMIN_TLS=true`). Sans paire complète et sans `TLS_DISABLE`, le serveur refuse de démarrer |
+| `TLS_DISABLE` | — | `true` = HTTP clair : tests/CI uniquement, jamais en production (booléen strict `true`/`false`) |
+| `ADMIN_TLS` | — | `true` = l'API admin sert TLS (requis si `ADMIN_ADDR` n'est pas loopback) |
+| `ADMIN_INSECURE_HTTP` / `ADMIN_INSECURE_HTTP_ACK` | — | Dérogation HTTP clair non loopback : `true` **et** `i-understand-the-risk` |
+| `RELAY_STATUS_FILE` | — | Fichier de statut local (défaut `/run/secagent/status.json`), hors `STATE_DIR` |
+| `RELAY_ACTION_LOG` | — | Chemin du journal des actions de hooks (défaut `STATE_DIR/actions.log`) |
+| `TRUSTED_PROXY_CIDRS` | — | CIDR des reverse proxies dont `X-Forwarded-For` est cru (vide = jamais) |
+| `RELAY_API_URL` | — | (CLI) liste d'adresses de l'API admin, séparées par des virgules |
 | `MAX_SNAPSHOT_RELAYS` | — | Limite nombre relays dans topology_snapshot (défaut 1000) |
 | `MAX_SNAPSHOT_HOSTS` | — | Limite nombre hôtes dans topology_snapshot (défaut 10000) |
 | `MAX_AGENT_LIST_HOSTS` | — | Limite nombre hôtes dans agent_list par appel (défaut = MAX_SNAPSHOT_HOSTS = 10 000) |
 | `MAX_WS_MESSAGE_SIZE_RELAY` | — | Taille maximale message WebSocket relay (défaut 10MB) |
 | `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` | — | Nombre de workers des hooks (défaut `64`) — voir §9.7a |
 | `RELAY_HOOKS_QUEUE_SIZE` | — | Taille de la file des hooks (défaut `10000`) — voir §9.7a |
-| `RELAY_INSECURE_TLS` | — | Utilisé par le binaire `secagent-inventory` (v3.0.2+) : accepter certificats TLS auto-signés. Requiert `RELAY_INSECURE_TLS_ACK=i-understand-the-risk` pour éviter les acceptations accidentelles (fail-closed) |
+| `RELAY_INSECURE_TLS` | — | **Pas une variable du serveur** : lue par `secagent-inventory` (voir INVENTORY_SPEC §3) et par le minion. Pour `secagent-inventory`, une adresse non loopback exige `RELAY_INSECURE_TLS_ACK=i-understand-the-risk` |
 
 ---
 
@@ -369,7 +344,7 @@ RELAY_GROUP_VARS='{"region":"dmz"}'
 ```
 WSS /ws/relay
 Authorization: Bearer <JWT rôle="relay-child ou relay-parent selon le sens d'ouverture", sub=REPEATER_ID>
-Port : 7772 (relay handler)
+Port : 7772 (listener WebSocket dédié) ou 7770 (même handler, compatibilité)
 ```
 
 #### Handshake — Séquence d'établissement (symétrique pour pull et push)
@@ -574,8 +549,11 @@ DELETE /api/admin/relays/{relay_id}
 **CLI :**
 ```bash
 secagent-server relays list
-secagent-server relays get <relay_id>
-secagent-server relays add <relay_id> --url <url> --token <token> --mode <push|pull>
+secagent-server relays status
+secagent-server relays add --id <relay_id> [--description …] [--mode pull]           # pull : JWT affiché une fois
+secagent-server relays add --id <relay_id> --mode push --url <url> --token <token>    # push
+secagent-server relays remove <uuid>
+# Pas de `relays get/revoke/delete` : la révocation se fait par l'API POST /api/admin/relays/{id}/revoke
 ```
 
 ---
@@ -623,7 +601,6 @@ secagent-server tokens create --role relay-parent \
 **Sécurité :** 
 - Tokens jamais loggés en clair
 - JWT_SECRET_KEY unique par relay (jamais partagé)
-- RELAY_PLUGIN_TOKEN unique par relay (jamais partagé)
 - Chaque relay valide les tokens reçus avec sa propre clé
 
 ---
@@ -740,51 +717,21 @@ Un hôte connecté directement au relay GAGNE TOUJOURS sur la table `relay_routi
 
 ---
 
-### 9.6 Schéma SQLite (tables repeater)
+### 9.6 Données des relays enfants (état fichier)
 
-```sql
-CREATE TABLE IF NOT EXISTS relay_nodes (
-    id              TEXT PRIMARY KEY,
-    relay_id        TEXT NOT NULL UNIQUE,
-    description     TEXT,
-    token_hash      TEXT,                   -- ⚠️ misnomer: SHA-256(JTI) pour pull; AES-GCM(token) préfixé enc: pour push (#152)
-    jti             TEXT,                   -- JWT JTI du token relay (pour blacklist #153, colonne NULL pour mode push)
-    token_exp       INTEGER,                -- exp du JWT (expiration timestamp pour purge blacklist)
-    token_encrypted TEXT,                   -- token relay mode=push chiffré AES-256-GCM avec RSA_MASTER_KEY (#140)
-    revoked         INTEGER DEFAULT 0,      -- flag révocation (#153); legacy relais (sans jti) révoqués par ce flag seul
-    mode            TEXT NOT NULL DEFAULT 'pull',  -- "pull" (entrante) | "push" (sortante vers enfant)
-    created_at      INTEGER NOT NULL,
-    last_seen       INTEGER,
-    status          TEXT NOT NULL DEFAULT 'pending'  -- "connected"|"disconnected"|"pending"
-);
+Plus de tables SQL : ces données sont dans `relay.state` (`relay_nodes`, `relay_parent_tokens`, `blacklist`, voir §5 et `internal/state/model.go`) ;
+le routage (`relay_routing` : clé simple `hostname`, `relay_id`, `hop_type` agent|relay, `relay_chain`) et le statut/`last_seen` sont **en mémoire**
+(reconstruits par `topology_snapshot`). Champs de `relay_nodes` : `relay_id`, `urls`, `mode`, `jti`, `token_exp`, `revoked`, `group_vars`,
+`token_hash` (pull : hachage du JTI) ou `token_secret` (push : token chiffré AES-256-GCM, préfixe `enc:`).
 
-CREATE TABLE IF NOT EXISTS relay_parent_tokens (
-    id              TEXT PRIMARY KEY,       -- UUID publique du token
-    jti             TEXT NOT NULL UNIQUE,   -- JWT JTI pour blacklist à la révocation
-    parent_id       TEXT NOT NULL,          -- relay_id du parent (cli --sub) — validé contre relay_hello
-    description     TEXT,
-    created_at      INTEGER NOT NULL,
-    expires_at      INTEGER NOT NULL,       -- exp du JWT (obligatoire, max 365j)
-    revoked_at      INTEGER                 -- timestamp révocation (NULL si actif); INSERT blacklist(jti) à cet instant
-);
-
-CREATE TABLE IF NOT EXISTS relay_routing (
-    hostname    TEXT PRIMARY KEY,              -- clé simple (un seul chemin par hôte)
-    relay_id    TEXT NOT NULL,                 -- relay auquel l'agent se connecte directement
-    hop_type    TEXT CHECK(hop_type IN ('agent','relay')),
-    relay_chain TEXT,                          -- JSON sérialisé ["dmz1","zone-a"]
-    updated_at  INTEGER NOT NULL
-);
-```
-
-**Changement clé** : clé simple `hostname` (pas de composite). Topologie arbre = un seul chemin par hôte.
+**Changement clé** : clé de routage simple `hostname` (pas de composite). Topologie arbre = un seul chemin par hôte.
 
 **Sémantique mode** (v3.0.1) :
 - `pull` = connexion WSS entrante (enfant se connecte, auto-registration relay_hello); token persisté en tant que JTI
 - `push` = connexion WSS sortante (parent ouvre vers enfant, déclaré via API); token persisté chiffré (enc:AES-GCM)
 
 **Notes** :
-- `token_hash` (colonne) mal nommée (#152) : elle stocke soit un hash (pull) soit du token chiffré (push). Renommage envisagé.
+- Le champ `token_hash` d'un relay pull stocke un hachage ; le token d'un relay push est dans `token_secret` (chiffré).
 - Relais antérieurs à #153 (sans `jti`) : `revoked` = true suffit pour refuser ; un `DELETE` d'un tel relais ne peut pas blacklister de JTI inexistant (contrainte : révoquer avant de supprimer)
 - `relay_parent_tokens` : jamais le token en clair persisté ; métadonnées uniquement pour audit et gestion du cycle de vie
 
@@ -862,57 +809,23 @@ Le filtre est validé au chargement de la config (fichier rejeté en bloc si mal
 
 ---
 
-### 9.8 Docker Compose qualification v3.0.1
+### 9.8 Déploiement des relays
 
-```yaml
-services:
-  central:
-    image: secagent-server:3.0.1
-    environment:
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
-      ADMIN_TOKEN: ${ADMIN_TOKEN}
-      RSA_MASTER_KEY: ${RSA_MASTER_KEY}
-      RELAY_PLUGIN_TOKEN: ${RELAY_PLUGIN_TOKEN}
-      NATS_URL: nats://nats:4222
-      RELAY_GROUP_VARS: '{"env":"prod"}'
-      TLS_CERT: /etc/secagent/certs/server.crt
-      TLS_KEY: /etc/secagent/certs/server.key
-    expose:
-      - "7771"   # Admin CLI — container-interne uniquement
-    ports:
-      - "443:7770"    # HTTPS (API REST via Caddy)
-      - "7772:7772"   # WSS (WebSocket termination par Caddy)
-
-  relay-dmz1:
-    image: secagent-server:3.1
-    environment:
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY_DMZ1}
-      ADMIN_TOKEN: ${ADMIN_TOKEN}
-      REPEATER_ID: "dmz1"
-      REPEATER_UPSTREAM_URL: "wss://central:7772"
-      REPEATER_UPSTREAM_TOKEN: ${REPEATER_UPSTREAM_TOKEN_DMZ1}
-      RSA_MASTER_KEY: ${RSA_MASTER_KEY_DMZ1}
-      NATS_URL: nats://nats:4222
-      RELAY_PLUGIN_TOKEN: ${RELAY_PLUGIN_TOKEN_DMZ1}
-      RELAY_GROUP_VARS: '{"region":"dmz"}'
-      TLS_CERT: /etc/secagent/certs/server.crt
-      TLS_KEY: /etc/secagent/certs/server.key
-    expose:
-      - "7771"   # Admin CLI — container-interne uniquement
-    ports:
-      - "7774:7772"   # WSS (WebSocket pour agents enfants)
-```
+Les fichiers Compose de référence sont `DEPLOYMENT/prod/docker-compose.server.yml` (racine) et `DEPLOYMENT/prod/docker-compose.child.yml`
+(surcharge d'un relay enfant : `REPEATER_ID`, `REPEATER_UPSTREAM_URL`, `REPEATER_UPSTREAM_TOKEN`, `RELAY_GROUP_VARS`), et
+`DEPLOYMENT/qualif/docker-compose.*.yml`. Il n'y a ni NATS (`NATS_URL`), ni Caddy, ni `RELAY_PLUGIN_TOKEN` ; le TLS est natif
+(`TLS_CERT`/`TLS_KEY`, plus `ADMIN_TLS=true` si l'API admin est liée à une adresse non loopback). Voir `DEPLOYMENT/prod/README.md`.
 
 ---
 
-### 9.8 Récapitulatif modifications (v3.0.1)
+### 9.9 Récapitulatif modifications (v3.0.1)
 
 | Aspect | Changement |
 |---|---|
 | **Config** | Variables simples (REPEATER_UPSTREAM_URL, REPEATER_UPSTREAM_TOKEN) — plus de YAML |
 | **Topologie** | Arbre strict (un parent max par relay enfant, un seul chemin par hôte) |
 | **Upstream** | Un seul upstream (le parent) — plus de multi-upstream |
-| **Schéma DB** | `relay_routing` : clé simple `hostname` (pas de composite), plus de priority |
+| **Routage** (état) | `relay_routing` : clé simple `hostname` (pas de composite), plus de priority |
 | **Routage** | Lookup simple `hostname` (un seul chemin, pas de sélection multi-chemins) |
 | **Events** | Remontée parent-à-parent, pas de déduplication (un seul chemin) |
 | **Anti-cycle** | Rejet si `REPEATER_ID ∈ relay_chain` |
