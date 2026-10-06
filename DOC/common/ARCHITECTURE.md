@@ -1548,13 +1548,13 @@ secagent-server security keys rotate [--grace 24h]
 
 1. Génère un nouveau `jwt_secret_current`
 2. L'ancien secret devient `jwt_secret_previous`
-3. Persiste les deux secrets en DB (chiffrés au repos)
+3. Persiste les deux secrets dans `relay.state` (chiffrés au repos)
 4. Génère une nouvelle paire RSA-4096 serveur (`rsa_key_current`)
 5. L'ancienne paire devient `rsa_key_previous`
 6. Enregistre `key_rotation_deadline = now + grace`
 7. Pour chaque agent connecté :
    - Signe un nouveau JWT avec `jwt_secret_current`
-   - Chiffre ce JWT avec la clef publique de l'agent (en DB)
+   - Chiffre ce JWT avec la clef publique de l'agent (enregistrée dans `relay.state`)
    - Envoie via WS : `{"type": "rekey", "token_encrypted": "<base64>"}`
    - L'agent déchiffre avec sa clef privée → stocke le nouveau JWT → aucune interruption
 
@@ -1581,60 +1581,11 @@ now >= key_rotation_deadline
 → Le serveur chiffre le nouveau JWT avec rsa_key_current
 ```
 
-### Schéma DB — table server_config
+### Stockage — section `server_config` de `relay.state`
 
-```sql
-CREATE TABLE IF NOT EXISTS server_config (
-    key        TEXT PRIMARY KEY,
-    value      TEXT NOT NULL,
-    updated_at TIMESTAMP NOT NULL
-);
-
--- Entrées gérées :
--- jwt_secret_current      : secret HMAC-SHA256 courant (base64)
--- jwt_secret_previous     : secret précédent (base64, NULL si pas de rotation)
--- key_rotation_deadline   : timestamp ISO8601 fin de grâce (NULL si pas de rotation)
--- rsa_key_current         : PEM PKCS8 clef privée RSA courante
--- rsa_key_previous        : PEM PKCS8 clef privée RSA précédente (NULL si pas de rotation)
-```
-
-### Message WS — rekey
-
-Nouveau type de message serveur → agent :
-
-```json
-{
-  "type": "rekey",
-  "token_encrypted": "<JWT chiffré RSA-OAEP avec la clef publique de l'agent>"
-}
-```
-
-Traitement côté agent :
-1. Déchiffrer `token_encrypted` avec la clef privée RSA locale
-2. Valider le JWT reçu (format, non-expiré)
-3. Écraser le fichier JWT local (`RELAY_JWT_PATH`)
-4. Logger `[SECURITY] JWT rotated — new token received`
-5. Continuer sans interrompre la connexion WS
-
-### Comportement agent — 401 à la connexion WS
-
-Si le serveur rejette la connexion WS avec HTTP 401 (JWT expiré ou révoqué après fin de grâce) :
-
-```
-1. Supprimer le JWT local (os.Remove(cfg.jwtPath))
-2. Ré-enrollment complet (POST /api/register avec la clef publique existante)
-3. Stocker le nouveau JWT chiffré → déchiffrer → sauvegarder
-4. Rouvrir la connexion WS avec le nouveau JWT
-```
-
-### Récapitulatif modifications par composant
-
-| Composant | Modification |
-|---|---|
-| **DB** | Table `server_config` (jwt secrets + RSA keys + deadline) |
-| **Server** | RSA keypair persisté en DB (plus en mémoire) ; dual-key JWT validation ; message WS type `rekey` ; endpoint `security keys rotate` |
-| **CLI** | `security keys rotate [--grace Xh]` + `security keys status` |
-| **Agent** | Handler WS type `rekey` ; gestion 401 sur connect → ré-enrôlement auto |
+Les secrets de rotation sont dans la section `server_config` du fichier d'état (chiffrés AES-256-GCM, voir §20), plus dans une table SQL :
+`jwt_secret_current`, `jwt_secret_previous` (vide hors rotation), `key_rotation_deadline` (fin de grâce), `rsa_key_current`, `rsa_key_previous`
+(noms de clefs relus dans le code : `handlers/register.go`, `handlers/security.go`).
 
 ---
 
@@ -1660,7 +1611,7 @@ Le mode repeater permet de construire une topologie arbre stricte de relays, cha
 - Un seul upstream par relay enfant (pas de multi-upstream)
 - Deux modes d'ouverture de connexion : enfant-push (enfant ouvre vers parent) ou parent-push (parent ouvre vers enfant via API)
 - Inventaire : chaque relay expose TOUTE LA DESCENDANCE (agents + sous-relays comme groupes récursifs), cloisonnement via authentification JWT
-- Authentification : deux rôles JWT distincts `relay-child` et `relay-parent` pour les deux sens de connexion
+- Authentification : deux rôles JWT distincts, `relay` (dit « relay-child ») et `relay-parent`, pour les deux sens de connexion
 
 ### Topologie de référence — Arbre
 
@@ -1714,7 +1665,7 @@ L'enfant établit **UNE SEULE** connexion WSS persistante vers son parent et env
 ```
 [Enfant (dmz1)]
   → WSS /ws/relay (port 7772 du parent central)
-  → Authorization: Bearer <JWT rôle="relay-child", sub="dmz1">
+  → Authorization: Bearer <JWT rôle="relay" (dit relay-child), sub="dmz1">
   → {type:"relay_hello", node_type:"relay", relay_id:"dmz1"}
   → agent_list { agents: [{ hostname: "host-A", status: "connected" }, ...] }
        (uniquement agents DIRECTS du relay, pas récursifs)
@@ -1749,7 +1700,7 @@ Le parent ouvre la connexion (une goroutine par enfant enregistré ainsi). L'enf
 
 ```
 WSS /ws/relay
-Authorization: Bearer <JWT rôle="relay-child ou relay-parent selon le sens d'ouverture", sub=REPEATER_ID>
+Authorization: Bearer <JWT rôle "relay" (enfant qui ouvre) ou "relay-parent" (parent qui ouvre), sub=relay_id du porteur>
 Port : 7772 (relay handler)
 ```
 
@@ -1893,7 +1844,7 @@ Après le handshake établi, tous les changements du sous-arbre sont notifiés a
 **Validation serveur à la réception (HAUT-1)** :
 
 Le dernier élément de `relay_chain` DOIT être égal à l'identité du PAIR authentifiée au handshake :
-- **Mode pull** (enfant ouvre) : relay_chain[-1] DOIT égaler `jwt.sub` du JWT relay-child (identité du WS client = l'enfant)
+- **Mode pull** (enfant ouvre) : relay_chain[-1] DOIT égaler `jwt.sub` du JWT `relay` (identité du WS client = l'enfant)
 - **Mode push** (parent ouvre) : relay_chain[-1] DOIT égaler `relay_ack.relay_id` du pair serveur (identité de l'enfant établie au handshake)
 
 Tous les éléments précédents DOIVENT être des descendants enregistrés du pair (relays présents dans `relay_nodes` après topology_snapshot initial).
@@ -1934,10 +1885,9 @@ Le relay enfant reçoit et le traite comme un exec direct (ou le forward encore 
 | Code | Nature | Signification | Comportement du pair qui reçoit le close |
 |---|---|---|---|
 | `4010` | **Refus permanent** | Identité non autorisée pour ce lien : token révoqué, `relay_id` ≠ `jwt.sub`, identité du pair différente de celle attendue, boucle détectée (C ∈ {P} ∪ ancêtres(P)) | **Ne pas reconnecter** : le client/dialer s'arrête (état terminal, log ERROR) ; une action opérateur est nécessaire |
-| `4011` | Token expiré | Token relay expiré (TTL dépassé) | Rafraîchir le token puis reconnecter |
+| `4011` | **Non émis** | Constante réservée (`ws/relay_handler.go:37`), jamais envoyée ni traitée : un token expiré est refusé par un 401 avant l'upgrade | — |
 | `4012` | **Refus corrigible** | Erreur protocolaire ou de validation pouvant se résoudre : `topology_snapshot` invalide / déjà reçu / reçu avant `relay_hello`, conflit de routage ou de relay déclaré, slot « parent unique » occupé | Reconnexion avec backoff exponentiel (5 s → 60 s max) |
-| `4000` | Normal | Fermeture normale ou initiée par le client | — |
-| `1000` | Normal | Fermeture WebSocket standard | — |
+| `4000` | Constante définie, non émise sur les liens relay | — | — |
 
 > Un refus HTTP 401 avant l'upgrade (token invalide, révoqué à la reconnexion, secret non configuré) n'a pas de code de fermeture : le client le traite comme une erreur de connexion (backoff 5 s → 60 s).
 
@@ -2016,16 +1966,8 @@ RELAY_GROUP_VARS='{"region":"dmz"}'   # sur relay dmz1
 
 ### 23.4 Table de routage et dispatch
 
-**Schéma relay_routing** :
-```sql
-CREATE TABLE IF NOT EXISTS relay_routing (
-    hostname    TEXT PRIMARY KEY,      -- clé sur hostname seul (un seul chemin par hôte)
-    relay_id    TEXT NOT NULL,         -- relay auquel l'agent se connecte directement
-    hop_type    TEXT CHECK(hop_type IN ('agent', 'relay')),
-    relay_chain TEXT,                  -- JSON sérialisé, ex: '["dmz1","zone-a"]'
-    updated_at  INTEGER NOT NULL
-)
-```
+**Table de routage `relay_routing`** (en mémoire, reconstruite par `topology_snapshot` / `agent_list` / événements ; elle n'est plus une table SQL) :
+`hostname` (clé simple : un seul chemin par hôte), `relay_id` (relay auquel l'agent se connecte directement), `hop_type` (`agent` | `relay`), `relay_chain` (liste ordonnée, ex. `["dmz1","zone-a"]`).
 
 **Clé sur hostname seul** (pas de composite) : topologie arbre = un seul chemin par hôte. Si l'agent se reconnecte via un autre relay, la ligne se met à jour.
 
@@ -2078,7 +2020,7 @@ Chaque relay maintient sa propre table `relay_routing` avec ses enfants directs.
 
 **Deux rôles JWT distincts** (voir SECURITY.md §2) :
 
-**Rôle `relay-child`** (présenté par l'enfant au handshake) :
+**Rôle `relay`** (dit « relay-child » ; présenté par l'enfant au handshake) :
 - Permissions : ouvrir `/ws/relay`, envoyer `relay_hello`, `agent_list`, `event_forward`
 - Restrictions : pas d'accès `/api/inventory`, `/api/exec`, `/ws/agent`, `/api/admin`
 - JWT créé sur : le relay parent (l'entité qui accueille l'enfant)
@@ -2092,13 +2034,9 @@ Chaque relay maintient sa propre table `relay_routing` avec ses enfants directs.
 
 Les tokens relay sont créés via CLI avec le rôle approprié :
 
-**Relay-child** (créé sur le parent, présenté par l'enfant qui ouvre vers le parent) :
-```bash
-# Sur central (parent) :
-secagent-server tokens create --role relay-child \
-  --sub dmz1 \
-  --expires 90d
-```
+**Rôle `relay`** (créé sur le parent, présenté par l'enfant qui ouvre vers le parent) :
+> *Pas disponible via `tokens create`* (rôles acceptés : `enrollment`, `plugin`, `relay-parent`). Le JWT de l'enfant (rôle `relay`, 30 j) est émis à l'enregistrement du relay :
+> `secagent-server relays add --id dmz1` (mode pull) ou `POST /api/admin/relays`.
 
 **Relay-parent** (créé sur l'enfant, présenté par le parent qui ouvre vers l'enfant) :
 ```bash
@@ -2114,47 +2052,13 @@ secagent-server tokens create --role relay-parent \
 
 ---
 
-### 23.7 Schéma de persistance (tables repeater)
+### 23.7 Persistance (état fichier)
 
-```sql
--- Relays enregistrés (auto-découverts via relay_hello pull ou déclarés via API)
-CREATE TABLE IF NOT EXISTS relay_nodes (
-    id              TEXT PRIMARY KEY,       -- UUID interne
-    relay_id        TEXT NOT NULL UNIQUE,   -- identifiant lisible, ex: "dmz1"
-    description     TEXT,
-    token_hash      TEXT,                   -- ⚠️ misnomer (#152): SHA-256(JTI) pour pull; AES-GCM(token) préfixé enc: pour push
-    jti             TEXT,                   -- JWT JTI du token relay (pour blacklist #153); NULL pour push
-    token_exp       INTEGER,                -- exp du JWT (expiration timestamp pour purge automatique blacklist)
-    token_encrypted TEXT,                   -- token relay mode=push chiffré AES-256-GCM avec RSA_MASTER_KEY (#140)
-    revoked         INTEGER DEFAULT 0,      -- flag révocation (#153); relais legacy (sans jti) révoqués par ce flag seul
-    mode            TEXT NOT NULL DEFAULT 'pull',   -- "pull" (WSS entrante) | "push" (WSS sortante)
-    created_at      INTEGER NOT NULL,
-    last_seen       INTEGER,               -- Unix timestamp, NULL si jamais connecté (pull)
-    status          TEXT NOT NULL DEFAULT 'pending'  -- "connected" | "disconnected" | "pending" (pull)
-);
+Il n'y a plus de tables SQL. La configuration des relays enfants est dans `relay.state` : section `relay_nodes` (`relay_id`, `urls`, `mode` pull|push, `jti`, `token_exp`,
+`revoked`, `group_vars`, `token_hash` pour un pull ou `token_secret` chiffré `enc:` pour un push) et section `relay_parent_tokens` (`id`, `jti`, `parent_id`, `expires_at`, `revoked_at` ;
+jamais le token). Statut, `last_seen`, `relay_chain` et routage sont **volatils** (en mémoire). Source : `internal/state/model.go`, voir SERVER_SPEC §5 et §9.6.
 
--- Tokens relay-parent (association relay_id → JTI pour la révocation)
-CREATE TABLE IF NOT EXISTS relay_parent_tokens (
-    id              TEXT PRIMARY KEY,       -- UUID publique du token
-    jti             TEXT NOT NULL UNIQUE,   -- JWT JTI pour blacklist à la révocation
-    parent_id       TEXT NOT NULL,          -- relay_id du parent (cli --sub) — validé contre relay_hello.relay_id
-    description     TEXT,
-    created_at      INTEGER NOT NULL,
-    expires_at      INTEGER NOT NULL,       -- exp du JWT (obligatoire, max 365j)
-    revoked_at      INTEGER                 -- timestamp révocation (NULL si actif); INSERT blacklist(jti) à cet instant
-);
-
--- Table de routage hostname → relay_id (un seul chemin par hôte)
-CREATE TABLE IF NOT EXISTS relay_routing (
-    hostname    TEXT PRIMARY KEY,       -- clé simple (un chemin par hôte)
-    relay_id    TEXT NOT NULL,         -- relay auquel l'agent se connecte directement
-    hop_type    TEXT CHECK(hop_type IN ('agent', 'relay')),
-    relay_chain TEXT,                  -- JSON sérialisé, ex: '["dmz1","zone-a"]'
-    updated_at  INTEGER NOT NULL
-);
-```
-
-**Changement clé** : clé composite `(hostname, relay_id)` supprimée. Clé simple `hostname` car un seul chemin par hôte en topologie arbre.
+**Changement clé** : clé de routage simple `hostname` (pas de composite) car un seul chemin par hôte en topologie arbre.
 
 ---
 
@@ -2242,11 +2146,11 @@ volumes:
 | **Server (routing)** | Lookup clé simple `hostname` (un seul chemin par hôte, pas de sélection multi-chemins) |
 | **Server (events)** | Remontée parent à parent ; relay_chain accumule ; pas de déduplication (un seul chemin) |
 | **Server (hooks)** | Filter `relay_chain_contains` ; signature `Dispatcher.Dispatch()` + relayChain param |
-| **Server (admin)** | Endpoints `/api/admin/relays` (list, get, status, add, remove) ; enregistrement API pour mode=push |
-| **Server (auth)** | Deux rôles JWT `relay-child` et `relay-parent` (voir SECURITY.md §2) : enfant ouvre vers parent, parent ouvre vers enfant ; `relay` role N'a PAS droit `read_inventory` |
+| **Server (admin)** | Endpoints `/api/admin/relays` (list, status, add, remove, revoke) ; enregistrement API pour mode=push |
+| **Server (auth)** | Deux rôles JWT `relay` (dit relay-child) et `relay-parent` (voir SECURITY.md §2) : enfant ouvre vers parent, parent ouvre vers enfant ; `relay` role N'a PAS droit `read_inventory` |
 | **Server (startup)** | Validation : si `REPEATER_UPSTREAM_URL` et `REPEATER_UPSTREAM_TOKEN` définis → mode enfant-push, vérifier parent |
 | **Suppression** | Fichiers proxy (push_manager.go, client.go) ; variables REPEATER_UPSTREAMS_FILE, REPEATER_UPSTREAMS ; plus de multi-upstream |
-| **CLI** | `secagent-server relays list|get|status|add` |
+| **CLI** | `secagent-server relays add|list|remove|status` |
 | **Infra** | `DEPLOYMENT/qualif/docker-compose.server.yml` (+ `.minion.yml`, `.proxy.yml`, `.ansible.yml`) : multi-relay avec variables simples (pas de YAML) |
 
 
@@ -2263,9 +2167,9 @@ volumes:
 - **Atomique** : validation complète (chaînes, noms, conflits) AVANT tout commit
 - **Coalescé** : rafales 200ms coalesced, min gap 2s (evite trop de snapshots)
 - **Rate-limited** : 40 remplacements/60s par lien (close 4012 si dépassé)
-- **Chaînes réelles** : chaque relay stocke sa vraie chaîne dans `relay_nodes.relay_chain` (pas d'aplatissement)
+- **Chaînes réelles** : chaque relay conserve la vraie chaîne de ses descendants (en mémoire, `storeRelayChain`), sans aplatissement
 
-**Stockage** : `relay_nodes.relay_chain` persisté en JSON, utilisé par `buildSnapshot` pour envoyer les chaînes exactes aux ancêtres.
+**Stockage** : les chaînes sont volatiles (reconstruites à chaque snapshot) et servent à construire le snapshot envoyé aux ancêtres.
 
 ### 24.2 Host.Conflict Exact
 
@@ -2292,7 +2196,7 @@ central reçoit ["zone-a", "dmz1"] → hooks voient la chaîne origin-first
 
 ### 24.4 Group Vars et Variables d'Hook
 
-**RELAY_GROUP_VARS** : JSON optionnel validé et persisté dans `relay_nodes.group_vars`.
+**RELAY_GROUP_VARS** : JSON optionnel, validé au démarrage ; les group vars d'un relay enfant sont persistés dans `relay_nodes.group_vars` de `relay.state`.
 
 **Validation** :
 - JSON valide (reject snapshot/hello si invalide)
@@ -2302,7 +2206,7 @@ central reçoit ["zone-a", "dmz1"] → hooks voient la chaîne origin-first
 - Bornes : max 16 KiB total, ≤ 64 clefs, clef ≤ 64 car, valeur ≤ 1 024 octets, profondeur ≤ 4, liste ≤ 64 éléments
 
 **Variables hook** :
-- `{{relay_chain}}` : JSON array origin-first (ex: `["zone-a","dmz1"]`)
+- `{{relay_chain}}` : liste séparée par des virgules, origine en premier (ex : `zone-a,dmz1`) ; `SECAGENT_RELAY_CHAIN` en shell, tableau JSON dans un webhook
 - `{{relay_origin}}` : premier élément (relay source)
 
 ### 24.5 Relay_id Validation Partout
