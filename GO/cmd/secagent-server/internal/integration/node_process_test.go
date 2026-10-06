@@ -101,6 +101,16 @@ func TestNodeProcess(t *testing.T) {
 	applyTuning(&cfg)
 	if os.Getenv("NODE_LOCK_PROFILE") != "default" {
 		cfg.LockParams = lockProfileFast()
+		// NODE_LOCK_MASTER_STALE=<duration>: how long this instance waits before judging ANOTHER master's
+		// lock stale. A test that wants "the takeover can only come from a RELEASED lock" sets it far above
+		// any duration it waits (no wall-clock threshold to tune against the machine load).
+		if v := os.Getenv("NODE_LOCK_MASTER_STALE"); v != "" {
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				log.Fatalf("NODE_LOCK_MASTER_STALE: %v", err)
+			}
+			cfg.LockParams.MasterStale = d
+		}
 	}
 
 	// NODE_LOCK_REMOVE_GATE: this instance waits between judging a lock stale and deleting it

@@ -182,10 +182,13 @@ func TestFailover_SecondaryHasNoPortAndWritesNothing(t *testing.T) {
 	}
 }
 
-// SIGTERM: the lock is deleted and a waiting secondary takes over in under 5 s, ports serving.
+// SIGTERM: the lock is deleted and a waiting secondary takes over at once, ports serving — WITHOUT waiting
+// for the lock to go stale. The staleness delay is set to 10 minutes on both instances: the only way the
+// secondary can take over within the bound below is the RELEASED lock (no wall-clock threshold to
+// tune against the machine load; the absolute < 10 s requirement is TestFailover_CleanStopTakeoverOnTheProductionCalibrationIsUnder10Seconds).
 func TestFailover_CleanStopReleasesTheLockAndTheSecondaryTakesOverFast(t *testing.T) {
 	parallel(t)
-	a := startNode(t, nodeSpec{ID: "root"})
+	a := startNode(t, nodeSpec{ID: "root", Env: []string{"NODE_LOCK_MASTER_STALE=10m"}})
 	b := a.sibling()
 	b.launchSecondary(nil)
 	t.Cleanup(b.stop)
@@ -196,16 +199,14 @@ func TestFailover_CleanStopReleasesTheLockAndTheSecondaryTakesOverFast(t *testin
 
 	start := time.Now()
 	a.stop()
-	if code, ok := a.waitExit(time.Second); !ok || code != 0 {
+	if code, ok := a.waitExit(waitLimit); !ok || code != 0 {
 		t.Fatalf("clean stop: exit %d (exited=%v)", code, ok)
 	}
-	if !b.awaitPromotion(10 * time.Second) {
-		t.Fatalf("the secondary did not take over within 10 s; logs:\n%s", b.logs.String())
+	// a stale lock would need 10 minutes: promotion within waitLimit proves the lock was released
+	if !b.awaitPromotion(waitLimit) {
+		t.Fatalf("the secondary did not take over (the lock must be released by a clean stop; staleness is 10 min); logs:\n%s", b.logs.String())
 	}
 	t.Logf("takeover after %v", time.Since(start))
-	if time.Since(start) > 10*time.Second {
-		t.Errorf("takeover took %v, want < 10 s", time.Since(start))
-	}
 	if code, body := b.admin("GET", "/api/admin/status", nil); code != 200 {
 		t.Errorf("the new master must serve its admin API: %d %v", code, body)
 	}
