@@ -2,7 +2,11 @@ package integration
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // #171 A2/A3/A4 with the REAL minion (dispatcher + address list [standby B, A]): the enrollment goes
@@ -65,5 +69,68 @@ func TestFailover_RealMinionFollowsTheMasterThroughItsAddressList(t *testing.T) 
 	}
 	if m.logs.has("[FATAL]") {
 		t.Errorf("the minion logged a fatal error:\n%s", m.logs.String())
+	}
+}
+
+// #171 A5: a command is RUNNING on the minion when the master is killed (kill -9). The client of the dead
+// master gets an error; the new master never re-sends it and the minion never runs it again: the marker
+// of the command holds exactly one line, and a later command through the new master still works (barrier:
+// the minion processed messages after its reconnection).
+func TestFailover_InFlightExecAtKillIsNeverExecutedTwice(t *testing.T) {
+	parallel(t)
+	addrA, addrB := newNodeAddrs(t), newNodeAddrs(t)
+	a := startNode(t, nodeSpec{ID: "root", Env: addrA.env()})
+	b := a.sibling()
+	b.launchSecondary(addrB.env())
+	t.Cleanup(b.stop)
+
+	const host = "inflight-minion"
+	m := startMinionProc(t, host, enrollmentToken(t, a, host), addrA, addrB)
+	m.waitConnections(1, "the minion is connected to the master A")
+	waitFor(t, "A serves the agent", func() bool { return agentServed(a, host, 1) })
+	waitFor(t, "the standby polls the lock", b.localStatusPolled)
+
+	marker := filepath.Join(t.TempDir(), "runs")
+	tok := a.pluginToken()
+	type result struct {
+		code int
+		err  error
+	}
+	res := make(chan result, 1)
+	go func() {
+		code, _, err := a.callErr("POST", a.apiURL(), "/api/exec/"+host, tok,
+			map[string]any{"cmd": "echo run >> " + marker + "; sleep 20", "timeout": 60})
+		res <- result{code, err}
+	}()
+	waitFor(t, "the command started on the minion (marker written)", func() bool {
+		b, _ := os.ReadFile(marker)
+		return strings.Count(string(b), "run\n") >= 1
+	})
+	a.killNow()
+	select {
+	case r := <-res:
+		if r.err == nil && r.code == http.StatusOK {
+			t.Fatalf("the client of a killed master must get an error, got %d", r.code)
+		}
+	case <-time.After(waitLimit):
+		t.Fatal("the client of the killed master never got an answer")
+	}
+
+	if !b.awaitPromotion(waitLimit) {
+		t.Fatalf("the standby never took over; logs:\n%s", b.logs.String())
+	}
+	m.waitConnections(2, "the minion reconnected to the new master")
+	waitFor(t, "the new master serves the agent", func() bool { return agentServed(b, host, 1) })
+	// barrier: a command sent through the new master is executed, so the minion processed messages after
+	// its reconnection; had the interrupted command been replayed it would have run by now
+	marker2 := filepath.Join(t.TempDir(), "runs2")
+	if r := b.exec(host, map[string]any{"cmd": "echo second >> " + marker2, "timeout": 20}); r.Code != http.StatusOK {
+		t.Fatalf("exec through the new master = %d %v", r.Code, r.Body)
+	}
+	if got, _ := os.ReadFile(marker); strings.Count(string(got), "run\n") != 1 {
+		t.Errorf("the interrupted command ran %d times, want exactly 1:\n%s", strings.Count(string(got), "run\n"), got)
+	}
+	if got, _ := os.ReadFile(marker2); strings.Count(string(got), "second\n") != 1 {
+		t.Errorf("the command sent through the new master ran %d times, want 1", strings.Count(string(got), "second\n"))
 	}
 }
