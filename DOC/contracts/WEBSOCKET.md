@@ -12,7 +12,7 @@
 Endpoint  : WSS /ws/agent  (port 7770 ou 7772, TLS natif v3.0.3)
 Initiateur: secagent-minion (sortant uniquement)
 Auth      : Authorization: Bearer <JWT HMAC-HS256>
-TLS       : obligatoire (TLS 1.3 natif) — connexion refusée sans TLS
+TLS       : obligatoire (TLS natif, version minimale TLS 1.2 — `server/tls.go:169`)
 ```
 
 Handshake HTTP → upgrade WebSocket :
@@ -24,7 +24,7 @@ Connection: Upgrade
 Authorization: Bearer eyJhbGci...
 ```
 
-Le serveur valide le JWT (signature + expiration + JTI blacklist) avant d'accepter l'upgrade.
+Le serveur valide le JWT (signature + expiration + JTI blacklist) avant d'accepter l'upgrade. Seul le rôle `agent` est accepté sur `/ws/agent` (un JWT d'un autre rôle, ou un jeton plugin, est refusé : `ws/handler.go:409`).
 
 ---
 
@@ -221,21 +221,22 @@ Erreur `payload_too_large` :
 
 ## 5. Codes de fermeture WebSocket
 
-| Code | Signification | Comportement **obligatoire** de l'agent |
-|---|---|---|
-| `4000` | Fermeture normale (restart serveur) | Backoff exponentiel : 1s → 2s → 4s → … → 60s |
-| `4001` | Token révoqué | **Arrêt définitif — NE PAS reconnecter** |
-| `4002` | Token expiré | Refresh token → reconnecter |
-| `4003` | Re-enrollment requis | Ré-enrollment complet → reconnecter |
-| `4004` | Conflit hostname | **Arrêt définitif — NE PAS reconnecter** |
-| `1001` / réseau | Déconnexion réseau / restart | Backoff exponentiel |
+| Code | Émis par le serveur ? | Signification | Comportement de l'agent |
+|---|---|---|---|
+| `4000` | Oui — uniquement à la suppression d'un agent (`DELETE /api/admin/minions/{hostname}`, `handlers/admin.go:644`) | Fermeture normale | Reconnexion avec backoff exponentiel : 1s → 2s → 4s → … → 60s |
+| `4001` | Oui — révocation (`POST /api/admin/revoke/{hostname}`) | Token révoqué | **Arrêt définitif — NE PAS reconnecter** ; le minion sort avec le code **77** |
+| `4002` | **Non** — constante définie (`ws/handler.go:24`) mais jamais émise | Token expiré (réservé) | Aucun traitement dédié : l'agent reconnecte comme pour tout code autre que `4001` |
+| `1001` | Oui — arrêt propre du serveur, perte du verrou maître (`server/server.go:566,602`) | Going Away | Reconnexion avec backoff exponentiel (jamais `4001`, pour ne pas interdire la reconnexion au nouveau maître) |
+| réseau | — | Déconnexion réseau | Backoff exponentiel |
+
+Seul `4001` arrête l'agent (`ReconnectManager.ShouldReconnect`, `secagent-minion/internal/ws/dispatcher.go:159`). Les codes `4003` (« re-enrollment requis ») et `4004` (« conflit hostname ») **n'existent pas** : le serveur ne les émet jamais et l'agent ne les traite pas. Le ré-enrôlement est déclenché par un `401` sur l'upgrade WebSocket (JWT rejeté), pas par un code de fermeture. Les codes `4010` et `4012` appartiennent au lien relay ↔ relay (`/ws/relay`), pas à `/ws/agent`.
 
 ---
 
 ## 6. Gestion de la concurrence (agent)
 
 ```
-MAX_CONCURRENT_TASKS = 10  (configurable via RELAY_MAX_TASKS)
+MAX_CONCURRENT_TASKS = 10  (variable d'environnement MAX_CONCURRENT_TASKS du minion)
 ```
 
 Si le sémaphore est saturé, l'agent répond immédiatement :
@@ -244,10 +245,12 @@ Si le sémaphore est saturé, l'agent répond immédiatement :
   "task_id": "...",
   "type": "result",
   "rc": -1,
-  "error": "agent_busy"
+  "stdout": "",
+  "stderr": "agent_busy",
+  "truncated": false
 }
 ```
-→ Le serveur retourne HTTP `429` au plugin Ansible.
+→ Le minion Go n'émet pas de champ `error` dans ce message : le serveur le relaie à l'appelant comme un résultat ordinaire (`rc: -1`, `stderr: "agent_busy"`). Le serveur sait traduire un résultat portant `error: "agent_busy"` en HTTP `429` (`handlers/exec.go:237`), mais le minion Go ne produit pas ce champ aujourd'hui.
 
 ---
 
