@@ -1,3 +1,10 @@
+# ============================================================================================
+# OBSOLETE v3.0.3 : NON CONSTRUCTIBLE. Copie GO/cmd/inventory et PYTHON/ansible.cfg|secagent.py, qui
+# n'existent plus (sources actuelles : GO/cmd/secagent-inventory, SECAGENT-PYTHON/ansible_plugins/...),
+# images de base non epinglees. Reference uniquement par DEPLOYMENT/qualif/docker-compose.ansible.yml
+# (lui aussi obsolete). A reecrire dans l'issue dediee (poste de controle Ansible : voir
+# DEPLOYMENT/ANSIBLE_DEPLOYMENT.md) ; NE PAS utiliser.
+# ============================================================================================
 # Dockerfile — Ansible Container with Ansible-SecAgent Plugins
 #
 # Multi-stage build :
