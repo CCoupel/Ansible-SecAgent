@@ -15,11 +15,21 @@ Fichiers Compose **réels** de ce répertoire :
 | Fichier | Rôle |
 |---|---|
 | `qualif/docker-compose.server.yml` | Qualif : 2 instances (`secagent-server-a`, `-b`) sur un volume d'état partagé |
+| `qualif/docker-compose.chain.yml` | Qualif : chaîne de relais (#188) — inclut le fichier ci-dessus, ajoute un relay enfant pull (`secagent-child`) et deux minions (`minion-root`, `minion-child`) |
 | `prod/docker-compose.server.yml` | Prod : relay racine (service `secagent-server`), identique sur N hôtes |
 | `prod/docker-compose.child.yml` | Surcharge pour un relay enfant |
 
-`qualif/docker-compose.{minion,proxy,ansible}.yml` sont marqués OBSOLETES en v3.0.3 (ne pas les utiliser).
-Il n'existe ni `qualif/docker-compose.yml` ni `prod/docker-compose.yml`.
+Scripts de qualif : `qualif/chain-test.sh` (`ci-prepare`, `bootstrap`, `smoke`, `failover`, `backup-restore`, `logs`, `down`),
+`qualif/failover-test.sh` (bascule en conteneurs), `qualif/pki/gen.sh` (CA privée de test et certificat à SAN multiples ;
+clés non versionnées). Voir [qualif/README.md](qualif/README.md) et [prod/README.md](prod/README.md).
+
+Les anciens Compose `qualif/docker-compose.{minion,proxy,ansible}.yml`, `deploy.sh` / `deploy.bat` et `scripts/bootstrap-qualif.sh`
+ont été **supprimés** (#188) ; il n'existe ni `qualif/docker-compose.yml` ni `prod/docker-compose.yml`.
+Pas de NATS, pas de Caddy ni de reverse proxy : TLS natif dans le serveur.
+
+**Images** : `linux/amd64` uniquement (publiées pour cette seule plate-forme par `candidate-images.yml` et `release.yml`) ;
+aucune image arm64 n'est fournie en v3.0.3. Le poste de contrôle Ansible n'est pas un conteneur Compose : c'est le poste
+qui lance `chain-test.sh` (plugin `SECAGENT-PYTHON`, binaire `secagent-inventory`, `ansible-core`).
 
 ---
 
