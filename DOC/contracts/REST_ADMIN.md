@@ -55,9 +55,9 @@ Authorization: Bearer <ADMIN_TOKEN>
 
 ---
 
-### `POST /api/admin/authorize` — Pré-autoriser une clef publique
+### `POST /api/admin/authorize` — Mémoriser une clef publique (sans droit d'enrôlement)
 
-Enregistre une clef publique dans les `authorized_keys` de l'état : l'agent portant cette clef peut ensuite s'enrôler sans jeton d'enrôlement (flux historique, voir `DOC/contracts/REST_ENROLLMENT.md`). Cette route **ne génère aucun jeton** ; les jetons d'enrôlement se créent avec `POST /api/admin/tokens` (`role: "enrollment"`, §3). La route est servie sur 7771 et, par compatibilité, aussi sur 7770 (`server/routers.go`).
+Enregistre une clef publique dans les `authorized_keys` de l'état et répond `201`. **Cela ne donne aucun droit d'enrôlement** : depuis la v3.0.3 (#192), `POST /api/register` ne consulte plus `authorized_keys` et refuse toute requête sans jeton d'enrôlement (`403 enrollment_token_required`, voir `REST_ENROLLMENT.md` §4b). La route (et la commande `secagent-server minions authorize <hostname> --key-file`) subsiste uniquement pour la compatibilité des scripts existants ; elle ne génère aucun jeton. Pour enrôler un hôte : créer un jeton avec `POST /api/admin/tokens` (`role: "enrollment"`, §3) ou `secagent-server tokens create --role enrollment`, puis le donner au minion (`RELAY_ENROLLMENT_TOKEN`). La route est servie sur 7771 et, par compatibilité, aussi sur 7770 (`server/routers.go`).
 
 ```http
 POST /api/admin/authorize
