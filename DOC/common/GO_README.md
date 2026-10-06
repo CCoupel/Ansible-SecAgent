@@ -48,14 +48,11 @@ GO/
 - `RegisterAgent()`: POST /api/register
   - JWT generation (HS256)
   - RSA-OAEP/SHA256 encryption
-  - Authorized key verification
+  - Enrollment token + nonce challenge (a request without `enrollment_token` is refused: 403 `enrollment_token_required`, #192c)
 - `AdminAuthorize()`: POST /api/admin/authorize
   - Bearer token validation
-  - Pre-authorization storage
-- `TokenRefresh()`: POST /api/token/refresh
-  - Challenge decryption (RSA)
-  - JTI blacklisting
-  - Token renewal
+  - Stores the key in `authorized_keys` only: it grants NO enrollment right any more
+- `POST /api/token/refresh` was removed (#192, 404): renewal = re-enrollment on 401, or the WS `rekey` message
 
 **exec.go** (380 LOC)
 - `ExecCommand()`: POST /api/exec/{hostname}
@@ -266,19 +263,18 @@ $SECAGENT minions list --format table
 $SECAGENT minions get qualif-host-01 --format json
 # Check: enrolled_at timestamp updated, token_jti recorded in relay.state
 
-# 5. Test authorized_keys flow (optional)
-# Pre-authorize an agent's public key, then trigger ré-enrôlement
-$SECAGENT minions authorize qualif-host-01 --key-file agent_pubkey.pem
+# 5. Re-enrollment needs an enrollment token (a pre-authorized key is no longer enough, #192c)
+$SECAGENT tokens create --role enrollment --hostname-pattern "qualif-host-01" --expires 1h
+# give it to the minion (RELAY_ENROLLMENT_TOKEN), then:
 $SECAGENT minions revoke qualif-host-01
-# Verify agent ré-enrôles with authorized key validation passing
 
 # (stop the stack with `docker compose ... down`)
 ```
 
 **What this validates** :
-- ✅ `RegisterAgent()` flow : authorized_keys lookup, JWT encryption, JTI persistence
-- ✅ `AdminAuthorize()` : pre-authorization storage
-- ✅ `TokenRefresh()` : 401 ré-enrôlement, new JWT encryption
+- ✅ `RegisterAgent()` flow : enrollment token + nonce challenge, JWT encryption, JTI persistence; refusal without token
+- ✅ `AdminAuthorize()` : key storage (no enrollment right)
+- ✅ 401 ré-enrôlement with a new enrollment token, new JWT encryption
 - ✅ Dual-key JWT : grace period validation during rotation
 - ✅ Agent 401 handling : automatic ré-enrôlement without manual intervention
 
