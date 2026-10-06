@@ -2,9 +2,9 @@
 
 Périmètre : Docker Compose uniquement. Kubernetes/Helm sont abandonnés ; Docker Swarm est **hors périmètre**.
 Un Compose par relay, **déployé à l'identique sur N hôtes**, avec `STATE_DIR` (fichier d'état `relay.state`,
-`relay.lock`, journal) sur un **stockage partagé**. Une seule instance est maître (ports 7770/7772 ouverts) ;
-les autres sont secondaires et **n'ouvrent aucun port**. Le Compose est fourni avec la release
-(`secagent-compose-<version>.tar.gz`, images en `vX.Y.Z@sha256:…`, vérifier `SHA256SUMS`).
+`relay.lock`, journal `actions.log`) sur un **stockage partagé NFS**. Tous les relays ouvrent les ports 7770/7771/7772 ;
+une seule instance acquiert le verrou (maître) et traite les tâches ; les autres restent en attente (passifs).
+Le Compose est fourni avec la release (`secagent-compose-<version>.tar.gz`, images en `vX.Y.Z@sha256:…`, vérifier `SHA256SUMS`).
 
 ## Fichiers
 
@@ -55,6 +55,37 @@ Alternative : volume Docker NFS (bloc commenté en bas du Compose).
 Il vérifie, avec 500 fichiers : `O_CREAT|O_EXCL` (un seul gagnant par fichier), `rename` atomique (aucun fichier partiel
 lu), `fsync` fichier et répertoire. À répéter (au moins 3 fois), horloges synchronisées (NTP). Complément manuel : `kill -9`
 d'un maître pendant l'écriture, puis `secagent-server state verify`. Supprimer ensuite `.storage-test`.
+
+## Variables d'environnement essentielles
+
+**Relay (secagent-server) :**
+- `STATE_DIR` : répertoire d'état partagé (NFS). **Identique sur tous les hôtes**. Contient `relay.state`, `relay.lock`, `actions.log`.
+- `TLS_CERT` / `TLS_KEY` : fichiers certificat et clef TLS (PEM). TLS natif sur 7770 et 7772 (obligatoire, pas de reverse proxy).
+- `ADMIN_ADDR` : adresse d'écoute admin (ex: `127.0.0.1:7771` pour loopback local uniquement). Voir `ADMIN_TLS`.
+- `ADMIN_TLS` : `true` si `ADMIN_ADDR` n'est pas loopback (sinon facultatif).
+- `RSA_MASTER_KEY` : clef privée RSA 4096 pour chiffrer les champs sensibles de l'état. **Identique sur tous les hôtes**. Jamais sur le partage NFS.
+
+**Agents (secagent-minion) — listes multi-adresses :**
+- `RELAY_SERVER_URL` : liste URLs HTTPS pour enrollment, séparées par `,`. Ex: `https://relay1:7770,https://relay2:7770`. **Pairée par position** avec `RELAY_WS_URL`.
+- `RELAY_WS_URL` : liste URLs WSS pour WebSocket, séparées par `,`. Ex: `wss://relay1:7772/ws/agent,wss://relay2:7772/ws/agent`. **Mêmes longueurs** que `RELAY_SERVER_URL`.
+- `RELAY_PRIVATE_KEY` : clef RSA-4096 locale (défaut: `/etc/secagent-minion/id_rsa`, mode 0600).
+- `RELAY_JWT_PATH` : token JWT courant (défaut: `/etc/secagent-minion/token.jwt`, réécrit à chaque enrollment).
+- `RELAY_MAX_TASKS` : tâches concurrentes max (défaut: 10).
+
+**Codes de sortie des agents :**
+- `0-7` : erreurs normales, redémarrage par systemd policy.
+- `77` (Revoked) : agent révoqué (JTI blacklisté). **`RestartPreventExitStatus=77`** — ne pas redémarrer.
+- `78` (Enrollment Refused) : token d'enrôlement expiré/invalide, échec 403 persistant. **`RestartPreventExitStatus=78`** — ne pas redémarrer, créer nouveau token.
+
+Systemd config recommandée (minion) :
+```ini
+[Service]
+Restart=on-failure
+RestartSec=30s
+RestartPreventExitStatus=77 78
+StartLimitIntervalSec=600
+StartLimitBurst=5
+```
 
 ## Dimensionnement (parc > 3 000 hôtes)
 
