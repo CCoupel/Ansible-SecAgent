@@ -2,7 +2,7 @@
 
 > Document de référence pour le modèle de sécurité d'Ansible-SecAgent.
 > Remplace et étend ARCHITECTURE.md §7.
-> Dernière mise à jour : 2026-03-06
+> Dernière mise à jour : 2026-10-06 (v3.0.3)
 
 ---
 
@@ -624,7 +624,104 @@ Le binaire `secagent-inventory` utilise `RELAY_INSECURE_TLS` pour désactiver la
 
 ---
 
-## 11. Matrice des menaces
+## 11. Avis de sécurité
+
+### Avis 1 — Endpoints `/ws/agent` et `/ws/relay` sans authentification (v1.0.0, v2.0.0)
+
+**Versions affectées** : v1.0.0, v2.0.0
+
+**Description** : Les endpoints WebSocket `/ws/agent` (tous les nœuds) et `/ws/relay` (nœuds en mode proxy, si `PROXY_MODE=true`) acceptaient les connexions **sans token Bearer** via un repli non signé qui acceptait un paramètre de chaîne de requête `?hostname=` (pour `/ws/agent`) ou `?relay_id=` (pour `/ws/relay`).
+
+**Scénarios d'exploitation** :
+- **`/ws/agent`** : Un client sans token pouvait usurper n'importe quel hostname et recevoir les tâches destinées à cet agent, dont les commandes et les `become_pass` en stdin.
+- **`/ws/relay` (mode proxy)** : Un client pouvait usurper l'identité d'un relay, annoncer des hôtes arbitraires et détourner les tâches routées vers ces hôtes.
+
+**Versions corrigées** :
+- `/ws/agent` : **v3.0.3** (#169, commit 49ea502)
+- `/ws/relay` : **v3.0.3** (réécriture v3 avec fail-closed `extractRelayAuth`, JTI-based)
+
+**Compensation (déploiements v1.0.0 / v2.0.0)** :
+- Restriction réseau stricte des ports 7770 et 7772
+- Mise à jour vers v3.0.3 recommandée
+- Audit des logs : rechercher `JWT verification bypassed` sur `/ws/agent` ou relays suspects dans `relay_hello`/`agent_list` côté proxy
+- **Rotation des `become_pass`** des hôtes pilotés via déploiement qualif si un accès non contrôlé est possible
+
+**Recommandation** : tous les déploiements utilisant v1.0.0 ou v2.0.0 en environnement de production doivent **minimalement** restreindre les ports 7770/7772 aux adresses de confiance, et **préférentiellement** mettre à jour vers v3.0.3 ou ultérieur.
+
+### Avis 2 — Secrets de webhooks stockés en clair dans `action_log` (v1.0.0, v2.0.0)
+
+**Versions affectées** : v1.0.0, v2.0.0
+
+**Description** : L'historique des exécutions de hooks (table SQLite `action_log`) enregistrait la configuration complète de chaque hook sans masquage, y compris :
+- Secrets HMAC des webhooks
+- En-têtes incluant tokens d'autorisation
+- URL contenant des jetons en query string
+
+**Exposition** : L'endpoint `GET /api/admin/hooks/log` (et la CLI `secagent-server hooks log`) renvoyaient ces enregistrements à tout administrateur, et le fichier `relay.db` était accessible en clair lors de sauvegardes, exports ou accès au système de fichiers.
+
+**Versions corrigées** : **v3.0.3** (#161)
+- Action log remplacé par un journal append-only séparé avec masquage
+- Retrait des secrets de l'historique d'exécution
+- v3 repart d'un état vierge, pas de migration de l'historique
+
+**Recommandation (déploiements v1.0.0 / v2.0.0)** :
+- **Évaluer** tous les secrets configurés dans les hooks (HMAC, jetons URL, en-têtes) et les considérer comme exposés
+- **Faire tourner** tous les secrets de webhooks (secrets HMAC, jetons)
+- **Purger** les copies de `relay.db` : sauvegardes, exports, fichiers supprimés non écrasés
+- Revoir la liste des détenteurs de tokens admin
+- Mettre à jour vers v3.0.3
+
+### Limites connues — v3.0.3
+
+#### Anti-rejeu limité : arrêt à froid
+
+La garde de `write_seq` (#163) interdit le rejeu d'une copie d'état authentique plus ancienne **quand les instances sont vivantes**.
+
+**Limite** : Après un **arrêt à froid de toutes les instances**, cette garde en mémoire est perdue. Un attaquant ayant accès en écriture à `STATE_DIR` peut rejouer une copie authentique plus ancienne (avant une révocation de token ou d'agent, par exemple).
+
+**Mitigations** :
+- **Permissions strictes** sur `STATE_DIR` : propriétaire = compte de service seul, mode 0700, export NFS restreint aux hôtes candidats
+- **Sauvegardes datées** stockées hors de `STATE_DIR` (support distinct, contrôle d'accès différent)
+- **Supervision des écritures** dans `STATE_DIR` : auditer toute modification de `relay.state` en dehors du processus serveur
+- **Vérification avant redémarrage à froid** : utiliser `secagent-server state verify --min-write-seq` (#187) pour vérifier l'intégrité et l'antériorité d'une copie d'état avant de la restaurer
+
+#### DoS de promotion par `relay.lock` forgé
+
+Un attaquant ayant accès en écriture à `STATE_DIR` peut déposer un `relay.lock` contenant un `write_seq` démesuré (ex. 2^64−1).
+
+**Cas** : Les secondaires mémorisent le maximum `write_seq` observé (`l.minSeq`), et la garde anti-rejeu refuse tout état ayant un `write_seq` inférieur. Un faux `relay.lock` avec une valeur extrême bloque **définitivement toute promotion** (déni de service) tant qu'il existe.
+
+**Modèle de menace** : Identique à la corruption directe de `relay.state` (l'attaquant a déjà accès en écriture à `STATE_DIR`).
+
+**Mitigation** :
+- Restrictions d'accès à `STATE_DIR` (permissions OS, ACL NFS)
+- En cas de blocage de promotion : identifier le `relay.lock` contenant le `write_seq` incohérent (comparer avec `secagent-server state verify`), le supprimer après vérification, redémarrer les secondaires (qui perdent `l.minSeq` à la réinitialisation)
+
+#### Rotation de `RSA_MASTER_KEY`
+
+La rotation de la clé maître exige une **réécriture complète de l'état** (tous les secrets rechiffrés, HMAC recalculé), sinon l'ancien fichier est refusé au démarrage.
+
+**Procédure** :
+1. Sauvegarder `STATE_DIR` préalablement
+2. Arrêter toutes les instances (ou utiliser la bascule actif/passif)
+3. Redémarrer les instances avec la nouvelle clé : elles rechiffrent l'état au 1er démarrage
+4. Monitorer les erreurs de déchiffrement (clé mal propagée)
+
+Le serveur **ne** redéploiera **jamais** une ancienne clé en cas d'erreur : il s'arrêtera avec un message d'erreur explicite.
+
+#### REPEATER_CA_FILE n'est pas rechargé à chaud
+
+Contrairement à `TLS_CERT` / `TLS_KEY` qui sont rechargés à chaud via `GetCertificate`, le bundle CA du relais (`REPEATER_CA_FILE`) est chargé une seule fois au démarrage.
+
+**Rotation de la CA** : Si des certificats internes doivent être mis à jour, l'une des deux actions est nécessaire :
+1. **Redémarrage** de l'instance serveur (indisponibilité brève)
+2. **Basculement actif/passif** : arrêt propre du maître (le secondaire prend le relais avec la nouvelle CA)
+
+À documenter dans le runbook DEPLOYMENT lors de la rotation de certificats internes.
+
+---
+
+## 12. Matrice des menaces
 
 | Menace | Contremesure |
 |---|---|
