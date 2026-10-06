@@ -81,6 +81,13 @@ Applique toutes les vérifications du serveur (schéma, HMAC avec la clé dériv
 | 6 | `RSA_MASTER_KEY` absente |
 | 7 | `write_seq` inférieur à `--min-write-seq` (copie trop ancienne) |
 
+**Pour `state restore --from`** :
+| Code | Signification |
+|---|---|
+| 0 | restauration réussie |
+| 2-7 | idem `state verify` (fichier refusé) |
+| 8 | `relay.lock` frais détecté, restauration refusée (instance active) — passer `--i-know-no-instance-is-running` ou arrêter toutes les instances |
+
 ### `secagent-server state restore --from <fichier> [--state-dir D] [--min-write-seq N] [--i-know-no-instance-is-running]`
 1. `verify` d'abord : un fichier inauthentique ou invalide est refusé, rien n'est modifié (mêmes codes 2 à 7).
 2. **Aucune instance active** : `relay.lock` est observé sans jamais être écrit, avec la règle de fraîcheur du verrou (contenu inchangé pendant la limite de son rôle, sur l'horloge monotone locale : 10 s pour un candidat, 5 min pour un maître ; tout changement du compteur de battement = instance vivante ; observation interrompue = refus). Verrou frais → code **8**, rien n'est modifié. `--i-know-no-instance-is-running` passe outre un verrou orphelin (stockage figé) : `[SECURITY WARNING]` et trace dans le journal.
