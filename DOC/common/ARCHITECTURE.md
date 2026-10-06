@@ -373,17 +373,19 @@ X-Role: agent    (pour les appels internes, si applicable)
 #### `POST /api/register` — Enrollment d'un agent
 
 **Seul endpoint accessible sans JWT valide préexistant.**
-Requiert TLS. La clef publique doit figurer dans `authorized_keys` côté serveur.
+Requiert TLS. Depuis #192c, **tout enrôlement exige un jeton d'enrôlement** (`secagent_enr_…`, créé par `secagent-server tokens create --role enrollment`) et la preuve de possession de la clef privée (challenge). Sans `enrollment_token`, le serveur répond **403 `enrollment_token_required`** (aucun JWT, aucun JTI posé) : `handlers/register.go:462-475`.
 
-**Requête :**
+**Requête (2 étapes, voir SERVER_SPEC §3) :**
 ```json
 {
   "hostname": "host-A",
-  "public_key_pem": "-----BEGIN PUBLIC KEY-----\n..."
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...",
+  "enrollment_token": "secagent_enr_...",
+  "challenge_response": "<étape 2 seulement>"
 }
 ```
 
-**Réponse 200 :**
+**Réponse 200 (étape 2) :**
 ```json
 {
   "token_encrypted": "<JWT chiffré avec la clef publique du client (RSAES-OAEP)>",
@@ -391,7 +393,7 @@ Requiert TLS. La clef publique doit figurer dans `authorized_keys` côté serveu
 }
 ```
 
-**Réponse 409 :** hostname déjà enregistré avec une autre clef.
+**Réponse 403 :** jeton absent (`enrollment_token_required`), invalide, expiré, déjà utilisé, hostname non autorisé, challenge faux.
 
 #### `GET /api/inventory` — Inventaire pour Ansible
 
@@ -516,22 +518,24 @@ Un token `role: plugin` ne peut pas ouvrir de WebSocket agent.
 ### Flow d'enrollment
 
 ```
-Prérequis : clef publique de l'agent pré-enregistrée en base
-            via POST /api/admin/authorize (pipeline de provisioning)
+Prérequis : un jeton d'enrôlement (`tokens create --role enrollment --hostname-pattern …`)
+            fourni au minion (variable RELAY_ENROLLMENT_TOKEN ; sans lui le minion sort en code 78)
 
-Table DB : authorized_keys(hostname, public_key_pem, approved_at, approved_by)
+La clef publique est enregistrée dans `authorized_keys` (état fichier) PAR l'enrôlement lui-même,
+et n'est plus consultée par /api/register (`EnrollAgent`, `handlers/register.go:560-565`).
 
 1. Agent démarre
    → génère paire RSA-4096 si absente (/etc/ansible-secagent/id_rsa)
    → POST https://secagent-server/api/register
-     { hostname: "host-A", public_key_pem: "..." }
+     { hostname: "host-A", public_key_pem: "...", enrollment_token: "secagent_enr_..." }
 
 2. Relay server
-   → vérifie public_key dans la table authorized_keys (DB)
+   → étape 1 : valide le jeton (hostname, usage, expiration), renvoie un nonce chiffré avec la clef publique de l'agent
+   → étape 2 : l'agent renvoie OAEP(nonce + jeton, clef serveur) ; comparé, nonce à usage unique
    → génère JWT : { sub: "host-A", role: "agent",
                     jti: "uuid", iat: now, exp: now+3600 }
    → chiffre JWT avec la clef publique du client (RSAES-OAEP)
-   → stocke en DB : (hostname, public_key, jti, enrolled_at)
+   → une seule mutation de l'état : jeton consommé, clef enregistrée, agent (hostname, public_key, jti, enrolled_at) créé
    → retourne { token_encrypted: "...", server_public_key_pem: "..." }
 
 3. Agent
@@ -540,7 +544,7 @@ Table DB : authorized_keys(hostname, public_key_pem, approved_at, approved_by)
    → stocke server_public_key (/etc/ansible-secagent/server.pub)
 ```
 
-### Endpoint d'autorisation (pipeline de provisioning)
+### Endpoint de pré-autorisation de clef (`POST /api/admin/authorize`) — sans effet sur l'enrôlement
 
 ```
 POST /api/admin/authorize
@@ -556,8 +560,7 @@ Authorization: Bearer <admin_token>
 → HTTP 201 Created
 ```
 
-Cet endpoint est distinct de `/api/register` et nécessite un token admin (rôle `admin`).
-Il est appelé par le pipeline de provisioning (Terraform, Packer, cloud-init) **avant** que le serveur ne démarre.
+Cet endpoint est distinct de `/api/register` et nécessite un token admin. Il se contente de mémoriser la clef dans `authorized_keys` ; **cette liste n'est plus consultée par `/api/register`** (#192c) : elle ne donne aucun droit d'enrôlement. Pour enrôler un hôte, le pipeline de provisioning crée un jeton d'enrôlement et le fournit au minion.
 
 ### Flow de reconnexion
 
@@ -568,14 +571,13 @@ Il est appelé par le pipeline de provisioning (Terraform, Packer, cloud-init) *
    → vérifie signature JWT
    → vérifie jti NOT IN blacklist
    → vérifie hostname == sub
-   → si token expiré → close(4002)
+   → si token expiré → refus HTTP 401 à l'upgrade (le code 4002 n'est jamais émis)
    → si jti blacklisté → close(4001)
    → si OK → session ouverte
 
-3. Si close(4002) reçu :
-   → Agent appelle POST /api/token/refresh
-     { hostname, old_token_encrypted_challenge }
-   → Serveur émet un nouveau JWT chiffré
+3. Si 401 à l'upgrade (JWT expiré/invalide) :
+   → Agent supprime son JWT local et se ré-enrôle (POST /api/register avec un jeton d'enrôlement)
+   → `POST /api/token/refresh` n'existe plus (404, #192) ; le renouvellement passe par le ré-enrôlement ou le message WS `rekey`
 
 4. Si close(4001) reçu :
    → Agent log l'événement, ne reconnecte pas, alerte admin
@@ -960,9 +962,8 @@ WS fermée code 4001 (révoqué)
   → logger l'événement
   → alerter (syslog, email selon config)
 
-WS fermée code 4002 (expiré)
-  → appeler POST /api/token/refresh
-  → reconnecter avec nouveau token
+Réponse 401 à l'upgrade (JWT expiré)
+  → ré-enrôlement (POST /api/register avec RELAY_ENROLLMENT_TOKEN), puis reconnexion
 ```
 
 ---
@@ -1195,8 +1196,8 @@ Pipeline de provisioning (Terraform / Packer / cloud-init)
 ─────────────────────────────────────────────────────────────────
 Étape 1 : génère paire RSA-4096 pour le nouveau serveur
 Étape 2 : stocke la clef privée dans le secret manager (Vault / AWS SSM)
-Étape 3 : appelle POST /api/admin/authorize sur le relay server
-           → enregistre la clef publique dans relay.state (authorized_keys) avant le boot
+Étape 3 : crée un jeton d'enrôlement sur le relay server
+           → (obsolète depuis #192c : cette pré-autorisation ne permet plus de s'enrôler ; créer un jeton d'enrôlement `tokens create --role enrollment` et le passer au minion)
 Étape 4 : provisionne le serveur avec la clef privée injectée
            (cloud-init / user-data)
 Étape 5 : au premier boot, l'agent démarre et s'enrôle automatiquement
@@ -1382,17 +1383,14 @@ Contient :
 
 ### Persistance authorized_keys
 
-Les clefs autorisées pour l'enrollment sont stockées **dans le fichier d'état**, pas en base de données. Alimentées via l'API admin `/api/admin/authorize` **avant** que l'agent ne s'enrôle.
+Les clefs sont stockées **dans le fichier d'état** (section `authorized_keys`), pas en base de données. Elles sont alimentées par l'enrôlement (jeton + challenge) et, pour compatibilité des scripts, par `POST /api/admin/authorize` / `minions authorize`.
 
 ```
-Pipeline de provisioning
-  → POST /api/admin/authorize { hostname, public_key_pem, approved_by }
-  → Édite relay.state : ajoute à authorized_keys
+Agent → POST /api/register sans enrollment_token
+  → HTTP 403 enrollment_token_required (la liste authorized_keys n'est PAS consultée)
 
-Serveur démarre → agent appelle POST /api/register
-  → relay server : lookup authorized_keys dans relay.state
-  → clef trouvée et correspondante → enrollment accepté ✓
-  → sinon → HTTP 403 ✗
+Agent → POST /api/register avec jeton + challenge valides
+  → enrôlement accepté, clef ajoutée à authorized_keys ✓
 ```
 
 ### Verrou fichier (relay.lock)
