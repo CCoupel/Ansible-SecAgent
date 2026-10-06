@@ -86,7 +86,7 @@ Content-Type: application/json
 
 ### `POST /api/admin/revoke/{hostname}` — Révoquer un agent
 
-Blackliste le JTI du JWT actif, ferme la connexion WS avec le code `4001` et marque l'agent déconnecté.
+En **une seule écriture d'état**, pose le drapeau persistant `revoked` de l'agent **et** blackliste le JTI courant (rétention 25 h) ; puis ferme la connexion WS avec le code `4001` et marque l'agent déconnecté.
 
 ```http
 POST /api/admin/revoke/{hostname}
@@ -98,13 +98,20 @@ Authorization: Bearer <ADMIN_TOKEN>
 { "status": "revoked", "hostname": "host-A", "ws_disconnected": true }
 ```
 
-`404 agent_not_found` si le hostname est inconnu. L'agent reçoit `close(4001)` et s'arrête définitivement (pas de reconnexion). Si l'écriture dans la blacklist échoue, la réponse est une erreur et la WS **n'est pas** fermée (voir §6, mode lecture seule). (`handlers/admin.go` `AdminRevokeMinion`.)
+Effets (#193) :
+- l'agent reçoit `close(4001)` et s'arrête définitivement (pas de reconnexion) ;
+- le drapeau `revoked` **survit à l'expiration de la blacklist** : tant qu'il n'est pas levé, l'hôte est refusé à l'enrôlement (`403 agent_revoked`, jeton non consommé, quel que soit le jeton), au `rekey` (aucun jeton émis) et au handshake `/ws/agent` (401, même sans entrée de blacklist) ;
+- **il n'existe pas de `unrevoke`** : la révocation se lève par `DELETE /api/admin/minions/{hostname}` (ci-dessous).
+
+`404 agent_not_found` si le hostname est inconnu. Si l'écriture est refusée (état en lecture seule, erreur disque), la réponse est une erreur (`500 db_error`, ou `503 state_read_only`) et la WS **n'est pas** fermée ; le client réessaie (§6). (`handlers/admin.go` `AdminRevokeMinion`, `storage/store.go:528` `RevokeAgent`.)
 
 ---
 
 ### `DELETE /api/admin/minions/{hostname}` — Supprimer un agent
 
-Ferme la WS (code `4000`), supprime l'agent de l'état et émet l'événement `host.deleted`. Réponse 200 : `{ "hostname", "status": "deleted", "ws_disconnected" }` ; `404 agent_not_found`. Différent de la révocation, qui blackliste sans supprimer.
+Ferme la WS (code `4000`), supprime l'agent **et sa clef autorisée** de l'état et émet l'événement `host.deleted`. Réponse 200 : `{ "hostname", "status": "deleted", "ws_disconnected" }` ; `404 agent_not_found`. Différent de la révocation, qui blackliste et pose le drapeau sans supprimer.
+
+**C'est aussi la levée explicite d'une révocation** : l'agent disparaît, donc son drapeau `revoked` aussi ; l'hôte peut alors s'enrôler de nouveau avec un jeton d'enrôlement. Ses variables sont perdues. (`storage/store.go:339` `DeleteAgent`.)
 
 ---
 
