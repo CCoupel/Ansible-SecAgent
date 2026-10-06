@@ -2,6 +2,7 @@ package integration
 
 import (
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -42,6 +43,40 @@ func TestAnsibleAsync_D1_PollReturnsTheResultOfASingleExecution(t *testing.T) {
           - res.rc == 0
           - res.stdout == 'ok-d1'
           - res.finished == 1
+`)
+	rc, out := r.run(pb)
+	if rc != 0 {
+		t.Fatalf("playbook rc=%d:\n%s", rc, out)
+	}
+	if got := markerRuns(marker); got != 1 {
+		t.Errorf("the task ran %d times, want exactly 1", got)
+	}
+}
+
+// D2: fire-and-forget (poll 0), then async_status (a module run on the minion) until finished.
+func TestAnsibleAsync_D2_FireAndForgetThenAsyncStatus(t *testing.T) {
+	parallel(t)
+	_, _, r := asyncSetup(t, "async-d2")
+	marker := filepath.Join(t.TempDir(), "runs")
+	pb := r.play("d2", `- hosts: target
+  gather_facts: false
+  tasks:
+    - name: start and forget
+      ansible.builtin.shell: "echo run >> `+marker+`; sleep 3; echo ok-d2"
+      async: 60
+      poll: 0
+      register: job
+    - name: the job is waited for with async_status
+      ansible.builtin.async_status:
+        jid: "{{ job.ansible_job_id }}"
+      register: res
+      until: res.finished
+      retries: 30
+      delay: 1
+    - ansible.builtin.assert:
+        that:
+          - res.rc == 0
+          - res.stdout == 'ok-d2'
 `)
 	rc, out := r.run(pb)
 	if rc != 0 {
