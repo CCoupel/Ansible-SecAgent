@@ -1,301 +1,74 @@
-# Ansible-SecAgent — Project Index
+# Ansible-SecAgent — Index du projet
 
-**Project**: Ansible-SecAgent — Ansible execution via inverse-connection agents
-**Status**: Phases 1-3, 6-9 ✅ Complete | Phase 10 (Enrollment Token) 🆕 In Progress
-**Last Updated**: 2026-03-27
+**Projet** : exécution de playbooks Ansible sur des hôtes distants sans SSH entrant (agents à connexion inversée).
+**Version documentée** : v3.0.3 (relay actif/passif, état sur fichier, TLS natif, WebSocket direct).
+**Suivi des tâches** : [GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues) (source de vérité). `DOC/common/BACKLOG.md` est archivé.
+
+> Les anciennes implémentations Python du serveur et de l'agent (FastAPI, NATS, SQLite) sont **retirées** : le serveur et le minion sont écrits en GO. Seul le plugin de connexion Ansible reste en Python (contrainte de l'API Ansible). `RELEASE/` conserve l'historique des phases (documents datés, non maintenus).
 
 ---
 
-## 📁 Directory Structure
+## Structure du dépôt
 
 ```
-Ansible_Agent/
-├── PYTHON/                     # Phase 1-3 Python MVP (Complete)
-│   ├── agent/                  # secagent-minion daemon
-│   ├── server/                 # secagent-server FastAPI + NATS
-│   ├── ansible_plugins/        # Ansible connection + inventory plugins
-│   ├── tests/                  # Test suite
-│   ├── docker-compose.yml      # Local dev environment
-│   └── README.md               # Python docs
-│
-├── GO/                         # Phase 7 GO Migration (Complete)
-│   ├── cmd/secagent-server/
-│   │   ├── main.go             # HTTP server (ports 7770/7771/7772)
-│   │   └── internal/
-│   │       ├── handlers/       # API endpoints (register, exec, inventory)
-│   │       ├── ws/             # WebSocket handler
-│   │       ├── storage/        # SQLite persistence
-│   │       └── broker/         # NATS JetStream client
-│   └── README.md               # GO docs
-│
-├── Documentation/
-│   ├── ARCHITECTURE.md         # Technical specifications (v1.1)
-│   ├── HLD.md                  # High-level design + diagrams
-│   ├── CLAUDE.md               # Project conventions for Claude Code
-│   ├── PHASE7_COMPLETE.md      # GO migration completion report
-│   └── CONVERSION_STATUS.md    # Conversion matrix + progress
-│
-├── Configuration/
-│   ├── PLAN_CDP.md             # Workflow for team coordination
-│   ├── .env                    # Environment variables
-│   └── .claude/commands/       # Claude Code command definitions
-│
-├── Other Directories/
-│   ├── bin/                    # Scripts, utilities
-│   ├── qualif/                 # Qualification test artifacts
-│   ├── ansible_minion/         # [Optional] Test minions
-│   ├── ansible_server/         # [Optional] Test server
-│   └── tools/                  # Development tools
-│
-└── Git/
-    ├── .git/                   # Git repository
-    ├── .gitignore              # Git ignore patterns
-    └── Recent commits:
-        ├── fa95120 docs(phase7): completion summary
-        ├── a1fc076 feat(phase7): complete GO migration (100%)
-        ├── 3cf92c5 feat(phase7): exec, inventory, ws handlers
-        └── ... (see git log for full history)
-
+Ansible_SecAgent/
+├── README.md, CHANGELOG.md, CLAUDE.md
+├── DOC/                         # Documentation vivante
+│   ├── common/                  # ARCHITECTURE, HLD, GO_README, INDEX (ce fichier), BACKLOG (archivé)
+│   ├── contracts/               # Contrats d'interface : REST_ADMIN, REST_ENROLLMENT, REST_PLUGIN, WEBSOCKET
+│   ├── security/                # SECURITY (modèle + avis), PORTS_SECURITY
+│   ├── server/                  # SERVER_SPEC, STATE_SPEC, LOCK_SPEC, HOOKS_SPEC, MANAGEMENT_CLI_SPECS
+│   ├── agent/                   # AGENT_SPEC (secagent-minion)
+│   ├── inventory/               # INVENTORY_SPEC (secagent-inventory)
+│   ├── plugins/                 # PLUGINS_SPEC (plugin de connexion)
+│   └── project/                 # QUICKSTART, DEPLOYMENT, plans CDP
+├── GO/
+│   ├── cmd/secagent-server/     # API + WebSocket + CLI cobra ; internal/{handlers,ws,state,storage,lock,server,cli,hooks,repeater,proxy,…}
+│   ├── cmd/secagent-minion/     # agent ; internal/{enrollment,ws,executor,registry,facts,files}
+│   └── cmd/secagent-inventory/  # binaire d'inventaire dynamique Ansible
+├── SECAGENT-PYTHON/             # plugin de connexion Ansible (ansible_plugins/connection_plugins/relay.py) + tests
+├── DEPLOYMENT/                  # qualif/ (Compose actif/passif), prod/, ANSIBLE_DEPLOYMENT.md
+└── RELEASE/                     # historique des phases (archive)
 ```
 
 ---
 
-## 🚀 Quick Navigation
+## Documents clés
 
-### For Python MVP Users
-**Location**: `PYTHON/`
-- **Server**: `PYTHON/server/` — FastAPI + NATS + SQLite
-- **Agent**: `PYTHON/agent/` — Systemd daemon with WSS
-- **Plugins**: `SECAGENT-PYTHON/ansible_plugins/` — Ansible integration
-- **Tests**: `PYTHON/tests/` — Comprehensive test suite
-- **Docs**: `PYTHON/README.md`
+| Sujet | Document |
+|---|---|
+| Architecture technique | `DOC/common/ARCHITECTURE.md` |
+| Design haut niveau | `DOC/common/HLD.md` |
+| Sécurité (rôles, jetons, révocation, avis) | `DOC/security/SECURITY.md`, `DOC/security/PORTS_SECURITY.md` |
+| Contrats d'interface (référence canonique) | `DOC/contracts/` |
+| Serveur : API, état, verrou, hooks, CLI | `DOC/server/` |
+| Agent (minion) | `DOC/agent/AGENT_SPEC.md` |
+| Plugins et inventaire Ansible | `DOC/plugins/PLUGINS_SPEC.md`, `DOC/inventory/INVENTORY_SPEC.md` |
+| Démarrage / déploiement | `DOC/project/QUICKSTART.md`, `DOC/project/DEPLOYMENT.md`, `DEPLOYMENT/README.md` |
+| Conventions de travail | `CLAUDE.md` |
 
-**Run**:
+---
+
+## Développement
+
 ```bash
-cd PYTHON
-docker-compose up -d
-python -m server.api.main
+# Tests GO (depuis GO/)
+JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v
+
+# Build du serveur (sans CGO)
+cd GO && CGO_ENABLED=0 go build -o secagent-server ./cmd/secagent-server
+
+# Tests du plugin Python
+cd SECAGENT-PYTHON && pytest tests/
 ```
 
-### For GO High-Performance Rewrite
-**Location**: `GO/`
-- **Handlers**: `GO/cmd/secagent-server/internal/handlers/` — API endpoints
-- **WebSocket**: `GO/cmd/secagent-server/internal/ws/` — Connection management
-- **Database**: `GO/cmd/secagent-server/internal/storage/` — SQLite wrapper
-- **Broker**: `GO/cmd/secagent-server/internal/broker/` — NATS client
-- **Docs**: `GO/README.md`
-
-**Build**:
-```bash
-cd GO/cmd/secagent-server
-go build -o secagent-server .
-./secagent-server
-```
+Avant de travailler : lire `CLAUDE.md`, puis les specs concernées, puis vérifier les issues GitHub. Commits conventionnels (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`).
 
 ---
 
-## 📋 Key Documents
+## Sécurité en bref
 
-### Architecture & Design
-| Document | Purpose | Location |
-|----------|---------|----------|
-| **ARCHITECTURE.md** | Technical specifications, APIs, security, deployment | Root |
-| **HLD.md** | High-level design with ASCII diagrams | Root |
-| **CLAUDE.md** | Instructions for Claude Code — read before working | Root |
-| **PHASE7_COMPLETE.md** | GO migration completion report (564 lines) | Root |
-| **CONVERSION_STATUS.md** | Python → GO conversion matrix | Root |
-
-### Planning & Tracking
-| Document | Purpose | Location |
-|----------|---------|----------|
-| **[GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues)** | Task tracking — source de vérité (96 issues, 10 phases) | GitHub |
-| **PLAN_CDP.md** | Team coordination workflow | Root |
-| **INDEX.md** | This file | Root |
-
-### Component Documentation
-| Component | README | Location |
-|-----------|--------|----------|
-| Python MVP | README.md | `PYTHON/` |
-| GO Rewrite | README.md | `GO/` |
-
----
-
-## 📊 Project Status
-
-### Phase 1-3: Python MVP ✅ COMPLETE
-- ✅ secagent-minion: Enrollment, WSS, dispatcher, subprocess execution
-- ✅ secagent-server: FastAPI, JWT auth, NATS, SQLite, WebSocket
-- ✅ ansible_plugins: Connection plugin (relay), inventory plugin
-- ✅ Tests: Unit + integration + E2E
-- ✅ Deployment: Docker Compose working on 192.168.1.218
-
-**Metrics**:
-- 2,585 lines of Python code
-- 0 failing tests
-- 100% API coverage
-
----
-
-### Phase 7: GO Server Rewrite ✅ COMPLETE
-- ✅ handlers/register.go: Enrollment, JWT, RSA-4096 (280 LOC)
-- ✅ handlers/exec.go: Task execution, file transfer (380 LOC)
-- ✅ handlers/inventory.go: Ansible format (140 LOC)
-- ✅ ws/handler.go: WebSocket connections (370 LOC)
-- ✅ storage/store.go: SQLite CRUD (470 LOC)
-- ✅ broker/nats.go: NATS JetStream (380 LOC)
-
-**Metrics**:
-- 2,585 lines of GO code (100% conversion)
-- 72 KB binary size
-- Production-ready with comprehensive error handling
-
----
-
-### Phase 6, 8, 9: GO Components ✅ COMPLETE
-- Phase 6: Management CLI GO ✅
-- Phase 8: Agent GO rewrite ✅
-- Phase 9: Plugins wrapper GO ✅
-
-### Phase 4, 5: Suspended ⏸
-- Phase 4: Production Kubernetes (Helm)
-- Phase 5: Documentation & Hardening
-
-### Phase 10: Enrollment Token 🆕 IN PROGRESS
-- See [GitHub Issues — Phase 10](https://github.com/CCoupel/Ansible-SecAgent/issues?q=label%3Aphase%3A10-enrollment)
-
----
-
-## 🛠️ Development Workflow
-
-### Before Starting Work
-1. Read `CLAUDE.md` — Project conventions
-2. Read `ARCHITECTURE.md` — Technical context
-3. Check [GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues) — Current task status (open = todo, closed = done)
-4. Review `PLAN_CDP.md` — Coordination rules
-
-### Working on Python MVP
-```bash
-cd PYTHON
-# Install dependencies
-pip install -r requirements.txt
-
-# Run tests
-pytest tests/
-
-# Start server
-docker-compose up -d
-python -m server.api.main
-
-# Start agent
-python agent/secagent_agent.py
-```
-
-### Working on GO Rewrite
-```bash
-cd GO
-# Build
-go build -o secagent-server ./cmd/server
-
-# Run
-./secagent-server
-
-# Test (TODO)
-go test ./cmd/server/internal/...
-```
-
-### Making Changes
-1. Edit code in `PYTHON/` or `GO/`
-2. Run tests locally
-3. Commit with conventional message: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`
-4. Push to remote
-
----
-
-## 🔐 Security
-
-### Encryption & Auth
-- **RSA-4096 OAEP/SHA256**: Agent enrollment
-- **HS256 JWT**: API request signing
-- **Bearer tokens**: Admin authorization
-- **JTI blacklist**: Token revocation
-- **WSS (TLS)**: WebSocket encryption
-- **mTLS**: NATS (production requirement)
-
-### Database
-- **SQLite with WAL**: PRAGMA foreign_keys=ON, indexes
-- **Schema**: agents, authorized_keys, blacklist (ARCHITECTURE.md §20)
-
----
-
-## 📈 Performance
-
-### Python MVP Baseline
-| Metric | Value |
-|--------|-------|
-| Latency (p95) | 100ms |
-| Memory per instance | 100MB |
-| Max agents | ~50 |
-| Startup time | 500ms |
-
-### GO Rewrite Targets
-| Metric | Value | vs Python |
-|--------|-------|-----------|
-| Latency (p95) | 5ms | **20x faster** |
-| Memory per instance | 10MB | **10x smaller** |
-| Max agents | 500+ | **10x more** |
-| Startup time | 10ms | **50x faster** |
-
----
-
-## 🔗 Useful Links
-
-### Code Files
-- **Python server**: `PYTHON/server/api/main.py`
-- **Python agent**: `PYTHON/agent/secagent_agent.py`
-- **GO server**: `GO/cmd/secagent-server/internal/handlers/register.go`
-- **GO broker**: `GO/cmd/secagent-server/internal/broker/nats.go`
-
-### Documentation
-- **Technical specs**: `ARCHITECTURE.md`
-- **High-level design**: `HLD.md`
-- **Project conventions**: `CLAUDE.md`
-- **GO completion**: `PHASE7_COMPLETE.md`
-
-### Configuration
-- **Environment**: `.env`
-- **Backlog**: [GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues)
-- **Workflow**: `PLAN_CDP.md`
-
----
-
-## ❓ FAQ
-
-**Q: Should I use Python or GO?**
-A: Use Python MVP for development/testing. Use GO for production deployment (20x faster, 10x less memory).
-
-**Q: Where is the GO server main.go?**
-A: `GO/cmd/secagent-server/main.go`. See `GO/cmd/secagent-server/internal/handlers/register.go` for reference implementation.
-
-**Q: Can I run Python and GO side-by-side?**
-A: Yes — they use same API contracts, NATS, SQLite. See `ARCHITECTURE.md` for migration guide.
-
-**Q: How do I test the conversion?**
-A: E2E tests in Python agent ↔ GO server (after main.go implementation).
-
-**Q: What's the next phase after GO migration?**
-A: Phase 8 (Agent GO rewrite) and Phase 9 (Plugins wrapper). See [GitHub Issues — Phase 8](https://github.com/CCoupel/Ansible-SecAgent/issues?q=label%3Aphase%3A8-agent-go).
-
----
-
-## 📞 Support
-
-- **Architecture questions**: See `ARCHITECTURE.md`
-- **Design decisions**: See `HLD.md` + `PHASE7_COMPLETE.md`
-- **Task tracking**: See [GitHub Issues](https://github.com/CCoupel/Ansible-SecAgent/issues)
-- **Code conventions**: See `CLAUDE.md`
-- **Team workflow**: See `PLAN_CDP.md`
-
----
-
-**Last Updated**: 2026-03-05 12:45 UTC
-**Project Status**: MVP Complete ✅ | GO Migration Complete ✅ | Ready for Integration Testing
+- TLS natif sur toutes les connexions (WSS/HTTPS) ; ports 7770 (API), 7771 (admin), 7772 (WebSocket).
+- Enrôlement : jeton d'enrôlement (`secagent_enr_…`) + challenge RSA-4096 OAEP ; JWT HS256 de rôle `agent` ; blacklist de JTI et drapeau persistant de révocation.
+- Plugins : jeton plugin opaque (`secagent_plg_…`) ; admin : `ADMIN_TOKEN`.
+- État : fichier `relay.state` authentifié par HMAC, secrets chiffrés AES-256-GCM (`RSA_MASTER_KEY`).
