@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 	}
 
 	// init() already ran and set JWTSecret + AdminToken.
-	// Generate an in-memory RSA keypair for tests that call RegisterAgent / TokenRefresh
+	// Generate an in-memory RSA keypair for tests that call RegisterAgent
 	// (normally done by InitServerState+DB at server startup).
 	if server != nil && server.PrivateKey == nil {
 		privKey, err := rsa.GenerateKey(rand.Reader, 2048) // 2048-bit sufficient for tests

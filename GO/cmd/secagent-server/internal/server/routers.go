@@ -38,7 +38,6 @@ func (n *Node) buildRouters() {
 	apiH("POST /api/upload/{hostname}", handlers.UploadFile)
 	apiH("POST /api/fetch/{hostname}", handlers.FetchFile)
 	apiH("GET /api/inventory", handlers.GetInventory)
-	apiH("POST /api/token/refresh", handlers.TokenRefresh)
 	apiH("POST /api/admin/authorize", handlers.AdminAuthorize) // Also on 7770 for compat
 	apiH("/ws/agent", ws.AgentHandler)                         // Also serve WS on main port
 

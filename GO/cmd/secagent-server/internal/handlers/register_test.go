@@ -314,18 +314,6 @@ func TestAdminAuthorizeMethodNotAllowed(t *testing.T) {
 	}
 }
 
-// TestTokenRefreshMethodNotAllowed tests non-POST method
-func TestTokenRefreshMethodNotAllowed(t *testing.T) {
-	httpReq := httptest.NewRequest("GET", "/api/token/refresh", nil)
-	w := httptest.NewRecorder()
-
-	TokenRefresh(w, httpReq)
-
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("expected 405, got %d", w.Code)
-	}
-}
-
 // ── writeJSON content-type regression tests ───────────────────────────────────
 // These tests guard against accidental removal of Content-Type: application/json
 // on error paths after the errcheck fix (all fmt.Fprintf → writeJSON migration).
@@ -364,18 +352,6 @@ func TestAdminAuthorize_ContentTypeOnError(t *testing.T) {
 	ct := w.Header().Get("Content-Type")
 	if ct != "application/json" {
 		t.Errorf("AdminAuthorize error response: expected Content-Type application/json, got %q", ct)
-	}
-}
-
-// TestTokenRefresh_ContentTypeOnError verifies Content-Type on TokenRefresh errors.
-func TestTokenRefresh_ContentTypeOnError(t *testing.T) {
-	httpReq := httptest.NewRequest("POST", "/api/token/refresh", bytes.NewBufferString("not-json"))
-	w := httptest.NewRecorder()
-	TokenRefresh(w, httpReq)
-
-	ct := w.Header().Get("Content-Type")
-	if ct != "application/json" {
-		t.Errorf("TokenRefresh error response: expected Content-Type application/json, got %q", ct)
 	}
 }
 

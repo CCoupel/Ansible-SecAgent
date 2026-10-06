@@ -8,7 +8,6 @@ package storage
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -392,52 +391,6 @@ func (s *Store) UpdateTokenJTI(ctx context.Context, hostname, tokenJTI string) (
 		return false, fmt.Errorf("failed to update token JTI: %w", err)
 	}
 	return found, nil
-}
-
-// Refusals of RotateAgentJTI (the handler maps them to its answers).
-var (
-	ErrRefreshUnknownAgent = errors.New("refresh: unknown agent")
-	ErrRefreshRevoked      = errors.New("refresh: token revoked")
-	ErrRefreshReplaced     = errors.New("refresh: token replaced")
-	ErrRefreshSuspended    = errors.New("refresh: agent suspended")
-)
-
-// RotateAgentJTI is the refresh of an agent token (#192): in ONE state write it checks that the
-// presented JTI is not blacklisted (a revocation racing the refresh wins), that the agent exists and is
-// not suspended, and — unless the token was validated with the previous JWT secret (rotation grace,
-// requireCurrent=false) — that the presented JTI is still the agent's current one (two concurrent
-// refreshes with the same token: exactly one wins); then it stores newJTI and blacklists oldJTI until
-// oldBlacklistUntil, so the old token can never be used again. A write failure leaves everything
-// unchanged: the caller must not issue the new token.
-func (s *Store) RotateAgentJTI(ctx context.Context, hostname, oldJTI, newJTI string, requireCurrent bool, oldBlacklistUntil time.Time) error {
-	err := s.mutate(func(tx *state.Tx) error {
-		if tx.Blacklisted(oldJTI) {
-			return ErrRefreshRevoked
-		}
-		a, ok := tx.Agent(hostname)
-		if !ok {
-			return ErrRefreshUnknownAgent
-		}
-		if a.Suspended {
-			return ErrRefreshSuspended
-		}
-		if requireCurrent && a.TokenJTI != oldJTI {
-			return ErrRefreshReplaced
-		}
-		a.TokenJTI = newJTI
-		if err := tx.PutAgent(a); err != nil {
-			return err
-		}
-		return putBlacklist(tx, oldJTI, hostname, "token_refreshed", nowUTC(), oldBlacklistUntil.UTC())
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, ErrRefreshRevoked), errors.Is(err, ErrRefreshUnknownAgent), errors.Is(err, ErrRefreshSuspended), errors.Is(err, ErrRefreshReplaced):
-			return err
-		}
-		return fmt.Errorf("failed to rotate the token jti: %w", err)
-	}
-	return nil
 }
 
 // ========================================================================

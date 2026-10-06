@@ -57,14 +57,6 @@ type AdminAuthorizeRequest struct {
 	ApprovedBy   string `json:"approved_by"`
 }
 
-// TokenRefreshRequest is the (optional) body of POST /api/token/refresh (#192). The caller is
-// identified by its Bearer JWT, never by the body: Hostname, when present, must equal the JWT subject.
-// ChallengeEncrypted is DEPRECATED and ignored (the old challenge proved nothing).
-type TokenRefreshRequest struct {
-	Hostname           string `json:"hostname,omitempty"`
-	ChallengeEncrypted string `json:"challenge_encrypted,omitempty"`
-}
-
 // ServerState holds global server state (RSA keypair + JWT secrets).
 // Loaded from DB at startup; updated in-memory during rotation.
 type ServerState struct {

@@ -294,3 +294,16 @@ func TestWiring_HealthIsPublicAndMinimal(t *testing.T) {
 		}
 	}
 }
+
+// #192: the refresh route is gone from every router (the public one included).
+func TestRouters_NoTokenRefreshRoute(t *testing.T) {
+	n, _, _, _ := startNode(t, nil)
+	api, admin, wsRoutes := n.Routes()
+	for name, routes := range map[string][]string{"api": api, "admin": admin, "ws": wsRoutes} {
+		for _, r := range routes {
+			if strings.Contains(r, "token/refresh") {
+				t.Errorf("%s router still registers %q", name, r)
+			}
+		}
+	}
+}
