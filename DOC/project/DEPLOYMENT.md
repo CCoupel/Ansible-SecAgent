@@ -1,148 +1,140 @@
-# Ansible-SecAgent — Deployment Guide
+# Ansible-SecAgent — Deployment Guide v3.0.3
 
 ## Architecture
 
-Ansible-SecAgent est composé de deux éléments distincts :
+Ansible-SecAgent v3.0.3 est composé de trois éléments :
 
-### 1. **ansible_server** — Serveur Relay (Phase 2)
-- **NATS JetStream** : Message broker pour les tâches/résultats
-- **relay-api** : FastAPI multi-port (7770/7771/7772)
-  - 7770 : Client (enrollment + WebSocket)
-  - 7771 : Plugin (exec/upload/fetch)
-  - 7772 : Inventory (admin)
-- **Caddy** : Reverse proxy TLS (optionnel, port 7443)
+### 1. **Serveur Relay** (secagent-server GO)
+- **Transports** : HTTP REST + WebSocket persistante (TLS natif sur tous les ports)
+- **Ports** :
+  - **7770** : API REST + WebSocket agent (enrollment `/api/register` + task dispatch `/ws/agent`)
+  - **7771** : Admin CLI (loopback par défaut, HTTPS si réseau)
+  - **7772** : WebSocket agent historique (deprecated, compat v3.0.3 only)
+- **État** : Fichier JSON (`relay.state`) sur stockage partagé NFS
+- **Verrou** : Actif/passif avec exclusion mutuellement exclusive (`relay.lock`)
+- **Pas de NATS** : Dispatch direct WebSocket par `task_id`
 
-**Network** : bridge (ansible_server_default)
+**Network** : Docker bridge ou host (agents et plugins connectent en sortie)
 
-### 2. **ansible_minion** — Agents Clients (Phase 1)
-- **secagent-minion-01** : qualif-host-01
-- **secagent-minion-02** : qualif-host-02
-- **secagent-minion-03** : qualif-host-03
+### 2. **Agents** (secagent-minion GO)
+- **Déploiement** : Systemd ou Docker container sur chaque hôte cible
+- **Connexion** : WebSocket persistante sortante vers relay (port 7770 ou 7772)
+- **Enrollment** : POST /api/register (RSA-4096 + JWT) une seule fois
+- **Exécution** : Subprocess par tâche, isolation complète, max 10 concurrentes (configurable)
+- **Codes de sortie** : 0-7 normal, 77 (revoked - no restart), 78 (enrollment refused - no restart)
 
-Chaque agent :
-- S'enregistre auprès du serveur via POST /api/register
-- Établit une WebSocket persistante pour recevoir les tâches
-- Exécute les playbooks Ansible en tant que processus subprocess
+**Network** : Host network (agents sur 192.168.1.100-102, relay sur 192.168.1.218)
 
-**Network** : host (accès direct au localhost:7770 du serveur)
+### 3. **Plugin Ansible** (connection + inventory, Python)
+- **Connection plugin** : Route exec/put_file/fetch_file vers relay via REST HTTP bloquant
+- **Inventory plugin** : Récupère la liste des agents enrôlés via API admin
+- **Cible** : Port 7770 (API unified + WebSocket)
+- **Authentification** : JWT signé (rôle `plugin` ou `admin`)
 
 ---
 
 ## Déploiement en Qualification
 
 ### Prérequis
-- Docker Remote API accessible : `tcp://192.168.1.218:2375`
-- Variables d'environnement définies dans `ansible_server/.env`
+- Docker et Docker Compose installés
+- Certificats TLS auto-signés générés : `DEPLOYMENT/qualif/tls.crt` + `tls.key`
+- Variables d'environnement : `DEPLOYMENT/qualif/.env` (STATE_DIR, JWT_SECRET_KEY, etc.)
+- **Pas de NATS, pas de FastAPI, pas de Caddy** — v3.0.3+ utilise GO server natif + TLS natif
 
-### Étape 1 : Déployer le Server
+### Étape 1 : Initialiser l'état du relay
 
 ```bash
-cd ansible_server
-export DOCKER_HOST=tcp://192.168.1.218:2375
-docker compose up --build -d
+cd DEPLOYMENT/qualif
+mkdir -p state logs
+docker compose run --rm secagent-server state init
+# Génère relay.state (fichier d'état JSON) avec RSA_MASTER_KEY auto-généré
 ```
 
-Vérifier que le serveur est healthy :
+Vérifier l'initialisation :
 ```bash
-docker compose ps
-curl http://192.168.1.218:7770/health
-# {"status":"ok","db":"ok","nats":"ok"}
+docker compose exec relay secagent-server state verify
+# Exit code 0 = OK, state cohérent
 ```
 
-### Étape 2 : Déployer les Minions
+### Étape 2 : Lancer le relay
 
 ```bash
-cd ../ansible_minion
-export DOCKER_HOST=tcp://192.168.1.218:2375
-docker compose up --build -d
+docker compose up -d relay
+docker compose logs relay | grep -i "listening\|port 7770"
+# Attendre : "Relay listening on 7770, 7771, 7772"
 ```
 
-Vérifier les inscriptions des agents :
+Healthcheck :
 ```bash
-docker logs secagent-minion-01
-docker logs secagent-minion-02
-docker logs secagent-minion-03
-# Rechercher : "WebSocket connecté — en attente de tâches"
+curl -k https://localhost:7770/health
+# {"status":"ok","agents":0,"uptime_seconds":N}
 ```
 
-### Étape 3 : Pré-autoriser les agents (une seule fois)
-
-Les agents doivent être pré-autorisés dans la table `authorized_keys` avant le premier enrollment.
+### Étape 3 : Générer token d'enrôlement et déployer agents
 
 ```bash
-# Récupérer les clefs publiques
-docker cp secagent-minion-01:/var/lib/secagent-minion/public_key.pem /tmp/pk01.pem
-docker cp secagent-minion-02:/var/lib/secagent-minion/public_key.pem /tmp/pk02.pem
-docker cp secagent-minion-03:/var/lib/secagent-minion/public_key.pem /tmp/pk03.pem
+# Créer un token d'enrôlement valide 1h
+TOKEN=$(docker compose exec relay \
+  secagent-server admin token create --role agent --duration 1h | grep -oE '[a-zA-Z0-9._-]{100,}')
 
-# Autoriser chaque agent
-ADMIN_TOKEN="dev-admin-token-for-qualification-only-change-in-prod"
-API="http://192.168.1.218:7770/api/admin/authorize"
+# Passer le token aux agents via .env ou docker exec
+docker compose set-env minion-01 RELAY_ENROLLMENT_TOKEN=$TOKEN
+docker compose set-env minion-02 RELAY_ENROLLMENT_TOKEN=$TOKEN
+docker compose set-env minion-03 RELAY_ENROLLMENT_TOKEN=$TOKEN
 
-for i in 01 02 03; do
-  PK=$(cat /tmp/pk${i}.pem | jq -Rs .)
-  curl -X POST "$API" \
-    -H "Authorization: Bearer $ADMIN_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "{\"hostname\": \"qualif-host-${i}\", \"public_key_pem\": $PK, \"approved_by\": \"setup-script\"}"
-done
+# Démarrer les agents
+docker compose up -d minion-01 minion-02 minion-03
 
-# Redémarrer les agents pour qu'ils s'inscrivent
-docker restart secagent-minion-01 secagent-minion-02 secagent-minion-03
+# Vérifier la connexion
+sleep 5
+docker compose logs minion-01 | grep -i "enrolled\|connected"
+# Attendre : "Enrolled successfully" + "WebSocket open"
 ```
 
----
-
-## Vérification de l'Inventaire Dynamique
-
-Une fois les agents connectés, interroger l'inventaire via le plugin :
+### Étape 4 : Vérifier l'inventaire
 
 ```bash
-# Générer un JWT plugin (valide 1h)
-export JWT_SECRET_KEY="dev-secret-key-for-qualification-only-change-in-prod"
+# Récupérer JWT admin
+ADMIN_JWT=$(docker compose exec relay \
+  secagent-server admin token create --role admin --duration 1h | grep -oE '[a-zA-Z0-9._-]{100,}')
 
-TOKEN=$(python3 << 'EOF'
-import json, uuid, base64, hmac, hashlib
-from datetime import datetime, timezone
-
-header = {"alg": "HS256", "typ": "JWT"}
-header_b64 = base64.urlsafe_b64encode(json.dumps(header).encode()).rstrip(b'=')
-
-jti = str(uuid.uuid4())
-now = int(datetime.now(timezone.utc).timestamp())
-payload = {
-    "sub": "test",
-    "role": "plugin",
-    "jti": jti,
-    "iat": now,
-    "exp": now + 3600,
-}
-payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b'=')
-
-message = header_b64 + b'.' + payload_b64
-signature = hmac.new("dev-secret-key-for-qualification-only-change-in-prod".encode(), message, hashlib.sha256).digest()
-signature_b64 = base64.urlsafe_b64encode(signature).rstrip(b'=')
-
-print((header_b64 + b'.' + payload_b64 + b'.' + signature_b64).decode())
-EOF
-)
-
-# Récupérer l'inventaire
-curl -s http://192.168.1.218:7770/api/inventory \
-  -H "Authorization: Bearer $TOKEN" | jq .
+# Requêter l'inventaire dynamique
+curl -k -H "Authorization: Bearer $ADMIN_JWT" \
+  https://localhost:7770/api/inventory | jq .
+# Doit afficher les 3 agents avec leurs facts
 ```
 
 ---
 
-## CI : job « Inventaire Ansible »
+## Codes de Sortie et Redémarrage
 
-Le workflow `.github/workflows/ci.yml` contient, en plus de « Build + tests Go » et « Lint Go », un job
-bloquant **Inventaire Ansible** : il installe `ansible-core` (version épinglée dans
-`.github/ci/requirements-ansible.txt`, actuellement **2.21.4**, Python 3.12) puis exécute les tests
-`TestAnsible*` du harnais d'intégration, qui lancent `ansible-inventory -i secagent-inventory --list`
-sur la sortie réelle du binaire. `ANSIBLE_E2E=1` rend ces tests obligatoires (échec si Ansible est absent) ;
-sans cette variable (poste local, job « Build + tests Go »), ils se skippent.
-Pour changer de version : modifier uniquement `requirements-ansible.txt`.
+### Agents (codes systemd significatifs)
+
+```ini
+[Service]
+# Redémarrage automatique sur erreurs normales
+Restart=on-failure
+RestartSec=30s
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+# NE PAS redémarrer sur ces codes
+RestartPreventExitStatus=77 78
+
+# Code 77 (Revoked) : JTI blacklisté — opérateur doit créer nouveau token
+# Code 78 (Enrollment Refused) : 403 persistant — opérateur doit créer nouveau token
+```
+
+### Relay (codes significatifs)
+
+| Code | Cause | Action |
+|------|-------|--------|
+| 0 | Arrêt propre | Normal |
+| 75 | Verrou perdu (master crash) | Redémarrage par container policy → promotion passif |
+
+---
+
+## Gestion des Erreurs et Reprise
 
 ## Gestion des Tokens Relay (v3.0.1)
 
