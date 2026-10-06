@@ -1,7 +1,8 @@
-# Ansible-SecAgent — High-Level Design (HLD)
+# Ansible-SecAgent — High-Level Design (HLD) v3.0.3
 
 > Vue d'ensemble architecturale du système.
-> Pour les spécifications techniques détaillées, voir [ARCHITECTURE.md](ARCHITECTURE.md).
+> **v3.0.3** : WebSocket direct dispatch (pas NATS), état fichier, Docker Compose multi-hôtes.
+> Pour les spécifications détaillées, voir [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
@@ -92,7 +93,7 @@ Ansible-SecAgent permet d'exécuter des playbooks Ansible sur des hôtes distant
 ║  │                                                                               │ ║
 ║  │  ┌────────────────────┐  ┌──────────────────┐  ┌──────────────────────────┐ │ ║
 ║  │  │    REST API        │  │   WS HANDLER     │  │     AUTH MANAGER         │ ║ ║
-║  │  │    FastAPI         │  │                  │  │                          │ ║ ║
+║  │  │    (GO native)     │  │                  │  │                          │ ║ ║
 ║  │  │                    │  │  ws_connections  │  │  • Enroll /api/register  │ ║ ║
 ║  │  │  /api/register     │  │  {"host": ws}    │  │  • Verify JWT            │ ║ ║
 ║  │  │  /api/exec/{host}  │  │                  │  │  • Blacklist JTI         │ ║ ║
