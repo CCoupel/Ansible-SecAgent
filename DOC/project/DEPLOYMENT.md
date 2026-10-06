@@ -8,100 +8,105 @@ Ansible-SecAgent v3.0.3 est composé de trois éléments :
 - **Transports** : HTTP REST + WebSocket persistante (TLS natif sur tous les ports)
 - **Ports** :
   - **7770** : API REST + WebSocket agent (enrollment `/api/register` + task dispatch `/ws/agent`)
-  - **7771** : Admin CLI (loopback par défaut, HTTPS si réseau)
-  - **7772** : WebSocket agent historique (deprecated, compat v3.0.3 only)
+  - **7771** : API d'administration (jeton `ADMIN_TOKEN` toujours exigé). Défaut d'écoute `:7771` (**toutes interfaces**, pas la boucle locale) : hors loopback, `ADMIN_TLS=true` est obligatoire, sinon le serveur refuse de démarrer
+  - **7772** : listener WebSocket dédié (`/ws/agent`, `/ws/relay`), défaut de `RELAY_WS_URL` des agents (`wss://localhost:7772/ws/agent`) ; 7770 sert aussi ces chemins
+  - Seule l'instance **maître** ouvre ces ports ; les secondaires n'en ouvrent aucun
 - **État** : Fichier JSON (`relay.state`) sur stockage partagé NFS
-- **Verrou** : Actif/passif avec exclusion mutuellement exclusive (`relay.lock`)
+- **Verrou** : actif/passif, fichier `relay.lock` créé en `O_EXCL` avec battement (30 s) ; pas un `flock` : après un crash il subsiste jusqu'à péremption (5 min)
 - **Pas de NATS** : Dispatch direct WebSocket par `task_id`
 
 **Network** : Docker bridge ou host (agents et plugins connectent en sortie)
 
 ### 2. **Agents** (secagent-minion GO)
 - **Déploiement** : Systemd ou Docker container sur chaque hôte cible
-- **Connexion** : WebSocket persistante sortante vers relay (port 7770 ou 7772)
+- **Connexion** : WebSocket persistante sortante vers `/ws/agent` du relay (port 7772 par défaut, ou 7770)
 - **Enrollment** : POST /api/register (RSA-4096 + JWT) une seule fois
 - **Exécution** : Subprocess par tâche, isolation complète, max 10 concurrentes (configurable)
-- **Codes de sortie** : 0-7 normal, 77 (revoked - no restart), 78 (enrollment refused - no restart)
+- **Codes de sortie** : 1 = échec (redémarrage par la politique), 77 (revoked - no restart), 78 (enrollment absent/refused - no restart)
 
 **Network** : Host network (agents sur 192.168.1.100-102, relay sur 192.168.1.218)
 
 ### 3. **Plugin Ansible** (connection + inventory, Python)
 - **Connection plugin** : Route exec/put_file/fetch_file vers relay via REST HTTP bloquant
-- **Inventory plugin** : Récupère la liste des agents enrôlés via API admin
+- **Inventory** : `secagent-inventory` (binaire Go) récupère la liste des agents via `GET /api/inventory`
 - **Cible** : Port 7770 (API unified + WebSocket)
-- **Authentification** : JWT signé (rôle `plugin` ou `admin`)
+- **Authentification** : jeton **plugin** opaque (`secagent_plg_` + 64 hex), créé par `tokens create --role plugin` ; `ADMIN_TOKEN` est refusé (403) sur `/api/inventory`
 
 ---
 
 ## Déploiement en Qualification
 
+Pas à pas détaillé : [QUICKSTART.md](QUICKSTART.md). Compose réel : `DEPLOYMENT/qualif/docker-compose.server.yml`
+(services `secagent-server-a` et `secagent-server-b`). Les autres Compose de `qualif/` sont OBSOLETES.
+
 ### Prérequis
 - Docker et Docker Compose installés
-- Certificats TLS auto-signés générés : `DEPLOYMENT/qualif/tls.crt` + `tls.key`
-- Variables d'environnement : `DEPLOYMENT/qualif/.env` (STATE_DIR, JWT_SECRET_KEY, etc.)
+- Certificat TLS auto-signé **avec SAN** : `tls/tls.crt` + `tls/tls.key` (répertoire désigné par `QUALIF_TLS_DIR`)
+- Secrets du serveur : `DEPLOYMENT/qualif/qualif.env` (copie de `qualif.env.example` : `JWT_SECRET_KEY`, `ADMIN_TOKEN`, `RSA_MASTER_KEY`)
+- Image : `SECAGENT_IMAGE` (candidate `sha-<commit>@sha256:<digest>`)
 - **Pas de NATS, pas de FastAPI, pas de Caddy** — v3.0.3+ utilise GO server natif + TLS natif
 
 ### Étape 1 : Initialiser l'état du relay
 
 ```bash
 cd DEPLOYMENT/qualif
-mkdir -p state logs
-docker compose run --rm secagent-server state init
-# Génère relay.state (fichier d'état JSON) avec RSA_MASTER_KEY auto-généré
+docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent-server-a state init
+# Crée relay.state dans le volume d'état. EXIGE RSA_MASTER_KEY (qualif.env) : ce secret n'est jamais
+# auto-généré ; il dérive l'HMAC de l'état et le chiffrement AES-GCM de ses secrets (pas une clef RSA).
+# La clef RSA-4096 du serveur et le secret JWT sont générés par `init`.
 ```
 
 Vérifier l'initialisation :
 ```bash
-docker compose exec relay secagent-server state verify
-# Exit code 0 = OK, state cohérent
+docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent-server-a \
+  state verify /data/relay.state
+# Exit code 0 = OK, état cohérent (le chemin est obligatoire ; RSA_MASTER_KEY requis, code 6 sinon)
 ```
 
 ### Étape 2 : Lancer le relay
 
 ```bash
-docker compose up -d relay
-docker compose logs relay | grep -i "listening\|port 7770"
-# Attendre : "Relay listening on 7770, 7771, 7772"
+docker compose -p secagent-qualif -f docker-compose.server.yml up -d
+docker compose -p secagent-qualif -f docker-compose.server.yml logs | grep -i "listening"
 ```
 
-Healthcheck :
+Healthcheck (sur l'instance maître) :
 ```bash
-curl -k https://localhost:7770/health
-# {"status":"ok","agents":0,"uptime_seconds":N}
+curl --cacert tls/tls.crt https://localhost:7770/health
+# {"instance_id":"...","role":"master","status":"ok","timestamp":"..."}
 ```
+(`-k` n'est acceptable que pour un essai local avec certificat auto-signé.)
 
 ### Étape 3 : Générer token d'enrôlement et déployer agents
 
 ```bash
-# Créer un token d'enrôlement valide 1h
-TOKEN=$(docker compose exec relay \
-  secagent-server admin token create --role agent --duration 1h | grep -oE '[a-zA-Z0-9._-]{100,}')
+# Raccourci : CLI du serveur dans l'instance a (API admin en TLS)
+srv() {
+  docker compose -p secagent-qualif -f docker-compose.server.yml exec \
+    -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
+    secagent-server-a secagent-server "$@"
+}
 
-# Passer le token aux agents via .env ou docker exec
-docker compose set-env minion-01 RELAY_ENROLLMENT_TOKEN=$TOKEN
-docker compose set-env minion-02 RELAY_ENROLLMENT_TOKEN=$TOKEN
-docker compose set-env minion-03 RELAY_ENROLLMENT_TOKEN=$TOKEN
+# Jeton d'enrôlement valide 1 h : `secagent_enr_` + 64 hex (77 caractères), pas un JWT
+TOKEN=$(srv tokens create --role enrollment --expires 1h | grep -oE 'secagent_enr_[0-9a-f]{64}' | tail -1)
 
-# Démarrer les agents
-docker compose up -d minion-01 minion-02 minion-03
-
-# Vérifier la connexion
-sleep 5
-docker compose logs minion-01 | grep -i "enrolled\|connected"
-# Attendre : "Enrolled successfully" + "WebSocket open"
+# Le jeton est passé à l'agent par la variable d'environnement RELAY_ENROLLMENT_TOKEN
+# (unité systemd, `docker run -e`, etc.). `docker compose set-env` n'existe pas.
 ```
+
+Rôles de jeton : `enrollment`, `plugin`, `relay-parent` ; la révocation (`tokens revoke <id>`) ne vaut que pour
+`plugin` et `relay-parent`. Les agents sont démarrés selon la section « Agents » ci-dessous
+(`docker-compose.minion.yml` est OBSOLETE) ; vérifier leurs logs : enrôlement puis ouverture de la WebSocket.
 
 ### Étape 4 : Vérifier l'inventaire
 
 ```bash
-# Récupérer JWT admin
-ADMIN_JWT=$(docker compose exec relay \
-  secagent-server admin token create --role admin --duration 1h | grep -oE '[a-zA-Z0-9._-]{100,}')
+# Jeton PLUGIN (l'inventaire refuse ADMIN_TOKEN avec 403)
+PLG=$(srv tokens create --role plugin --expires 1h | grep -oE 'secagent_plg_[0-9a-f]{64}' | tail -1)
 
-# Requêter l'inventaire dynamique
-curl -k -H "Authorization: Bearer $ADMIN_JWT" \
+curl --cacert tls/tls.crt -H "Authorization: Bearer $PLG" \
   https://localhost:7770/api/inventory | jq .
-# Doit afficher les 3 agents avec leurs facts
+# Doit afficher les agents enrôlés
 ```
 
 ---
@@ -112,7 +117,7 @@ curl -k -H "Authorization: Bearer $ADMIN_JWT" \
 
 ```ini
 [Service]
-# Redémarrage automatique sur erreurs normales
+# Redémarrage automatique sur erreur (code 1)
 Restart=on-failure
 RestartSec=30s
 StartLimitIntervalSec=600
@@ -122,7 +127,7 @@ StartLimitBurst=5
 RestartPreventExitStatus=77 78
 
 # Code 77 (Revoked) : JTI blacklisté — opérateur doit créer nouveau token
-# Code 78 (Enrollment Refused) : 403 persistant — opérateur doit créer nouveau token
+# Code 78 (Enrollment Refused) : jeton absent ou refusé (403) — opérateur doit créer nouveau token
 ```
 
 ### Relay (codes significatifs)
@@ -130,7 +135,8 @@ RestartPreventExitStatus=77 78
 | Code | Cause | Action |
 |------|-------|--------|
 | 0 | Arrêt propre | Normal |
-| 75 | Verrou perdu (master crash) | Redémarrage par container policy → promotion passif |
+| 1 | Démarrage refusé (configuration, état absent ou invalide…) ou erreur serveur | Corriger ; sans `relay.state` le serveur refuse de démarrer et ne se ré-initialise pas |
+| 75 | Verrou perdu par une instance **vivante** (un crash ne produit pas 75) | Redémarrage par container policy → repart secondaire |
 
 ---
 
@@ -146,10 +152,9 @@ Sur l'enfant (dmz1), créer un token que le parent utilisera :
 docker exec secagent-server secagent-server tokens create \
   --role relay-parent \
   --sub central \
-  --expires 90d \
-  --description "Token pour central→dmz1 push mode"
+  --expires 90d
 
-# Sortie : secagent_relay_parent_xxxxxxxx (affiché UNE SEULE FOIS)
+# Sortie : JWT signé par ce nœud (affiché UNE SEULE FOIS ; --description ne vaut que pour les jetons plugin)
 # Transmettre ce token au parent pour POST /api/admin/relays
 ```
 
@@ -175,12 +180,10 @@ docker exec secagent-server secagent-server tokens revoke <token-id>
 ### Révoquer un relay enfant (mode pull)
 
 ```bash
-# Via API (port 7771, admin)
-curl -X POST http://localhost:7771/api/admin/relays/dmz1/revoke \
+# Via API uniquement (port 7771, admin ; https si ADMIN_TLS=true) :
+# il n'existe pas de sous-commande `relays revoke`
+curl --cacert tls.crt -X POST https://localhost:7771/api/admin/relays/dmz1/revoke \
   -H "Authorization: Bearer <ADMIN_TOKEN>"
-
-# Via CLI
-docker exec secagent-server secagent-server relays revoke dmz1
 
 # Effets :
 # - JTI du token enfant blacklisté
@@ -193,14 +196,15 @@ docker exec secagent-server secagent-server relays revoke dmz1
 ⚠️ **Règle importante** : Toujours révoquer AVANT de supprimer (sinon 409 relay_not_revoked)
 
 ```bash
-# 1. Révoquer d'abord
-docker exec secagent-server secagent-server relays revoke dmz1
+# 1. Révoquer d'abord (API, voir ci-dessus)
+curl --cacert tls.crt -X POST https://localhost:7771/api/admin/relays/dmz1/revoke \
+  -H "Authorization: Bearer <ADMIN_TOKEN>"
 
-# 2. Puis supprimer
-docker exec secagent-server secagent-server relays delete dmz1
+# 2. Puis supprimer (CLI : sous-commandes relays add | list | remove <id> | status)
+docker exec secagent-server secagent-server relays remove dmz1
 
 # Ou via API
-curl -X DELETE http://localhost:7771/api/admin/relays/dmz1 \
+curl --cacert tls.crt -X DELETE https://localhost:7771/api/admin/relays/dmz1 \
   -H "Authorization: Bearer <ADMIN_TOKEN>"
 ```
 
@@ -210,35 +214,31 @@ curl -X DELETE http://localhost:7771/api/admin/relays/dmz1 \
 
 ### Voir les logs du serveur
 ```bash
-docker compose logs relay -f
+docker compose -p secagent-qualif -f docker-compose.server.yml logs -f
 ```
 
 ### Voir les logs des agents
 ```bash
-docker logs secagent-minion-01 --follow
-docker logs secagent-minion-02 --follow
-docker logs secagent-minion-03 --follow
+journalctl -u secagent-minion -f      # agent sous systemd
+docker logs <conteneur-agent> --follow  # agent en conteneur
 ```
 
 ### Arrêter complètement
 ```bash
-# Minions
-cd ansible_minion && docker compose down
-
-# Server
-cd ../ansible_server && docker compose down
+docker compose -p secagent-qualif -f docker-compose.server.yml down
 ```
 
 ### Redémarrer un agent
 ```bash
-docker restart secagent-minion-02
+systemctl restart secagent-minion     # ou : docker restart <conteneur-agent>
 ```
 
 ### Nettoyer l'état (données persistantes)
 ```bash
-# Les données d'état sont stockées sur le filesystem (STATE_DIR, défaut: ./state)
-rm -rf DEPLOYMENT/qualif/state/*
-# Le relay se ré-initialisera au prochain démarrage
+# DESTRUCTIF : supprime relay.state, relay.lock, actions.log (volume d'état du Compose qualif)
+docker compose -p secagent-qualif -f docker-compose.server.yml down -v
+# Le serveur NE se ré-initialise PAS : sans relay.state il refuse de démarrer.
+# Refaire `state init` (Étape 1) avant `up`. Tous les agents devront se ré-enrôler.
 ```
 
 ---
@@ -250,15 +250,16 @@ rm -rf DEPLOYMENT/qualif/state/*
 | Variable | Default | Description |
 |---|---|---|
 | `STATE_DIR` | `/data` | Répertoire d'état (relay.state, relay.lock, actions.log) |
-| `TLS_CERT` | — | Certificat TLS (PEM, obligatoire sauf TLS_DISABLE) |
-| `TLS_KEY` | — | Clef privée TLS (PEM, obligatoire sauf TLS_DISABLE) |
-| `ADMIN_ADDR` | `:7771` | Adresse admin (ex: `127.0.0.1:7771` loopback, ou `0.0.0.0:7771` réseau) |
-| `ADMIN_TLS` | `false` | TLS sur admin si non-loopback |
+| `JWT_SECRET_KEY`, `ADMIN_TOKEN`, `RSA_MASTER_KEY` | — | Secrets requis (`RSA_MASTER_KEY` : secret HMAC/AES-GCM de l'état, pas une clef RSA) |
+| `TLS_CERT` | — | Certificat TLS (PEM, obligatoire en production ; `TLS_DISABLE=true` = tests/CI uniquement, jamais en production) |
+| `TLS_KEY` | — | Clef privée TLS (PEM, obligatoire en production) |
+| `ADMIN_ADDR` | `:7771` | Adresse admin (toutes interfaces par défaut ; `127.0.0.1:7771` pour la boucle locale) |
+| `ADMIN_TLS` | `false` | TLS sur admin ; **obligatoire** si `ADMIN_ADDR` n'est pas loopback (sinon refus de démarrer, ou dérogation `ADMIN_INSECURE_HTTP` + ACK) |
 
-**Ports (non-configurables)** :
+**Ports (configurables : `API_ADDR`, `ADMIN_ADDR`, `WS_ADDR`)** — défauts :
 - 7770 : API REST + WebSocket
-- 7771 : Admin CLI
-- 7772 : WebSocket compat
+- 7771 : API d'administration
+- 7772 : WebSocket dédié
 
 ### Server Repeater Mode (enfant pull)
 ```
@@ -297,7 +298,7 @@ RELAY_HOOKS_MAX_CONCURRENT_ACTIONS=64           # Limit goroutines hook actions 
 ### Client `secagent-inventory` (v3.0.2)
 ```
 RELAY_SERVER_URL=https://relay.example.com:7770  # URL du relay server
-RELAY_TOKEN=secagent_plugin_xxxxx                # Bearer token (RELAY_PLUGIN_TOKEN du serveur)
+RELAY_TOKEN=secagent_plg_<64 hex>                # Bearer token plugin (`tokens create --role plugin`) ; RELAY_PLUGIN_TOKEN n'existe pas
 RELAY_SCOPE=zone-a                              # ID du relay (optionnel, v3.0.2+) — limite inventaire à ce sous-arbre
 RELAY_CA_BUNDLE=/path/to/ca.pem                 # CA custom (optionnel)
 RELAY_INSECURE_TLS=false                        # true = skip vérif TLS (DEV/QUALIF SEULEMENT)
@@ -305,12 +306,17 @@ RELAY_INSECURE_TLS_ACK=i-understand-the-risk    # Confirmation si RELAY_INSECURE
 RELAY_ONLY_CONNECTED=false                      # true = hôtes connectés uniquement
 ```
 
-### Agents (definis dans docker-compose.yml)
+### Agents (variables d'environnement ; aucun fichier de configuration)
 ```
-RELAY_SERVER_URL=http://localhost:7770
-RELAY_HOSTNAME=qualif-host-01
-RELAY_DATA_DIR=/var/lib/secagent-minion
+RELAY_SERVER_URL=https://localhost:7770          # défaut ; http:// = QUALIF / TESTS UNIQUEMENT (jamais en production)
+RELAY_WS_URL=wss://localhost:7772/ws/agent       # le chemin /ws/agent est obligatoire
+RELAY_ENROLLMENT_TOKEN=secagent_enr_<64 hex>
+RELAY_AGENT_HOSTNAME=qualif-host-01
+RELAY_ASYNC_DIR=/var/lib/secagent-minion/async
+RELAY_CA_BUNDLE=/path/to/ca.pem                  # optionnel
+MAX_CONCURRENT_TASKS=10
 ```
+Table complète : [DEPLOYMENT/README.md](../../DEPLOYMENT/README.md). `RELAY_HOSTNAME` et `RELAY_DATA_DIR` n'existent pas.
 
 ---
 
@@ -333,10 +339,11 @@ RELAY_DATA_DIR=/var/lib/secagent-minion
 └──────────────────────────────┘
 
 ┌──────────────────────────────┐
-│  Host 2-N (passifs)          │
+│  Host 2-N (secondaires)      │
 ├──────────────────────────────┤
 │  secagent-server (identique) │
-│  (en attente du verrou)      │
+│  (aucun port ouvert ; sonde  │
+│   le verrou toutes les 5 s)  │
 │  STATE_DIR → NFS (partagé)   │
 └──────────────────────────────┘
 
@@ -344,12 +351,12 @@ RELAY_DATA_DIR=/var/lib/secagent-minion
 │  Agents (partout)            │
 ├──────────────────────────────┤
 │  secagent-minion (GO)        │
-│  → WebSocket vers relay:7770 │
+│  → WebSocket vers /ws/agent  │
 │  (multi-adresses failover)   │
 └──────────────────────────────┘
 ```
 
-**Production** : Docker Compose multi-hôtes avec NFS `STATE_DIR` partagé. Un relay acquiert le verrou, les autres restent passifs.
+**Production** : Docker Compose multi-hôtes avec NFS `STATE_DIR` partagé. Un relay acquiert le verrou et ouvre ses ports ; les autres sont secondaires et n'ouvrent aucun port.
 
 
 ## Supervision du lien amont (relay enfant)
