@@ -1,19 +1,31 @@
-# Contrat d'interface — NATS JetStream (secagent-server ↔ secagent-server)
+# ⚠️ DEPRECATED v3.0.3 — Contrat NATS JetStream
 
-> Interface interne entre les nœuds secagent-server pour le routage HA des tâches.
-> Invisible pour l'agent et les plugins.
-> Sources : `DOC/common/ARCHITECTURE.md` §5 · `DOC/server/SERVER_SPEC.md` §4
+**STATUS** : Supprimé en v3.0.3 — Voir #178 (NATS removal)
+
+> Interface interne OBSOLÈTE (v2.0-v3.0.2) entre les nœuds secagent-server pour le routage HA.
+> **Remplacé par** : WebSocket direct dispatch + état fichier (STATE_DIR).
+> Voir : `DOC/common/ARCHITECTURE.md` §5 (Routage WebSocket Direct) · `DOC/server/STATE_SPEC.md` (persistance)
 
 ---
 
-## 1. Rôle
+## Note historique
 
-NATS JetStream est le bus de messages interne qui permet à N nœuds secagent-server de collaborer :
-- Un plugin POST sur le nœud #2
-- L'agent `host-A` est connecté au nœud #1
-- NATS achemine la tâche du nœud #2 vers le nœud #1, puis le résultat en sens inverse
+---
 
-**L'agent ne connaît pas NATS.** NATS est transparent pour tous les clients externes.
+## Raison du retrait
+
+**v3.0.3** adopte un modèle de déploiement actif/passif :
+- Un seul relay actif à la fois (détient le verrou sur STATE_DIR/relay.lock)
+- Pas de multi-relay stateless → pas besoin de bus de messages inter-nodes
+- État centralisé en fichier → simpler, plus stable que NATS clusters
+- WebSocket direct : les tâches vont directement au relay actif via WSS
+
+**Historique** : NATS était utilisé pour :
+- Acheminer les tâches depuis le nœud qui reçoit le POST vers celui qui a la WS de l'agent
+- Retourner les résultats en sens inverse
+- Fournir une base pour la HA stateless
+
+Ce modèle a été remplacé par un verrou en fichier + failover actif/passif + multi-adresses agent.
 
 ---
 
