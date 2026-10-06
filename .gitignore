@@ -82,3 +82,4 @@ _work/
 DEPLOYMENT/prod/prod.env
 DEPLOYMENT/prod/.env
 DEPLOYMENT/qualif/qualif.env
+DEPLOYMENT/qualif/.ci-tls/

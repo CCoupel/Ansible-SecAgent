@@ -204,3 +204,33 @@ jobs:
           if grep -niE 'nats|jetstream' GO/go.mod GO/go.sum; then fail=1; fi
           if grep -rniE 'nats-io|nats\.go|jetstream' GO --include='*.go' --exclude='*_test.go'; then fail=1; fi
           if [ "$fail" -ne 0 ]; then echo "::error::Reference a NATS reintroduite (#178)"; exit 1; fi
+
+  # ---- Basculement actif/passif en conteneurs (#174 M6) : arret propre, rapide, bloquant -------------
+  # Image construite LOCALEMENT depuis le commit (aucun login, aucun push). Le scenario `docker kill`
+  # (peremption reelle du verrou, ~5-6 min) est dans failover.yml (planifie, manuel et avant release).
+  failover-stop:
+    name: Basculement en conteneurs (arret propre)
+    needs: [docker-compose-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Build de l'image du commit
+        run: docker build -t secagent-server:ci -f GO/Dockerfile GO
+      - name: Preparation (certificats et secrets JETABLES, etat initial)
+        env:
+          SECAGENT_IMAGE: secagent-server:ci
+        run: DEPLOYMENT/qualif/failover-test.sh setup-ci
+      - name: Arret propre du maitre
+        env:
+          SECAGENT_IMAGE: secagent-server:ci
+          QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
+        run: DEPLOYMENT/qualif/failover-test.sh run stop
+      - name: Journaux et nettoyage
+        if: always()
+        env:
+          SECAGENT_IMAGE: secagent-server:ci
+          QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
+        run: |
+          docker compose -p secagent-failover -f DEPLOYMENT/qualif/docker-compose.server.yml logs --tail=80 || true
+          DEPLOYMENT/qualif/failover-test.sh teardown || true
