@@ -1,7 +1,7 @@
 # Contrat d'interface — REST Enrollment (secagent-minion → secagent-server)
 
-> Protocole d'enrôlement et de refresh JWT pour le secagent-minion.
-> Endpoint : HTTPS :7770 (`POST /api/register`, `POST /api/token/refresh`)
+> Protocole d'enrôlement et de renouvellement du JWT pour le secagent-minion.
+> Endpoint : HTTPS :7770 (`POST /api/register`). `POST /api/token/refresh` a été **supprimée en v3.0.3** (voir §7).
 > Sources : `DOC/security/SECURITY.md` §3 · `DOC/server/SERVER_SPEC.md` §3 · `DOC/agent/AGENT_SPEC.md` §3
 
 ---
@@ -40,7 +40,7 @@ Le jeton (`secagent_enr_` + 64 caractères hexadécimaux, **opaque, pas un JWT**
 - `expires_at` — `--expires` accepte `30d`, `24h`, `90m` ou `never` ; **le défaut est `never`** (pas d'expiration), il n'y a pas de TTL de 24 h par défaut
 - `reusable=0` (usage unique, défaut) ou `reusable=1` (`--reusable`, multi-usage pipeline)
 
-Le même jeton peut aussi être créé par `POST /api/admin/tokens` (`role: "enrollment"`, voir `REST_ADMIN.md` §3). `POST /api/admin/authorize` ne crée **pas** de jeton : il pré-autorise une clef publique (flux historique, §3b).
+Le même jeton peut aussi être créé par `POST /api/admin/tokens` (`role: "enrollment"`, voir `REST_ADMIN.md` §3). `POST /api/admin/authorize` ne crée **pas** de jeton et ne donne **aucun droit d'enrôlement** : il se contente de mémoriser une clef publique dans les `authorized_keys` de l'état, que `/api/register` ne consulte plus (§4b).
 
 À **chaque** requête `/api/register` (étapes 1 et 2), le serveur :
 1. Cherche le jeton par son empreinte SHA-256 (`token_not_found`)
@@ -145,9 +145,16 @@ Les champs `hostname`, `public_key_pem` et `enrollment_token` sont renvoyés à 
 
 ---
 
-## 4b. Flux historique (clef pré-autorisée)
+## 4b. Requête sans jeton d'enrôlement : refusée
 
-Sans `enrollment_token` dans la requête, le serveur utilise le flux historique : `POST /api/register {hostname, public_key_pem}` réussit en une étape si la clef a été pré-autorisée par `POST /api/admin/authorize` (`authorized_keys` de l'état). Refus : `403 unauthorized_hostname` (hostname non pré-autorisé) ou `403 public_key_mismatch` (clef différente). Réponse 200 : `token_encrypted` + `server_public_key_pem`.
+Depuis la v3.0.3 (#192), `POST /api/register` **sans** `enrollment_token` répond **toujours** :
+
+```http
+HTTP/1.1 403 Forbidden
+{"error": "enrollment_token_required"}
+```
+
+La réponse est identique quels que soient le hostname et la clef (aucun oracle) ; aucun JWT n'est émis, aucun JTI n'est posé, aucun agent n'est créé, et un `[SECURITY WARNING]` est journalisé côté serveur (`handlers/register.go:463-475`). L'ancien flux « clef pré-autorisée en une étape » (réponses `unauthorized_hostname` / `public_key_mismatch`) n'existe plus : il émettait un JWT sans preuve de possession de la clef privée et sans consulter la révocation (voir l'avis de sécurité dans `DOC/security/SECURITY.md` §11). Tout enrôlement passe par un jeton d'enrôlement **et** le challenge du §3-§4. `authorized_keys` n'est plus lue par `/api/register`.
 
 ---
 
@@ -203,32 +210,15 @@ Une fois déchiffré, le JWT est un token HMAC-HS256 :
 
 ---
 
-## 7. Refresh token
+## 7. Renouvellement du JWT
 
-> Le minion Go n'appelle pas cette route (il se ré-enrôle, §8). Elle est servie par le serveur ; son comportement ci-dessous est celui du code (`handlers/register.go` `TokenRefresh`).
+La route `POST /api/token/refresh` a été **supprimée en v3.0.3** (#192) : elle répond `404` à tout appelant (agent révoqué compris). Elle n'avait aucun client (le minion Go ne l'a jamais appelée) et, dans les versions antérieures, elle émettait un JWT sans authentifier l'appelant (contournement de la révocation, remplacement du JTI d'un agent : voir `DOC/security/SECURITY.md` §11).
 
-### Requête
+Le JWT se renouvelle par deux chemins seulement :
+- **ré-enrôlement complet** (§3-§4, avec le jeton d'enrôlement) quand le serveur répond `401` à l'upgrade WebSocket ;
+- **message WebSocket `rekey`** lors d'une rotation de clefs : le serveur envoie le nouveau JWT chiffré avec la clef publique de l'agent, sur une connexion déjà authentifiée (voir `WEBSOCKET.md`).
 
-```http
-POST /api/token/refresh
-Content-Type: application/json
-```
-
-```json
-{
-  "hostname": "host-A",
-  "challenge_encrypted": "<base64(OAEP(challenge, server_pubkey))>"
-}
-```
-
-Le handler **n'examine pas l'en-tête `Authorization`** : l'unique preuve exigée est un `challenge_encrypted` que le serveur sait déchiffrer avec sa clef privée (il n'est comparé à aucune valeur).
-
-### Réponse 200
-
-```json
-{
-  "token_encrypted": "<base64(OAEP(nouveau_jwt, agent_pubkey))>",
-  "server_public_key_pem": "-----BEGIN PUBLIC KEY-----\n..."
+-----BEGIN PUBLIC KEY-----\n..."
 }
 ```
 
