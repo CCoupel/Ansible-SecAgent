@@ -62,7 +62,7 @@ Ansible-SecAgent permet d'exécuter des playbooks Ansible sur des hôtes distant
 | Pipeline CI/CD | Provisionne les serveurs et pré-enregistre leurs clefs |
 | Ansible Control Node | Hôte exécutant `ansible-playbook`, portant les plugins relay |
 | Relay Server (actif) | Broker central v3.0.3 (GO, TLS natif, état fichier) |
-| Relay Server (passif) | Failover standby (partagé NFS, verrou) |
+| Relay Server (secondaire) | Failover standby : n'ouvre aucun port tant qu'il n'a pas le verrou (stockage partagé, `relay.lock`) |
 | Hôtes gérés | Serveurs cibles portant `secagent-minion` en tant que service systemd |
 
 ---
@@ -96,7 +96,7 @@ Ansible-SecAgent permet d'exécuter des playbooks Ansible sur des hôtes distant
 ║  │  │  • /api/admin      │  └─────────────────────────────────────┘ │  ║
 ║  │  └────────────────────┘  ┌─────────────────────────────────────┐ │  ║
 ║  │  ┌────────────────────┐  │  STATE FILE (STATE_DIR, NFS)        │ │  ║
-║  │  │  AUTH MANAGER      │  │  • relay.state (JSON signé+chiffré) │ │  ║
+║  │  │  AUTH MANAGER      │  │  • relay.state (HMAC, secrets AES)  │ │  ║
 ║  │  │  • Enroll          │  │  • relay.lock (actif/passif)        │ │  ║
 ║  │  │  • Verify JWT      │  │  • authorized_keys                  │ │  ║
 ║  │  │  • Blacklist JTI   │  │  • Blacklist JTI                    │ │  ║
@@ -200,7 +200,7 @@ PLUGIN ANSIBLE       RELAY SERVER (GO)        RELAY AGENT (host-A)
 ### 3.3 Failover actif/passif
 
 ```
-Relay #1 (ACTIF)    │ STATE_DIR (NFS)    │    Relay #2 (PASSIF)
+Relay #1 (MAÎTRE)    │ STATE_DIR (NFS)    │    Relay #2 (SECONDAIRE)
   A lock             │  relay.lock        │    attend verrou
   │                  │  relay.state       │    │
   │ détient verrou   │                    │    │
@@ -208,9 +208,11 @@ Relay #1 (ACTIF)    │ STATE_DIR (NFS)    │    Relay #2 (PASSIF)
   │                  │                    │    │
   [agent connecté]   │                    │    [agent attente]
   │                  │                    │    │
-  X [CRASH]          │                    │    │
+  X [ARRÊT / CRASH]  │                    │    │
                      │                    │    │
-                     │ verrou libéré      │    │ Relay #2 acquiert
+                     │ arrêt propre : verrou relâché ; crash / kill -9 :
+                     │ verrou périmé après 5 min sans battement (fichier O_EXCL, pas un flock)
+                     │                    │    │ Relay #2 (sondage 5 s) acquiert
                      │◀────────────────────────│
                      │                    │ ✓  │
                      │                    │◀──▶│ restaure state
@@ -230,7 +232,6 @@ Relay #1 (ACTIF)    │ STATE_DIR (NFS)    │    Relay #2 (PASSIF)
 | Agent offline | POST /api/exec, agent disconnecté | HTTP 503 `agent_offline` | UNREACHABLE |
 | Timeout tâche | POST /api/exec timeout=30, tâche > 30s | HTTP 504 `timeout` (SIGTERM envoyé) | FAILED |
 | Agent crash mid-tâche | WS fermée pendant exécution | HTTP 500 `agent_disconnected` | FAILED |
-| Task annulée | POST /api/cancel/{task_id} | SIGTERM subprocess, WS close | FAILED |
 
 ---
 
@@ -313,8 +314,8 @@ ADMIN               RELAY SERVER          RELAY AGENT (host-E)
 │              HOST 1 (RELAY ACTIF)                        │
 │  secagent-server:3.0.3  [détient lock]                  │
 ├─────────────────────────────────────────────────────────┤
-│              HOST 2 (RELAY PASSIF)                       │
-│  secagent-server:3.0.3  [attend lock]                   │
+│          HOST 2 (RELAY SECONDAIRE)                       │
+│  secagent-server:3.0.3  [attend lock, aucun port]       │
 └─────────────────────────────────────────────────────────┘
          ▲  │
          │  └─────────────┐
@@ -323,8 +324,8 @@ ADMIN               RELAY SERVER          RELAY AGENT (host-E)
     │    NFS (STATE_DIR partagé)     │
     │  • relay.state                 │
     │  • relay.lock  (exclusivité)   │
-    │  • relay.state.backup          │
-    │  • write_seq                   │
+    │  • relay.state.prev            │
+    │  • actions.log                 │
     └────────────────────────────────┘
          │         ▲
          │ mount   │ hard mount (robuste)
@@ -344,10 +345,10 @@ ADMIN               RELAY SERVER          RELAY AGENT (host-E)
 | I1 | Pipeline CI/CD | Relay | HTTPS | POST /api/admin/authorize | Bearer admin token |
 | I2 | secagent-minion | Relay | HTTPS | POST /api/register | Public key + TLS |
 | I3 | secagent-minion | Relay | WSS | /ws/agent (7770/7772) | Bearer JWT agent |
-| I4 | Inventory Plugin | Relay | HTTPS | GET /api/inventory | Bearer JWT plugin |
-| I5 | Connection Plugin | Relay | HTTPS | POST /api/exec/{host} | Bearer JWT plugin |
-| I6 | Connection Plugin | Relay | HTTPS | POST /api/upload/{host} | Bearer JWT plugin |
-| I7 | Connection Plugin | Relay | HTTPS | POST /api/fetch/{host} | Bearer JWT plugin |
+| I4 | `secagent-inventory` | Relay | HTTPS | GET /api/inventory | Bearer jeton plugin (opaque `secagent_plg_…`, pas un JWT) |
+| I5 | Connection Plugin | Relay | HTTPS | POST /api/exec/{host} | Bearer jeton plugin (opaque) |
+| I6 | Connection Plugin | Relay | HTTPS | POST /api/upload/{host} | Bearer jeton plugin (opaque) |
+| I7 | Connection Plugin | Relay | HTTPS | POST /api/fetch/{host} | Bearer jeton plugin (opaque) |
 | I8 | Relay enfant | Relay parent | WSS | /ws/relay (7772) | Bearer JWT relay-child |
 | I9 | Relay parent | Relay enfant | WSS | /ws/relay (7772) | Bearer JWT relay-parent |
 
@@ -364,7 +365,7 @@ ADMIN               RELAY SERVER          RELAY AGENT (host-E)
 | DA-03 | **État fichier (STATE_DIR), pas NATS** | Redis, NATS JetStream (v2) | Modèle actif/passif = simpler, plus stable (verrou seul) |
 | DA-04 | **REST HTTP bloquant pour le plugin Ansible** | WS côté plugin | `exec_command()` Ansible est synchrone par nature |
 | DA-05 | **authorized_keys en état fichier** | Fichiers sur disque, DB | Dynamique, multi-nodes, API admin, signée |
-| DA-06 | **JWT + blacklist JTI pour l'auth** | mTLS, sessions côté serveur | Stateless, révocation immédiate |
+| DA-06 | **JWT (agents) + blacklist JTI ; jetons opaques (plugin, enrollment)** | mTLS, sessions côté serveur | Révocation immédiate |
 | DA-07 | **subprocess par tâche (pas de threads)** | Thread pool | Isolation mémoire, kill propre |
 | DA-08 | **Infra immuable — clef pré-enregistrée avant boot** | TOFU, auto-enrollment | Sécurité renforcée, zero-touch |
 | DA-09 | **Verrou fichier pour actif/passif** | Base de données distribuée | Élémentaire, robuste, NFS-friendly |
