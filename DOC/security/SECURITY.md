@@ -11,7 +11,7 @@
 ```
 Zero-Trust sur le transport  : TLS obligatoire sur toutes les connexions (WSS + HTTPS)
 Zero-Trust sur les identités : chaque composant prouve son identité à chaque connexion
-Pas de TOFU                  : aucun composant n'est accepté sans pré-autorisation explicite
+Pas de TOFU                  : aucun composant n'est accepté sans autorisation explicite de l'admin (jeton d'enrôlement émis par l'admin + preuve de possession de la clef)
 Défense en profondeur        : IP binding + hostname claim + token secret + TLS
 ```
 
@@ -693,16 +693,24 @@ Le binaire `secagent-inventory` utilise `RELAY_INSECURE_TLS` pour désactiver la
 - la route `POST /api/token/refresh` est **supprimée** (`404` pour tout appelant) ; elle n'avait aucun client, le renouvellement se fait par ré-enrôlement ou message `rekey` ;
 - `POST /api/register` **sans jeton d'enrôlement est refusé** (`403 enrollment_token_required`, identique quels que soient hostname et clef) ; le flux avec jeton exige le challenge RSA-OAEP, dont la preuve de possession de la clef privée est comparée côté serveur.
 
+**Seconde porte (corrigée par #193)** : même après la suppression de ces deux chemins, la révocation ne reposait que sur la blacklist du JTI courant (rétention 25 h). Un agent révoqué qui gardait sa clef privée pouvait se **ré-enrôler avec un jeton d'enrôlement réutilisable** (ou à `hostname_pattern` large) et obtenir un nouveau JTI non blacklisté ; l'oubli de la blacklist après 25 h produisait le même effet. v3.0.3 pose à la révocation un **drapeau persistant `revoked`** sur l'agent, dans la même écriture que la blacklist : l'enrôlement (`403 agent_revoked`, jeton non consommé), le `rekey` et le handshake `/ws/agent` refusent un hôte révoqué même sans entrée de blacklist. La révocation se lève **uniquement** par `DELETE /api/admin/minions/{hostname}` (pas de `unrevoke`). Les révocations antérieures à #193 sont réparées au démarrage du maître tant que le JTI est encore en blacklist ; au-delà de 25 h elles sont oubliées et doivent être refaites. Voir `DOC/contracts/REST_ADMIN.md` et `DOC/server/STATE_SPEC.md`.
+
 **Exposition tant que v2.0.0 est en service** : l'environnement de qualification resté en v2.0.0 est exposé jusqu'à sa migration vers v3.0.3.
 
 **Mitigation réseau (déploiements v1.0.0 / v2.0.0)** :
 - bloquer l'accès à `POST /api/token/refresh` et restreindre `POST /api/register` aux réseaux d'enrôlement (pare-feu ou reverse proxy en frontal) ;
-- ne pas considérer la révocation comme définitive pour un agent qui conserve sa clef privée : rendre l'hôte inutilisable (réinstallation ou retrait de la clef privée) ;
+- **en v1.0.0 / v2.0.0 la révocation n'est pas fiable** face à un agent qui conserve sa clef privée (aucun drapeau persistant) : pour un hôte à exclure, couper son accès réseau aux ports 7770/7772 (pare-feu) en attendant la mise à jour vers v3.0.3 ;
 - mettre à jour vers v3.0.3.
 
 **Recommandation** : mettre à jour vers v3.0.3 ; après la mise à jour, tous les agents se ré-enrôlent avec un jeton d'enrôlement (état vierge).
 
 ### Limites connues — v3.0.3
+
+#### Révocation d'agent : drapeau persistant, retour arrière et révocations anciennes (#193)
+
+- **Retour arrière** : le décodeur d'état est strict ; un binaire antérieur à #193 refuse de démarrer sur un état contenant `"revoked": true`. Avant un rollback : lever les révocations (`DELETE` des agents) ou restaurer un état antérieur (`schema_version` reste 1).
+- **Révocations antérieures à #193** : réparées au démarrage du maître seulement si le JTI courant est encore en blacklist (25 h). Les plus anciennes sont oubliées : **révoquer à nouveau** ces hôtes.
+- **Levée** : `DELETE /api/admin/minions/{hostname}` supprime aussi les variables de l'hôte et sa clef autorisée ; il n'y a pas de levée qui les conserve.
 
 #### Anti-rejeu limité : arrêt à froid
 
