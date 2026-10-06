@@ -4,10 +4,14 @@ package ws
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,17 +34,13 @@ type relayNode struct {
 	conns atomic.Int32 // WebSocket upgrades served
 	reqs  atomic.Int32 // TCP connections accepted
 	mute  atomic.Bool  // accept the upgrade request, then say nothing
+	deny  atomic.Bool  // answer every request 401 (a verdict, not a silent host)
 	links []*websocket.Conn
 }
 
 func newRelayNode(t *testing.T, on bool) *relayNode {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := &relayNode{t: t, addr: l.Addr().String()}
-	_ = l.Close()
+	n := &relayNode{t: t, addr: freeAddr(t)}
 	if on {
 		n.start()
 	}
@@ -64,6 +64,10 @@ func (n *relayNode) start() {
 	}
 	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	n.srv = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if n.deny.Load() {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		if n.mute.Load() {
 			time.Sleep(5 * time.Second) // read the request, never answer
 			return
@@ -245,28 +249,22 @@ func TestMulti_PairedRotorsShareTheLastGoodInstance(t *testing.T) {
 
 // A 401 verdict is not a silent host: the re-enrollment keeps the address, no rotation.
 func TestMulti_A401DoesNotRotateTheHead(t *testing.T) {
-	var hits atomic.Int32
 	srv := newRelayNode(t, true)
-	srv.stop()
-	// replace the handler: always 401
-	l, err := net.Listen("tcp", srv.addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hs := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1); w.WriteHeader(http.StatusUnauthorized) })}
-	go func() { _ = hs.Serve(l) }()
-	defer func() { _ = hs.Close() }()
+	srv.deny.Store(true) // the listener stays open: the node answers 401 (no stop-then-listen on a recycled port)
 	other := newRelayNode(t, true)
 	r := rotorOf(t, "ws://"+srv.addr+"/ws/agent", other.wsURL())
 	d := NewDispatcher(ConnConfig{Endpoints: r, JWT: "j", Insecure: true}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err = d.connect(ctx, NewReconnectManager(0.01, 0.01))
+	err := d.connect(ctx, NewReconnectManager(0.01, 0.01))
 	if !isHTTP401(err) {
 		t.Fatalf("connect = %v, want the 401 verdict", err)
 	}
 	if r.Head() != 0 || other.reqs.Load() != 0 {
 		t.Errorf("a 401 must neither rotate the head (%d) nor try the other address (%d)", r.Head(), other.reqs.Load())
+	}
+	if srv.reqs.Load() != 1 {
+		t.Errorf("the 401 address was contacted %d times", srv.reqs.Load())
 	}
 }
 
@@ -296,4 +294,58 @@ func TestMulti_ReEnrollmentSyncsTheWebSocketRotor(t *testing.T) {
 	if wsr.Head() != 1 {
 		t.Fatalf("after a re-enrollment through instance 2 the WebSocket must try instance 2 first, head %d", wsr.Head())
 	}
+}
+
+// ── ports: no bind-close-reuse window with the kernel's ephemeral allocations ──
+//
+// A node that is OFF must refuse TCP (the standby of an active/passive pair opens no port) and may
+// be switched ON later at the SAME address. A port obtained with ":0" and released is an EPHEMERAL
+// port: the kernel hands it to any outgoing connection or ":0" listener of a parallel test before
+// the node binds it again ("address already in use"). Addresses are therefore drawn OUTSIDE the
+// kernel's ephemeral range, never handed out twice by this process, and checked free right before use.
+var (
+	portMu   sync.Mutex
+	portUsed = map[int]bool{}
+)
+
+func ephemeralRangeStart() int {
+	b, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
+	if err != nil {
+		return 32768
+	}
+	var lo, hi int
+	if _, err := fmt.Sscanf(string(b), "%d %d", &lo, &hi); err != nil || lo < 2048 {
+		return 32768
+	}
+	return lo
+}
+
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	portMu.Lock()
+	defer portMu.Unlock()
+	top := ephemeralRangeStart() - 1
+	bottom := 12000
+	if top-bottom < 1000 {
+		bottom = 1100
+	}
+	for i := 0; i < 500; i++ {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(top-bottom)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := bottom + int(n.Int64())
+		if portUsed[port] {
+			continue
+		}
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue
+		}
+		_ = ln.Close()
+		portUsed[port] = true
+		return fmt.Sprintf("127.0.0.1:%d", port)
+	}
+	t.Fatal("no free port outside the ephemeral range")
+	return ""
 }
