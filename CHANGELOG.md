@@ -23,12 +23,10 @@ All notable changes to this project will be documented in this file.
 - **`DATABASE_URL` définie = erreur au démarrage** — utiliser `STATE_DIR` (défaut `/data`).
 - Exécutez `secagent-server state init` pour initialiser le nouvel état avant le 1er démarrage.
 
-**Avis de sécurité** (#181) :
+**Avis de sécurité** (#181, #192) :
+- **Toutes les versions antérieures, dont v1.0.0 et v2.0.0 (défaut présent depuis v1.0.0)** : `POST /api/token/refresh` n'authentifiait pas l'appelant et `POST /api/register` sans jeton d'enrôlement émettait un JWT sans preuve de possession de la clef privée ni contrôle de la blacklist. Conséquences : **contournement de la révocation** (un agent révoqué qui garde sa clef obtenait un nouveau JTI) et **remplacement du JTI** d'un agent par un tiers (déni de service). **Corrigé en v3.0.3** : route supprimée, enrôlement sans jeton refusé. L'environnement de qualification resté en v2.0.0 est exposé jusqu'à sa migration ; mitigation réseau : bloquer `/api/token/refresh` et restreindre `/api/register` (voir `DOC/security/SECURITY.md` §11, avis 3).
 - **v1.0.0 et v2.0.0 affectées** : endpoints `/ws/agent` et `/ws/relay` (mode proxy) acceptaient connexions sans token. Exploitation : usurpation d'agent/relay, interception de tâches et `become_pass`. **Corrigé en v3.0.3**, fail-closed. Mitigations pour déploiements v2.0.0 : restriction réseau des ports 7770/7772 + **rotation des `become_pass`**.
 - **v1.0.0 et v2.0.0 affectées** : secrets de webhooks (HMAC, jetons) enregistrés en clair dans `action_log`. Exposition via `GET /api/admin/hooks/log` et via accès au fichier `relay.db`. **Corrigé en v3.0.3** avec journal append-only masqué. Actions : **évaluer et faire tourner les secrets de webhooks** et **purger les anciennes copies de `relay.db`**.
-
-### Changed (breaking)
-- **Le Store passe sur le fichier d'état, SQLite et CGO sont retirés (#160)** : `STATE_DIR` (défaut `/data`, créé par `secagent-server state init`) remplace `DATABASE_URL` ; `DATABASE_URL` définie = **erreur au démarrage** (aucune migration d'un ancien `relay.db`). Enrôlement et révocation d'un relay en une seule mutation ; statut, `last_seen`, routage et `relay_chain` en mémoire ; purge horaire de la blacklist ; `last_used_*` des tokens plugin approximatifs (champ `last_used_approximate`). Tokens relay : `token_hash` (pull) et `token_secret` scellé (push) distincts. Sans garde d'écriture le serveur est en lecture seule. Binaire et image serveur en `CGO_ENABLED=0`.
 
 ### Changed (breaking)
 - **Le Store passe sur le fichier d'état, SQLite et CGO sont retirés (#160)** : `STATE_DIR` (défaut `/data`, créé par `secagent-server state init`) remplace `DATABASE_URL` ; `DATABASE_URL` définie = **erreur au démarrage** (aucune migration d'un ancien `relay.db`). Enrôlement et révocation d'un relay en une seule mutation ; statut, `last_seen`, routage et `relay_chain` en mémoire ; purge horaire de la blacklist ; `last_used_*` des tokens plugin approximatifs (champ `last_used_approximate`). Tokens relay : `token_hash` (pull) et `token_secret` scellé (push) distincts. Sans garde d'écriture le serveur est en lecture seule. Binaire et image serveur en `CGO_ENABLED=0`.
@@ -52,11 +50,24 @@ All notable changes to this project will be documented in this file.
 - **Caddy et scripts deploy.sh / deploy.bat retirés (#174, #188)** : TLS natif dans le serveur ; Compose sans reverse proxy ; déploiement par Compose direct.
 
 ### Security
+- **#192** : `POST /api/token/refresh` supprimée (404 pour tout appelant) — aucun client, et elle contournait la révocation / remplaçait le JTI d'un agent sans l'authentifier (v1.0.0 à v2.0.0). Le JWT se renouvelle par ré-enrôlement (401) ou message `rekey`.
+- **#192c** : `POST /api/register` sans `enrollment_token` refusé (`403 enrollment_token_required`, identique quels que soient hostname et clef). Le flux « clef pré-autorisée » est supprimé ; `authorized_keys` n'est plus consultée à l'enrôlement.
+- **#191** : le plugin Ansible n'accepte plus qu'un fichier de jeton **régulier, appartenant à l'utilisateur effectif et en mode 0600/0400** ; lien symbolique (`O_NOFOLLOW`), FIFO, socket et périphérique sont refusés (aucune requête envoyée, jamais le jeton dans le message). `O_NOFOLLOW` ne protège que le dernier composant du chemin : protéger le répertoire parent.
 - **#169** : `/ws/agent` refuse (401, avant l'upgrade) un JTI blacklisté, remplacé ou un agent inconnu ; fail closed. Bearer obligatoire, pas de repli `?hostname=`.
 - **#177** : `X-Forwarded-For` n'est pris en compte que derrière `TRUSTED_PROXY_CIDRS` (vide par défaut = ignoré).
 - **#173** : `agents.suspended` appliqué à exec/upload/fetch (503 `agent_suspended`, relayé par les parents).
 - **#176** : suppression de `completedResults` et de `GET /api/async_status/{task_id}` (map sans mutex, non bornée, sans appelant en production).
 - **#175b** : port 7771 (admin) refuse HTTP en clair si non-loopback, sauf dérogation explicite.
+
+### Breaking changes (v3.0.3, en plus de la migration d'état)
+- `POST /api/token/refresh` n'existe plus (404). Aucun client du dépôt ne l'utilisait.
+- `POST /api/register` sans `enrollment_token` répond 403 `enrollment_token_required` : tout enrôlement exige un jeton `secagent_enr_…` (`secagent-server tokens create --role enrollment`). `POST /api/admin/authorize` et `minions authorize` subsistent mais ne donnent plus aucun droit d'enrôlement.
+- Plugin de connexion : le **fichier de jeton par défaut est `/etc/ansible/secagent_plugin.jwt`** (plus de repli sur `/tmp`) et doit être en `0600` (ou `0400`), appartenir à l'utilisateur d'Ansible et ne pas être un lien symbolique ni un fichier spécial : **un fichier de jeton existant en 0644 est désormais refusé** (`chmod 600`).
+
+### Fixed
+- **#190** : plugin de connexion — le `stdin` de `exec_command` est envoyé en **base64** des octets bruts (champ omis s'il n'y a pas de données), comme le serveur et le minion l'attendent ; auparavant le stdin n'arrivait pas à la commande (0 octet reçu : `python3 -` ne produisait rien).
+- **#192 (audit)** : un message WS `rekey` n'est plus envoyé si le nouveau JTI n'a pas pu être persisté (l'agent aurait reçu un jeton refusé au handshake suivant).
+- Les binaires précompilés `*.exe` ne sont plus suivis par git (`.gitignore`).
 
 ---
 
