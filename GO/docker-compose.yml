@@ -20,7 +20,7 @@ services:
     volumes:
       - relay-db:/data
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7770/health"]
+      test: ["CMD", "/app/secagent-server", "status", "--local"]
       interval: 10s
       timeout: 5s
       retries: 3

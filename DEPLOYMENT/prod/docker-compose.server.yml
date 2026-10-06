@@ -30,6 +30,8 @@ services:
         required: true
     environment:
       STATE_DIR: /data
+      # Fichier de statut LOCAL de `status --local` : tmpfs ci-dessous, JAMAIS dans STATE_DIR (refuse sinon).
+      RELAY_STATUS_FILE: /run/secagent/status.json
       API_ADDR: "0.0.0.0:7770"
       WS_ADDR: "0.0.0.0:7772"
       # Admin : lie sur toutes les interfaces DU CONTENEUR (le port est publie plus bas UNIQUEMENT sur

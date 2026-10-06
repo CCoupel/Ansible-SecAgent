@@ -44,6 +44,7 @@ x-secagent: &secagent
 
 x-secagent-env: &secagent-env
   STATE_DIR: /data
+  RELAY_STATUS_FILE: /run/secagent/status.json
   API_ADDR: "0.0.0.0:7770"
   WS_ADDR: "0.0.0.0:7772"
   ADMIN_ADDR: "0.0.0.0:7771"

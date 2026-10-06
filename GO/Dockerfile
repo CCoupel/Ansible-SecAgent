@@ -33,7 +33,8 @@ RUN addgroup -g 10001 -S relay && adduser -S -u 10001 -G relay -H -s /sbin/nolog
     && mkdir -p /data /run/secagent && chown relay:relay /data /run/secagent
 USER 10001:10001
 
-ENV STATE_DIR=/data
+ENV STATE_DIR=/data \
+    RELAY_STATUS_FILE=/run/secagent/status.json
 
 # Sonde = `secagent-server status --local` (#163) : lit le statut ecrit par le process lui-meme, sans
 # ouvrir de connexion ; un secondaire (aucun port ouvert) est donc `healthy`, un process fige passe
