@@ -341,13 +341,16 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - name: Deux builds, comparaison des digests (aucun push)
+        env:
+          IMAGE: ${{ matrix.image }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
         run: |
           set -euo pipefail
           export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
           for n in 1 2; do
             docker buildx build --provenance=false --sbom=false --no-cache \
               --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
-              -f GO/${{ matrix.dockerfile }} \
+              -f "GO/${DOCKERFILE}" \
               --output "type=oci,dest=build$n.tar,rewrite-timestamp=true" GO
             mkdir "o$n" && tar -xf "build$n.tar" -C "o$n"
             python3 -c "import json;print(json.load(open('o$n/index.json'))['manifests'][0]['digest'])" > "d$n"
@@ -356,7 +359,7 @@ jobs:
           if cmp -s d1 d2; then
             echo "Reproductible : meme digest." | tee -a "$GITHUB_STEP_SUMMARY"
           else
-            echo "::warning::${{ matrix.image }} : builds NON reproductibles ($(cat d1) != $(cat d2)). A documenter (cause) avant de passer en erreur."
+            echo "::warning::${IMAGE} : builds NON reproductibles ($(cat d1) != $(cat d2)). A documenter (cause) avant de passer en erreur."
             for n in 1 2; do echo "couches build$n :"; python3 scripts/ci/oci_layers.py "o$n"; done
           fi
 

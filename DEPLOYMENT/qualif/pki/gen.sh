@@ -13,6 +13,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="${1:-${PKI_OUT:-$HERE/out}}"
 DAYS="${PKI_DAYS:-30}"
 mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"
+# Garde : refuse d'ecrire des cles dans un depot git hors d'un chemin IGNORE (une cle ne doit jamais etre versionnee).
+if git -C "$OUT" rev-parse --is-inside-work-tree >/dev/null 2>&1 && ! git -C "$OUT" check-ignore -q "$OUT/tls.key" "$OUT/ca.key"; then
+  echo "ERREUR : $OUT est dans un depot git et n'est pas ignore : refus de generer des cles (utiliser pki/out ou un repertoire hors depot)." >&2
+  exit 1
+fi
 cd "$OUT"
 umask 077
 openssl req -x509 -newkey rsa:2048 -nodes -days "$DAYS" -subj "/CN=secagent-test-ca" \
@@ -26,7 +32,9 @@ basicConstraints=CA:FALSE
 EXT
 openssl x509 -req -in tls.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days "$DAYS" -extfile san.ext -out tls.crt 2>/dev/null
 rm -f tls.csr san.ext ca.srl
-# Le conteneur tourne en UID 10001 (autre proprietaire) : la cle doit etre lisible ; certificat jetable de test.
+# CLE DE TEST JETABLE, generee dans le runner/poste de test, jamais versionnee (garde ci-dessus), JAMAIS POUR LA
+# PRODUCTION. 0644 car le conteneur tourne en UID 10001 (autre proprietaire que l'utilisateur du runner) : pas
+# d'alternative simple (chown impossible sans root, group_add dependrait du GID du runner) pour une cle de 30 jours.
 chmod 644 tls.key tls.crt ca.crt
 chmod 600 ca.key   # la cle de la CA ne sort jamais du repertoire et n'est montee nulle part
 echo "PKI de test ecrite dans $OUT (ca.crt, tls.crt, tls.key ; ca.key conservee en 0600)"
