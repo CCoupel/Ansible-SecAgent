@@ -505,12 +505,17 @@ func TestEvents_HostConflictClimbsWithoutStorm(t *testing.T) {
 	root := startNode(t, nodeSpec{ID: "root", Hooks: standardHooks})
 	mid := startNode(t, nodeSpec{ID: "mid", ParentURL: root.wssURL(), ParentToken: root.registerChild("mid")})
 	waitFor(t, "mid linked", func() bool { return mid.upstreamState() == "connected" })
-	leafA := startNode(t, nodeSpec{ID: "leafA", ParentURL: mid.wssURL(), ParentToken: mid.registerChild("leafA")})
-	leafB := startNode(t, nodeSpec{ID: "leafB", ParentURL: mid.wssURL(), ParentToken: mid.registerChild("leafB")})
+	// the leaves enroll the host while unlinked: the enrollment host.new events (real, but racing the
+	// claims this test counts exactly) have nowhere to go; then they are linked (see linkTo)
+	leafA := startNode(t, nodeSpec{ID: "leafA"})
+	leafB := startNode(t, nodeSpec{ID: "leafB"})
+	tokA, tokB := leafA.enrollAgent("twin"), leafB.enrollAgent("twin")
+	leafA.linkTo(mid)
+	leafB.linkTo(mid)
 	waitFor(t, "leaves linked", func() bool { return leafA.upstreamState() == "connected" && leafB.upstreamState() == "connected" })
 
-	connectMinion(t, leafA, "twin")
-	connectMinion(t, leafB, "twin")
+	connectMinionWithToken(t, leafA, "twin", tokA)
+	connectMinionWithToken(t, leafB, "twin", tokB)
 	// mid detects the change of owner in BOTH directions (leafA→leafB, then leafB→leafA) and reports
 	// each ONCE; both travel up and run the root's hook: exactly 2 lines, one per direction, and
 	// no more however many agent_list rounds follow

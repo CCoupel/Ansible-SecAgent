@@ -10,11 +10,13 @@ import (
 func TestRouting_LiveLocalAgentBeatsRelayClaim(t *testing.T) {
 	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
-	relay1 := startNode(t, nodeSpec{ID: "relay1", ParentURL: root.wssURL(), ParentToken: root.registerChild("relay1")})
+	relay1 := startNode(t, nodeSpec{ID: "relay1"}) // unlinked while its agent is enrolled (see linkTo)
+	remoteTok := relay1.enrollAgent("dup-host")
+	relay1.linkTo(root)
 	waitFor(t, "relay1 linked", func() bool { return relay1.upstreamState() == "connected" })
 
 	local := connectMinion(t, root, "dup-host")
-	remote := connectMinion(t, relay1, "dup-host") // relay1 declares the same hostname to the root
+	remote := connectMinionWithToken(t, relay1, "dup-host", remoteTok) // relay1 declares the same hostname to the root
 	// the claim reaches the root (relay1's agent_list lists dup-host, root processes it several times)
 	// the claim reaches the root: it is reported as a host.conflict against the LOCAL owner, once,
 	// and the host is not re-routed (relay1's agent_list is accepted with this host excluded)
@@ -61,11 +63,8 @@ func TestRouting_DuplicateClaimEmitsHostConflictWithoutStorm(t *testing.T) {
 	relayA := startNode(t, nodeSpec{ID: "relayA"})
 	relayB := startNode(t, nodeSpec{ID: "relayB"})
 	tokA, tokB := relayA.enrollAgent("roamer"), relayB.enrollAgent("roamer")
-	for _, r := range []*node{relayA, relayB} {
-		r.setEnv("REPEATER_UPSTREAM_URL", root.wssURL())
-		r.setEnv("REPEATER_UPSTREAM_TOKEN", root.registerChild(r.id))
-		r.restart()
-	}
+	relayA.linkTo(root)
+	relayB.linkTo(root)
 	waitFor(t, "relays linked", func() bool { return relayA.upstreamState() == "connected" && relayB.upstreamState() == "connected" })
 
 	conflicts := func() int { return root.logs.count("host.conflict: hostname=roamer") }

@@ -1049,3 +1049,14 @@ func (n *node) awaitPromotion(d time.Duration) bool {
 		return false
 	}
 }
+
+// linkTo gives a node that was started WITHOUT a parent its pull parent (restart on its own address and
+// state). Enrolling an agent is a real host.new event that climbs to the root and moves routes: a test
+// that counts conflicts between relays enrolls its agents while the relay is still unlinked (the
+// events have nowhere to go), then links it.
+func (n *node) linkTo(parent *node) {
+	n.t.Helper()
+	n.setEnv("REPEATER_UPSTREAM_URL", parent.wssURL())
+	n.setEnv("REPEATER_UPSTREAM_TOKEN", parent.registerChild(n.id))
+	n.restart()
+}
