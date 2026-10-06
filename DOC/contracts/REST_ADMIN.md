@@ -1,7 +1,7 @@
 # Contrat d'interface — REST Admin (CLI → secagent-server)
 
 > Interface d'administration entre le CLI cobra et le secagent-server.
-> Endpoint : HTTP :7771 — **container-interne uniquement**, jamais exposé externalement.
+> Endpoint : port admin **7771** (`ADMIN_ADDR`), réservé à l'administration — ne jamais l'exposer au réseau public.
 > Sources : `DOC/server/SERVER_SPEC.md` §7 · `DOC/server/MANAGEMENT_CLI_SPECS.md` · `DOC/security/SECURITY.md` §8
 
 ---
@@ -9,16 +9,13 @@
 ## 1. Accès et authentification
 
 ```
-Port    : 7771 (expose: seulement dans docker-compose, jamais ports:)
-Auth    : Authorization: Bearer <ADMIN_TOKEN>
-Accès   : docker exec relay-api secagent-server <commande>
+Port    : 7771 (ADMIN_ADDR, défaut ":7771" = toutes les interfaces)
+Auth    : Authorization: Bearer <ADMIN_TOKEN>   (aucune exemption loopback)
 ```
 
-Le CLI lit `ADMIN_TOKEN` depuis les variables d'environnement du container et appelle `http://localhost:7771/api/admin/*`.
+Le port admin ne démarre que dans une configuration sûre (`server/tls.go` `adminExposure`) : soit TLS (`ADMIN_TLS=true`, avec `TLS_CERT`/`TLS_KEY`), soit une adresse **loopback** (`ADMIN_ADDR=127.0.0.1:7771`), soit la dérogation explicite `ADMIN_INSECURE_HTTP=true` + `ADMIN_INSECURE_HTTP_ACK=i-understand-the-risk` (avertissement `[SECURITY WARNING]`, jeton admin en clair sur le réseau). Sinon, avec le défaut `:7771` et sans TLS admin, le serveur **refuse de démarrer**.
 
-**Ce port ne doit jamais être exposé hors du container.**
-
----
+Le CLI `secagent-server` lit `ADMIN_TOKEN` dans l'environnement et appelle l'API admin (`/api/admin/*`, plus `GET /api/inventory`).
 
 ## 2. Minions
 
@@ -35,18 +32,20 @@ Authorization: Bearer <ADMIN_TOKEN>
   {
     "hostname": "host-A",
     "status": "connected",
-    "pubkey_pem": "-----BEGIN PUBLIC KEY-----\n...",
-    "enrolled_at": "2026-03-01T10:00:00Z",
-    "last_seen_at": "2026-03-06T10:00:00Z"
+    "last_seen": "2026-03-06T10:00:00Z",
+    "suspended": false,
+    "enrolled_at": "2026-03-01T10:00:00Z"
   }
 ]
 ```
+
+`status` vaut `connected` si l'agent a une WebSocket ouverte sur cette instance, sinon la valeur enregistrée (`handlers/admin.go` `MinionSummary`, `AdminListMinions`). Il n'y a pas de paramètre `format` : la réponse est toujours du JSON.
 
 ---
 
 ### `GET /api/admin/minions/{hostname}` — Détail d'un agent
 
-**Réponse 200 :** même structure qu'un élément de la liste.
+**Réponse 200 :** `hostname`, `status`, `last_seen`, `suspended`, `enrolled_at`, `key_fingerprint` (début de la clef publique, 16 caractères + `...`) et `vars` (variables Ansible de l'hôte) — `MinionDetail`, `handlers/admin.go`. La clef publique complète n'est pas renvoyée.
 
 **Codes d'erreur :**
 
@@ -56,48 +55,62 @@ Authorization: Bearer <ADMIN_TOKEN>
 
 ---
 
-### `POST /api/admin/minions/{hostname}/authorize` — Créer un token d'enrollment
+### `POST /api/admin/authorize` — Pré-autoriser une clef publique
 
-Génère un token OTP single-use pour permettre l'enrollment d'un agent.
+Enregistre une clef publique dans les `authorized_keys` de l'état : l'agent portant cette clef peut ensuite s'enrôler sans jeton d'enrôlement (flux historique, voir `DOC/contracts/REST_ENROLLMENT.md`). Cette route **ne génère aucun jeton** ; les jetons d'enrôlement se créent avec `POST /api/admin/tokens` (`role: "enrollment"`, §3). La route est servie sur 7771 et, par compatibilité, aussi sur 7770 (`server/routers.go`).
 
 ```http
-POST /api/admin/minions/{hostname}/authorize
+POST /api/admin/authorize
 Authorization: Bearer <ADMIN_TOKEN>
 Content-Type: application/json
 ```
 
 ```json
 {
-  "expires_in": "24h"
+  "hostname": "host-A",
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...",
+  "approved_by": "ci-pipeline"
 }
 ```
 
-**Réponse 200 :**
-```json
-{
-  "enrollment_token": "secagent_enr_xxxxxxxxxxxxx",
-  "hostname": "host-A",
-  "expires_at": "2026-03-07T10:00:00Z"
-}
-```
+**Réponse 201 :** `{ "hostname": "host-A", "status": "authorized" }`
+
+| HTTP | Signification |
+|---|---|
+| `400` | JSON invalide (`invalid_request`) ou champ vide (`missing_fields` : `hostname`, `public_key_pem` et `approved_by` sont tous obligatoires) |
+| `401` | `missing_authorization` / `invalid_admin_token` |
+
+(`handlers/register.go` `AdminAuthorize`.)
 
 ---
 
-### `POST /api/admin/minions/{hostname}/revoke` — Révoquer un agent
+### `POST /api/admin/revoke/{hostname}` — Révoquer un agent
 
-Blackliste le JTI du JWT actif et ferme la connexion WS avec le code `4001`.
+Blackliste le JTI du JWT actif, ferme la connexion WS avec le code `4001` et marque l'agent déconnecté.
 
 ```http
-POST /api/admin/minions/{hostname}/revoke
+POST /api/admin/revoke/{hostname}
 Authorization: Bearer <ADMIN_TOKEN>
 ```
 
 **Réponse 200 :**
 ```json
-{ "status": "revoked", "hostname": "host-A" }
+{ "status": "revoked", "hostname": "host-A", "ws_disconnected": true }
 ```
 
-L'agent reçoit `close(4001)` et s'arrête définitivement (pas de reconnexion).
+`404 agent_not_found` si le hostname est inconnu. L'agent reçoit `close(4001)` et s'arrête définitivement (pas de reconnexion). Si l'écriture dans la blacklist échoue, la réponse est une erreur et la WS **n'est pas** fermée (voir §6, mode lecture seule). (`handlers/admin.go` `AdminRevokeMinion`.)
+
+---
+
+### `DELETE /api/admin/minions/{hostname}` — Supprimer un agent
+
+Ferme la WS (code `4000`), supprime l'agent de l'état et émet l'événement `host.deleted`. Réponse 200 : `{ "hostname", "status": "deleted", "ws_disconnected" }` ; `404 agent_not_found`. Différent de la révocation, qui blackliste sans supprimer.
+
+---
+
+### `POST /api/admin/minions/{hostname}/set-state` — Forcer le statut
+
+Corps `{ "status": "connected" | "disconnected" }` (autre valeur : `400 invalid_status`). Modifie le statut enregistré sans toucher à la WebSocket. Réponse 200 : `{ "hostname", "status" }`.
 
 ---
 
@@ -130,21 +143,27 @@ Authorization: Bearer <ADMIN_TOKEN>
 
 ---
 
-### `PUT /api/admin/minions/{hostname}/vars/{key}` — Définir une variable
+### `POST /api/admin/minions/{hostname}/vars` — Définir des variables
 
 ```http
-PUT /api/admin/minions/{hostname}/vars/{key}
+POST /api/admin/minions/{hostname}/vars
 Authorization: Bearer <ADMIN_TOKEN>
 Content-Type: application/json
 ```
 
+Le corps est un objet clef → valeur ; chaque paire est ajoutée ou mise à jour :
+
 ```json
-{ "value": "deploy" }
+{ "ansible_user": "deploy", "ansible_become": true }
 ```
+
+Réponse 200 : `{ "hostname": "host-A", "status": "updated" }` ; `404 agent_not_found`. Il n'existe pas de route `PUT …/vars/{key}`.
 
 ---
 
 ### `DELETE /api/admin/minions/{hostname}/vars/{key}` — Supprimer une variable
+
+Réponse 200 : `{ "hostname", "key", "status": "deleted" }` ; `404 agent_not_found` ou `404 key_not_found`.
 
 ---
 
@@ -158,7 +177,7 @@ Authorization: Bearer <ADMIN_TOKEN>
 ```
 
 **Paramètres :**
-- `role` : `plugin` | `enrollment` | `all` (défaut: `all`)
+- `role` : `plugin` | `enrollment` | `relay-parent` | `all` (défaut: `all`) ; autre valeur : `400 invalid_role`
 
 **Réponse 200 :**
 ```json
@@ -170,17 +189,19 @@ Authorization: Bearer <ADMIN_TOKEN>
     "allowed_ips": "192.168.1.10/32",
     "allowed_hostname_pattern": "ansible-control-[0-9]+",
     "created_at": "2026-03-01T10:00:00Z",
-    "expires_at": null,
     "last_used_at": "2026-03-06T10:00:00Z",
     "last_used_ip": "192.168.1.10",
+    "last_used_approximate": true,
     "revoked": false
   }
 ]
 ```
 
+`expires_at`, `last_used_*` et `description` sont omis quand ils sont vides. `last_used_at` / `last_used_ip` sont gardés en mémoire et ne sont persistés qu'avec la prochaine écriture de l'état : ils peuvent retarder de plusieurs minutes (`last_used_approximate: true`), et un jeton utilisé juste avant un crash peut apparaître « jamais utilisé » — ne pas s'en servir pour un audit. Chaque entrée porte aussi `token_hash` (jamais le jeton en clair). Les jetons `enrollment` et `relay-parent` ont leurs propres champs (`hostname_pattern`, `reusable`, `use_count` ; `sub`, `jti`) — `handlers/admin_tokens.go`.
+
 ---
 
-### `POST /api/admin/tokens` — Créer un token plugin
+### `POST /api/admin/tokens` — Créer un token (plugin, enrôlement ou relay-parent)
 
 ```http
 POST /api/admin/tokens
@@ -194,19 +215,23 @@ Content-Type: application/json
   "role": "plugin",
   "allowed_ips": "192.168.1.10/32",
   "allowed_hostname_pattern": "ansible-control-[0-9]+",
-  "expires_in": "365d"
+  "expires_at": "2027-03-01T00:00:00Z"
 }
 ```
+
+`role` : `plugin`, `enrollment` ou `relay-parent` (sinon `400 invalid_role`). L'expiration est `expires_at` en **RFC 3339** (pas de durée `expires_in` ; format invalide : `400 invalid_expires_at`). Vide = jeton sans expiration, sauf `relay-parent` pour lequel elle est obligatoire (maximum 365 jours, `400 expires_exceeds_maximum_365d`). Le CLI `tokens create --expires <durée>` convertit la durée en `expires_at`. Champs propres au rôle : `enrollment` → `hostname_pattern` (obligatoire), `reusable` (0 = usage unique, 1 = permanent) ; `plugin` → `description`, `allowed_ips`, `allowed_hostname_pattern` ; `relay-parent` → `sub` (relay_id du parent).
 
 **Réponse 201 :**
 ```json
 {
   "id": "tok-uuid",
-  "token": "secagent_plugin_xxxxxxxxxxxxx"
+  "token": "secagent_plg_<64 hex>",
+  "role": "plugin",
+  "created_at": "2026-03-01T10:00:00Z"
 }
 ```
 
-Le token en clair n'est retourné **qu'une seule fois** à la création. Ensuite, seul le hash est stocké.
+Le token en clair n'est retourné **qu'une seule fois** à la création. Ensuite, seul le hash est stocké. Les jetons `plugin` et `enrollment` sont des chaînes **opaques** préfixées `secagent_plg_` / `secagent_enr_` (suivies de 64 caractères hexadécimaux), **pas des JWT** ; seul le jeton `relay-parent` est un JWT (`handlers/admin_tokens.go:163`).
 
 #### Note sur `allowed_hostname_pattern`
 
@@ -234,7 +259,7 @@ Le champ `allowed_hostname_pattern` est une **regexp Go** (pas un glob shell). L
 
 ### `POST /api/admin/tokens/{id}/revoke` — Révoquer un token
 
-**Réponse 200 :** `{ "status": "revoked" }`
+Révoque un jeton **plugin** (ou `relay-parent`). Les jetons d'enrôlement ne se révoquent pas : utiliser `DELETE`. Réponse 200 : `{ "revoked": true, "id": "...", "updated_at": "..." }` ; `404 token_not_found` si l'id n'existe pas.
 
 ---
 
@@ -242,7 +267,9 @@ Le champ `allowed_hostname_pattern` est une **regexp Go** (pas un glob shell). L
 
 ---
 
-### `POST /api/admin/tokens/purge` — Purger les tokens expirés
+### `POST /api/admin/tokens/purge` — Purger les tokens expirés ou consommés
+
+Paramètres de requête : `expired=1` (jetons d'enrôlement expirés) et/ou `used=1` (jetons d'enrôlement à usage unique consommés) ; aucun des deux : `400 specify_at_least_one_param_expired_or_used`. Réponse 200 : `{ "deleted_count": N, "purged_at": "..." }`. Les jetons plugin ne sont pas purgés.
 
 ---
 
@@ -253,37 +280,46 @@ Le champ `allowed_hostname_pattern` est une **regexp Go** (pas un glob shell). L
 **Réponse 200 :**
 ```json
 {
-  "current_key_id": "key-2026-03-06",
-  "previous_key_id": "key-2026-02-01",
-  "rotation_deadline": "2026-03-07T10:00:00Z",
-  "grace_period_active": true
+  "current_key_sha256": "<sha256 hex>",
+  "previous_key_sha256": "<sha256 hex ou vide>",
+  "deadline": "2026-03-07T10:00:00Z",
+  "rotation_active": true,
+  "agents_total": 42
 }
 ```
 
+Les clefs sont identifiées par leur empreinte SHA-256 (pas d'identifiant `key-…`). `agents_total` = agents actuellement connectés. (`handlers/security.go` `KeysStatusResponse`.)
+
 ---
 
-### `POST /api/admin/security/keys/rotate` — Déclencher une rotation
+### `POST /api/admin/keys/rotate` — Déclencher une rotation
 
 ```http
-POST /api/admin/security/keys/rotate
+POST /api/admin/keys/rotate
 Authorization: Bearer <ADMIN_TOKEN>
 Content-Type: application/json
 ```
 
 ```json
 {
-  "grace_period": "24h"
+  "grace": "24h"
 }
 ```
+
+Corps facultatif ; `grace` est une durée Go (`24h`, `2h30m`), défaut `24h` ; durée invalide : `400 invalid_grace_duration`.
 
 **Réponse 200 :**
 ```json
 {
-  "new_key_id": "key-2026-03-07",
-  "rotation_deadline": "2026-03-08T10:00:00Z",
-  "agents_notified": 42
+  "current_key_sha256": "<sha256 hex>",
+  "previous_key_sha256": "<sha256 hex>",
+  "deadline": "2026-03-08T10:00:00Z",
+  "agents_migrated": 41,
+  "agents_total": 42
 }
 ```
+
+`agents_migrated` = agents connectés à qui le nouveau JWT a pu être envoyé ; `agents_total` = agents connectés (`handlers/security.go` `RotateKeysResponse`). La rotation renouvelle aussi la paire RSA du serveur.
 
 Pendant `grace_period`, les deux clefs (`jwt_secret_current` + `jwt_secret_previous`) sont valides.
 Après `rotation_deadline`, `jwt_secret_previous` est invalidé et les JTIs pré-rotation sont blacklistés.
@@ -311,14 +347,24 @@ Les agents connectés reçoivent un message WS `{type: "rekey"}` et ré-enrollme
 
 ### `POST /api/admin/security/blacklist/purge` — Purger les JTIs expirés
 
+Réponse 200 : `{ "deleted": N }`.
+
+---
+
+### `GET /api/admin/security/tokens` — JTI actifs des agents
+
+Réponse 200 : tableau de `{ hostname, jti, enrolled_at, last_seen, status }`, un par agent ayant un JTI courant.
+
 ---
 
 ## 5. Inventaire
 
-### `GET /api/admin/inventory` — Inventaire complet
+### `GET /api/inventory` (port 7771) — Inventaire complet, jeton admin
+
+Sur le port admin 7771 la route est `GET /api/inventory` (il n'existe pas de `/api/admin/inventory`) ; elle exige l'`ADMIN_TOKEN`. Sur 7770, la même route exige un **jeton plugin** (voir `DOC/contracts/REST_PLUGIN.md` §2) : un `ADMIN_TOKEN` y est refusé (`server/routers.go:40,71`, `handlers/inventory.go` `GetInventory` / `AdminGetInventory`).
 
 ```http
-GET /api/admin/inventory?only_connected=false
+GET /api/inventory?only_connected=false
 Authorization: Bearer <ADMIN_TOKEN>
 ```
 
@@ -364,34 +410,28 @@ Lu dans le journal append-only `actions.log` (#161). `limit` : 1–200 (défaut 
 
 ---
 
-### `GET /api/admin/server/status`
+### `GET /api/admin/stats`
 
 **Réponse 200 :**
 ```json
-{
-  "status": "healthy",
-  "uptime_seconds": 86400,
-  "connected_agents": 3,
-  "db_ok": true,
-  "version": "1.1.0"
-}
+{ "agents_connected": 3, "agents_total": 15, "tasks_active": 2 }
 ```
+
+`tasks_active` = tâches en attente de réponse d'un agent (`handlers/admin.go` `AdminStats`). Il n'existe pas de routes `/api/admin/server/status` ni `/api/admin/server/stats` ; `secagent-server server status` appelle `GET /api/admin/status`.
 
 ---
 
-### `GET /api/admin/server/stats`
+## 6b. Relays
 
-**Réponse 200 :**
-```json
-{
-  "tasks_processed_total": 14250,
-  "tasks_in_progress": 2,
-  "tasks_failed_total": 12,
-  "agents_registered": 15,
-  "agents_connected": 3,
-  "tokens_active": 4
-}
-```
+| Route | Rôle |
+|---|---|
+| `POST /api/admin/relays` | Enregistre un relay enfant (`relay_id`, `mode` `pull` (défaut) ou `push`, `urls`, `token`, `description`). Mode pull : renvoie `jwt_token` **une seule fois**. |
+| `GET /api/admin/relays` | Liste des relays |
+| `GET /api/admin/relays/status` | État des relays : `{ "relays": [...], "timestamp": "..." }` |
+| `DELETE /api/admin/relays/{id}` | Supprime un relay |
+| `POST /api/admin/relays/{id}/revoke` | Révoque un relay (c'est la seule forme de révocation : il n'y a pas de sous-commande CLI `relays revoke`) |
+
+(`server/routers.go:91-95`, `handlers/admin_relays.go`.)
 
 ---
 
@@ -399,7 +439,7 @@ Lu dans le journal append-only `actions.log` (#161). `limit` : 1–200 (défaut 
 
 | HTTP | Signification |
 |---|---|
-| `401` | ADMIN_TOKEN absent ou invalide |
+| `401` | ADMIN_TOKEN absent ou invalide (`missing_authorization`, `invalid_admin_token`) — y compris depuis une boucle locale : il n'y a aucune exemption loopback |
 | `404` | Ressource introuvable |
 | `409` | Conflit (ex: hostname déjà existant) |
 | `500` | Erreur interne |
