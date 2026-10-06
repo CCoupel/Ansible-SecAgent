@@ -932,7 +932,7 @@ proc.stdin.close()
 | Tâche annulée (cancel) | `rc: -15` | FAILED |
 | Fichier trop grand | HTTP 413 `payload_too_large` | FAILED |
 | Token révoqué | WS close 4001 | N/A (agent) |
-| Token expiré | WS close 4002 | Refresh automatique |
+| Token expiré | HTTP 401 à l'upgrade WS (4002 non émis) | Ré-enrôlement (jeton d'enrôlement) |
 
 ### Timeout en cascade
 
@@ -1197,10 +1197,11 @@ Pipeline de provisioning (Terraform / Packer / cloud-init)
 Étape 1 : génère paire RSA-4096 pour le nouveau serveur
 Étape 2 : stocke la clef privée dans le secret manager (Vault / AWS SSM)
 Étape 3 : crée un jeton d'enrôlement sur le relay server
-           → (obsolète depuis #192c : cette pré-autorisation ne permet plus de s'enrôler ; créer un jeton d'enrôlement `tokens create --role enrollment` et le passer au minion)
+           (`tokens create --role enrollment --hostname-pattern …`) ; la pré-autorisation d'une clef
+           (POST /api/admin/authorize) ne permet plus de s'enrôler depuis #192c
 Étape 4 : provisionne le serveur avec la clef privée injectée
            (cloud-init / user-data)
-Étape 5 : au premier boot, l'agent démarre et s'enrôle automatiquement
+Étape 5 : au premier boot, l'agent démarre et s'enrôle avec RELAY_ENROLLMENT_TOKEN (injecté comme la clef)
 ```
 
 ### Unit file systemd
