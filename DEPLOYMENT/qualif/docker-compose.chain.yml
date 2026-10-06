@@ -1,0 +1,110 @@
+# Topologie QUALIF en CHAINE DE RELAIS (#188), qui remplace les anciens Compose proxy/minion/ansible :
+#
+#   racine actif/passif (secagent-server-a/-b, STATE_DIR partage)  <--pull--  secagent-child (relay enfant dmz1)
+#        ^  minion-root (liste des 2 adresses de la racine)                        ^  minion-child
+#
+# La racine est celle de docker-compose.server.yml (incluse, non dupliquee). L'enfant pull est UNE instance
+# (justification : l'actif/passif de la racine est le cas teste ; un enfant a deux instances n'apporte que la
+# meme preuve) ; l'enfant PUSH (optionnel dans #188) n'est pas deploye ici.
+# Images : SECAGENT_IMAGE (serveur) et SECAGENT_MINION_IMAGE (minion), references promues
+# (`sha-<commit>@sha256:<digest>`) ; aucun `build:`, aucun `latest`. TLS de bout en bout avec une CA privee :
+# REPEATER_CA_FILE / RELAY_CA_BUNDLE, jamais RELAY_INSECURE_TLS.
+# Les jetons sont produits par `chain-test.sh bootstrap` dans ./chain/ (ignore par git, fichiers 0600) :
+# jamais dans le depot, jamais dans les logs. Le poste de controle Ansible est HORS Compose (voir README).
+include:
+  - docker-compose.server.yml
+
+x-child-env: &child-env
+  STATE_DIR: /data
+  RELAY_STATUS_FILE: /run/secagent/status.json
+  API_ADDR: "0.0.0.0:7770"
+  WS_ADDR: "0.0.0.0:7772"
+  ADMIN_ADDR: "0.0.0.0:7771"
+  ADMIN_TLS: "true"
+  TLS_CERT: /certs/tls.crt
+  TLS_KEY: /certs/tls.key
+  LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+  GOMEMLIMIT: ${GOMEMLIMIT:-1638MiB}
+  REPEATER_ID: dmz1
+  REPEATER_UPSTREAM_URL: wss://secagent-server-a:7772,wss://secagent-server-b:7772
+  REPEATER_CA_FILE: /certs/ca.crt
+  # REPEATER_UPSTREAM_TOKEN : secret, dans ./chain/child.env (env_file ci-dessous)
+
+services:
+  secagent-child:
+    image: ${SECAGENT_IMAGE:?SECAGENT_IMAGE est obligatoire (image candidate sha-<commit>@sha256:<digest>)}
+    container_name: secagent-qualif-child
+    restart: unless-stopped
+    user: "10001:10001"
+    stop_grace_period: 30s
+    read_only: true
+    mem_limit: ${SECAGENT_MEM_LIMIT:-2g}
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    env_file:
+      - path: ./qualif.env
+        required: true
+      - path: ./chain/child.env
+        required: false
+    environment: *child-env
+    volumes:
+      - child_state:/data
+      - type: bind
+        source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}
+        target: /certs
+        read_only: true
+    tmpfs:
+      - /run/secagent:uid=10001,gid=10001,mode=0700
+      - /tmp:uid=10001,gid=10001,mode=1777
+    ports:
+      - "127.0.0.1:9771:7771"     # admin : boucle locale uniquement
+    healthcheck:
+      test: ["CMD", "/app/secagent-server", "status", "--local"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # Minions de test : enroles par jeton (RELAY_ENROLLMENT_TOKEN dans ./chain/minion-*.env), listes d'adresses.
+  minion-root:
+    image: ${SECAGENT_MINION_IMAGE:?SECAGENT_MINION_IMAGE est obligatoire (image minion sha-<commit>@sha256:<digest>)}
+    hostname: minion-root
+    restart: unless-stopped
+    env_file:
+      - path: ./chain/minion-root.env
+        required: false
+    environment:
+      RELAY_SERVER_URL: https://secagent-server-a:7770,https://secagent-server-b:7770
+      RELAY_WS_URL: wss://secagent-server-a:7772/ws/agent,wss://secagent-server-b:7772/ws/agent
+      RELAY_CA_BUNDLE: /certs/ca.crt
+    volumes:
+      - minion_root_data:/var/lib/secagent-minion
+      - type: bind
+        source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}
+        target: /certs
+        read_only: true
+    mem_limit: 512m
+
+  minion-child:
+    image: ${SECAGENT_MINION_IMAGE:?SECAGENT_MINION_IMAGE est obligatoire (image minion sha-<commit>@sha256:<digest>)}
+    hostname: minion-child
+    restart: unless-stopped
+    env_file:
+      - path: ./chain/minion-child.env
+        required: false
+    environment:
+      RELAY_SERVER_URL: https://secagent-child:7770
+      RELAY_WS_URL: wss://secagent-child:7772/ws/agent
+      RELAY_CA_BUNDLE: /certs/ca.crt
+    volumes:
+      - minion_child_data:/var/lib/secagent-minion
+      - type: bind
+        source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}
+        target: /certs
+        read_only: true
+    mem_limit: 512m
+
+volumes:
+  child_state:
+  minion_root_data:
+  minion_child_data:

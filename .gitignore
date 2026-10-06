@@ -91,3 +91,5 @@ DEPLOYMENT/qualif/.ci-tls/
 /GO/secagent-inventory
 /GO/relay-server
 /GO/relay-server-linux
+DEPLOYMENT/qualif/pki/out/
+DEPLOYMENT/qualif/chain/

@@ -109,9 +109,12 @@ run() {
   echo "OK ($mode)"
 }
 
-case "${1:-}" in
-  setup-ci) setup_ci ;;
-  run) run "${2:?mode stop|kill}" ;;
-  teardown) "${DC[@]}" down -v ;;
-  *) sed -n '2,15p' "$0"; exit 2 ;;
-esac
+# Sourceable (chain-test.sh reutilise les fonctions) : le dispatch ne s'execute que lance directement.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  case "${1:-}" in
+    setup-ci) setup_ci ;;
+    run) run "${2:?mode stop|kill}" ;;
+    teardown) "${DC[@]}" down -v ;;
+    *) sed -n '2,15p' "$0"; exit 2 ;;
+  esac
+fi

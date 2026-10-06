@@ -66,13 +66,14 @@ def check(doc: dict, allow_build: bool, require_mem: bool = False) -> list:
                 errs.append(f"{where}: port admin 7771 publie sans host_ip ou sur 0.0.0.0/:: (host_ip={ip!r})")
             elif target == 7771 and not is_loopback(ip):
                 print(f"INFO {where}: 7771 publie sur {ip} (reseau d'administration, a valider)", file=sys.stderr)
+        is_server = "secagent-server" in svc.get("image", "") or "ADMIN_ADDR" in env
         admin = env.get("ADMIN_ADDR", ":7771")
         tls = strict_bool(env, "ADMIN_TLS", where, errs)
         insecure = strict_bool(env, "ADMIN_INSECURE_HTTP", where, errs)
         tls_disable = strict_bool(env, "TLS_DISABLE", where, errs)
         if tls and not (env.get("TLS_CERT") and env.get("TLS_KEY")):
             errs.append(f"{where}: ADMIN_TLS=true exige TLS_CERT et TLS_KEY")
-        if not is_loopback(admin_host(admin)):
+        if is_server and not is_loopback(admin_host(admin)):
             derog = insecure and env.get("ADMIN_INSECURE_HTTP_ACK") == ACK
             if not (tls or derog):
                 errs.append(f"{where}: ADMIN_ADDR={admin!r} non loopback sans ADMIN_TLS=true ni derogation complete")
@@ -90,7 +91,7 @@ def check(doc: dict, allow_build: bool, require_mem: bool = False) -> list:
             lim = ((svc.get("deploy") or {}).get("resources") or {}).get("limits", {}).get("memory") or svc.get("mem_limit")
             if not lim or str(lim) in ("0", ""):
                 errs.append(f"{where}: limite memoire de conteneur absente")
-            if not env.get("GOMEMLIMIT"):
+            if is_server and not env.get("GOMEMLIMIT"):
                 errs.append(f"{where}: GOMEMLIMIT absent")
         if "build" in svc and not allow_build:
             errs.append(f"{where}: 'build:' interdit")
