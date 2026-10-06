@@ -24,7 +24,7 @@ Connection: Upgrade
 Authorization: Bearer eyJhbGci...
 ```
 
-Le serveur valide le JWT (signature + expiration + JTI blacklist) avant d'accepter l'upgrade. Seul le rôle `agent` est accepté sur `/ws/agent` (un JWT d'un autre rôle, ou un jeton plugin, est refusé : `ws/handler.go:409`).
+Le serveur valide le JWT (signature + expiration + JTI blacklist) avant d'accepter l'upgrade, puis vérifie l'agent : un hostname inconnu, un JTI remplacé ou un agent **révoqué** (drapeau persistant `revoked`, même si l'entrée de blacklist a expiré, #193) est refusé en `401` avant l'upgrade (`server/helpers.go:205-218`). Seul le rôle `agent` est accepté sur `/ws/agent` (un JWT d'un autre rôle, ou un jeton plugin, est refusé : `ws/handler.go:409`).
 
 ---
 
