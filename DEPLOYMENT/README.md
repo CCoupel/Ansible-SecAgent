@@ -288,6 +288,13 @@ export RELAY_WS_URL="wss://relay1.example.com:7772/ws/agent,wss://relay2.example
 
 ## Gestion des Erreurs et Reprise
 
+### Lancement du binaire
+
+`secagent-server` sans sous-commande **démarre le serveur** en avant-plan : il n'y a pas d'option `-d` (daemon),
+et `--help` ou une sous-commande inconnue (ex. `admin …`) démarre aussi le serveur au lieu d'afficher l'aide.
+Sous-commandes CLI : `minions security inventory server tokens hooks relays state status help completion`
+(aide : `secagent-server tokens --help`).
+
 ### Codes de Sortie
 
 **Relay :**
