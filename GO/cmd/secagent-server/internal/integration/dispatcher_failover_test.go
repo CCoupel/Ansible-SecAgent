@@ -4,9 +4,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"secagent-server/cmd/secagent-server/internal/localstatus"
 )
 
 // #171 A2/A3/A4 with the REAL minion (dispatcher + address list [standby B, A]): the enrollment goes
@@ -132,5 +135,65 @@ func TestFailover_InFlightExecAtKillIsNeverExecutedTwice(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(marker2); strings.Count(string(got), "second\n") != 1 {
 		t.Errorf("the command sent through the new master ran %d times, want 1", strings.Count(string(got), "second\n"))
+	}
+}
+
+// #171 A8-(2), with real processes: two secondaries observe the SAME stale lock of a killed master at the
+// same time and both try to take it. Exactly one becomes master; the other goes back to waiting (no port,
+// no write, still a secondary, still running); the lock names the winner.
+func TestFailover_TwoSecondariesCollidingOnAStaleLockOnlyOneTakesOver(t *testing.T) {
+	parallel(t)
+	a := startNode(t, nodeSpec{ID: "root"})
+	b1, b2 := a.sibling(), a.sibling()
+	b1.launchSecondary(nil)
+	t.Cleanup(b1.stop)
+	b2.launchSecondary(nil)
+	t.Cleanup(b2.stop)
+	waitFor(t, "both secondaries poll the lock", func() bool { return b1.localStatusPolled() && b2.localStatusPolled() })
+
+	a.killNow() // the lock goes stale for both at about the same time
+	var winner, loser *node
+	select {
+	case r := <-b1.pendingReady:
+		b1.ready, winner, loser = r, b1, b2
+	case r := <-b2.pendingReady:
+		b2.ready, winner, loser = r, b2, b1
+	case <-time.After(waitLimit):
+		t.Fatalf("no secondary took over; logs:\n%s\n%s", b1.logs.String(), b2.logs.String())
+	}
+
+	// let the loser poll the lock at least twice AFTER the winner is master (a poll is its only activity)
+	last := func() int64 { f, _ := localstatus.Read(loser.statusPath); return f.LastCheckAt }
+	base := last()
+	waitFor(t, "the loser polled the lock after the take-over", func() bool { return last() > base })
+	base = last()
+	waitFor(t, "the loser polled the lock again", func() bool { return last() > base })
+
+	if !winner.logs.has("promoted to master") {
+		t.Errorf("the winner must log its promotion:\n%s", winner.logs.String())
+	}
+	if loser.logs.has("promoted to master") {
+		t.Errorf("the loser was promoted too:\n%s", loser.logs.String())
+	}
+	select {
+	case <-loser.pendingReady:
+		t.Error("the loser reported listening addresses: two masters")
+	case <-loser.exited:
+		t.Errorf("the loser exited (code %d); it must keep waiting:\n%s", loser.exitCode, loser.logs.String())
+	default:
+	}
+	if f, err := localstatus.Read(loser.statusPath); err != nil || f.Role != "secondary" {
+		t.Errorf("the loser's status = %+v (%v), want a secondary", f, err)
+	}
+	if p := listeningPorts(t, loser.cmd.Process.Pid); len(p) != 0 {
+		t.Errorf("the loser listens on %v: it must hold no port", p)
+	}
+	l, ok := readLock(winner.stateDir)
+	m := regexp.MustCompile(`promoted to master \(instance_id=([0-9a-f]+)\)`).FindStringSubmatch(winner.logs.String())
+	if !ok || m == nil || l.InstanceID != m[1] || l.Role != "master" {
+		t.Errorf("the lock %+v (present=%v) must name the winner %v as master", l, ok, m)
+	}
+	if code, body := winner.admin("GET", "/api/admin/status", nil); code != http.StatusOK {
+		t.Errorf("the winner must serve its admin API: %d %v", code, body)
 	}
 }
