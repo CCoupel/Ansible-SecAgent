@@ -145,13 +145,31 @@ func TestFailover_TwoSecondariesCollidingOnAStaleLockOnlyOneTakesOver(t *testing
 	parallel(t)
 	a := startNode(t, nodeSpec{ID: "root"})
 	b1, b2 := a.sibling(), a.sibling()
+	gates := []string{filepath.Join(t.TempDir(), "gate1"), filepath.Join(t.TempDir(), "gate2")}
+	b1.setEnv("NODE_LOCK_CREATE_GATE", gates[0])
+	b2.setEnv("NODE_LOCK_CREATE_GATE", gates[1])
 	b1.launchSecondary(nil)
 	t.Cleanup(b1.stop)
 	b2.launchSecondary(nil)
 	t.Cleanup(b2.stop)
 	waitFor(t, "both secondaries poll the lock", func() bool { return b1.localStatusPolled() && b2.localStatusPolled() })
 
-	a.killNow() // the lock goes stale for both at about the same time
+	a.killNow() // the lock goes stale for both
+	// both instances are held right before the exclusive creation of the lock, then released together:
+	// a REAL collision on the creation, whatever the machine load
+	waitFor(t, "both secondaries judged the lock stale and are about to create it", func() bool {
+		for _, g := range gates {
+			if _, err := os.Stat(g + ".reached"); err != nil {
+				return false
+			}
+		}
+		return true
+	})
+	for _, g := range gates {
+		if err := os.WriteFile(g, []byte("go"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	var winner, loser *node
 	select {
 	case r := <-b1.pendingReady:

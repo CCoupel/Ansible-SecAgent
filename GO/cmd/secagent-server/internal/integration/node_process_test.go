@@ -130,6 +130,22 @@ func TestNodeProcess(t *testing.T) {
 		}
 	}
 
+	// NODE_LOCK_CREATE_GATE=<file>: same idea right before the EXCLUSIVE CREATION of the lock (case 2 of
+	// #162: two instances about to take the same free lock): <file>.reached tells the instance is there,
+	// it creates the lock once <file> exists. The test releases both gates together: a real collision,
+	// whatever the machine load.
+	if gate := os.Getenv("NODE_LOCK_CREATE_GATE"); gate != "" {
+		cfg.LockHooks.BeforeCreate = func() {
+			_ = os.WriteFile(gate+".reached", []byte("x"), 0o600)
+			for i := 0; i < 6000; i++ {
+				if _, err := os.Stat(gate); err == nil {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+	}
+
 	var ctlLn net.Listener
 	cfg.OnReady = func(node *server.Node) {
 		ctl := http.NewServeMux()
