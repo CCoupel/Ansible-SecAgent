@@ -1,42 +1,56 @@
 # Ansible-SecAgent — Quick Start v3.0.3
 
-**Durée estimée** : 10 minutes  
-**Prérequis** : Docker 20.10+, Docker Compose 2.0+, openssl
+**Durée estimée** : 15 minutes
+**Prérequis** : Docker 20.10+, Docker Compose 2.0+, openssl, le binaire `secagent-minion` (archive de release), `jq`
+
+> **Portée** : démarrage **QUALIF / essai local** avec un certificat auto-signé. Pour la production
+> (stockage partagé, actif/passif) voir [DEPLOYMENT/prod/README.md](../../DEPLOYMENT/prod/README.md).
+> Le Compose utilisé est `DEPLOYMENT/qualif/docker-compose.server.yml` (deux instances `a`/`b` sur un
+> même volume d'état ; seule l'instance maître ouvre ses ports, l'autre n'en ouvre aucun).
+> Les autres fichiers de `DEPLOYMENT/qualif/` (`docker-compose.minion.yml`, `.proxy.yml`, `.ansible.yml`)
+> sont marqués OBSOLETES en v3.0.3 : ne pas les utiliser.
 
 ---
 
-## 1️⃣ Préparer l'environnement (2 min)
+## 1️⃣ Préparer l'environnement (3 min)
 
 ```bash
 cd DEPLOYMENT/qualif
 
-# Générer certificats TLS auto-signés
-openssl req -x509 -newkey rsa:2048 -keyout tls.key -out tls.crt \
-  -days 365 -nodes -subj "/CN=localhost"
+# Certificat TLS auto-signé. Le SAN est obligatoire : sans lui, la vérification TLS échoue.
+mkdir -p tls
+openssl req -x509 -newkey rsa:2048 -keyout tls/tls.key -out tls/tls.crt \
+  -days 365 -nodes -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+# Le conteneur tourne en UID 10001 : la clef doit lui être lisible (essai local UNIQUEMENT).
+chmod 0644 tls/tls.key
 
-# Créer répertoire d'état
-mkdir -p state logs
+# Secrets du serveur (hors dépôt)
+cp qualif.env.example qualif.env
+# Renseigner dans qualif.env : JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY
+#   (chaînes aléatoires, ex. `openssl rand -hex 32` ; RSA_MASTER_KEY est un secret
+#    dont dérivent l'HMAC de l'état et le chiffrement AES-GCM de ses secrets, pas une clef RSA)
 
-# Créer .env si absent (docker-compose.yml le référence)
-cat > .env <<'EOF'
-STATE_DIR=./state
-TLS_CERT=./tls.crt
-TLS_KEY=./tls.key
-ADMIN_ADDR=127.0.0.1:7771
-EOF
+# Image candidate (voir l'en-tête de docker-compose.server.yml) et répertoire TLS
+export SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-<commit>@sha256:<digest>
+export QUALIF_TLS_DIR="$PWD/tls"
 ```
 
 ---
 
-## 2️⃣ Initialiser le relay (2 min)
+## 2️⃣ Initialiser l'état (2 min)
+
+Le serveur **ne crée jamais son état implicitement** : sans `relay.state` il refuse de démarrer.
+`state init` exige `RSA_MASTER_KEY` (présent dans `qualif.env`, chargé par le Compose).
 
 ```bash
-# Créer le fichier d'état vierge
-docker compose run --rm secagent-server state init
+# Crée relay.state (clef RSA-4096 du serveur + secret JWT) dans le volume partagé
+docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent-server-a state init
 
-# Vérifier l'initialisation
-docker compose run --rm secagent-server state verify
-# Sortie : exit code 0 (OK)
+# Vérifier : `state verify` prend le chemin du fichier en argument
+docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent-server-a \
+  state verify /data/relay.state
+# Sortie : code retour 0 (OK). Codes 2-7 = défaut détecté (voir `state verify --help`).
 ```
 
 ---
@@ -44,60 +58,77 @@ docker compose run --rm secagent-server state verify
 ## 3️⃣ Lancer le relay (2 min)
 
 ```bash
-# Démarrer le relay server
-docker compose up -d relay
+docker compose -p secagent-qualif -f docker-compose.server.yml up -d
 
-# Vérifier que les ports écoutent
-sleep 2
-curl -k https://localhost:7770/health
-# Réponse attendue : {"status":"ok","agents":0,"uptime_seconds":...}
+sleep 5
+# 7770 (API) est ouvert par l'instance maître ; l'autre instance n'ouvre aucun port.
+curl -s --cacert tls/tls.crt https://localhost:7770/health
+# Réponse : {"instance_id":"...","role":"master","status":"ok","timestamp":"..."}
 ```
+
+> Le port d'hôte `7770` est publié par l'instance `a` ; l'instance `b` est publiée sur `8770`.
+> Si `b` a pris le verrou en premier, interrogez `https://localhost:8770/health`.
 
 ---
 
-## 4️⃣ Enrôler et lancer les agents (2 min)
+## 4️⃣ Créer les jetons et enrôler un agent (4 min)
+
+La CLI parle à l'API d'administration (7771, TLS). Dans le conteneur : `RELAY_API_URL` pointe sur
+`https://localhost:7771`, `REPEATER_CA_FILE` sur le certificat monté, `ADMIN_TOKEN` vient de `qualif.env`.
 
 ```bash
-# Générer un token d'enrôlement (valide 1 heure)
-TOKEN=$(docker compose exec relay \
-  secagent-server admin token create --role agent --duration 1h | grep -oE '[a-zA-Z0-9._-]{80,}' | tail -1)
+# Alias de commodité : exécute la CLI dans l'instance a
+srv() {
+  docker compose -p secagent-qualif -f docker-compose.server.yml exec \
+    -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
+    secagent-server-a secagent-server "$@"
+}
 
-echo "Token: $TOKEN"
-
-# Passer le token aux agents via docker compose
-export RELAY_ENROLLMENT_TOKEN=$TOKEN
-
-# Démarrer les agents
-docker compose up -d minion-01 minion-02 minion-03
-
-# Vérifier la connexion
-sleep 3
-docker compose logs minion-01 | grep -i "enrolled\|connected"
-# Chercher : "Enrolled successfully" + "WebSocket open"
+# Jeton d'enrôlement (1 h). Jeton opaque `secagent_enr_` + 64 hex (77 car.), pas un JWT.
+ENR=$(srv tokens create --role enrollment --hostname-pattern 'qualif-host-.*' --expires 1h \
+      | grep -oE 'secagent_enr_[0-9a-f]{64}' | tail -1)
+echo "$ENR"
 ```
+
+> Un jeton n'est affiché qu'**une seule fois**. Rôles possibles : `enrollment`, `plugin`, `relay-parent`
+> (il n'existe pas de rôle `agent` ou `admin`). Le jeton d'enrôlement est à usage unique sauf `--reusable`.
+
+Démarrer l'agent (binaire `secagent-minion`, sur l'hôte ou dans un conteneur). Il n'a **aucun fichier de
+configuration** : uniquement des variables d'environnement.
+
+```bash
+mkdir -p ./minion-data
+RELAY_SERVER_URL=https://localhost:7770 \
+RELAY_WS_URL=wss://localhost:7772/ws/agent \
+RELAY_CA_BUNDLE="$PWD/tls/tls.crt" \
+RELAY_AGENT_HOSTNAME=qualif-host-01 \
+RELAY_PRIVATE_KEY="$PWD/minion-data/id_rsa" \
+RELAY_JWT_PATH="$PWD/minion-data/token.jwt" \
+RELAY_ASYNC_DIR="$PWD/minion-data/async" \
+RELAY_ENROLLMENT_TOKEN="$ENR" \
+secagent-minion
+```
+
+- `RELAY_WS_URL` **doit contenir le chemin `/ws/agent`** : l'agent compose l'URL telle quelle.
+- Le 7772 est le port WebSocket dédié (`/ws/agent`, `/ws/relay`) ; le 7770 sert aussi ces chemins.
+- Si l'instance maître est `b`, utilisez les ports d'hôte `8770`/`8772`.
+- Succès : l'agent journalise l'enrôlement puis l'ouverture de la WebSocket.
 
 ---
 
 ## 5️⃣ Vérifier l'inventaire (1 min)
 
+`GET /api/inventory` sur 7770 exige un **jeton plugin** (un jeton `ADMIN_TOKEN` renvoie 403).
+
 ```bash
-# Générer un token admin
-ADMIN_JWT=$(docker compose exec relay \
-  secagent-server admin token create --role admin --duration 1h | grep -oE '[a-zA-Z0-9._-]{80,}' | tail -1)
+PLG=$(srv tokens create --role plugin --description quickstart --expires 1h \
+      | grep -oE 'secagent_plg_[0-9a-f]{64}' | tail -1)
 
-# Récupérer l'inventaire
-curl -s -k -H "Authorization: Bearer $ADMIN_JWT" \
+curl -s --cacert tls/tls.crt -H "Authorization: Bearer $PLG" \
   https://localhost:7770/api/inventory | jq .
-
-# Résultat attendu :
 # {
-#   "_meta": {
-#     "hostvars": {
-#       "qualif-host-01": {"ansible_host": "...", "os": "Linux", ...},
-#       ...
-#     }
-#   },
-#   "all": {"hosts": ["qualif-host-01", "qualif-host-02", "qualif-host-03"]}
+#   "_meta": {"hostvars": {"qualif-host-01": {"ansible_connection": "relay", ...}}},
+#   "all": {"hosts": ["qualif-host-01"]}
 # }
 ```
 
@@ -106,39 +137,37 @@ curl -s -k -H "Authorization: Bearer $ADMIN_JWT" \
 ## 6️⃣ Tester une exécution simple (1 min)
 
 ```bash
-# Générer token plugin
-PLUGIN_JWT=$(docker compose exec relay \
-  secagent-server admin token create --role plugin --duration 1h | grep -oE '[a-zA-Z0-9._-]{80,}' | tail -1)
-
-# Exécuter une commande sur un agent (REST bloquant)
-curl -s -k -X POST \
-  -H "Authorization: Bearer $PLUGIN_JWT" \
+# Exécuter une commande sur l'agent (REST bloquant, jeton plugin)
+curl -s --cacert tls/tls.crt -X POST \
+  -H "Authorization: Bearer $PLG" \
   -H "Content-Type: application/json" \
-  -d '{"cmd":"echo Hello from minion-01","timeout":10}' \
+  -d '{"cmd":"echo Hello from qualif-host-01","timeout":10}' \
   https://localhost:7770/api/exec/qualif-host-01 | jq .
 
-# Résultat : {"rc":0,"stdout":"Hello from minion-01\n","stderr":"","truncated":false}
+# Résultat : {"rc":0,"stdout":"Hello from qualif-host-01\n","stderr":"","truncated":false}
 ```
+
+Pour révoquer un jeton plugin : `srv tokens list` puis `srv tokens revoke <id>`.
 
 ---
 
 ## 📋 Commandes Utiles
 
 ```bash
-# Voir logs du relay
-docker compose logs relay -f
+# Logs des instances
+docker compose -p secagent-qualif -f docker-compose.server.yml logs -f
 
-# Voir logs d'un agent
-docker compose logs minion-01 -f
-
-# Redémarrer un agent
-docker compose restart minion-01
+# Statut local d'une instance (maître / secondaire)
+docker compose -p secagent-qualif -f docker-compose.server.yml exec secagent-server-a \
+  secagent-server status --local
 
 # Arrêter tout
-docker compose down
+docker compose -p secagent-qualif -f docker-compose.server.yml down
 
-# Nettoyer l'état (pour recommencer)
-rm -rf state/* && docker compose run --rm secagent-server state init
+# Recommencer à zéro (DESTRUCTIF : supprime l'état et les clefs). Le serveur ne se ré-initialise
+# pas seul : `state init` est obligatoire avant le redémarrage.
+docker compose -p secagent-qualif -f docker-compose.server.yml down -v
+docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent-server-a state init
 ```
 
 ---
@@ -147,18 +176,24 @@ rm -rf state/* && docker compose run --rm secagent-server state init
 
 | Problème | Cause | Solution |
 |----------|-------|----------|
-| Relay ne démarre pas | Certificats manquants | Exécuter `openssl req -x509 ...` |
-| Agents ne se connectent pas | Token expiré | Générer nouveau token |
-| Status 401 on /api/inventory | JWT invalide | Vérifier l'expiration du JWT |
-| Inventaire vide | Agents pas connectés | Vérifier `docker compose logs minion-01` |
+| Le conteneur redémarre en boucle, « relay.state » absent | État non initialisé | Exécuter `state init` (étape 2) |
+| `state init` échoue | `RSA_MASTER_KEY` absent de `qualif.env` | Renseigner `RSA_MASTER_KEY` |
+| Refus de démarrer : « admin API … plain HTTP on a non-loopback address » | `ADMIN_ADDR` non loopback sans `ADMIN_TLS=true` | Le Compose qualif fixe `ADMIN_TLS=true` ; ne pas le retirer |
+| `curl` : certificat inconnu / SAN absent | Certificat sans SAN | Regénérer avec `-addext subjectAltName=...` |
+| Rien n'écoute sur 7770 | Cette instance est secondaire (aucun port ouvert) | Interroger l'autre instance (`8770`) ; `status --local` indique le rôle |
+| Agent : requête `GET /` / pas de WebSocket | `RELAY_WS_URL` sans `/ws/agent` | Ajouter le chemin `/ws/agent` |
+| Agent : arrêt (code 78) à l'enrôlement | Jeton d'enrôlement refusé (403) | Créer un nouveau jeton ; aucun retry n'est fait sur un refus |
+| 401 sur `/api/inventory` | Jeton absent, expiré ou révoqué | `tokens create --role plugin` |
+| 403 sur `/api/inventory` | Jeton non plugin (ex. `ADMIN_TOKEN`) | Utiliser un jeton plugin |
+| Inventaire vide | Agent non connecté | Vérifier les logs de l'agent |
 
 ---
 
 ## 📚 Prochaines Étapes
 
-1. **Deployer en production** : Voir [DEPLOYMENT/README.md](../../DEPLOYMENT/README.md)
-2. **Écrire des playbooks** : Utiliser plugin connection `relay`
-3. **Configurer les hooks** : Voir [DOC/server/HOOKS_SPEC.md](../server/HOOKS_SPEC.md)
+1. **Déployer en production** : voir [DEPLOYMENT/README.md](../../DEPLOYMENT/README.md) et [DEPLOYMENT/prod/README.md](../../DEPLOYMENT/prod/README.md)
+2. **Écrire des playbooks** : utiliser le plugin de connexion `relay` (voir [PLUGINS_SPEC](../plugins/PLUGINS_SPEC.md))
+3. **Configurer les hooks** : voir [DOC/server/HOOKS_SPEC.md](../server/HOOKS_SPEC.md)
 
 ---
 
