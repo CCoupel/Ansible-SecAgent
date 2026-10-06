@@ -17,7 +17,6 @@ var (
 		"POST /api/upload/{hostname}",
 		"POST /api/fetch/{hostname}",
 		"GET /api/inventory",
-		"POST /api/token/refresh",
 		"POST /api/admin/authorize",
 		"/ws/agent",
 		"/ws/relay",
