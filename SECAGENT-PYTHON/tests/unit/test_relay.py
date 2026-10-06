@@ -436,3 +436,59 @@ def test_exec_refused_with_symlinked_token_no_request(servers, make_conn, tmp_pa
     with pytest.raises(AnsibleConnectionFailure):
         _exec(conn)
     assert c.n == 0
+
+
+# --- #191c: special files (FIFO, socket, device) are refused, never block -------
+
+def _load_with_timeout(conn, timeout=5):
+    """Run _load_jwt in a daemon thread; fail the test if it blocks."""
+    box = {}
+
+    def run():
+        try:
+            box["value"] = conn._load_jwt()
+        except Exception as exc:  # noqa: BLE001 - reported to the test
+            box["error"] = exc
+
+    th = threading.Thread(target=run, daemon=True)
+    th.start()
+    th.join(timeout)
+    assert not th.is_alive(), "_load_jwt blocked"
+    return box
+
+
+def test_token_file_fifo_refused_without_blocking(make_conn, tmp_path, monkeypatch):
+    conn = make_conn("http://127.0.0.1:1")
+    fifo = tmp_path / "tok.fifo"
+    os.mkfifo(fifo, 0o600)
+    monkeypatch.setenv("RELAY_TOKEN_FILE", str(fifo))
+    box = _load_with_timeout(conn)
+    assert isinstance(box.get("error"), AnsibleConnectionFailure)
+    assert "not a regular file" in str(box["error"])
+
+
+def test_token_file_socket_refused(make_conn, tmp_path, monkeypatch):
+    conn = make_conn("http://127.0.0.1:1")
+    path = str(tmp_path / "tok.sock")
+    sock = socket.socket(socket.AF_UNIX)
+    sock.bind(path)
+    try:
+        monkeypatch.setenv("RELAY_TOKEN_FILE", path)
+        box = _load_with_timeout(conn)
+    finally:
+        sock.close()
+    assert isinstance(box.get("error"), AnsibleConnectionFailure)
+    assert "not a regular file" in str(box["error"])
+
+
+def test_token_file_device_refused(make_conn, monkeypatch):
+    conn = make_conn("http://127.0.0.1:1")
+    monkeypatch.setenv("RELAY_TOKEN_FILE", "/dev/null")
+    box = _load_with_timeout(conn)
+    assert isinstance(box.get("error"), AnsibleConnectionFailure)
+    assert "not a regular file" in str(box["error"])
+
+
+def test_token_file_regular_ok_with_nonblock(make_conn):
+    box = _load_with_timeout(make_conn("http://127.0.0.1:1"))
+    assert box.get("value") == TOKEN

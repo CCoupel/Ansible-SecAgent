@@ -111,6 +111,7 @@ import base64
 import errno
 import json
 import os
+import stat
 import uuid
 from urllib.parse import urlsplit
 
@@ -303,7 +304,7 @@ class ConnectionPlugin(ConnectionBase):
         """Load the JWT from the token file.
 
         Returns "" when the file is missing or unreadable. Raises
-        AnsibleConnectionFailure when the file is a symlink, is not owned by the current
+        AnsibleConnectionFailure when the file is a symlink, not a regular file, is not owned by the current
         user or is accessible by group/others (mode & 0o077): the message
         names the path and the problem, never the token.
         """
@@ -313,15 +314,31 @@ class ConnectionPlugin(ConnectionBase):
         try:
             # O_NOFOLLOW: a symlink is refused, so the checks below apply to the
             # path the operator configured and not to an attacker-chosen target.
-            fd = os.open(token_file, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            # O_NONBLOCK: opening a FIFO must not block Ansible forever.
+            fd = os.open(
+                token_file,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            )
         except OSError as exc:
             if exc.errno == errno.ELOOP:
                 raise AnsibleConnectionFailure(
                     f"JWT token file {token_file} is a symbolic link; refusing to follow it"
                 )
+            try:
+                special = not stat.S_ISREG(os.lstat(token_file).st_mode)
+            except OSError:
+                special = False
+            if special:  # e.g. a socket, which cannot be opened
+                raise AnsibleConnectionFailure(
+                    f"JWT token file {token_file} is not a regular file; refusing to use it"
+                )
             return ""
         try:
             st = os.fstat(fd)  # on the opened file: no check/use race
+            if not stat.S_ISREG(st.st_mode):
+                raise AnsibleConnectionFailure(
+                    f"JWT token file {token_file} is not a regular file; refusing to use it"
+                )
             if hasattr(os, "geteuid") and st.st_uid != os.geteuid():
                 raise AnsibleConnectionFailure(
                     f"JWT token file {token_file} is not owned by the current user; refusing to use it"
