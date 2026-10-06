@@ -48,9 +48,13 @@ ansible-secagent/
 │   ├── cmd/secagent-server/  # secagent-server (API + WS + CLI cobra)
 │   ├── cmd/secagent-minion/  # secagent-minion
 │   └── cmd/secagent-inventory/ # secagent-inventory binary
-├── DEPLOYMENT/               # Scripts et configs de déploiement
-│   ├── deploy.sh / deploy.bat
-│   └── qualif/               # Docker Compose qualif (192.168.1.218)
+├── DEPLOYMENT/               # Compose et scripts de déploiement (aucun deploy.sh/.bat : supprimés, #188)
+│   ├── qualif/               # Qualif (192.168.1.218) : docker-compose.server.yml (racine actif/passif a/b),
+│   │                         #   docker-compose.chain.yml (chaîne racine + enfant pull + 2 minions),
+│   │                         #   chain-test.sh, failover-test.sh, pki/gen.sh (CA de test)
+│   └── prod/                 # Prod : docker-compose.server.yml (identique sur N hôtes), docker-compose.child.yml
+├── .github/workflows/        # ci.yml, release.yml (tag), candidate-images.yml et failover.yml (manuels/planifiés)
+├── scripts/ci/               # check_compose.py, check_no_publish.py, build_compose_archive.sh…
 └── SECAGENT-PYTHON/          # Connection plugin Ansible (Python — contrainte Ansible)
 ```
 
@@ -61,7 +65,7 @@ ansible-secagent/
 - **Inventory** : GO binary standalone (`secagent-inventory`)
 - **Plugins Ansible** : Python (contrainte Ansible — ConnectionBase / InventoryModule)
 - **Tests** : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v`
-- **Déploiement** : systemd (agent), Docker Compose multi-hôtes actif/passif (qualif + prod)
+- **Déploiement** : systemd (agent), Docker Compose multi-hôtes actif/passif (qualif + prod) ; images `linux/amd64` uniquement ; images candidates par `workflow_dispatch` (`candidate-images.yml`), release par tag (`release.yml`)
 
 ## Décisions techniques majeures (non négociables)
 
