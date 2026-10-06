@@ -83,3 +83,11 @@ DEPLOYMENT/prod/prod.env
 DEPLOYMENT/prod/.env
 DEPLOYMENT/qualif/qualif.env
 DEPLOYMENT/qualif/.ci-tls/
+
+# Binaires precompiles (jamais suivis ; releases par la CI)
+*.exe
+/GO/secagent-server
+/GO/secagent-minion
+/GO/secagent-inventory
+/GO/relay-server
+/GO/relay-server-linux
