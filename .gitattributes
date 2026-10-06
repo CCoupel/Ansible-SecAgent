@@ -1,0 +1,8 @@
+# Fins de ligne LF pour tout ce qui est execute (WSL/Windows : un CRLF casse `#!/bin/bash^M`)
+*.sh   text eol=lf
+*.py   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+Dockerfile*    text eol=lf
+*.dockerignore text eol=lf
+.dockerignore  text eol=lf
