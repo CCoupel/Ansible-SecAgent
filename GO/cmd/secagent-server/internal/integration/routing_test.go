@@ -54,8 +54,18 @@ func TestRouting_LiveLocalAgentBeatsRelayClaim(t *testing.T) {
 func TestRouting_DuplicateClaimEmitsHostConflictWithoutStorm(t *testing.T) {
 	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
-	relayA := startNode(t, nodeSpec{ID: "relayA", ParentURL: root.wssURL(), ParentToken: root.registerChild("relayA")})
-	relayB := startNode(t, nodeSpec{ID: "relayB", ParentURL: root.wssURL(), ParentToken: root.registerChild("relayB")})
+	// Enrolling a host is a REAL event (host.new climbs to the root and moves the route), and two
+	// relays enrolling the same host would race their events against the claims this test counts. The
+	// agents are therefore enrolled while the relays have no parent yet (events are not forwarded), then
+	// the relays are linked to the root: from then on only agent_list claims are in play.
+	relayA := startNode(t, nodeSpec{ID: "relayA"})
+	relayB := startNode(t, nodeSpec{ID: "relayB"})
+	tokA, tokB := relayA.enrollAgent("roamer"), relayB.enrollAgent("roamer")
+	for _, r := range []*node{relayA, relayB} {
+		r.setEnv("REPEATER_UPSTREAM_URL", root.wssURL())
+		r.setEnv("REPEATER_UPSTREAM_TOKEN", root.registerChild(r.id))
+		r.restart()
+	}
 	waitFor(t, "relays linked", func() bool { return relayA.upstreamState() == "connected" && relayB.upstreamState() == "connected" })
 
 	conflicts := func() int { return root.logs.count("host.conflict: hostname=roamer") }
@@ -70,7 +80,7 @@ func TestRouting_DuplicateClaimEmitsHostConflictWithoutStorm(t *testing.T) {
 	}
 
 	// 1. A declares the host alone: it owns it, no conflict
-	atA := connectMinion(t, relayA, "roamer")
+	atA := connectMinionWithToken(t, relayA, "roamer", tokA)
 	waitFor(t, "root routes roamer via relayA", func() bool { return root.hasHost("roamer") })
 	rounds(4)
 	if n := conflicts(); n != 0 {
@@ -79,7 +89,7 @@ func TestRouting_DuplicateClaimEmitsHostConflictWithoutStorm(t *testing.T) {
 
 	// 2. B declares it too while A still does: ONE conflict per claimant's view of the owner change
 	// (relayA→relayB seen by B's claim, relayB→relayA seen by A's next claim) = exactly 2
-	atB := connectMinion(t, relayB, "roamer")
+	atB := connectMinionWithToken(t, relayB, "roamer", tokB)
 	waitFor(t, "both directions reported", func() bool { return conflicts() >= 2 })
 	rounds(16) // many more rounds with BOTH still claiming: nothing more may be emitted
 	if n := conflicts(); n != 2 {
@@ -107,7 +117,7 @@ func TestRouting_DuplicateClaimEmitsHostConflictWithoutStorm(t *testing.T) {
 
 	// 4. A claims again: its previous report was forgotten when its claim ended, so the change of
 	// owner is reported ONE more time (relayB→relayA) — and B's kept memory suppresses the echo
-	connectMinion(t, relayA, "roamer")
+	connectMinionWithToken(t, relayA, "roamer", tokA)
 	waitFor(t, "the renewed claim is reported", func() bool { return conflicts() >= 3 })
 	rounds(16)
 	if n := conflicts(); n != 3 {

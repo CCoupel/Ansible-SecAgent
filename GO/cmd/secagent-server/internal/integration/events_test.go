@@ -243,8 +243,11 @@ func TestEvents_PropagateUpWithExactRelayChain(t *testing.T) {
 		root: "UP ev-host status=connected chain=leaf,mid origin=leaf enrolled=",
 	}
 	for n, line := range want {
-		if got := n.hookLines(); len(got) != 1 || got[0] != line {
-			t.Errorf("%s hook lines = %q, want exactly %q (local event: empty chain; received: origin first, sender last)", n.id, got, line)
+		// enrolling the host (connectMinion: the real token + challenge flow) is itself a host.new that
+		// climbs the tree: it comes first, with an enrollment timestamp; the host.up is the exact line
+		got := n.hookLines()
+		if len(got) != 2 || !strings.HasPrefix(got[0], "NEW ev-host status=disconnected ") || got[1] != line {
+			t.Errorf("%s hook lines = %q, want a NEW (enrollment) then exactly %q (local event: empty chain; received: origin first, sender last)", n.id, got, line)
 		}
 	}
 	if !root.hasHost("ev-host") {
