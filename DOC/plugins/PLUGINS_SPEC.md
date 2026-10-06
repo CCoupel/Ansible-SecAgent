@@ -118,7 +118,7 @@ Authorization: Bearer <jeton lu dans le fichier de jeton>
 
 {
   "cmd": "<commande>",
-  "stdin": "<in_data décodé en UTF-8>"   # chaîne vide si pas de stdin
+  "stdin": "<base64 des octets bruts de in_data>"   # str encodée en UTF-8 d'abord ; champ OMIS si pas de in_data (#190, relay.py:494-502)
 }
 ```
 
@@ -220,11 +220,15 @@ connect_timeout = 5
 - **Jeton lu depuis un fichier** (`token_file`), jamais directement depuis une variable : si le fichier est absent ou vide,
   `_connect()` échoue (`JWT token file is empty or not readable`). Le contenu est le jeton plugin (`secagent_plg_…`) ;
   le nom « jwt » du fichier par défaut est historique.
-- **Défaut du fichier de jeton — écart doc/code** : la déclaration `DOCUMENTATION` indique
-  `/etc/ansible/secagent_plugin.jwt`, mais le repli codé dans `_secagent_token_file()` (utilisé quand Ansible n'enregistre
-  pas la définition d'option du plugin, cas signalé pour Ansible 2.19 avec des chemins `ansible.cfg` personnalisés) est
-  `/tmp/secagent_token.jwt`. Le comportement effectif dépend donc de la version d'Ansible ; **toujours définir
-  `token_file` / `RELAY_TOKEN_FILE` explicitement** (un défaut sous `/tmp` est de surcroît déconseillé).
+- **Défaut du fichier de jeton** : `/etc/ansible/secagent_plugin.jwt` (constante `DEFAULT_TOKEN_FILE`, `relay.py:138`), identique à
+  la déclaration `DOCUMENTATION` ; il n'y a plus de repli sous `/tmp` (#191).
+- **Contrôles du fichier de jeton** (`_load_jwt`, `relay.py:300-350`) : le fichier est ouvert avec `O_NOFOLLOW` et `O_NONBLOCK`, puis contrôlé
+  par `fstat` sur le descripteur ouvert (pas de course contrôle/usage). Le plugin **refuse** (`AnsibleConnectionFailure`, le message cite le chemin et la cause, jamais le jeton) :
+  un lien symbolique, un fichier qui n'est pas régulier (FIFO, socket, périphérique), un fichier dont le **propriétaire n'est pas l'utilisateur courant** (euid), un fichier
+  accessible au groupe ou aux autres (`mode & 0o077` : seuls `0600` / `0400` passent ; corriger avec `chmod 600 <fichier>`). Un fichier absent ou illisible renvoie un jeton vide
+  (erreur `_connect()` habituelle). **Aucune requête n'est envoyée** si le fichier est refusé.
+  - Impact : un fichier de jeton existant en `0644` est désormais refusé.
+  - **Limite** : le plugin ne contrôle que le fichier lui-même ; le **répertoire parent doit être protégé** (non inscriptible par d'autres utilisateurs), sinon le fichier peut être remplacé.
 - La vérification TLS est toujours active (`verify=True`, ou le `ca_bundle` s'il est fourni) ; il n'existe pas d'option
   `verify_tls` dans le plugin.
 
