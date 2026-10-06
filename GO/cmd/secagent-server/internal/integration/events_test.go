@@ -285,6 +285,12 @@ func TestEvents_PropagateUpWithExactRelayChain(t *testing.T) {
 		t.Log("host is down: exec must not succeed") // the host disconnected above
 	}
 	connectMinion(t, leaf, "ev-host-2")
+	// connectMinion returns once the WebSocket upgrade is done, NOT once the leaf registered the agent
+	// connection; and the root's inventory lists the host as soon as its enrollment (host.new) arrived. Neither
+	// proves that the host can be reached: exec = 503 host_not_found under load. The host.up event is emitted
+	// after the leaf registered the connection and the root records its route before running the hook, so the
+	// root's UP hook is the observable "the host is reachable through the chain".
+	waitFor(t, "root's hook ran for host.up of ev-host-2 (the route is learned)", func() bool { return root.hookHas("UP ev-host-2") })
 	waitFor(t, "root routes ev-host-2", func() bool { return root.hasHost("ev-host-2") })
 	if r := root.exec("ev-host-2", execBody("whoami")); r.Code != http.StatusOK {
 		t.Fatalf("exec through the event-learned route = %d %v", r.Code, r.Body)
