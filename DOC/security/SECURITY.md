@@ -199,10 +199,11 @@ Agent                         Server
 
 | Code | Signification | Comportement agent |
 |---|---|---|
-| `4001` | JWT blacklisté / révocation admin | **Arrêt définitif** — ne jamais reconnecter |
-| `4002` | JWT expiré | Ré-enrollment automatique (POST /api/register) |
-| `4003` | Re-enrollment requis (rotation de clefs) | Ré-enrollment automatique |
-| `1001` | Restart serveur / coupure réseau | Reconnexion avec backoff exponentiel (1s→2s→4s→…→60s max) |
+| `4001` | Révocation admin (JTI blacklisté) | **Arrêt définitif** — ne jamais reconnecter (code de sortie 77) |
+| `4000` | Agent supprimé (`DELETE /api/admin/minions/{hostname}`) | Reconnexion avec backoff exponentiel |
+| `1001` | Arrêt propre du serveur, perte du verrou maître, coupure réseau | Reconnexion avec backoff exponentiel (1s→2s→4s→…→60s max) |
+
+Le serveur n'émet vers les agents que `4000`, `4001` et `1001`. `4002` existe comme constante (`ws/handler.go:24`) mais n'est jamais émis ; `4003` et `4004` n'existent pas. Un JWT expiré ou invalide n'est pas signalé par un code de fermeture : l'upgrade WebSocket est refusé en **HTTP 401** et l'agent se ré-enrôle (voir « Gestion du 401 »). Tout code autre que `4001` provoque une reconnexion.
 
 #### Codes de fermeture WebSocket `/ws/relay` (#148)
 
@@ -258,7 +259,7 @@ Admin                    Server                        Agents connectés
 ### Gestion du 401 par les agents hors-ligne
 
 Un agent qui se reconnecte après la deadline avec un ancien JWT reçoit HTTP 401.
-Il déclenche automatiquement un ré-enrollment (close(4003) ou 401 sur /api/register).
+Il déclenche automatiquement un ré-enrollment complet (`POST /api/register` avec `RELAY_ENROLLMENT_TOKEN`) puis se reconnecte. Un code de fermeture ne déclenche jamais de ré-enrôlement. Sans jeton d'enrôlement configuré, ou si le serveur répond `403`, le minion s'arrête avec le code 78.
 
 ### Stockage des secrets
 
@@ -355,7 +356,7 @@ Pour une preuve cryptographique du hostname : utiliser mTLS (PKI interne, hors s
 - Plugin pointe vers **UN relay uniquement** (pas de multi-relays)
 - Plugin s'authentifie avec le `RELAY_PLUGIN_TOKEN` du relay
 - Relay valide le token avec son JWT_SECRET_KEY (signature HS256)
-- **Jamais de partage** de JWT_SECRET_KEY ou RELAY_PLUGIN_TOKEN entre relays
+- **Jamais de partage** de JWT_SECRET_KEY ou des jetons plugin (`secagent_plg_…`) entre relays
 
 **Isolation** : Un token plugin signé par relay-central ne marche pas sur relay-dmz1
 - Chaque relay valide les tokens indépendamment
