@@ -45,9 +45,9 @@ ansible-secagent/
 │       └── DEPLOYMENT.md
 ├── RELEASE/                  # Historique d'implémentation (phases, rapports, migrations)
 ├── GO/                       # Code source GO
-│   ├── cmd/server/           # secagent-server (API + WS + CLI cobra)
-│   ├── cmd/agent/            # secagent-minion
-│   └── cmd/inventory/        # secagent-inventory binary
+│   ├── cmd/secagent-server/  # secagent-server (API + WS + CLI cobra)
+│   ├── cmd/secagent-minion/  # secagent-minion
+│   └── cmd/secagent-inventory/ # secagent-inventory binary
 ├── DEPLOYMENT/               # Scripts et configs de déploiement
 │   ├── deploy.sh / deploy.bat
 │   └── qualif/               # Docker Compose qualif (192.168.1.218)
@@ -70,7 +70,7 @@ ansible-secagent/
 - Dispatch des tâches : **WebSocket direct** (NATS retiré v3.0.3+), relay actif unique (actif/passif)
 - Plugin Ansible → serveur : **REST HTTP bloquant**
 - Auth : **JWT signé** (rôles `agent` / `plugin` / `admin`), blacklist JTI — voir `DOC/security/SECURITY.md`
-- `authorized_keys` : **table DB** (pas de fichiers), alimentée par API admin
+- `authorized_keys` : persistées dans le fichier d'état du relay (plus de table DB, plus de fichiers par clé), alimentées par l'API admin
 - Concurrence agent : **subprocess par tâche** (pas de threads)
 - Stdout MVP : **buffer 5MB max**, truncation + flag
 - Fichiers MVP : **< 500KB**, base64 inline
@@ -116,9 +116,9 @@ Séquence correcte :
 | Nom | Rôle | Fichier | Spawn |
 |-----|------|---------|-------|
 | `planner` | Backlog GitHub Issues + structuration des phases (type `implementation-planner`) | `.claude/agents/implementation-planner.template.md` + compagnon `implementation-planner.md` | permanent |
-| `dev-agent` | Développeur secagent-minion (GO, `GO/cmd/agent/`) | `.claude/agents/dev-agent.template.md` + compagnon `dev-agent.md` | permanent |
-| `dev-relay` | Développeur secagent-server (GO, `GO/cmd/server/`) | `.claude/agents/dev-relay.template.md` + compagnon `dev-relay.md` | permanent |
-| `dev-inventory` | Développeur secagent-inventory (GO, `GO/cmd/inventory/`) | `.claude/agents/dev-inventory.template.md` + compagnon `dev-inventory.md` | permanent |
+| `dev-agent` | Développeur secagent-minion (GO, `GO/cmd/secagent-minion/`) | `.claude/agents/dev-agent.template.md` + compagnon `dev-agent.md` | permanent |
+| `dev-relay` | Développeur secagent-server (GO, `GO/cmd/secagent-server/`) | `.claude/agents/dev-relay.template.md` + compagnon `dev-relay.md` | permanent |
+| `dev-inventory` | Développeur secagent-inventory (GO, `GO/cmd/secagent-inventory/`) | `.claude/agents/dev-inventory.template.md` + compagnon `dev-inventory.md` | permanent |
 | `dev-connexion` | Développeur plugin connexion Ansible (Python, `SECAGENT-PYTHON/`) | `.claude/agents/dev-connexion.template.md` (dev-plugin) + compagnon `dev-connexion.md` | permanent |
 | `test-writer` | Rédaction des tests (unitaires, intégration, E2E) | `.claude/agents/test-writer.template.md` | permanent |
 | `qa` | Exécution des tests, verdict GO/NOGO | `.claude/agents/qa.template.md` | permanent |
