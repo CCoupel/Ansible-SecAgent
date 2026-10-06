@@ -70,7 +70,7 @@ ansible-secagent/
 - Dispatch des tâches : **WebSocket direct** (NATS retiré v3.0.3+), relay actif unique (actif/passif)
 - Plugin Ansible → serveur : **REST HTTP bloquant**
 - Auth : **JWT signé** (rôles `agent` / `plugin` / `admin`), blacklist JTI — voir `DOC/security/SECURITY.md`
-- `authorized_keys` : persistées dans le fichier d'état du relay (plus de table DB, plus de fichiers par clé), alimentées par l'API admin
+- `authorized_keys` : persistées dans le fichier d'état du relay (plus de table DB, plus de fichiers par clé), alimentées par l'enrôlement et par l'API admin ; **elles ne donnent aucun droit d'enrôlement** : `POST /api/register` sans jeton d'enrôlement est refusé (403 `enrollment_token_required`, #192c), tout enrôlement exige un jeton `secagent_enr_…` (`tokens create --role enrollment`) + challenge
 - Concurrence agent : **subprocess par tâche** (pas de threads)
 - Stdout MVP : **buffer 5MB max**, truncation + flag
 - Fichiers MVP : **< 500KB**, base64 inline
