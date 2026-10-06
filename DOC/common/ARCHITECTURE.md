@@ -12,7 +12,7 @@
 2. [Composants du système](#2-composants-du-système)
 3. [Architecture réseau et flux de données](#3-architecture-réseau-et-flux-de-données)
 4. [Protocole WebSocket](#4-protocole-websocket)
-5. [Bus de messages — NATS JetStream](#5-bus-de-messages--nats-jetstream)
+5. [Routage WebSocket Direct](#5-routage-websocket-direct)
 6. [API REST du relay server](#6-api-rest-du-secagent-server)
 7. [Sécurité et authentification](#7-sécurité-et-authentification)
 8. [Flow complet d'un playbook](#8-flow-complet-dun-playbook)
@@ -26,7 +26,7 @@
 16. [Configuration](#16-configuration)
 17. [Roadmap MVP vs V2](#17-roadmap-mvp-vs-v2)
 18. [Déploiement — secagent-minion (systemd)](#18-déploiement--secagent-minion-systemd)
-19. [Déploiement — relay server (Compose / Kubernetes)](#19-déploiement--secagent-server-compose--kubernetes)
+19. [Déploiement — relay server (Docker Compose)](#19-déploiement--secagent-server-docker-compose)
 20. [Persistance des données](#20-persistance-des-données)
 21. [CLI de Management — secagent-server en mode CLI](#21-cli-de-management--secagent-server-en-mode-cli)
 22. [Rotation des clefs — Période de recouvrement](#22-rotation-des-clefs--période-de-recouvrement)
@@ -631,16 +631,16 @@ Phase 1 — gather_facts (host-A)
   connection plugin
     → POST /api/exec/host-A { cmd: "python3 -c <setup>", task_id: "t-001" }
   relay server
-    → publie dans NATS tasks.host-A
-    → subscribe results.t-001 (bloque)
+    → envoie tâche directement via WebSocket persistant à host-A
+    → attend résultat (bloque avec timeout)
   agent host-A
-    → reçoit via WS
+    → reçoit via WS task t-001
     → WS: ack t-001
     → spawn subprocess python3 -c setup
     → WS: stdout {...facts JSON...}
     → WS: result { rc: 0 }
   relay server
-    → publie results.t-001
+    → reçoit résultat depuis WS
     → HTTP 200 { rc: 0, stdout: "{facts...}" } → plugin
   Ansible parse les facts ✓
 
@@ -827,12 +827,11 @@ if time.time() - job.started_at > job.async_timeout:
 
 ### MVP — Fichiers < 1MB
 
-Transfert via base64 inline dans le message WebSocket/NATS.
+Transfert via base64 inline dans le message WebSocket.
 
 ```
 Taille réelle → base64 → overhead x1.33
-1MB fichier   → ~1.33MB dans le message
-Limite NATS : 1MB par message → limite fichier source : ~750KB effectif
+500KB fichier   → ~665KB dans le message (v3.0.3 : limit buffering)
 ```
 
 **Recommandation MVP : limite à 500KB pour la marge.**
@@ -904,7 +903,7 @@ proc.stdin.close()
 ### Sécurité
 
 - `stdin` masqué dans les logs si `become: true`
-- Le `become_pass` ne doit jamais apparaître en clair dans les logs du relay server, de l'agent, ni de NATS
+- Le `become_pass` ne doit jamais apparaître en clair dans les logs du relay server ou de l'agent
 
 ---
 
@@ -1074,32 +1073,30 @@ file = /var/log/ansible-secagent/agent.log
 mask_become_stdin = true
 ```
 
-### Relay server (`/etc/ansible-secagent/server.conf`)
+### Relay server (v3.0.3 — Variables d'environnement)
 
-```ini
-[server]
-host = 0.0.0.0
-port = 8443
-tls_cert = /etc/ansible-secagent/server.crt
-tls_key = /etc/ansible-secagent/server.key
+v3.0.3 utilise des variables d'environnement pour la configuration (pas de fichier `.conf`).
 
-[nats]
-url = nats://nats-cluster:4222
-stream_tasks = RELAY_TASKS
-stream_results = RELAY_RESULTS
-message_ttl = 300
+```bash
+# État persistant
+STATE_DIR=/data/relay-state
 
-[database]
-# Compose / MVP : SQLite
-url = sqlite:////data/relay.db
-# Production Kubernetes : PostgreSQL
-# url = postgresql://relay:pass@postgres:5432/relay
+# TLS natif
+TLS_CERT=/etc/secagent-server/server.crt
+TLS_KEY=/etc/secagent-server/server.key
 
-[jwt]
-secret_key = <clef secrète HMAC-SHA256>
-token_ttl = 3600
-admin_token = <token admin pour /api/admin/authorize>
+# Admin CLI
+ADMIN_ADDR=127.0.0.1:7771
+ADMIN_TLS=false
+
+# JWT
+JWT_SECRET_KEY=<clef secrète HMAC-SHA256>
+
+# Logging
+LOG_LEVEL=INFO
 ```
+
+**Note** : NATS et base de données ont été retirés en v3.0.3. État persistant via fichier local (STATE_DIR) avec verrou actif/passif.
 
 ### Plugin Ansible (`ansible.cfg`)
 
@@ -1533,9 +1530,9 @@ secagent-server inventory list [--only-connected] [--format json|yaml|table]
 
 ```
 secagent-server server status [--format json|table]
-  → NATS    : connected (nats://localhost:4222) / unreachable
-  → DB      : ok (relay.db, N agents enregistrés)
+  → State   : ok (STATE_DIR=/data/relay-state, N agents enregistrés)
   → WS      : N connexions actives
+  → Lock    : held (master) / candidate / stale
   → Uptime  : Xh Xm
 
 secagent-server server stats [--format json|table]
@@ -1663,7 +1660,7 @@ Si le serveur rejette la connexion WS avec HTTP 401 (JWT expiré ou révoqué ap
 ---
 
 *Document généré le 2026-03-03 — Session de brainstorming architecture Ansible-SecAgent*
-*Mise à jour v1.1 : déploiement systemd / Docker Compose / Kubernetes, persistance des données*
+*Mise à jour v1.1 : déploiement systemd / Docker Compose, persistance des données*
 *Mise à jour v1.2 : CLI management (§21), rotation des clefs avec période de recouvrement (§22)*
 *Mise à jour v2.0 : Mode Proxy/Gateway multi-zone (§23) — Phase 12*
 
@@ -2216,50 +2213,39 @@ POST /api/admin/relays
 }
 ```
 
-#### Docker Compose qualification v3.0.0
+#### Docker Compose multi-hôtes v3.0.3
 
-**Note** : TLS obligatoire — exemple avec Caddy pour terminaison WSS/HTTPS.
+**Note** : TLS natif (pas de Caddy). État partagé via volume NFS.
 
 ```yaml
 services:
-  central:
-    image: secagent-server:3.0.0
+  relay-server:
+    image: secagent-server:3.0.3
     environment:
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       ADMIN_TOKEN: ${ADMIN_TOKEN}
       RSA_MASTER_KEY: ${RSA_MASTER_KEY}
-      NATS_URL: nats://nats:4222
-      RELAY_PLUGIN_TOKEN: ${RELAY_PLUGIN_TOKEN}
-      # REPEATER_ID absent → c'est la racine
+      STATE_DIR: /data/relay-state
+      TLS_CERT: /etc/secagent/certs/server.crt
+      TLS_KEY: /etc/secagent/certs/server.key
+      ADMIN_ADDR: "127.0.0.1:7771"
       RELAY_GROUP_VARS: '{"env":"prod"}'
-      TLS_CERT: /etc/secagent/certs/server.crt
-      TLS_KEY: /etc/secagent/certs/server.key
-    expose:
-      - "7771"   # Admin CLI — container-interne uniquement
+    volumes:
+      - relay-state:/data/relay-state:rw
+      - ./certs/server.crt:/etc/secagent/certs/server.crt:ro
+      - ./certs/server.key:/etc/secagent/certs/server.key:ro
     ports:
-      - "443:7770"    # HTTPS (via Caddy)
-      - "7772:7772"   # WSS (via Caddy)
+      - "7770:7770"   # REST API + /ws/agent (WSS natif)
+      - "7771:7771"   # Admin CLI (loopback uniquement)
+      - "7772:7772"   # Optional WSS alt port
 
-  relay-dmz1:
-    image: secagent-server:3.0
-    environment:
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY_DMZ1}
-      ADMIN_TOKEN: ${ADMIN_TOKEN}
-      RSA_MASTER_KEY: ${RSA_MASTER_KEY_DMZ1}
-      NATS_URL: nats://nats:4222
-      RELAY_PLUGIN_TOKEN: ${RELAY_PLUGIN_TOKEN_DMZ1}
-      REPEATER_ID: "dmz1"
-      REPEATER_UPSTREAM_URL: "wss://central:7772"
-      REPEATER_UPSTREAM_TOKEN: ${REPEATER_UPSTREAM_TOKEN_DMZ1}
-      RELAY_GROUP_VARS: '{"region":"dmz"}'
-      TLS_CERT: /etc/secagent/certs/server.crt
-      TLS_KEY: /etc/secagent/certs/server.key
-    expose:
-      - "7771"   # Admin CLI — container-interne uniquement
-    depends_on:
-      - central
-    ports:
-      - "7774:7772"   # WSS (pour agents enfants)
+volumes:
+  relay-state:
+    driver: nfs
+    driver_opts:
+      type: nfs
+      o: addr=${NFS_SERVER},vers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2
+      device: ":/export/relay-state"
 ```
 
 ---
