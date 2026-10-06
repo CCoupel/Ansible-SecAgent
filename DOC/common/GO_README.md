@@ -34,7 +34,7 @@ GO/
 │       └── main.go                          # Standalone inventory binary
 ├── go.mod                                   # Module definition
 ├── go.sum                                   # Dependency lock
-├── Dockerfile / Dockerfile.agent / Dockerfile.ansible   # Container images (Dockerfile.ansible : OBSOLETE v3.0.3, voir #188 pour le remplaçant)
+├── Dockerfile / Dockerfile.agent                        # Container images (serveur / minion) ; Dockerfile.ansible supprimé (#188)
 └── internal/endpoints/, internal/testnet/               # Shared packages (address lists, test helpers)
 
 (Compose files are NOT under GO/: see ../DEPLOYMENT/qualif/ and ../DEPLOYMENT/prod/.)
@@ -189,7 +189,7 @@ export TLS_KEY="./certs/server.key"
 
 ### CLI Access via Container
 
-**Start the stack** : Compose files live in `DEPLOYMENT/qualif/` (`docker-compose.server.yml`, `docker-compose.minion.yml`, …) — see `DEPLOYMENT/qualif/README.md`. There is no Compose file under `GO/`. The CLI must be run in the container of the instance that currently holds the lock (the secondary opens no port):
+**Start the stack** : Compose files live in `DEPLOYMENT/qualif/` (`docker-compose.server.yml`, `docker-compose.chain.yml`) — see `DEPLOYMENT/qualif/README.md`. There is no Compose file under `GO/`. The CLI must be run in the container of the instance that currently holds the lock (the secondary opens no port):
 ```bash
 SECAGENT="docker exec secagent-qualif-a secagent-server"   # or secagent-qualif-b
 ```
