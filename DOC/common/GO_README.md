@@ -1,31 +1,42 @@
-# Ansible-SecAgent — GO Implementation (Phase 7+)
+# Ansible-SecAgent — GO Implementation (Phase 7-14, v3.0.3)
 
-**Status**: ✅ CONVERSION COMPLETE — Ready for Integration Testing
+**Status**: ✅ v3.0.3 STABLE — Production Ready (NATS removed, state file, TLS native)
 
-This directory contains the high-performance GO rewrite of Ansible-SecAgent secagent-server and related components.
+This directory contains the high-performance GO implementation of Ansible-SecAgent server, agents, and inventory components.
+
+> **Note**: v3.0.3 simplifies architecture (removes NATS, uses file-based state + verrou). See ARCHITECTURE.md for current specs.
 
 ## Directory Structure
 
 ```
 GO/
 ├── cmd/
-│   └── server/
-│       ├── main.go                          # [TODO] HTTP server setup
-│       └── internal/
-│           ├── handlers/
-│           │   ├── register.go              # Enrollment, JWT, RSA-4096
-│           │   ├── exec.go                  # Task execution, file transfer
-│           │   └── inventory.go             # Ansible inventory format
-│           ├── ws/
-│           │   └── handler.go               # WebSocket connections, dispatch
-│           ├── storage/
-│           │   └── store.go                 # SQLite persistence
-│           └── broker/
-│               └── nats.go                  # NATS JetStream client
-├── go.mod                                   # [TODO] Module definition
-├── go.sum                                   # [TODO] Dependency lock
-├── Dockerfile                               # [TODO] Container image
-├── docker-compose.yml                       # [TODO] Local dev environment
+│   ├── secagent-server/
+│   │   ├── main.go                          # HTTP + WSS server (TLS native)
+│   │   ├── main_*.go                        # Tests, helpers
+│   │   └── internal/
+│   │       ├── server/                      # Core server (tls.go, config.go)
+│   │       ├── handlers/                    # REST API endpoints
+│   │       ├── ws/                          # WebSocket handlers (/ws/agent, /ws/relay)
+│   │       ├── storage/                     # File-based state + lock (STATE_DIR, v3.0.3)
+│   │       ├── lock/                        # Failover lock management (actif/passif)
+│   │       ├── cli/                         # Admin CLI (Cobra)
+│   │       └── repeater/                    # Relay-to-relay support (v3.0.1+)
+│   ├── secagent-minion/
+│   │   ├── main.go                          # Agent daemon (WSS client)
+│   │   └── internal/
+│   │       ├── ws/                          # WebSocket handler, reconnection
+│   │       ├── executor/                    # Subprocess execution
+│   │       ├── enrollment/                  # RSA-4096, enrollment flow
+│   │       └── registry/                    # Async task registry
+│   └── secagent-inventory/
+│       └── main.go                          # Standalone inventory binary
+├── go.mod                                   # Module definition
+├── go.sum                                   # Dependency lock
+├── Dockerfile                               # Container image
+├── DEPLOYMENT/
+│   ├── docker-compose.yml                   # Qualification setup
+│   └── prod/docker-compose.yml              # Production HA setup (multi-host NFS)
 └── README.md                                # This file
 ```
 
@@ -81,35 +92,28 @@ GO/
 - `RegisterFuture()`: Create result channel
 - `ResolveFuturesForHostname()`: Cleanup on disconnect
 
-### 3. Storage Layer (storage/)
+### 3. Storage Layer (storage/) — v3.0.3
 
-**store.go** (470 LOC)
-- SQLite persistence with WAL mode
-- **Agents table**: hostname, public_key_pem, token_jti, enrolled_at, last_seen, status
-- **AuthorizedKeys table**: Pre-authorization (CI/CD pipeline)
-- **Blacklist table**: Revoked JWT tracking with expiry
+**state.go** (v3.0.3 - removed SQLite, file-based state)
+- File-based state persistence (STATE_DIR)
+- **relay.state**: JSON file (signed HMAC, encrypted RSA)
+- **relay.lock**: Failover lock (exclusive access)
+- Atomic reads/writes with write_seq anti-replay
 
-Methods:
-- `RegisterAgent()`, `GetAgent()`, `ListAgents()`, `UpdateLastSeen()`, `UpdateAgentStatus()`, `UpdateTokenJTI()`
-- `AddAuthorizedKey()`, `GetAuthorizedKey()`, `RevokeKey()`
-- `AddToBlacklist()`, `IsJTIBlacklisted()`, `PurgeExpiredBlacklist()`
+Methods (file-based, not DB):
+- `ReadState()`, `WriteState()` - atomic file I/O
+- `AcquireLock()`, `ReleaseLock()` - exclusive failover
+- `ValidateState()` - HMAC verify, anti-replay check
 
-### 4. Message Broker (broker/)
+### 4. Lock Management (lock/) — v3.0.3
 
-**nats.go** (380 LOC)
-- NATS JetStream client
-- **RELAY_TASKS stream**: WorkQueue, 5-min TTL, 1MB max
-  - Subject: tasks.{hostname}
-  - HA routing: NAK if agent offline locally
-- **RELAY_RESULTS stream**: Limits, 60-sec TTL, 5MB max
-  - Subject: results.{task_id}
-  - Single-delivery result consumption
+**Failover lock** (file-based, NFS-friendly)
+- Heartbeat-based lock acquisition (30s interval)
+- Self-retire after 3min no heartbeat
+- Candidate stale timeout 10s
+- Atomic lock verification per state write
 
-Methods:
-- `PublishTask()`: Publish to tasks.{hostname}
-- `PublishResult()`: Publish to results.{task_id}
-- `SubscribeTasks()`: Consumer for task delivery
-- `SubscribeResults()`: Consumer for result collection
+No more NATS JetStream. Direct WebSocket dispatch to agents.
 
 ## Performance Targets
 
@@ -130,18 +134,18 @@ Methods:
 - `net/http`: HTTP server
 - `context`, `sync`: Concurrency primitives
 
-### External Packages
-- `github.com/mattn/go-sqlite3`: SQLite driver
+### External Packages (v3.0.3)
 - `github.com/golang-jwt/jwt/v5`: JWT handling
 - `github.com/google/uuid`: UUID generation
-- `github.com/nats-io/nats.go`: NATS client
 - `github.com/gorilla/websocket`: WebSocket upgrade
 
+SQLite and NATS are removed in v3.0.3:
+- File-based state (no DB)
+- Direct WebSocket dispatch (no message broker)
+
 ```bash
-go get github.com/mattn/go-sqlite3
 go get github.com/golang-jwt/jwt/v5
 go get github.com/google/uuid
-go get github.com/nats-io/nats.go
 go get github.com/gorilla/websocket
 ```
 
@@ -160,23 +164,31 @@ GOOS=linux GOARCH=amd64 go build -o secagent-server ./cmd/server
 
 ## Usage
 
-### Environment Variables
+### Environment Variables (v3.0.3)
 - `JWT_SECRET_KEY`: Secret for JWT signing (required)
 - `ADMIN_TOKEN`: Bearer token for admin endpoints (required)
-- `NATS_URL`: NATS server URL (default: nats://localhost:4222)
-- `DATABASE_URL`: SQLite path (default: sqlite:///./relay.db)
-- `RSA_MASTER_KEY`: Master key for AES-256-GCM encryption of RSA private key (optional, required in production)
+- `STATE_DIR`: Directory for relay.state and relay.lock (default: /data, required for production)
+- `RELAY_STATUS_FILE`: Healthcheck file path (local, outside STATE_DIR, optional)
+- `TLS_CERT`, `TLS_KEY`: TLS certificate paths (required for production WSS)
+- `TLS_DISABLE`: Set to allow HTTP (tests only, unsafe)
+- `ADMIN_TLS`, `ADMIN_INSECURE_HTTP`: Admin CLI TLS options
+- `RSA_MASTER_KEY`: Master key for AES-256-GCM encryption (production recommended)
 
-### Quick Start
+### Quick Start (v3.0.3)
 ```bash
+# Initialize state directory
+mkdir -p ./data
+./secagent-server state init --state-dir ./data
+
 # Set environment
 export JWT_SECRET_KEY="dev-secret-key"
 export ADMIN_TOKEN="dev-admin-token"
-export NATS_URL="nats://localhost:4222"
-export DATABASE_URL="sqlite:///./relay.db"
-export RSA_MASTER_KEY="test-key-for-dev"
+export STATE_DIR="./data"
+export TLS_CERT="./certs/server.crt"
+export TLS_KEY="./certs/server.key"
+# For tests only: export TLS_DISABLE=true
 
-# Run server
+# Run server (WSS on 7770/7772)
 ./secagent-server
 ```
 
@@ -297,17 +309,17 @@ docker-compose down
 - **HS256 JWT**: Symmetric signing (server-side validation only)
 - **Constant-time comparison**: Prevention of timing attacks
 
-### Database
-- **SQLite WAL mode**: Better concurrency (readers don't block writers)
-- **PRAGMA foreign_keys=ON**: Referential integrity
-- **MaxOpenConns=1**: Serialized writes (SQLite preference)
-- **Indexes on status, expires_at**: Query optimization
+### Persistence (v3.0.3)
+- **File-based state**: relay.state (JSON, HMAC-signed, AES-256-GCM encrypted)
+- **Atomic writes**: write_seq counter (anti-replay)
+- **NFS-friendly**: Verrou fichier (exclusivité actif/passif)
+- **Indexes**: None (file-based, lookup by JSON parsing)
 
-### Messaging
-- **NATS JetStream WorkQueue**: Exactly-once delivery
-- **Durable consumers**: Subscriber persistence
-- **MaxDeliver=1**: No silent retries
-- **Subject routing**: Selective consumption
+### Messaging (v3.0.3)
+- **Direct WebSocket dispatch**: No NATS
+- **Task multiplexing**: By task_id (1 WS per agent)
+- **No message persistence**: Agents reconnect + retry
+- **Failover**: Relay active/passive with lock (both agents see same state file)
 
 ## Migration from Python
 
@@ -324,11 +336,11 @@ docker-compose down
 - Binary compilation (no Python runtime)
 - Reduced memory footprint
 
-### Database Migration
-- SQLite schema identical (ARCHITECTURE.md §20)
-- All DDL preserved
-- Pragma settings matched
-- Index configuration same
+### Migration v3.0 → v3.0.3
+- Removed: SQLite database, NATS JetStream client
+- Added: File-based state (STATE_DIR), failover lock
+- See STATE_SPEC.md for state file format and validation
+- Agents must have correct STATE_DIR and RSA_MASTER_KEY to start
 
 ## Completed Phases
 
