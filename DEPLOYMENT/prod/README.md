@@ -48,9 +48,9 @@ Alternative : volume Docker NFS (bloc commenté en bas du Compose).
 ### Test avant mise en production (deux hôtes)
 
     # hôte 1 :  T=$(( $(date +%s) + 60 )); echo $T
-    tools/test_shared_storage.py run --dir /mnt/secagent-state/.storage-test --host h1 --hosts h1,h2 --start-at $T
-    tools/test_shared_storage.py run --dir /mnt/secagent-state/.storage-test --host h2 --hosts h1,h2 --start-at $T   # hôte 2
-    tools/test_shared_storage.py verify --dir /mnt/secagent-state/.storage-test --hosts h1,h2
+    python3 tools/test_shared_storage.py run --dir /mnt/secagent-state/.storage-test --host h1 --hosts h1,h2 --start-at $T
+    python3 tools/test_shared_storage.py run --dir /mnt/secagent-state/.storage-test --host h2 --hosts h1,h2 --start-at $T   # hôte 2
+    python3 tools/test_shared_storage.py verify --dir /mnt/secagent-state/.storage-test --hosts h1,h2
 
 Il vérifie, avec 500 fichiers : `O_CREAT|O_EXCL` (un seul gagnant par fichier), `rename` atomique (aucun fichier partiel
 lu), `fsync` fichier et répertoire. À répéter (au moins 3 fois), horloges synchronisées (NTP). Complément manuel : `kill -9`

@@ -127,14 +127,14 @@ jobs:
       - name: Build de l'image du tag (local, sans push)
         run: docker build -t secagent-server:ci -f GO/Dockerfile GO
       - name: Preparation
-        run: DEPLOYMENT/qualif/failover-test.sh setup-ci
+        run: bash DEPLOYMENT/qualif/failover-test.sh setup-ci
       - name: Arret propre
-        run: DEPLOYMENT/qualif/failover-test.sh run stop
+        run: bash DEPLOYMENT/qualif/failover-test.sh run stop
       - name: docker kill
-        run: DEPLOYMENT/qualif/failover-test.sh run kill
+        run: bash DEPLOYMENT/qualif/failover-test.sh run kill
       - name: Nettoyage
         if: always()
-        run: DEPLOYMENT/qualif/failover-test.sh teardown || true
+        run: bash DEPLOYMENT/qualif/failover-test.sh teardown || true
 
   images:
     name: Image GHCR ${{ matrix.image }}

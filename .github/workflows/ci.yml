@@ -161,6 +161,8 @@ jobs:
           python3 scripts/ci/check_compose_selftest.py
           python3 scripts/ci/test_shared_storage_hosts.py
           python3 scripts/ci/check_no_publish_selftest.py
+          python3 scripts/ci/check_scripts_selftest.py
+          python3 scripts/ci/check_scripts.py .github/workflows/*.yml
 
       # Variables d'exemple NON secretes : uniquement pour que `docker compose config` puisse interpoler.
       - name: Rendu et controles de chaque Compose prod et qualif
@@ -224,12 +226,12 @@ jobs:
       - name: Preparation (certificats et secrets JETABLES, etat initial)
         env:
           SECAGENT_IMAGE: secagent-server:ci
-        run: DEPLOYMENT/qualif/failover-test.sh setup-ci
+        run: bash DEPLOYMENT/qualif/failover-test.sh setup-ci
       - name: Arret propre du maitre
         env:
           SECAGENT_IMAGE: secagent-server:ci
           QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
-        run: DEPLOYMENT/qualif/failover-test.sh run stop
+        run: bash DEPLOYMENT/qualif/failover-test.sh run stop
       - name: Journaux et nettoyage
         if: always()
         env:
@@ -237,4 +239,4 @@ jobs:
           QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
         run: |
           docker compose -p secagent-failover -f DEPLOYMENT/qualif/docker-compose.server.yml logs --tail=80 || true
-          DEPLOYMENT/qualif/failover-test.sh teardown || true
+          bash DEPLOYMENT/qualif/failover-test.sh teardown || true
