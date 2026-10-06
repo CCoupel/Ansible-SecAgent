@@ -1,3 +1,9 @@
+# ============================================================================================
+# OBSOLETE v3.0.3 : non fonctionnel avec le serveur actuel (etat sur fichier, TLS natif, plus de
+# DATABASE_URL / NATS / Caddy). Remplace par DEPLOYMENT/qualif/docker-compose.server.yml ; la
+# topologie en chaine de relais sera reconstruite par une issue dediee. Conserve comme outillage
+# de reference uniquement : NE PAS utiliser, exclu des controles de conformite (scripts/ci).
+# ============================================================================================
 # docker-compose.yml — Ansible-SecAgent Test Minions (Phase 8 — GO agents)
 #
 # Remplace les agents Python (Phase 1) par les agents GO (Phase 8).
