@@ -1,157 +1,79 @@
-# Ansible-SecAgent — Python MVP (Phase 1-3)
+# SECAGENT-PYTHON — plugin de connexion Ansible
 
-**Status**: ✅ COMPLETE — Production-ready
-
-This directory contains the original Python implementation of Ansible-SecAgent, developed during Phase 1-3.
-
-## Directory Structure
+Ce répertoire contient la **seule partie Python** d'Ansible-SecAgent : le plugin de connexion Ansible `relay` (contrainte de l'API Ansible : `ConnectionBase` n'existe qu'en Python). Le serveur (`secagent-server`), l'agent (`secagent-minion`) et l'inventaire dynamique (`secagent-inventory`) sont écrits en **GO** (`GO/cmd/`). Les anciennes implémentations Python du serveur et de l'agent (FastAPI, NATS, SQLite) sont retirées.
 
 ```
-PYTHON/
-├── agent/                      # Relay agent client (systemd daemon)
-│   ├── secagent_agent.py          # Main entry point
-│   ├── async_registry.py       # Async task registry
-│   ├── facts_collector.py      # System facts collection
-│   └── secagent-minion.service     # Systemd unit file
-├── server/                     # Relay server (FastAPI + NATS)
-│   ├── api/
-│   │   ├── main.py             # FastAPI application
-│   │   ├── routes_register.py  # JWT, enrollment, auth
-│   │   ├── routes_exec.py      # Task execution endpoints
-│   │   ├── routes_inventory.py # Ansible inventory
-│   │   └── ws_handler.py       # WebSocket connections
-│   ├── db/
-│   │   └── agent_store.py      # SQLite persistence
-│   └── broker/
-│       └── nats_client.py      # NATS JetStream client
-├── ansible_plugins/            # Ansible integration
-│   ├── connection_plugins/
-│   │   └── secagent.py            # Custom connection plugin
-│   └── inventory_plugins/
-│       └── secagent_inventory.py  # Dynamic inventory
-├── tests/                      # Test suite
-│   ├── unit/
-│   ├── integration/
-│   └── robustness/
-├── docker-compose.yml          # Local dev environment
-├── Dockerfile                  # Server container image
-└── .env                        # Configuration
-
+SECAGENT-PYTHON/
+├── ansible.cfg                                   # exemple de configuration
+├── ansible_plugins/connection_plugins/relay.py   # plugin de connexion (ansible_connection: relay)
+└── tests/unit/test_relay.py                      # tests pytest
 ```
 
-## Quick Start
+Spécification : `DOC/plugins/PLUGINS_SPEC.md` · contrat REST : `DOC/contracts/REST_PLUGIN.md` · guide de poste de contrôle : `DEPLOYMENT/ANSIBLE_DEPLOYMENT.md`.
 
-### Prerequisites
-- Python 3.11+
-- NATS server running (via docker-compose)
-- Ansible 2.9+
+## Fonctionnement
 
-### Install Dependencies
-```bash
-pip install -r requirements.txt
-```
+Le plugin remplace SSH : `exec_command`, `put_file` et `fetch_file` sont des appels **REST bloquants** vers `secagent-server` (`POST /api/exec|upload|fetch/{hostname}`, port 7770, HTTPS), authentifiés par un **jeton plugin** (`secagent_plg_…`, chaîne opaque, pas un JWT) créé par `secagent-server tokens create --role plugin`. Le serveur route la tâche vers le minion par sa WebSocket.
 
-### Run Server
-```bash
-# With NATS and database
-docker-compose up -d
-
-# Start server
-python -m server.api.main
-```
-
-### Run Agent
-```bash
-python agent/secagent_agent.py \
-  --server=ws://localhost:7770 \
-  --hostname=minion-01
-```
-
-### Run Ansible Playbook
-```bash
-export ANSIBLE_PLUGINS=./ansible_plugins
-ansible-playbook -i inventory.yml playbooks/site.yml
-```
-
-## Architecture
-
-### Agent (secagent_agent.py)
-- Registers with server via POST /api/register
-- Opens persistent WebSocket connection (WSS)
-- Receives and executes tasks
-- Streams stdout, uploads/fetches files
-- Auto-reconnect with exponential backoff
-
-### Server (FastAPI)
-- Enrollment endpoint: POST /api/register
-- Admin pre-authorization: POST /api/admin/authorize
-- Task execution: POST /api/exec/{hostname}
-- File transfer: POST /api/upload, POST /api/fetch
-- Dynamic inventory: GET /api/inventory
-- WebSocket: /ws/agent
-- NATS JetStream for HA message routing
-
-### Plugins (Ansible)
-- Custom connection plugin: `ansible_connection: relay`
-- Dynamic inventory plugin: reads from /api/inventory
-- Replaces SSH with relay protocol
-
-## Security
-
-- **JWT HS256**: All API requests signed and verified
-- **RSA-4096 OAEP/SHA256**: Agent enrollment encryption
-- **Bearer tokens**: Admin authorization
-- **JTI blacklist**: Token revocation support
-- **WebSocket WSS**: TLS-encrypted agent connections
-- **mTLS**: NATS connections in production (configurable)
+- **stdin** : `exec_command` envoie `stdin` en **base64** des octets bruts (le champ est omis s'il n'y a pas de données).
+- **Multi-adresses** : `server` accepte une liste d'URL séparées par des virgules (instances actif/passif d'un même relay). Les adresses sont essayées dans l'ordre (la dernière qui a répondu en tête) ; le plugin ne passe à la suivante **que si la connexion échoue avant l'envoi de la requête** (erreur de connexion, délai de connexion, échec TLS). Une erreur après l'envoi (délai de lecture, erreur de protocole, HTTP 5xx) est remontée **sans rejouer** la requête ailleurs. Une adresse avec identifiants (`user:pass@host`) est refusée ; `http://` hors boucle locale envoie le jeton en clair et déclenche un avertissement : utiliser `https://`. La mémoire de la dernière bonne adresse est propre à un processus Ansible (chaque fork repart de l'ordre configuré).
 
 ## Configuration
 
-### Environment Variables
-- `JWT_SECRET_KEY`: Secret for JWT signing
-- `ADMIN_TOKEN`: Bearer token for admin endpoints
-- `NATS_URL`: NATS server URL (default: nats://nats:4222)
-- `DATABASE_URL`: SQLite path (default: sqlite:////data/relay.db)
-- `LOG_LEVEL`: Logging level (default: INFO)
+Options (ini `[secagent_connection]`, variable d'environnement, variable d'hôte Ansible) :
 
-### File Structure
-- `authorized_keys` table: Pre-authorized agent public keys
-- `agents` table: Enrolled agents with status
-- `blacklist` table: Revoked JWT identifiers
+| Option | ini | Variable d'environnement | Variable d'hôte | Défaut |
+|---|---|---|---|---|
+| URL(s) du serveur | `server` | `RELAY_SERVER_URL` | `ansible_secagent_server` | `http://localhost:7770` (renseigner une URL `https://`) |
+| Fichier du jeton plugin | `token_file` | `RELAY_TOKEN_FILE` | `ansible_secagent_token_file` | `/etc/ansible/secagent_plugin.jwt` |
+| Bundle CA (HTTPS) | `ca_bundle` | `RELAY_CA_BUNDLE` | `ansible_secagent_ca_bundle` | aucun |
+| Délai d'une tâche (s) | `timeout` | `RELAY_TIMEOUT` | `ansible_secagent_timeout` | `30` |
+| Délai de connexion par adresse (s) | `connect_timeout` | `RELAY_CONNECT_TIMEOUT` | `ansible_secagent_connect_timeout` | `5` |
 
-## Testing
+```ini
+# ansible.cfg
+[defaults]
+connection_plugins = ./ansible_plugins/connection_plugins
+inventory = /usr/local/bin/secagent-inventory   # binaire GO (RELAY_TOKEN, RELAY_SERVER_URL…)
+host_key_checking = False
 
-```bash
-# Unit tests
-pytest tests/unit/
-
-# Integration tests
-pytest tests/integration/
-
-# E2E tests
-pytest tests/robustness/ -v
+[secagent_connection]
+server = https://relay.example.com:7770
+token_file = /etc/ansible/secagent_plugin.jwt
+ca_bundle = /etc/ansible/secagent_ca.pem
 ```
 
-## Performance Baseline
+### Fichier de jeton
 
-- **Latency**: ~100ms round-trip (task dispatch → result)
-- **Memory**: ~100MB per server instance
-- **Throughput**: ~500 tasks/min per agent
-- **Concurrency**: ~50 agents per relay node
+Le jeton est lu dans un **fichier**, jamais dans une variable. Le plugin le refuse (sans envoyer de requête, et sans jamais afficher le jeton) si le fichier :
+- est un lien symbolique (`O_NOFOLLOW`, qui ne protège que le dernier composant du chemin : protéger aussi le répertoire parent) ;
+- n'est pas un fichier régulier (FIFO, socket, périphérique) ;
+- n'appartient pas à l'utilisateur qui lance Ansible ;
+- est lisible par le groupe ou les autres (mode ≠ `0600`/`0400` : `chmod 600`).
 
-## Phase History
+Un fichier absent ou vide donne une erreur de connexion explicite. Il n'y a plus de repli sur `/tmp` : ne jamais placer le jeton dans un répertoire partagé.
 
-| Phase | Component | Status | Date |
-|-------|-----------|--------|------|
-| Phase 1 | secagent-minion | ✅ Complete | 2026-03-03 |
-| Phase 2 | secagent-server | ✅ Complete | 2026-03-03 |
-| Phase 3 | ansible_plugins | ✅ Complete | 2026-03-04 |
+```bash
+install -m 600 /dev/null /etc/ansible/secagent_plugin.jwt
+printf '%s' "$PLUGIN_TOKEN" > /etc/ansible/secagent_plugin.jwt
+```
 
-## Next Phase: GO Migration (Phase 7)
+L'inventaire dynamique est le binaire `secagent-inventory`, qui lit son jeton dans `RELAY_TOKEN` (voir `DOC/inventory/INVENTORY_SPEC.md`).
 
-See `GO/README.md` for the high-performance GO rewrite.
+## Utilisation
 
----
+```bash
+export RELAY_SERVER_URL=https://relay.example.com:7770
+export RELAY_CA_BUNDLE=/etc/ansible/secagent_ca.pem
+export RELAY_TOKEN="$PLUGIN_TOKEN"        # pour secagent-inventory seulement
+ansible-playbook -i /usr/local/bin/secagent-inventory playbooks/site.yml
+```
 
-**Last Updated**: 2026-03-05
-**Maintainer**: Ansible-SecAgent Team
+Les hôtes de l'inventaire portent `ansible_connection: relay`.
+
+## Tests
+
+```bash
+pip install pytest httpx ansible-core
+pytest SECAGENT-PYTHON/tests/unit/ -v
+```
