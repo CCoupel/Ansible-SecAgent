@@ -108,6 +108,7 @@ options:
 """
 
 import base64
+import errno
 import json
 import os
 import uuid
@@ -302,7 +303,7 @@ class ConnectionPlugin(ConnectionBase):
         """Load the JWT from the token file.
 
         Returns "" when the file is missing or unreadable. Raises
-        AnsibleConnectionFailure when the file is not owned by the current
+        AnsibleConnectionFailure when the file is a symlink, is not owned by the current
         user or is accessible by group/others (mode & 0o077): the message
         names the path and the problem, never the token.
         """
@@ -310,8 +311,14 @@ class ConnectionPlugin(ConnectionBase):
         if not token_file:
             return ""
         try:
-            fd = os.open(token_file, os.O_RDONLY)
-        except OSError:
+            # O_NOFOLLOW: a symlink is refused, so the checks below apply to the
+            # path the operator configured and not to an attacker-chosen target.
+            fd = os.open(token_file, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise AnsibleConnectionFailure(
+                    f"JWT token file {token_file} is a symbolic link; refusing to follow it"
+                )
             return ""
         try:
             st = os.fstat(fd)  # on the opened file: no check/use race

@@ -407,3 +407,32 @@ def test_exec_refused_with_insecure_token_file_no_request(servers, make_conn):
     with pytest.raises(AnsibleConnectionFailure):
         _exec(conn)
     assert c.n == 0
+
+
+# --- #191b: symlinks are not followed -------------------------------------------
+
+def test_token_file_symlink_refused(make_conn, tmp_path, monkeypatch):
+    conn = make_conn("http://127.0.0.1:1")
+    real = Path(os.environ["RELAY_TOKEN_FILE"])  # regular 0600 file owned by us
+    link = tmp_path / "link.jwt"
+    link.symlink_to(real)
+    monkeypatch.setenv("RELAY_TOKEN_FILE", str(link))
+    with pytest.raises(AnsibleConnectionFailure) as ei:
+        conn._load_jwt()
+    assert "symbolic link" in str(ei.value) and str(link) in str(ei.value)
+    assert TOKEN not in str(ei.value)
+
+
+def test_token_file_regular_still_accepted(make_conn):
+    assert make_conn("http://127.0.0.1:1")._load_jwt() == TOKEN
+
+
+def test_exec_refused_with_symlinked_token_no_request(servers, make_conn, tmp_path, monkeypatch):
+    srv, c = servers("ok")
+    conn = make_conn(_url(srv))
+    link = tmp_path / "l.jwt"
+    link.symlink_to(os.environ["RELAY_TOKEN_FILE"])
+    monkeypatch.setenv("RELAY_TOKEN_FILE", str(link))
+    with pytest.raises(AnsibleConnectionFailure):
+        _exec(conn)
+    assert c.n == 0
