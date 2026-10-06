@@ -2,8 +2,8 @@
 
 Périmètre : Docker Compose uniquement. Kubernetes/Helm sont abandonnés ; Docker Swarm est **hors périmètre**.
 Un Compose par relay, **déployé à l'identique sur N hôtes**, avec `STATE_DIR` (fichier d'état `relay.state`,
-`relay.lock`, journal `actions.log`) sur un **stockage partagé NFS**. Tous les relays ouvrent les ports 7770/7771/7772 ;
-une seule instance acquiert le verrou (maître) et traite les tâches ; les autres restent en attente (passifs).
+`relay.lock`, journal `actions.log`) sur un **stockage partagé NFS**. Une seule instance acquiert le verrou (maître), ouvre les
+ports 7770/7771/7772 et traite les tâches ; les autres (secondaires) **n'ouvrent aucun port** et sondent le verrou toutes les 5 s.
 Le Compose est fourni avec la release (`secagent-compose-<version>.tar.gz`, images en `vX.Y.Z@sha256:…`, vérifier `SHA256SUMS`).
 
 ## Fichiers
@@ -54,28 +54,32 @@ Alternative : volume Docker NFS (bloc commenté en bas du Compose).
 
 Il vérifie, avec 500 fichiers : `O_CREAT|O_EXCL` (un seul gagnant par fichier), `rename` atomique (aucun fichier partiel
 lu), `fsync` fichier et répertoire. À répéter (au moins 3 fois), horloges synchronisées (NTP). Complément manuel : `kill -9`
-d'un maître pendant l'écriture, puis `secagent-server state verify`. Supprimer ensuite `.storage-test`.
+d'un maître pendant l'écriture, puis `secagent-server state verify <STATE_DIR>/relay.state` (avec `RSA_MASTER_KEY`). Supprimer ensuite `.storage-test`.
 
 ## Variables d'environnement essentielles
 
 **Relay (secagent-server) :**
 - `STATE_DIR` : répertoire d'état partagé (NFS). **Identique sur tous les hôtes**. Contient `relay.state`, `relay.lock`, `actions.log`.
 - `TLS_CERT` / `TLS_KEY` : fichiers certificat et clef TLS (PEM). TLS natif sur 7770 et 7772 (obligatoire, pas de reverse proxy).
-- `ADMIN_ADDR` : adresse d'écoute admin (ex: `127.0.0.1:7771` pour loopback local uniquement). Voir `ADMIN_TLS`.
-- `ADMIN_TLS` : `true` si `ADMIN_ADDR` n'est pas loopback (sinon facultatif).
-- `RSA_MASTER_KEY` : clef privée RSA 4096 pour chiffrer les champs sensibles de l'état. **Identique sur tous les hôtes**. Jamais sur le partage NFS.
+- `ADMIN_ADDR` : adresse d'écoute admin. **Défaut `:7771` (toutes interfaces)**, pas la boucle locale ; le Compose fournit `0.0.0.0:7771` (dans le conteneur) et ne le publie que sur `ADMIN_PUBLISH_ADDR`.
+- `ADMIN_TLS` : `true` **obligatoire** si `ADMIN_ADDR` n'est pas loopback (sinon, sauf dérogation `ADMIN_INSECURE_HTTP` + ACK, le serveur refuse de démarrer).
+- `API_ADDR` / `WS_ADDR` : adresses d'écoute de l'API et du WebSocket (défauts `:7770` / `:7772`).
+- `RSA_MASTER_KEY` : secret (chaîne) dont dérivent la clef HMAC d'authentification de l'état et le chiffrement AES-256-GCM de ses champs sensibles (`enc:`) ; ce n'est pas une clef RSA. Exigé par `state init`, `state verify` et `state restore`. **Identique sur tous les hôtes**. Jamais sur le partage NFS.
 
 **Agents (secagent-minion) — listes multi-adresses :**
 - `RELAY_SERVER_URL` : liste URLs HTTPS pour enrollment, séparées par `,`. Ex: `https://relay1:7770,https://relay2:7770`. **Pairée par position** avec `RELAY_WS_URL`.
 - `RELAY_WS_URL` : liste URLs WSS pour WebSocket, séparées par `,`. Ex: `wss://relay1:7772/ws/agent,wss://relay2:7772/ws/agent`. **Mêmes longueurs** que `RELAY_SERVER_URL`.
 - `RELAY_PRIVATE_KEY` : clef RSA-4096 locale (défaut: `/etc/secagent-minion/id_rsa`, mode 0600).
 - `RELAY_JWT_PATH` : token JWT courant (défaut: `/etc/secagent-minion/token.jwt`, réécrit à chaque enrollment).
-- `RELAY_MAX_TASKS` : tâches concurrentes max (défaut: 10).
+- `MAX_CONCURRENT_TASKS` : tâches concurrentes max (défaut: 10).
+- `RELAY_ENROLLMENT_TOKEN` : jeton d'enrôlement (`secagent_enr_…`), requis au premier démarrage.
+- `RELAY_CA_BUNDLE` : bundle CA PEM (défaut : magasin système) ; `RELAY_AGENT_HOSTNAME` : nom de l'hôte (défaut : hostname) ; `RELAY_ASYNC_DIR` : registre async (défaut `/var/lib/secagent-minion/async`).
+- Le minion n'a ni fichier de configuration ni variable pour la taille de stdout (tampon fixe de 5 MiB).
 
 **Codes de sortie des agents :**
-- `0-7` : erreurs normales, redémarrage par systemd policy.
+- `1` : échec ou arrêt sur erreur (clef, enrôlement non permanent…), redémarrage par la politique systemd.
 - `77` (Revoked) : agent révoqué (JTI blacklisté). **`RestartPreventExitStatus=77`** — ne pas redémarrer.
-- `78` (Enrollment Refused) : token d'enrôlement expiré/invalide, échec 403 persistant. **`RestartPreventExitStatus=78`** — ne pas redémarrer, créer nouveau token.
+- `78` (Enrollment Refused) : token d'enrôlement absent, refusé (403), expiré ou consommé ; aucun retry. **`RestartPreventExitStatus=78`** — ne pas redémarrer, créer nouveau token.
 
 Systemd config recommandée (minion) :
 ```ini
@@ -109,20 +113,22 @@ les redémarrages OOM (`docker inspect -f '{{.State.OOMKilled}}'`). La limite es
        docker compose ps --format '{{.Name}} {{.Ports}}' | grep 7771   # jamais 0.0.0.0:7771 ni :::7771
 
    (`check_compose.py` est livré dans l'archive à côté de ce README.) Toute erreur = ne pas déployer.
-5. Contrôle : exactement **un** hôte écoute sur 7770/7772 ; `docker ps` : tous `healthy`.
+5. Contrôle : exactement **un** hôte écoute sur 7770/7771/7772 (le maître ; les secondaires n'ouvrent aucun port) ; `docker ps` : tous `healthy`.
 
 ## Bascule manuelle
 
 Arrêt propre du maître : `docker compose stop secagent-server` (relâche `relay.lock`) ; un secondaire devient maître en quelques
-secondes. `docker kill` / perte de l'hôte : promotion après la péremption du verrou. Le maître qui perd le verrou sort et
-redémarre secondaire (`restart: unless-stopped`).
+secondes (3,3 à 4,0 s mesurées). `docker kill` / `kill -9` / perte de l'hôte : le verrou est un fichier créé en `O_EXCL` avec
+battement (30 s), **non libéré par le système de fichiers** ; il reste jusqu'à sa péremption (**5 min** sans battement),
+après quoi un secondaire est promu. Le maître qui perd le verrou alors qu'il est vivant sort avec le code 75 et redémarre
+secondaire (`restart: unless-stopped`).
 
 ## Sauvegarde et restauration
 
 ### État (`relay.state`)
 Fichier unique, cohérent par construction : copier `relay.state` (ou `relay.state.prev`) **hors hôte et hors du partage**,
 à intervalle régulier et avant chaque montée de version. Restauration : relay arrêté sur tous les hôtes,
-`secagent-server state verify` puis `state restore`, redémarrage. Le fichier d'état n'est pas rétrocompatible au-delà d'un
+`secagent-server state verify <fichier>` puis `state restore --from <fichier>` (qui revérifie le fichier, sauvegarde l'état courant en `relay.state.bak-<UTC>` et journalise dans `state-restore.log`), redémarrage. `RSA_MASTER_KEY` doit être défini. Le fichier d'état n'est pas rétrocompatible au-delà d'un
 changement de `schema_version`.
 
 ### `RSA_MASTER_KEY` — procédure **distincte**
