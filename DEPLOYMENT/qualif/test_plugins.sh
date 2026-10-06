@@ -4,7 +4,9 @@
 set -e
 
 RELAY_SERVER="192.168.1.218:7770"
-TOKEN_FILE="/tmp/secagent_token.jwt"
+# Unpredictable name, mode 0600, owned by the caller (the plugin refuses group/other-readable token files)
+umask 077
+TOKEN_FILE="$(mktemp "${TMPDIR:-/tmp}/secagent_token.XXXXXX")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "[*] Ansible-SecAgent Plugin Test"

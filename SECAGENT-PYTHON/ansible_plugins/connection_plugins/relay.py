@@ -132,6 +132,9 @@ display = Display()
 # connect timeout per fork, bounded by secagent_connect_timeout.
 _LAST_GOOD_URL = None
 
+# Same default as the DOCUMENTATION above (never a world-writable directory like /tmp).
+DEFAULT_TOKEN_FILE = "/etc/ansible/secagent_plugin.jwt"
+
 _LOOPBACK_HOSTS = ("localhost", "::1")
 _WARNED_CLEARTEXT = set()
 
@@ -274,7 +277,7 @@ class ConnectionPlugin(ConnectionBase):
         return self._secagent_servers()[0]
 
     def _secagent_token_file(self):
-        return self._get_opt("secagent_token_file", "RELAY_TOKEN_FILE", "/tmp/secagent_token.jwt")
+        return self._get_opt("secagent_token_file", "RELAY_TOKEN_FILE", DEFAULT_TOKEN_FILE)
 
     def _secagent_ca_bundle(self):
         return self._get_opt("secagent_ca_bundle", "RELAY_CA_BUNDLE", "")
@@ -296,16 +299,39 @@ class ConnectionPlugin(ConnectionBase):
         return self._play_context.remote_addr
 
     def _load_jwt(self):
-        """Load JWT token from file."""
-        token_file = self._secagent_token_file()
-        if not token_file or not os.path.exists(token_file):
-            return ""
+        """Load the JWT from the token file.
 
-        try:
-            with open(token_file, "r") as f:
-                return f.read().strip()
-        except Exception:
+        Returns "" when the file is missing or unreadable. Raises
+        AnsibleConnectionFailure when the file is not owned by the current
+        user or is accessible by group/others (mode & 0o077): the message
+        names the path and the problem, never the token.
+        """
+        token_file = self._secagent_token_file()
+        if not token_file:
             return ""
+        try:
+            fd = os.open(token_file, os.O_RDONLY)
+        except OSError:
+            return ""
+        try:
+            st = os.fstat(fd)  # on the opened file: no check/use race
+            if hasattr(os, "geteuid") and st.st_uid != os.geteuid():
+                raise AnsibleConnectionFailure(
+                    f"JWT token file {token_file} is not owned by the current user; refusing to use it"
+                )
+            if st.st_mode & 0o077:
+                raise AnsibleConnectionFailure(
+                    f"JWT token file {token_file} is accessible by group/others "
+                    f"(mode {st.st_mode & 0o777:04o}); run: chmod 600 {token_file}"
+                )
+            with os.fdopen(fd, "r") as f:
+                fd = -1
+                return f.read().strip()
+        except OSError:
+            return ""
+        finally:
+            if fd != -1:
+                os.close(fd)
 
     def _get_client(self):
         """Create httpx client with proper TLS configuration."""

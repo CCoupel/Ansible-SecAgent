@@ -5,6 +5,7 @@ import datetime
 import io
 import json
 import socket
+import os
 import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -131,6 +132,7 @@ def make_conn(tmp_path, monkeypatch):
     """Build a plugin instance; options go through the env-var fallback."""
     tok = tmp_path / "tok.jwt"
     tok.write_text(TOKEN)
+    tok.chmod(0o600)
     monkeypatch.setenv("RELAY_TOKEN_FILE", str(tok))
     monkeypatch.setenv("RELAY_TIMEOUT", "5")
     monkeypatch.setenv("RELAY_CONNECT_TIMEOUT", "2")
@@ -357,3 +359,51 @@ def test_no_stdin_field_without_in_data(servers, make_conn):
     conn.exec_command("true", sudoable=False)
     conn.exec_command("true", in_data=b"", sudoable=False)
     assert all("stdin" not in r for r in SEEN) and len(SEEN) == 2
+
+
+# --- #191: token file location and permissions --------------------------------
+
+def test_default_token_file_is_not_tmp(monkeypatch):
+    monkeypatch.delenv("RELAY_TOKEN_FILE", raising=False)
+    conn = relay.Connection(PlayContext(), io.StringIO())
+    assert conn._secagent_token_file() == "/etc/ansible/secagent_plugin.jwt"
+
+
+def test_token_file_group_or_other_accessible_refused(make_conn, tmp_path):
+    conn = make_conn("http://127.0.0.1:1")
+    tok = Path(os.environ["RELAY_TOKEN_FILE"])
+    for mode in (0o640, 0o604, 0o644, 0o660):
+        tok.chmod(mode)
+        with pytest.raises(AnsibleConnectionFailure) as ei:
+            conn._load_jwt()
+        assert TOKEN not in str(ei.value) and str(tok) in str(ei.value)
+
+
+def test_token_file_0600_owned_accepted(make_conn):
+    assert make_conn("http://127.0.0.1:1")._load_jwt() == TOKEN
+    Path(os.environ["RELAY_TOKEN_FILE"]).chmod(0o400)
+    assert make_conn("http://127.0.0.1:1")._load_jwt() == TOKEN
+
+
+def test_token_file_other_owner_refused(make_conn, monkeypatch):
+    conn = make_conn("http://127.0.0.1:1")
+    other = os.geteuid() + 1
+    monkeypatch.setattr(relay.os, "geteuid", lambda: other)
+    with pytest.raises(AnsibleConnectionFailure) as ei:
+        conn._load_jwt()
+    assert "not owned" in str(ei.value) and TOKEN not in str(ei.value)
+
+
+def test_missing_token_file_empty(make_conn, monkeypatch):
+    conn = make_conn("http://127.0.0.1:1")
+    monkeypatch.setenv("RELAY_TOKEN_FILE", "/nonexistent/x.jwt")
+    assert conn._load_jwt() == ""
+
+
+def test_exec_refused_with_insecure_token_file_no_request(servers, make_conn):
+    srv, c = servers("ok")
+    conn = make_conn(_url(srv))
+    Path(os.environ["RELAY_TOKEN_FILE"]).chmod(0o644)
+    with pytest.raises(AnsibleConnectionFailure):
+        _exec(conn)
+    assert c.n == 0
