@@ -2,7 +2,7 @@
 
 > Interface entre les plugins Ansible (connection plugin, inventory plugin, secagent-inventory binary)
 > et le secagent-server.
-> Endpoint : HTTPS :7770 (via Caddy)
+> Endpoint : HTTPS :7770 (TLS natif v3.0.3)
 > Sources : `DOC/plugins/PLUGINS_SPEC.md` · `DOC/inventory/INVENTORY_SPEC.md` · `DOC/server/SERVER_SPEC.md` §3
 
 ---
