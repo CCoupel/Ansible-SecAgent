@@ -295,11 +295,13 @@ Envoyé immédiatement après le démarrage du subprocess, avant tout stdout.
 
 | Code | Signification | Comportement agent |
 |---|---|---|
-| `4000` | Fermeture normale | Reconnexion avec backoff exponentiel |
-| `4001` | Token révoqué | Ne pas reconnecter — alerter l'admin |
-| `4002` | Token expiré | Refresh token puis reconnecter |
-| `4003` | Re-enrollment requis | Clef révoquée, contacter l'admin |
-| `4004` | Conflit hostname | Ne pas reconnecter — alerter l'admin |
+| `4000` | Fermeture normale (émise seulement à la suppression d'un agent, `handlers/admin.go:644`) | Reconnexion avec backoff exponentiel |
+| `4001` | Token révoqué (émis à la révocation) | Ne pas reconnecter ; le minion sort avec le code 77 |
+| `4002` | Token expiré — constante définie (`ws/handler.go:24`) mais jamais émise | Aucun traitement dédié : reconnexion |
+| `1001` | Arrêt propre du serveur / perte du verrou (`server/server.go:566,602`) | Reconnexion avec backoff |
+
+Seul `4001` arrête l'agent (`dispatcher.go:159`). Il n'existe pas de code `4003`/`4004` ; le ré-enrôlement est déclenché par un
+`401` (JWT rejeté), pas par un code de fermeture. Voir `DOC/contracts/WEBSOCKET.md`.
 
 ---
 
@@ -2245,7 +2247,7 @@ volumes:
 | **Server (startup)** | Validation : si `REPEATER_UPSTREAM_URL` et `REPEATER_UPSTREAM_TOKEN` définis → mode enfant-push, vérifier parent |
 | **Suppression** | Fichiers proxy (push_manager.go, client.go) ; variables REPEATER_UPSTREAMS_FILE, REPEATER_UPSTREAMS ; plus de multi-upstream |
 | **CLI** | `secagent-server relays list|get|status|add` |
-| **Infra** | `DEPLOYMENT/qualif/docker-compose.yml` : multi-relay avec variables simples (pas de YAML) |
+| **Infra** | `DEPLOYMENT/qualif/docker-compose.server.yml` (+ `.minion.yml`, `.proxy.yml`, `.ansible.yml`) : multi-relay avec variables simples (pas de YAML) |
 
 
 ---
