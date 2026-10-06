@@ -2,392 +2,391 @@
 
 ## Overview
 
-Ce répertoire contient les scripts et configurations pour déployer Ansible-SecAgent sur qualif (192.168.1.218).
+Ce répertoire contient les configurations Docker Compose pour déployer Ansible-SecAgent en qualif et production.
 
-**Composants :**
-- **Relay Server** : serveur central (NATS + relay-api + caddy)
-- **Relay Agents** : agents clients (secagent-minion-01/02/03)
-- **Ansible Container** : container Ansible avec plugins relay pour exécuter des playbooks
+**Architecture v3.0.3 :**
+- **Relay Server** : daemon GO, TLS natif (ports 7770 API+/ws/agent, 7771 admin, 7772 compat), état fichier JSON + verrou exclusif
+- **Relay Agents** : secagent-minion sur chaque hôte cible, WebSocket persistante sortante
+- **Ansible Control Node** : container Ansible avec plugin connection secagent (Python)
+- **Multi-hôte actif/passif** : verrou d'exclusivité (1 relay actif, N relays passifs)
 
 ---
 
-## Quick Start
+## Architecture Multi-hôtes Actif/Passif
 
-### Deploy Everything
+```
+┌─────────────────────────────────────┐
+│   NFS Partagé (STATE_DIR)          │
+│   - relay.state (HMAC-SHA256)      │
+│   - relay.lock (verrou exclusif)   │
+│   - actions.log (JSON Lines)       │
+└─────────────────────────────────────┘
+           ▲            ▲            ▲
+           │            │            │
+      ┌────▼──┐    ┌─────▼──┐    ┌─────▼──┐
+      │Relay-1│    │Relay-2 │    │Relay-3 │
+      │ACTIF  │    │Passif  │    │Passif  │
+      └───┬───┘    └────────┘    └────────┘
+          │
+          ├─► PORT 7770 (API + /ws/agent, TLS natif)
+          ├─► PORT 7771 (Admin, loopback par défaut)
+          └─► PORT 7772 (compat, WebSocket agent)
+```
+
+**Comportement :**
+- Relay actif : acquiert le verrou, traite les tâches
+- Relays passifs : essaient périodiquement d'acquérir le verrou, reprennent si actif crash
+- Agents : se reconnectent automatiquement en cas de failover
+
+---
+
+## Déploiement Qualif (Single-host Compose)
+
+### 1. Préparation de l'environnement
 
 ```bash
 cd DEPLOYMENT
 
-# Set environment variables (if needed)
-export DOCKER_HOST=tcp://192.168.1.218:2375
-export RELAY_ADMIN_TOKEN=your-admin-token-here
+# Créer les répertoires
+mkdir -p qualif/state qualif/logs
 
-# Deploy server, agents, and Ansible container
-./deploy.sh all
+# Générer certificats TLS (auto-signés pour tests)
+openssl req -x509 -newkey rsa:2048 -keyout qualif/tls.key -out qualif/tls.crt \
+  -days 365 -nodes -subj "/CN=localhost"
 
-# Check status
-./deploy.sh status
+# Créer fichier .env local
+cat > qualif/.env <<EOF
+STATE_DIR=./state
+TLS_CERT=./tls.crt
+TLS_KEY=./tls.key
+ADMIN_ADDR=127.0.0.1:7771
+ADMIN_TLS=false
+RELAY_PRIVATE_KEY=/etc/secagent-minion/id_rsa
+RELAY_JWT_PATH=/etc/secagent-minion/token.jwt
+RELAY_SERVER_URL=https://relay:7770
+RELAY_WS_URL=wss://relay:7772/ws/agent
+EOF
 ```
 
-### Deploy Individual Components
+### 2. Lancer Docker Compose
 
 ```bash
-# Deploy server only
-./deploy.sh server
+# Voir docker-compose.yml (fourni)
+docker compose -f qualif/docker-compose.yml up -d
 
-# Deploy agents only
-./deploy.sh minion
+# Vérifier état
+docker compose -f qualif/docker-compose.yml ps
+```
 
-# Deploy Ansible container only
-./deploy.sh ansible
+### 3. Initialiser l'état du relay
 
-# Stop everything
-./deploy.sh stop
+```bash
+# Créer le fichier d'état vierge
+docker compose -f qualif/docker-compose.yml exec relay \
+  secagent-server state init
+
+# Vérifier l'initialisation
+docker compose -f qualif/docker-compose.yml exec relay \
+  secagent-server state verify
+# Sortie attendue : exit code 0 (OK)
+```
+
+### 4. Enrôler les agents
+
+```bash
+# Générer un token d'enrôlement (depuis l'admin local)
+TOKEN=$(docker compose -f qualif/docker-compose.yml exec -it relay \
+  secagent-server admin token create --role agent --duration 1h | grep -oE '[a-zA-Z0-9._-]+' | tail -1)
+
+# Passer le token aux agents
+docker compose -f qualif/docker-compose.yml set-env minion-01 RELAY_ENROLLMENT_TOKEN=$TOKEN
+docker compose -f qualif/docker-compose.yml restart minion-01
+
+# Vérifier la connexion
+docker compose -f qualif/docker-compose.yml logs minion-01 | grep -i "enrolled\|connected"
+```
+
+### 5. Vérifier le déploiement
+
+```bash
+# Healthcheck local
+docker compose -f qualif/docker-compose.yml exec relay \
+  secagent-server status --local
+
+# Vérifier les agents
+curl -k -H "Authorization: Bearer $ADMIN_TOKEN" \
+  https://localhost:7770/api/agents
+
+# Port bindings
+netstat -an | grep 777
+# Doit afficher : 7770, 7771, 7772
 ```
 
 ---
 
-## Directory Structure
+## Déploiement Production (Multi-hôtes Compose)
 
+### 1. Préparation NFS partagé
+
+```bash
+# Sur le serveur NFS (ex. nas.example.com)
+sudo mkdir -p /export/secagent-state
+sudo chmod 700 /export/secagent-state
+sudo exportfs -a
+
+# Sur chaque hôte production
+sudo mkdir -p /mnt/secagent-state
+sudo mount -t nfs -o hard,intr nas.example.com:/export/secagent-state /mnt/secagent-state
+sudo chmod 700 /mnt/secagent-state
+
+# Ajouter à /etc/fstab pour persistance au reboot
+echo "nas.example.com:/export/secagent-state /mnt/secagent-state nfs hard,intr,_netdev 0 0" | sudo tee -a /etc/fstab
 ```
-DEPLOYMENT/
-├── deploy.sh                      ← Main deployment script
-├── deploy.bat                     ← Windows deployment script
-├── README.md                      ← This file
-├── ANSIBLE_DEPLOYMENT.md          ← Ansible container guide
-├── qualif/                        ← Qualif environment config
-│   ├── docker-compose.server.yml  ← Server composition (nats + relay-api)
-│   ├── docker-compose.minion.yml  ← Agents composition
-│   ├── docker-compose.ansible.yml ← Ansible container composition
-│   ├── playbooks/                 ← User playbooks (created on deploy)
-│   ├── inventory/                 ← Inventory files (created on deploy)
-│   └── roles/                     ← Ansible roles (created on deploy)
-└── (other environments)
+
+### 2. Configuration multi-hôtes
+
+**Sur hôte relay-1 (actif) :**
+```bash
+STATE_DIR=/mnt/secagent-state
+TLS_CERT=/etc/secagent/tls.crt
+TLS_KEY=/etc/secagent/tls.key
+ADMIN_ADDR=127.0.0.1:7771
+ADMIN_TLS=false
+```
+
+**Sur hôtes relay-2, relay-3 (passifs) :**
+```bash
+# Même STATE_DIR, même certificats TLS
+STATE_DIR=/mnt/secagent-state
+TLS_CERT=/etc/secagent/tls.crt
+TLS_KEY=/etc/secagent/tls.key
+ADMIN_ADDR=127.0.0.1:7771  # Loopback (admin local uniquement)
+ADMIN_TLS=false
+```
+
+### 3. Lancer compose sur chaque hôte
+
+```bash
+docker compose -f prod/docker-compose.yml up -d
+```
+
+**Résultat attendu :**
+- Relay-1 : acquiert le verrou après 30s (beat), devient ACTIF
+- Relay-2, Relay-3 : restent en attente, relancent la tentative toutes les 30s
+
+### 4. Promotion qualif → prod (image digest pinning)
+
+```bash
+# Récupérer le digest de l'image déjà validée en qualif
+DIGEST=$(docker inspect secagent-server:v3.0.3 | jq -r '.[0].RepoDigests[0]')
+
+# Mettre à jour prod/docker-compose.yml avec le digest exact
+sed -i "s|image: secagent-server:.*|image: ${DIGEST}|g" prod/docker-compose.yml
+
+# Commiter et déployer
+git commit -m "prod: pin secagent-server digest ${DIGEST}"
+docker compose -f prod/docker-compose.yml pull
+docker compose -f prod/docker-compose.yml up -d
 ```
 
 ---
 
-## Components
+## Configuration des Ports
 
-### 1. Relay Server
+| Port | Service | Interface | TLS | Usage |
+|------|---------|-----------|-----|-------|
+| 7770 | REST API + /ws/agent | `0.0.0.0` | ✓ HTTPS/WSS natif | Agents + Plugins |
+| 7771 | Admin CLI | `127.0.0.1` par défaut | TLS optionnel (loopback) | Opérateurs locaux |
+| 7772 | WebSocket (compat) | `0.0.0.0` | ✓ WSS natif | Redondance avec 7770 |
 
-**What it does :**
-- Central relay server for agents
-- NATS JetStream for message bus
-- REST API for agent enrollment + task execution
-- WebSocket listener for agent connections
+**Règles TLS :**
+- Port 7770 : TLS obligatoire (HTTPS et WSS)
+- Port 7771 : Loopback = HTTP par défaut ; si non-loopback, TLS obligatoire (ADMIN_TLS=true)
+- Port 7772 : TLS obligatoire (compatible avec 7770)
 
-**Ports :**
-- 7770 : Agent API (enrollment, task execution)
-- 7771 : Plugin API (inventory, execution)
-- 7772 : WebSocket (agent connections)
-- 7443 : HTTPS (reverse proxy via caddy)
+---
 
-**Environment :**
-- `JWT_SECRET_KEY` : HMAC-SHA256 secret for JWT signing
-- `ADMIN_TOKEN` : Bearer token for admin API access
-- `NATS_URL` : NATS server URL (default: nats://relay-nats:4222)
-- `DATABASE_URL` : SQLite database file (default: /data/relay.db)
+## Variables d'Environnement
 
-### 2. Relay Agents
+### Relay Server (secagent-server)
 
-**What they do :**
-- Connect to relay server via WebSocket
-- Execute tasks received from relay server
-- Report results back to relay server
-- Persist state locally
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `STATE_DIR` | `/data` | Oui | Répertoire d'état partagé (NFS pour multi-hôtes) |
+| `TLS_CERT` | — | Sauf test | Fichier certificat TLS (PEM) |
+| `TLS_KEY` | — | Sauf test | Fichier clef TLS (PEM) |
+| `TLS_DISABLE` | — | Non | Désactiver TLS (tests uniquement) |
+| `ADMIN_ADDR` | `:7771` | Non | Adresse d'écoute admin (ex: `127.0.0.1:7771`) |
+| `ADMIN_TLS` | `false` | Non | Activer TLS sur admin si non-loopback |
+| `ADMIN_INSECURE_HTTP` | `false` | Non | Autoriser HTTP sur admin (tests, avec ACK) |
+| `REPEATER_CA_FILE` | — | Non | CA bundle pour relais (non-rechargé à chaud) |
+| `REPEATER_UPSTREAM_URL` | — | Non | URL du relay parent en mode relais |
 
-**Containers :**
-- `secagent-minion-01` (qualif-host-01)
-- `secagent-minion-02` (qualif-host-02)
-- `secagent-minion-03` (qualif-host-03)
+### Minion Agents (secagent-minion)
 
-**Environment :**
-- `RELAY_SERVER_URL` : Server address (default: http://relay-api:7770)
-- `RELAY_ENROLLMENT_TOKEN` : Token for enrollment (Phase 10)
-- `HOSTNAME` : Agent hostname
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RELAY_SERVER_URL` | `https://localhost:7770` | URL(s) HTTPS pour enrollment (liste séparée par `,`, pairée par position avec RELAY_WS_URL) |
+| `RELAY_WS_URL` | `wss://localhost:7772/ws/agent` | URL(s) WSS pour WebSocket (liste, pairée par position avec RELAY_SERVER_URL) |
+| `RELAY_PRIVATE_KEY` | `/etc/secagent-minion/id_rsa` | Clef privée RSA-4096 (stockée 0600) |
+| `RELAY_JWT_PATH` | `/etc/secagent-minion/token.jwt` | Token JWT courant (réécrit à chaque enrollment) |
+| `RELAY_MAX_TASKS` | `10` | Tâches concurrentes max |
+| `RELAY_STDOUT_MAX` | `5242880` | Buffer stdout max (5MB) |
+| `RELAY_INSECURE_TLS` | `false` | Désactiver vérif TLS (tests uniquement) |
 
-### 3. Ansible Container
+### Multi-adresses (Failover)
 
-**What it does :**
-- Provides Ansible with relay plugins (connection + inventory)
-- Executes playbooks against relay agents
-- Supports all standard Ansible features
-
-**Features :**
-- Pre-installed plugins (secagent.py, secagent_inventory.py)
-- Mounted playbooks, inventory, and roles
-- Ansible CLI and modules
-
-**Usage :**
+**Exemple à 2 relays :**
 ```bash
-# Enter container
-docker exec -it relay-ansible bash
+# RELAY_SERVER_URL et RELAY_WS_URL doivent avoir le même nombre d'adresses
+export RELAY_SERVER_URL="https://relay1.example.com:7770,https://relay2.example.com:7770"
+export RELAY_WS_URL="wss://relay1.example.com:7772/ws/agent,wss://relay2.example.com:7772/ws/agent"
 
-# Run playbook
-ansible-playbook -i secagent_inventory /ansible/playbooks/my-playbook.yml
-
-# List inventory
-ansible-inventory -i secagent_inventory -y
-
-# Run command on all agents
-ansible all -i secagent_inventory -m command -a "uptime"
+# Les deux listes sont pairées :
+# - relay1 = index 0
+# - relay2 = index 1
 ```
 
 ---
 
-## Deployment Workflow
+## Gestion des Erreurs et Reprise
 
-### 1. Prepare Environment
+### Codes de Sortie
 
-```bash
-cd DEPLOYMENT
+**Relay :**
+| Code | Cause | Action |
+|------|-------|--------|
+| 0 | Arrêt propre | Normal |
+| 75 | Verrou perdu (crash du maître) | Redémarrage auto par systemd/docker |
 
-# Set Docker host
-export DOCKER_HOST=tcp://192.168.1.218:2375
+**Minion :**
+| Code | Cause | Comportement |
+|------|-------|-------------|
+| 0-7 | Erreurs normales | Redémarrage par policy |
+| 77 | Revoked (JTI blacklisté) | **NE PAS redémarrer** — état terminal |
+| 78 | Enrollment refused (403 persistant) | **NE PAS redémarrer** — l'opérateur crée nouveau token |
 
-# Set credentials (optional, defaults available)
-export JWT_SECRET_KEY="your-secret-key"
-export ADMIN_TOKEN="your-admin-token"
-export RELAY_ADMIN_TOKEN="$ADMIN_TOKEN"  # For Ansible container
+**Systemd config recommandée (agents) :**
+```ini
+[Service]
+Restart=on-failure
+RestartSec=30s
+RestartPreventExitStatus=77 78
+StartLimitIntervalSec=600
+StartLimitBurst=5
 ```
 
-### 2. Deploy Relay Server
+### Vérification et Restauration d'État
 
 ```bash
-./deploy.sh server
+# Vérifier l'état du relay
+secagent-server state verify
 
-# Wait for health check
-sleep 15
+# Si HMAC invalid ou schema corrompu : restauration depuis backup
+secagent-server state restore --from /backup/relay.state.bak
 
-# Verify server is running
-./deploy.sh status
-```
-
-### 3. Deploy Relay Agents
-
-```bash
-./deploy.sh minion
-
-# Check agent status
-docker logs secagent-minion-01 | tail -20
-```
-
-### 4. Deploy Ansible Container
-
-```bash
-./deploy.sh ansible
-
-# Test Ansible
-docker exec -it relay-ansible ansible-inventory -i secagent_inventory -y
-```
-
-### 5. Verify Full Stack
-
-```bash
-# Check all containers
-./deploy.sh status
-
-# Check relay inventory
-docker exec -it relay-ansible ansible-inventory -i secagent_inventory -y
-
-# Test playbook execution
-docker exec -it relay-ansible ansible-playbook -i secagent_inventory \
-  -c relay playbooks/ping.yml  # Use relay connection plugin
+# Codes de sortie :
+# 0 = OK
+# 2 = HMAC invalid
+# 3 = schema unknown
+# 4 = invariant violated
+# 5 = file unreadable
+# 6 = RSA_MASTER_KEY missing
+# 7 = write_seq too low
+# 8 = instance alive (restore bloqué)
 ```
 
 ---
 
-## Configuration Files
+## Monitorage et Santé
 
-### server/docker-compose.yml
+### Health Check Local
 
-Server configuration with NATS and relay-api.
+```bash
+# Sur le relay
+secagent-server status --local
+# Sortie : state fichier + verrou + uptime + agents connectés
 
-**Key services :**
-- `nats` : JetStream message broker
-- `relay-api` : Python FastAPI server (multi-port)
-- `caddy` : Reverse proxy (optional)
+# Liveness check depuis conteneur
+curl -f http://localhost:7771/healthz || exit 1
+```
 
-**Volumes :**
-- `nats_data` : NATS persistence
-- `secagent_data` : Server database + state
+### Logs
 
-### minion/docker-compose.yml
+**Relay :**
+```bash
+# JSON Lines append-only
+tail -f /data/actions.log | jq .
 
-Agent configuration with 3 containers.
+# Secrets masqués automatiquement (HMAC, tokens, en-têtes)
+```
 
-**Key services :**
-- `secagent-minion-01/02/03` : GO agent instances
+**Minion :**
+```bash
+journalctl -u secagent-minion -f
+# become_pass masqué dans tous les logs
+```
 
-**Environment :**
-- `RELAY_ENROLLMENT_TOKEN` : Required for enrollment (Phase 10)
-- `HOSTNAME` : Unique agent identifier
+---
 
-### qualif/docker-compose.ansible.yml
+## Limitations Connues v3.0.3
 
-Ansible container with plugins.
-
-**Volumes :**
-- `/ansible/playbooks` : User playbooks
-- `/ansible/inventory` : Static inventory
-- `/ansible/roles` : Ansible roles
-- `/ansible/ansible_plugins` : Relay plugins (read-only)
+| Limitation | Impact | Mitigation |
+|-----------|--------|-----------|
+| Rejeu après arrêt à froid | write_seq gardée perdue | Backups réguliers + permissions 0700 |
+| DoS : promotion forcée via relay.lock forgée | Un attaquant peut forcer la basculement | Autoriser écritures STATE_DIR à relay seul |
+| REPEATER_CA_FILE non-rechargée à chaud | Rotation de CA nécessite redémarrage/failover | Redémarrer le relay inactif, puis basculer |
+| Rotation RSA_MASTER_KEY : ré-enrôlement obligatoire | Tous les agents doivent se ré-enrôler | Planifier rotation pendant fenêtre maintenance |
 
 ---
 
 ## Troubleshooting
 
-### Server won't start
+### Le relay ne démarre pas
 
 ```bash
-# Check server logs
-docker logs relay-api
+# Vérifier les certificats TLS
+openssl x509 -in $TLS_CERT -text -noout
 
-# Check NATS
-docker logs relay-nats
+# Vérifier l'état du fichier
+secagent-server state verify
 
-# Verify ports are free
-netstat -an | grep 777
+# Logs
+docker logs relay | grep -i error
 ```
 
-### Agents won't connect
+### Les agents ne se connectent pas
 
 ```bash
-# Check agent logs
-docker logs secagent-minion-01
+# Vérifier enrollment
+docker logs minion-01 | grep -i "enroll\|403\|401"
 
-# Verify enrollment token (Phase 10)
-echo $RELAY_ENROLLMENT_TOKEN
+# Vérifier URLs (multi-adresses)
+echo $RELAY_SERVER_URL
+echo $RELAY_WS_URL
 
-# Check server is accepting connections
-curl http://192.168.1.218:7770/health
+# Test de connectivité
+curl -k -v https://relay:7770/api/agents
 ```
 
-### Ansible container issues
+### Failover vers passif ne se fait pas
 
 ```bash
-# Check container logs
-docker logs relay-ansible
+# Vérifier verrou
+ls -la /mnt/secagent-state/relay.lock
 
-# Verify plugins are mounted
-docker exec relay-ansible ls /ansible/ansible_plugins/
+# Vérifier NFS
+mount | grep secagent-state
 
-# Test ansible installation
-docker exec relay-ansible ansible --version
-
-# Test inventory plugin
-docker exec relay-ansible ansible-inventory -i secagent_inventory -y
-```
-
----
-
-## Environment Variables
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `DOCKER_HOST` | No | `tcp://192.168.1.218:2375` | Docker daemon address |
-| `JWT_SECRET_KEY` | Yes | (generated) | JWT signing secret |
-| `ADMIN_TOKEN` | Yes | (generated) | Admin API token |
-| `RELAY_ENROLLMENT_TOKEN` | No | (env) | Agent enrollment token |
-| `RELAY_ADMIN_TOKEN` | No | `$ADMIN_TOKEN` | Ansible container token |
-| `RELAY_SERVER_URL` | No | `http://relay-api:7770` | Server URL for Ansible |
-| `NATS_URL` | No | `nats://relay-nats:4222` | NATS server URL |
-| `DATABASE_URL` | No | `/data/relay.db` | SQLite database file |
-
----
-
-## Logs and Debugging
-
-### View Server Logs
-
-```bash
-./deploy.sh logs-server
-```
-
-### View Agent Logs
-
-```bash
-./deploy.sh logs-agent 01  # or 02, 03
-```
-
-### View Ansible Logs
-
-```bash
-./deploy.sh logs-ansible
-```
-
-### Follow Logs in Real-Time
-
-```bash
-docker logs -f relay-api       # Server
-docker logs -f secagent-minion-01  # Agent
-docker logs -f relay-ansible   # Ansible container
+# Logs du passif
+docker logs relay-2 | grep -i "lock\|stale\|promote"
 ```
 
 ---
 
-## Security Considerations
+## Documentation Référence
 
-### Credentials
-
-- Store `JWT_SECRET_KEY` and `ADMIN_TOKEN` securely
-- Rotate tokens regularly (see `secagent-server security keys rotate`)
-- Use environment variables or `.env` files, not hardcoded values
-
-### Network
-
-- `DOCKER_HOST` should point to a secure Docker socket
-- Use TLS for production (caddy handles this)
-- Restrict access to ports 7770-7772
-
-### Enrollment
-
-- Use enrollment tokens (Phase 10) for agent registration
-- Rotate enrollment tokens periodically
-- One-shot tokens are consumed after first use
-- Permanent tokens can be revoked
-
----
-
-## Advanced Topics
-
-### Custom Playbooks
-
-See [ANSIBLE_DEPLOYMENT.md](./ANSIBLE_DEPLOYMENT.md) for playbook examples.
-
-### Performance Tuning
-
-```bash
-# Parallel execution
-ansible-playbook -i secagent_inventory -f 5 playbooks/my-playbook.yml
-
-# Enable fact caching
-export ANSIBLE_FACT_CACHING=jsonfile
-export ANSIBLE_FACT_CACHING_CONNECTION=/tmp/ansible_cache
-```
-
-### CI/CD Integration
-
-See [ANSIBLE_DEPLOYMENT.md](./ANSIBLE_DEPLOYMENT.md) for GitLab/Jenkins examples.
-
----
-
-## Support
-
-For issues or questions:
-
-1. Check logs with `./deploy.sh logs-*`
-2. See [ANSIBLE_DEPLOYMENT.md](./ANSIBLE_DEPLOYMENT.md) for Ansible-specific help
-3. Review [DEPLOYMENT/qualif/test_plugins.sh](./qualif/test_plugins.sh) for test examples
-4. Check project documentation in [DOC/](../DOC/)
-
----
-
-## Related Documentation
-
-- [ANSIBLE_DEPLOYMENT.md](./ANSIBLE_DEPLOYMENT.md) — Detailed Ansible guide
-- [DOC/ARCHITECTURE.md](../DOC/common/ARCHITECTURE.md) — System architecture
-- [DOC/PLUGINS_SPEC.md](../DOC/plugins/PLUGINS_SPEC.md) — Plugin specifications
-- [DOC/AGENT_SPEC.md](../DOC/agent/AGENT_SPEC.md) — Agent specifications
-- [DOC/SERVER_SPEC.md](../DOC/server/SERVER_SPEC.md) — Server specifications
+- [DOC/server/SERVER_SPEC.md](../DOC/server/SERVER_SPEC.md) — Spécifications techniques du relay
+- [DOC/agent/AGENT_SPEC.md](../DOC/agent/AGENT_SPEC.md) — Spécifications de l'agent
+- [DOC/security/SECURITY.md](../DOC/security/SECURITY.md) — Modèle de sécurité v3.0.3
+- [DOC/project/DEPLOYMENT.md](../DOC/project/DEPLOYMENT.md) — Guide opérationnel complet
