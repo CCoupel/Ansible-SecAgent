@@ -72,7 +72,7 @@ Ansible **NE SUPPORTE PAS** les plugins GO nativement. Les alternatives sont :
   - ✅ `secagent-inventory` (binaire GO)
   - ✅ `ansible.cfg` pointe sur binaire GO pour l'inventaire
 
-- Le **Dockerfile.ansible** installe :
+- Le **Dockerfile.ansible** (**obsolète v3.0.3**, non constructible tel quel : voir #188 pour le remplaçant ; le plugin s'appelle désormais `relay.py`) installait :
   - Python 3.11 + ansible-core (pour connection plugin API)
   - GO secagent-inventory binaire (copié depuis build GO)
 
