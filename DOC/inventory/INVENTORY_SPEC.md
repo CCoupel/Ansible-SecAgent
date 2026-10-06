@@ -38,7 +38,7 @@ secagent-inventory --host my-host
 
 ```bash
 RELAY_SERVER_URL=https://relay.example.com    # défaut: https://localhost:7770 ; liste possible : https://a:7770,https://b:7770 (#167)
-RELAY_TOKEN=secagent_plugin_xxxxx              # Bearer token (PLUGIN_TOKEN)
+RELAY_TOKEN=secagent_plg_xxxxx                 # Bearer token (jeton plugin, opaque)
 RELAY_CA_BUNDLE=/path/to/ca.pem               # CA custom (optionnel)
 RELAY_INSECURE_TLS=false                      # true = désactiver vérif TLS (TESTS UNIQUEMENT, voir ci-dessous)
 RELAY_INSECURE_TLS_ACK=                       # i-understand-the-risk = confirmation pour un serveur non-bouclage
