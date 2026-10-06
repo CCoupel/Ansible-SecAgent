@@ -357,9 +357,9 @@ Variables inconnues (`{{foo}}`) sont laissées telles quelles.
 
 ---
 
-## 7. Log d'exécution (table `action_log`)
+## 7. Log d'exécution (journal `actions.log`)
 
-Toutes les exécutions sont tracées en base SQLite, consultables via CLI.
+Toutes les exécutions sont tracées dans un journal JSON Lines append-only (`actions.log`, défaut `STATE_DIR/actions.log`), consultable via CLI. **Les secrets (HMAC, tokens, en-têtes) sont masqués** dans le journal (ils n'apparaissent jamais, contrairement aux versions v1.0.0/v2.0.0 qui exposaient les secrets en clair dans `action_log.config_snapshot`). Rotation par taille (10 Mio × 5).
 
 | Colonne | Description |
 |---------|-------------|
