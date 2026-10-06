@@ -33,13 +33,18 @@ func IsSecretConfigKey(k string) bool { return secretConfigKeys[k] }
 // Agent is an enrolled minion. LastSeen/Status are volatile: they are only persisted when the
 // file is written for another reason (piggyback, see Options.Piggyback).
 type Agent struct {
-	Hostname     string         `json:"hostname"`
-	PublicKeyPEM string         `json:"public_key_pem"`
-	TokenJTI     string         `json:"token_jti,omitempty"`
-	EnrolledAt   time.Time      `json:"enrolled_at"`
-	Suspended    bool           `json:"suspended,omitempty"`
-	Vars         map[string]any `json:"vars,omitempty"`
-	LastSeen     *time.Time     `json:"last_seen,omitempty"`
+	Hostname     string    `json:"hostname"`
+	PublicKeyPEM string    `json:"public_key_pem"`
+	TokenJTI     string    `json:"token_jti,omitempty"`
+	EnrolledAt   time.Time `json:"enrolled_at"`
+	Suspended    bool      `json:"suspended,omitempty"`
+	// Revoked (#193) is set by the revocation, in the same write as the JTI blacklist, and survives the
+	// expiry of that blacklist entry: a revoked host is refused by every path that would give it a
+	// JWT/JTI (enrollment included) until an admin lifts it explicitly (DELETE of the agent). Optional
+	// at read: a state written before this field existed simply has it false (schema_version unchanged).
+	Revoked  bool           `json:"revoked,omitempty"`
+	Vars     map[string]any `json:"vars,omitempty"`
+	LastSeen *time.Time     `json:"last_seen,omitempty"`
 }
 
 // AuthorizedKey is a pre-authorized public key.

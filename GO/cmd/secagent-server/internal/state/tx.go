@@ -89,6 +89,15 @@ func (t *Tx) PutAgent(a Agent) error {
 	return nil
 }
 
+// Agents returns a copy of every agent of the transaction's view.
+func (t *Tx) Agents() []Agent {
+	out := make([]Agent, 0, len(t.m.Agents))
+	for _, a := range t.m.Agents {
+		out = append(out, a.clone())
+	}
+	return out
+}
+
 func (t *Tx) DeleteAgent(hostname string) bool {
 	_, ok := t.m.Agents[hostname]
 	del(t, t.m.Agents, hostname)

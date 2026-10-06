@@ -8,6 +8,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -27,6 +28,7 @@ type AgentRecord struct {
 	LastSeen     time.Time
 	Status       string // "connected", "disconnected"
 	Suspended    bool
+	Revoked      bool   // #193: persistent revocation (see state.Agent.Revoked)
 	Vars         string // JSON object, e.g. {"key": "value"}
 }
 
@@ -213,7 +215,7 @@ func (s *Store) RevokeKey(ctx context.Context, hostname string) (bool, error) {
 
 func (s *Store) agentRecord(a state.Agent) AgentRecord {
 	rec := AgentRecord{Hostname: a.Hostname, PublicKeyPEM: a.PublicKeyPEM, TokenJTI: a.TokenJTI, EnrolledAt: a.EnrolledAt,
-		LastSeen: a.EnrolledAt, Status: "disconnected", Suspended: a.Suspended, Vars: varsJSON(a.Vars)}
+		LastSeen: a.EnrolledAt, Status: "disconnected", Suspended: a.Suspended, Revoked: a.Revoked, Vars: varsJSON(a.Vars)}
 	if a.LastSeen != nil {
 		rec.LastSeen = *a.LastSeen
 	}
@@ -245,6 +247,9 @@ func (s *Store) RegisterAgent(ctx context.Context, hostname, publicKeyPEM, token
 	now := nowUTC()
 	err := s.mutate(func(tx *state.Tx) error { return putEnrolledAgent(tx, hostname, publicKeyPEM, tokenJTI, now) })
 	if err != nil {
+		if errors.Is(err, ErrAgentRevoked) {
+			return "", err
+		}
 		return "", fmt.Errorf("failed to register agent: %w", err)
 	}
 	s.touchAgent(hostname, "disconnected", now, false)
@@ -252,8 +257,15 @@ func (s *Store) RegisterAgent(ctx context.Context, hostname, publicKeyPEM, token
 	return hostname, nil
 }
 
+// ErrAgentRevoked: the host was revoked (#193); nothing that would give it a JWT/JTI may go through
+// until an admin lifts the revocation (DELETE of the agent).
+var ErrAgentRevoked = errors.New("agent revoked")
+
 func putEnrolledAgent(tx *state.Tx, hostname, publicKeyPEM, tokenJTI string, now time.Time) error {
 	a, _ := tx.Agent(hostname)
+	if a.Revoked {
+		return ErrAgentRevoked
+	}
 	a.Hostname, a.PublicKeyPEM, a.TokenJTI, a.EnrolledAt = hostname, publicKeyPEM, tokenJTI, now
 	a.LastSeen = &now
 	return tx.PutAgent(a)
@@ -266,6 +278,9 @@ func putEnrolledAgent(tx *state.Tx, hostname, publicKeyPEM, tokenJTI string, now
 func (s *Store) EnrollAgent(ctx context.Context, tokenID, hostname, publicKeyPEM, tokenJTI, approvedBy string) error {
 	now := nowUTC()
 	err := s.mutate(func(tx *state.Tx) error {
+		if a, ok := tx.Agent(hostname); ok && a.Revoked {
+			return ErrAgentRevoked // first, before anything is consumed
+		}
 		if tokenID != "" {
 			tok, ok := tx.EnrollmentToken(tokenID)
 			if !ok {
@@ -283,6 +298,9 @@ func (s *Store) EnrollAgent(ctx context.Context, tokenID, hostname, publicKeyPEM
 		return putEnrolledAgent(tx, hostname, publicKeyPEM, tokenJTI, now)
 	})
 	if err != nil {
+		if errors.Is(err, ErrAgentRevoked) {
+			return err // the token was NOT consumed: the mutation was rolled back as a whole
+		}
 		return fmt.Errorf("EnrollAgent: %w", err)
 	}
 	s.touchAgent(hostname, "disconnected", now, false)
@@ -501,6 +519,79 @@ func (s *Store) SetSuspended(ctx context.Context, hostname string, suspended boo
 		log.Printf("Agent %s: hostname=%q", action, hostname)
 	}
 	return found, nil
+}
+
+// IsAgentRevoked reports whether the agent exists and carries the persistent revocation (#193).
+func (s *Store) IsAgentRevoked(ctx context.Context, hostname string) (bool, error) {
+	a, ok := s.snap().Agent(hostname)
+	return ok && a.Revoked, nil
+}
+
+// RevokeAgent is the revocation (#193): in ONE state write the agent gets its persistent Revoked flag
+// and its current JTI (when it has one) is blacklisted until blacklistUntil. found is false when the
+// agent does not exist (nothing written). The flag outlives the blacklist entry.
+func (s *Store) RevokeAgent(ctx context.Context, hostname, jti, reason string, blacklistUntil time.Time) (found bool, err error) {
+	err = s.mutate(func(tx *state.Tx) error {
+		a, ok := tx.Agent(hostname)
+		if !ok {
+			return nil
+		}
+		found = true
+		a.Revoked = true
+		if err := tx.PutAgent(a); err != nil {
+			return err
+		}
+		if jti == "" {
+			return nil
+		}
+		return putBlacklist(tx, jti, hostname, reason, nowUTC(), blacklistUntil.UTC())
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to revoke agent: %w", err)
+	}
+	if found {
+		log.Printf("Agent revoked: hostname=%q jti=%q reason=%q", hostname, jti, reason)
+	}
+	return found, nil
+}
+
+// RepairRevokedFlags gives the persistent flag to the agents revoked BEFORE it existed (their current
+// JTI is blacklisted, nothing else remembers it): one write, nothing written when there is nothing to
+// repair. It runs at the start of the master. A revocation older than the blacklist retention (25 h)
+// is already forgotten and cannot be recovered: those hosts must be revoked again.
+func (s *Store) RepairRevokedFlags(ctx context.Context) (int, error) {
+	snap := s.snap()
+	need := false
+	for _, a := range snap.Agents() {
+		if !a.Revoked && a.TokenJTI != "" && snap.Blacklisted(a.TokenJTI) {
+			need = true
+			break
+		}
+	}
+	if !need {
+		return 0, nil // nothing to repair: no write at all
+	}
+	repaired := 0
+	err := s.mutate(func(tx *state.Tx) error {
+		repaired = 0
+		for _, a := range tx.Agents() {
+			if !a.Revoked && a.TokenJTI != "" && tx.Blacklisted(a.TokenJTI) {
+				a.Revoked = true
+				if err := tx.PutAgent(a); err != nil {
+					return err
+				}
+				repaired++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("RepairRevokedFlags: %w", err)
+	}
+	if repaired > 0 {
+		log.Printf("[SECURITY] %d agent(s) revoked before the persistent flag existed were flagged", repaired)
+	}
+	return repaired, nil
 }
 
 // IsAgentSuspended returns true if the agent exists and is suspended.
