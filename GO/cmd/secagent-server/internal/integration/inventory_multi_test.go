@@ -5,23 +5,18 @@ package integration
 
 import (
 	"bytes"
-	"net"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
+
+	"secagent-server/internal/testnet"
 )
 
 // deadAddress returns an https address nothing listens on.
 func deadAddress(t *testing.T) string {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := l.Addr().String()
-	_ = l.Close()
-	return "https://" + addr
+	return "https://" + testnet.ClosedAddr(t)
 }
 
 func runInventoryBinary(t *testing.T, bin string, env []string, args ...string) (code int, stdout, stderr string) {

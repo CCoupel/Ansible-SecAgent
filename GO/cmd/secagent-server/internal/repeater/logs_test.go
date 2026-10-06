@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"secagent-server/cmd/secagent-server/internal/config"
+	"secagent-server/internal/testnet"
 )
 
 // leakToken is long enough to have significant fragments (prefix, middle, suffix).
@@ -157,9 +158,7 @@ func TestLogs_ClientNeverLeaksToken(t *testing.T) {
 	waitFor(t, 10*time.Second, "healthy link after 401, 4012 and a dropped link", func() bool { return p.steady.Load() >= 1 })
 
 	// Unreachable parent: dial error path with the address in the message.
-	dead := httptest.NewTLSServer(http.NotFoundHandler())
-	deadURL := "wss" + strings.TrimPrefix(dead.URL, "https")
-	dead.Close()
+	deadURL := "wss://" + testnet.ClosedAddr(t)
 	c2 := New(config.RepeaterConfig{ID: "dmz2", UpstreamURL: deadURL, UpstreamToken: leakToken}, Options{
 		TLSConfig:  &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test server cert
 		MinBackoff: 5 * time.Millisecond, MaxBackoff: 10 * time.Millisecond,

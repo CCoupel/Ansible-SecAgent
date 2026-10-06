@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"secagent-server/internal/endpoints"
+	"secagent-server/internal/testnet"
 )
 
 const okInventory = `{"all":{"hosts":["h1"]},"_meta":{"hostvars":{"h1":{}}}}`
@@ -44,10 +45,7 @@ func okHandler(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(o
 
 func deadURL(t *testing.T) string {
 	t.Helper()
-	srv := httptest.NewServer(http.NotFoundHandler())
-	u := srv.URL
-	srv.Close()
-	return u
+	return "http://" + testnet.ClosedAddr(t) // not a closed httptest server: its ephemeral port could be reused
 }
 
 func TestFetchInventory_DeadThenLiveAddress(t *testing.T) {

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/actionlog"
+	"secagent-server/internal/testnet"
 )
 
 // #161: the journal gets one line per action, without any secret of the hook configuration.
@@ -23,9 +24,7 @@ import (
 func TestDispatcher_JournalNeverContainsSecrets(t *testing.T) {
 	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	defer ok.Close()
-	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	deadURL := dead.URL
-	dead.Close() // refuses connections: the error message quotes the URL
+	deadURL := "http://" + testnet.ClosedAddr(t) // refuses connections: the error message quotes the URL
 
 	const (
 		authSecret = "Bearer SUPER-SECRET-AUTH-TOKEN"

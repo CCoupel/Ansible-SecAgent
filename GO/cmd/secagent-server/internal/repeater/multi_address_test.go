@@ -16,15 +16,13 @@ import (
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/config"
+	"secagent-server/internal/testnet"
 )
 
 // deadURL is the wss address of a server that no longer listens: the dial is refused (before send).
 func deadURL(t *testing.T) string {
 	t.Helper()
-	srv := httptest.NewTLSServer(http.NotFoundHandler())
-	u := "wss" + strings.TrimPrefix(srv.URL, "https")
-	srv.Close()
-	return u
+	return "wss://" + testnet.ClosedAddr(t)
 }
 
 // silentServer reads the WebSocket upgrade request, then never answers: the dial is "after send".

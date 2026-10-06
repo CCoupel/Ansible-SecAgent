@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"secagent-server/internal/testnet"
 )
 
 func TestParse(t *testing.T) {
@@ -229,13 +231,7 @@ func getFn(pool *x509.CertPool) func(context.Context, *url.URL) (string, error) 
 // closedAddr returns a TCP address on which nothing listens (connection refused).
 func closedAddr(t *testing.T) string {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := l.Addr().String()
-	_ = l.Close()
-	return addr
+	return testnet.ClosedAddr(t)
 }
 
 func TestDialFirst_RefusedThenSuccess(t *testing.T) {

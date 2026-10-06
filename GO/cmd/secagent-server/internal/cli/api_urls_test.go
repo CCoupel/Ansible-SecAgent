@@ -16,15 +16,14 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"secagent-server/internal/testnet"
 )
 
 // deadAPI is a loopback address that refuses connections.
 func deadAPI(t *testing.T) string {
 	t.Helper()
-	s := httptest.NewServer(http.NotFoundHandler())
-	u := s.URL
-	s.Close()
-	return u
+	return "http://" + testnet.ClosedAddr(t)
 }
 
 // resetServer reads the request then closes the connection without answering: a write sent to it

@@ -1,21 +1,16 @@
 package integration
 
 import (
-	"net"
 	"net/http"
 	"testing"
+
+	"secagent-server/internal/testnet"
 )
 
 // closedWSSAddress is the wss address of a port nobody listens on.
 func closedWSSAddress(t *testing.T) string {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := l.Addr().String()
-	_ = l.Close()
-	return "wss://" + addr
+	return "wss://" + testnet.ClosedAddr(t)
 }
 
 // A child declared with TWO parent addresses (REPEATER_UPSTREAM_URL list): the first one is down, the

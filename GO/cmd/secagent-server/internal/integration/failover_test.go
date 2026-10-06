@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/localstatus"
+	"secagent-server/internal/testnet"
 )
 
 // listeningPorts returns the TCP ports the process listens on (Linux: /proc).
@@ -125,13 +126,7 @@ func (n *node) healthy(t *testing.T) (bool, string) {
 // freeAddr returns a loopback address nobody listens on right now.
 func freeAddr(t *testing.T) string {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := l.Addr().String()
-	_ = l.Close()
-	return a
+	return testnet.ClosedAddr(t) // outside the ephemeral range: nobody can take it before the node binds it
 }
 
 // A secondary opens NO socket, starts nothing and writes nothing in STATE_DIR but the lock itself;
