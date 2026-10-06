@@ -348,7 +348,7 @@ Port : 7772 (listener WebSocket dédié) ou 7770 (même handler, compatibilité)
 ```
 
 Rôles JWT acceptés sur `/ws/relay` : **`relay`** (nommé « relay-child » dans le reste de la documentation) et **`relay-parent`** ; tout autre rôle est refusé
-(`ws/relay_handler.go:817-855`, `extractRelayAuth`). Le `sub` doit respecter `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`, le `jti` est obligatoire et ne doit être
+(`ws/relay_handler.go:832-889`, `extractRelayAuth`). Le `sub` doit respecter `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`, le `jti` est obligatoire et ne doit être
 ni blacklisté ni (pour un enfant) marqué `revoked` ; sinon refus **HTTP 401** avant l'upgrade (`relay_handler.go:1064`).
 
 Délais (`repeater/client.go:40-46`, `ws/relay_handler.go`) : handshake 15 s ; heartbeat WebSocket (ping) 30 s ; `agent_list` toutes les 30 s ; lecture côté serveur : 120 s sans trafic coupe le lien ;
@@ -369,8 +369,8 @@ Le client envoie son identité avec JWT(sub = son REPEATER_ID) :
 Serveur (récepteur) valide :
 - ✅ `relay_hello.relay_id` présent ET `relay_hello.relay_id == jwt.sub` (identité du client)
 - ✅ Détection de boucle : C ∉ {P} ∪ ancêtres(P) (voir ARCHITECTURE.md §23.2)
-- ❌ Rejeter (close **4010** — refus permanent) si l'une de ces vérifications échoue (`relay_handler.go:891-902` côté enfant entrant, `1315-1334` côté lien parent)
-- ❌ Close **4012** (corrigible) si le premier message n'est pas un `relay_hello` ou si `ancestors` dépasse 32 éléments (`relay_handler.go:1316,1324`) ; en mode pull, le serveur ne vérifie
+- ❌ Rejeter (close **4010** — refus permanent) si l'une de ces vérifications échoue (`relay_handler.go:891-900` enfant entrant, `1315-1335` lien parent)
+- ❌ Close **4012** (corrigible) si le premier message n'est pas un `relay_hello` ou si `ancestors` dépasse 32 éléments (`relay_handler.go:1315-1326`) ; en mode pull, le serveur ne vérifie
   pas `ancestors` (le hello du client pull n'est contrôlé que sur `relay_id`)
 
 **Étape 2 — relay_ack (serveur → client)** :
@@ -409,10 +409,10 @@ Validation du snapshot :
 - Nombre de relays ≤ `MAX_SNAPSHOT_RELAYS` (défaut 1000)
 - Nombre d'hôtes ≤ `MAX_SNAPSHOT_HOSTS` (défaut 10000)
 - Taille du message ≤ `MAX_WS_MESSAGE_SIZE_RELAY` (défaut 10MB)
-- Rejeter (close **4012** — refus corrigible — + log) si validation échoue. Contrôles réels (`validateSnapshot`, `relay_handler.go:1393-1470`) : chaque `relay_chain` commence par l'enfant émetteur et se termine par le propriétaire
+- Rejeter (close **4012** — refus corrigible — + log) si validation échoue. Contrôles réels (`validateSnapshot`, `relay_handler.go:1395-1470`) : chaque `relay_chain` commence par l'enfant émetteur et se termine par le propriétaire
   (relay ou hôte), ≤ 32 éléments, IDs conformes, sans répétition ni identifiant de ce nœud ou de ses ancêtres ; pas de relay en double ; chaque hôte conforme à `hostnameShape`, sans doublon, rattaché à un relay déclaré
-- Refus 4012 aussi : snapshot reçu avant `relay_hello`, **plus de 40 remplacements par 60 s** sur un lien (`relay_handler.go:79,1483-1492`), `group_vars` invalides, relay déjà déclaré par un autre pair ou connecté directement,
-  **hôte connecté localement ou déjà routé via un autre pair** (`checkHostConflicts`, `relay_handler.go:344-365`) : un snapshot qui détournerait une route est **refusé**, il n'y a pas de « dernier arrivé gagne » pour les snapshots
+- Refus 4012 aussi : snapshot reçu avant `relay_hello`, **plus de 40 remplacements par 60 s** sur un lien (`relay_handler.go:79,1480-1492`), `group_vars` invalides, relay déjà déclaré par un autre pair ou connecté directement,
+  **hôte connecté localement ou déjà routé via un autre pair** (`checkHostConflicts`, `relay_handler.go:354-376`) : un snapshot qui détournerait une route est **refusé**, il n'y a pas de « dernier arrivé gagne » pour les snapshots
 
 **→ Après snapshot validé, la connexion est établie** (relay_nodes, relay_routing, inventaire initialisés)
 
@@ -421,7 +421,7 @@ Validation du snapshot :
 {"type":"agent_list", "agents":[{"hostname":"host-A", "status":"connected", "last_seen":"..."}]}
 ```
 Contient **uniquement les agents directs** du relay. Le serveur répond `agent_list_ack` (`count`). Hostnames mal formés ignorés ; liste > `MAX_AGENT_LIST_HOSTS` : close 4012
-(`relay_handler.go:946-1003`). Entre relays, le dernier arrivé gagne (avec `host.conflict`), mais un agent connecté localement n'est jamais re-routé (§9.5a).
+(`relay_handler.go:946-1005`). Entre relays, le dernier arrivé gagne (avec `host.conflict`), mais un agent connecté localement n'est jamais re-routé (§9.5a).
 
 #### event_forward — Propagation des changements du sous-arbre
 
@@ -452,8 +452,8 @@ Après handshake établi, tous les changements (hôtes, relays) sont notifiés v
 }
 ```
 
-**Ordre de `relay_chain` dans un `event_forward`** : **origine en premier, pair émetteur en dernier** (`relay_handler.go:1620-1632`) ; pour `relay.updated`, le premier élément est le relay décrit
-(`eventShapeError`, `relay_handler.go:1695`). Les snapshots utilisent l'ordre inverse (l'enfant émetteur en premier, le propriétaire en dernier).
+**Ordre de `relay_chain` dans un `event_forward`** : **origine en premier, pair émetteur en dernier** (`relay_handler.go:1617-1633`) ; pour `relay.updated`, le premier élément est le relay décrit
+(`eventShapeError`, `relay_handler.go:1692-1701`). Les snapshots utilisent l'ordre inverse (l'enfant émetteur en premier, le propriétaire en dernier).
 
 **Design** : `event_forward` unifie tous les événements ascendants (hôtes et relays) avec des types distincts (`host.{up,down,new}`, `relay.updated`).
 
@@ -865,7 +865,7 @@ Plusieurs instances d'un même relay partagent `STATE_DIR` ; **une seule** est m
 
 **Perte du verrou** (identité changée, verrou supprimé, auto-retrait) : arrêt du processus, pas de rétrogradation en mémoire. Dans l'ordre : hooks et liens annulés (**sans vidage de la file** : aucune action n'est exécutée au nom d'un ancien maître), listeners fermés, **toutes les WebSockets fermées en `1001 Going Away`** (jamais `4001`, qui interdit la reconnexion : les minions et les relays rebouclent sur leur liste d'adresses, #165/#166), aucune écriture d'état, code de sortie **75**. La policy de redémarrage du Compose relance l'instance en secondaire. Les appels REST du plugin en cours pendant la bascule **échouent** (le plugin ne rejoue pas, #168).
 
-**Arrêt propre** (SIGTERM / SIGINT) : WebSockets fermées en 1001, ports fermés, file des hooks vidée (bornée), état fermé, puis **suppression de `relay.lock`** : un secondaire reprend aussitôt. Exigence : reprise **< 10 s** (cohérent avec `STOP_MAX_S` de l'infra) ; elle se compose d'un cycle de contrôle du secondaire (≤ 5 s), de la pause du candidat (1-2 s) et du chargement de l'état — mesurée entre 3 et 6 s. Le protocole du verrou ne change pas.
+**Arrêt propre** (SIGTERM / SIGINT) : WebSockets fermées en 1001, ports fermés, file des hooks vidée (bornée), état fermé, puis **suppression de `relay.lock`** : un secondaire reprend aussitôt. Exigence : reprise **< 10 s** (cohérent avec `STOP_MAX_S` de l'infra) ; elle se compose d'un cycle de contrôle du secondaire (≤ 5 s), de la pause du candidat (1-2 s) et du chargement de l'état — mesurée par QA entre 3,3 et 4,0 s (rapports #163b). Après un crash ou `kill -9` le fichier `relay.lock` n'est pas relâché : le secondaire attend sa péremption (5 min sans battement, `MasterStale`, `lock/params.go:46-55`). Le protocole du verrou ne change pas.
 
 **Observabilité** : `/health` (maître seul) ajoute `role` et `instance_id`. Fichier de statut **local** `RELAY_STATUS_FILE` (défaut `/run/secagent/status.json`, `0600`, refusé s'il est dans `STATE_DIR`) : rôle (`secondary` / `candidate` / `master` / `lost`), `instance_id`, état (`waiting`, `loading`, `ready`, `failed`, `lost`), compteur de battement, horodatages du dernier battement réussi (maître) ou du dernier contrôle (secondaire) tirés du verrou lui-même, périodes du verrou ; aucun secret. `secagent-server status --local` le lit sans ouvrir de port ni appeler l'API : code **0** pour un maître dont le dernier battement a moins de 2 × la période de battement ou un secondaire dont le dernier contrôle a moins de 3 × la période de contrôle ; non nul si le fichier est absent, trop ancien (processus figé), `failed` ou `lost`. C'est le healthcheck du conteneur.
 
