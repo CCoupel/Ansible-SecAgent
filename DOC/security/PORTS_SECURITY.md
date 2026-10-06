@@ -15,7 +15,6 @@
 │  Port 7770 — API REST (TLS natif)         [API_ADDR]         │
 │     ├─ GET  /health                       (public)           │
 │     ├─ POST /api/register                 (enrôlement)       │
-│     ├─ POST /api/token/refresh                               │
 │     ├─ GET  /api/inventory                (jeton plugin)     │
 │     ├─ POST /api/exec|upload|fetch/{host} (jeton plugin)     │
 │     ├─ GET  /ws/agent, /ws/relay          (WebSocket)        │
@@ -40,21 +39,20 @@ Seul le maître ouvre ces ports : une instance secondaire (passive) **n'ouvre au
 **Interfaces** (`routers.go:35-43,101`) :
 ```
 GET    /health                    → Liveness (public, sans authentification)
-POST   /api/register              → Enrôlement agent (jeton d'enrôlement ou clef pré-autorisée)
-POST   /api/token/refresh         → Renouvellement de JWT agent
+POST   /api/register              → Enrôlement agent (jeton d'enrôlement obligatoire)
 GET    /api/inventory             → Inventaire dynamique (jeton PLUGIN)
 POST   /api/exec/{hostname}       → Exécution de commande (jeton PLUGIN, bloquant)
 POST   /api/upload/{hostname}     → Envoi de fichier (jeton PLUGIN, bloquant)
 POST   /api/fetch/{hostname}      → Récupération de fichier (jeton PLUGIN, bloquant)
 GET    /ws/agent                  → WebSocket persistante des agents (JWT rôle agent)
 GET    /ws/relay                  → WebSocket entre relays
-POST   /api/admin/authorize       → Pré-autorisation d'une clef (ADMIN_TOKEN ; aussi sur 7771)
+POST   /api/admin/authorize       → Mémorise une clef publique, sans effet sur l'enrôlement (ADMIN_TOKEN ; compat, aussi sur 7771)
 ```
 
-Il n'existe **pas** de route `GET /healthz`, `GET /api/agents` ni `POST /api/inventory` : ces chemins répondent `404`.
+Il n'existe **pas** de route `GET /healthz`, `GET /api/agents`, `POST /api/inventory` ni `POST /api/token/refresh` (supprimée en v3.0.3, #192) : ces chemins répondent `404`.
 
 **Authentification** :
-- `/api/register` : jeton d'enrôlement (`secagent_enr_…`, opaque) + challenge RSA-OAEP, ou clef publique pré-autorisée par `POST /api/admin/authorize` (flux historique) — voir `DOC/contracts/REST_ENROLLMENT.md`
+- `/api/register` : jeton d'enrôlement (`secagent_enr_…`, opaque) + challenge RSA-OAEP, **obligatoire** : sans jeton, `403 enrollment_token_required` (la pré-autorisation d'une clef par `POST /api/admin/authorize` ne donne aucun droit d'enrôlement) — voir `DOC/contracts/REST_ENROLLMENT.md`
 - `/ws/agent` : **JWT signé de rôle `agent` uniquement** ; un JWT d'un autre rôle est refusé (`ws/handler.go:409`)
 - `/api/inventory`, `/api/exec`, `/api/upload`, `/api/fetch` : **jeton plugin** `secagent_plg_…` (chaîne opaque, **pas un JWT**), vérifié contre l'empreinte SHA-256 de l'état, avec expiration, révocation, `allowed_ips` et `allowed_hostname_pattern` (`handlers/plugin_auth.go`). Un `ADMIN_TOKEN` y est refusé (`403`)
 - `/health` : publique
@@ -85,7 +83,7 @@ Il n'existe **pas** de route `GET /healthz`, `GET /api/agents` ni `POST /api/inv
 ```
 
 **Cas de sécurité** :
-- ✓ Seuls les agents enrôlés (jeton d'enrôlement valide, ou clef pré-autorisée) obtiennent un JWT de rôle `agent`
+- ✓ Seuls les agents enrôlés (jeton d'enrôlement valide + preuve de possession de la clef par le challenge) obtiennent un JWT de rôle `agent`
 - ✓ Les plugins n'ont jamais de WebSocket : `/ws/agent` n'accepte que le rôle `agent`
 - ✓ JWT agent signé, révocation par blacklist de JTI
 - ✓ Agent révoqué → fermeture WS code `4001` (arrêt définitif, code de sortie 77)
@@ -164,7 +162,7 @@ Le chemin `/ws/agent` est **obligatoire** dans `RELAY_WS_URL` : le minion se con
 
 | Port | Endpoint | Auth | Agent | Plugin | Admin | Notes |
 |------|----------|------|-------|--------|-------|-------|
-| **7770** | POST /api/register | jeton d'enrôlement ou clef pré-autorisée | ✓ | ✗ | ✗ | Challenge RSA-OAEP |
+| **7770** | POST /api/register | jeton d'enrôlement (obligatoire) | ✓ | ✗ | ✗ | Challenge RSA-OAEP |
 | **7770 / 7772** | GET /ws/agent | JWT(rôle agent) | ✓ | ✗ | ✗ | Dispatch de tâches ; autre rôle refusé |
 | **7770** | POST /api/exec, /api/upload, /api/fetch | jeton plugin | ✗ | ✓ | ✗ | REST bloquant |
 | **7770** | GET /api/inventory | jeton plugin | ✗ | ✓ | ✗ | `ADMIN_TOKEN` refusé (403) |
