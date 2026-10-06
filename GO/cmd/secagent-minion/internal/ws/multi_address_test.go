@@ -4,14 +4,10 @@ package ws
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
-	"fmt"
-	"math/big"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +17,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"secagent-server/internal/endpoints"
+	"secagent-server/internal/testnet"
 )
 
 // relayNode is a fake relay instance on a FIXED address that can be switched on and off (the
@@ -40,7 +37,7 @@ type relayNode struct {
 
 func newRelayNode(t *testing.T, on bool) *relayNode {
 	t.Helper()
-	n := &relayNode{t: t, addr: freeAddr(t)}
+	n := &relayNode{t: t, addr: testnet.ClosedAddr(t)}
 	if on {
 		n.start()
 	}
@@ -294,58 +291,4 @@ func TestMulti_ReEnrollmentSyncsTheWebSocketRotor(t *testing.T) {
 	if wsr.Head() != 1 {
 		t.Fatalf("after a re-enrollment through instance 2 the WebSocket must try instance 2 first, head %d", wsr.Head())
 	}
-}
-
-// ── ports: no bind-close-reuse window with the kernel's ephemeral allocations ──
-//
-// A node that is OFF must refuse TCP (the standby of an active/passive pair opens no port) and may
-// be switched ON later at the SAME address. A port obtained with ":0" and released is an EPHEMERAL
-// port: the kernel hands it to any outgoing connection or ":0" listener of a parallel test before
-// the node binds it again ("address already in use"). Addresses are therefore drawn OUTSIDE the
-// kernel's ephemeral range, never handed out twice by this process, and checked free right before use.
-var (
-	portMu   sync.Mutex
-	portUsed = map[int]bool{}
-)
-
-func ephemeralRangeStart() int {
-	b, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
-	if err != nil {
-		return 32768
-	}
-	var lo, hi int
-	if _, err := fmt.Sscanf(string(b), "%d %d", &lo, &hi); err != nil || lo < 2048 {
-		return 32768
-	}
-	return lo
-}
-
-func freeAddr(t *testing.T) string {
-	t.Helper()
-	portMu.Lock()
-	defer portMu.Unlock()
-	top := ephemeralRangeStart() - 1
-	bottom := 12000
-	if top-bottom < 1000 {
-		bottom = 1100
-	}
-	for i := 0; i < 500; i++ {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(top-bottom)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		port := bottom + int(n.Int64())
-		if portUsed[port] {
-			continue
-		}
-		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-		if err != nil {
-			continue
-		}
-		_ = ln.Close()
-		portUsed[port] = true
-		return fmt.Sprintf("127.0.0.1:%d", port)
-	}
-	t.Fatal("no free port outside the ephemeral range")
-	return ""
 }

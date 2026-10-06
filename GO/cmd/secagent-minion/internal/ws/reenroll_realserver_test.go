@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"secagent-server/cmd/secagent-minion/internal/enrollment"
+	"secagent-server/internal/testnet"
 )
 
 type syncBuffer struct {
@@ -53,15 +54,9 @@ func moduleRoot(t *testing.T) string {
 	}
 }
 
-func localAddr(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = l.Close() }()
-	return l.Addr().String()
-}
+// localAddr gives an address that the server process will bind: outside the ephemeral range and
+// reserved (a released ":0" port could be taken by anything before the process binds it).
+func localAddr(t *testing.T) string { t.Helper(); return testnet.ClosedAddr(t) }
 
 func TestReEnrollAgainstARealServer(t *testing.T) {
 	if testing.Short() {

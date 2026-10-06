@@ -14,7 +14,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -25,6 +24,7 @@ import (
 	"time"
 
 	"secagent-server/internal/endpoints"
+	"secagent-server/internal/testnet"
 )
 
 // registerServer implements the two protocol steps of POST /api/register.
@@ -65,16 +65,7 @@ func newRegisterServer(t *testing.T, agent *rsa.PublicKey, serverKey *rsa.Privat
 	return rs
 }
 
-func closedBase(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := l.Addr().String()
-	_ = l.Close()
-	return "http://" + addr
-}
+func closedBase(t *testing.T) string { t.Helper(); return "http://" + testnet.ClosedAddr(t) }
 
 func rotorFor(t *testing.T, bases ...string) *endpoints.Rotor {
 	t.Helper()
