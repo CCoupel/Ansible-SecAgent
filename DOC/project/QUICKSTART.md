@@ -1,218 +1,165 @@
-# Ansible-SecAgent — Quick Start Guide
+# Ansible-SecAgent — Quick Start v3.0.3
 
-## Déploiement Rapide
+**Durée estimée** : 10 minutes  
+**Prérequis** : Docker 20.10+, Docker Compose 2.0+, openssl
 
-### Depuis Windows (ou n'importe où)
+---
 
-```batch
-# Déployer serveur + minions
-.\deploy.bat all
+## 1️⃣ Préparer l'environnement (2 min)
 
-# Voir le statut
-.\deploy.bat status
+```bash
+cd DEPLOYMENT/qualif
+
+# Générer certificats TLS auto-signés
+openssl req -x509 -newkey rsa:2048 -keyout tls.key -out tls.crt \
+  -days 365 -nodes -subj "/CN=localhost"
+
+# Créer répertoire d'état
+mkdir -p state logs
+
+# Créer .env si absent (docker-compose.yml le référence)
+cat > .env <<'EOF'
+STATE_DIR=./state
+TLS_CERT=./tls.crt
+TLS_KEY=./tls.key
+ADMIN_ADDR=127.0.0.1:7771
+EOF
+```
+
+---
+
+## 2️⃣ Initialiser le relay (2 min)
+
+```bash
+# Créer le fichier d'état vierge
+docker compose run --rm secagent-server state init
+
+# Vérifier l'initialisation
+docker compose run --rm secagent-server state verify
+# Sortie : exit code 0 (OK)
+```
+
+---
+
+## 3️⃣ Lancer le relay (2 min)
+
+```bash
+# Démarrer le relay server
+docker compose up -d relay
+
+# Vérifier que les ports écoutent
+sleep 2
+curl -k https://localhost:7770/health
+# Réponse attendue : {"status":"ok","agents":0,"uptime_seconds":...}
+```
+
+---
+
+## 4️⃣ Enrôler et lancer les agents (2 min)
+
+```bash
+# Générer un token d'enrôlement (valide 1 heure)
+TOKEN=$(docker compose exec relay \
+  secagent-server admin token create --role agent --duration 1h | grep -oE '[a-zA-Z0-9._-]{80,}' | tail -1)
+
+echo "Token: $TOKEN"
+
+# Passer le token aux agents via docker compose
+export RELAY_ENROLLMENT_TOKEN=$TOKEN
+
+# Démarrer les agents
+docker compose up -d minion-01 minion-02 minion-03
+
+# Vérifier la connexion
+sleep 3
+docker compose logs minion-01 | grep -i "enrolled\|connected"
+# Chercher : "Enrolled successfully" + "WebSocket open"
+```
+
+---
+
+## 5️⃣ Vérifier l'inventaire (1 min)
+
+```bash
+# Générer un token admin
+ADMIN_JWT=$(docker compose exec relay \
+  secagent-server admin token create --role admin --duration 1h | grep -oE '[a-zA-Z0-9._-]{80,}' | tail -1)
+
+# Récupérer l'inventaire
+curl -s -k -H "Authorization: Bearer $ADMIN_JWT" \
+  https://localhost:7770/api/inventory | jq .
+
+# Résultat attendu :
+# {
+#   "_meta": {
+#     "hostvars": {
+#       "qualif-host-01": {"ansible_host": "...", "os": "Linux", ...},
+#       ...
+#     }
+#   },
+#   "all": {"hosts": ["qualif-host-01", "qualif-host-02", "qualif-host-03"]}
+# }
+```
+
+---
+
+## 6️⃣ Tester une exécution simple (1 min)
+
+```bash
+# Générer token plugin
+PLUGIN_JWT=$(docker compose exec relay \
+  secagent-server admin token create --role plugin --duration 1h | grep -oE '[a-zA-Z0-9._-]{80,}' | tail -1)
+
+# Exécuter une commande sur un agent (REST bloquant)
+curl -s -k -X POST \
+  -H "Authorization: Bearer $PLUGIN_JWT" \
+  -H "Content-Type: application/json" \
+  -d '{"cmd":"echo Hello from minion-01","timeout":10}' \
+  https://localhost:7770/api/exec/qualif-host-01 | jq .
+
+# Résultat : {"rc":0,"stdout":"Hello from minion-01\n","stderr":"","truncated":false}
+```
+
+---
+
+## 📋 Commandes Utiles
+
+```bash
+# Voir logs du relay
+docker compose logs relay -f
+
+# Voir logs d'un agent
+docker compose logs minion-01 -f
+
+# Redémarrer un agent
+docker compose restart minion-01
 
 # Arrêter tout
-.\deploy.bat stop
-```
+docker compose down
 
-### Depuis Linux/macOS
-
-```bash
-# Rendre exécutable
-chmod +x deploy.sh
-
-# Déployer serveur + minions
-./deploy.sh all
-
-# Voir le statut
-./deploy.sh status
-
-# Arrêter tout
-./deploy.sh stop
-```
-
-### Sur srv8 (192.168.1.218) via Docker Remote API
-
-Les scripts gèrent automatiquement la connexion à `tcp://192.168.1.218:2375`.
-
-```batch
-# Depuis Windows
-.\deploy.bat status
-
-# Depuis Linux
-./deploy.sh status
+# Nettoyer l'état (pour recommencer)
+rm -rf state/* && docker compose run --rm secagent-server state init
 ```
 
 ---
 
-## Déploiement Manuel (pas recommandé)
+## 🐛 Troubleshooting
 
-Si tu veux déployer manuellement sans les scripts :
-
-### Server uniquement
-
-```bash
-cd ansible_server
-docker compose up --build -d
-
-# Vérifier santé
-curl http://192.168.1.218:7770/health
-```
-
-### Minions uniquement (après server)
-
-```bash
-cd ansible_minion
-docker compose up --build -d
-
-# Vérifier logs
-docker logs secagent-minion-01
-docker logs secagent-minion-02
-docker logs secagent-minion-03
-```
+| Problème | Cause | Solution |
+|----------|-------|----------|
+| Relay ne démarre pas | Certificats manquants | Exécuter `openssl req -x509 ...` |
+| Agents ne se connectent pas | Token expiré | Générer nouveau token |
+| Status 401 on /api/inventory | JWT invalide | Vérifier l'expiration du JWT |
+| Inventaire vide | Agents pas connectés | Vérifier `docker compose logs minion-01` |
 
 ---
 
-## Commandes Utiles
+## 📚 Prochaines Étapes
 
-```bash
-# Statut des services
-./deploy.sh status
-
-# Logs du serveur
-./deploy.sh logs-server
-
-# Logs d'un agent (01, 02, ou 03)
-./deploy.sh logs-agent 01
-
-# Arrêter proprement
-./deploy.sh stop
-
-# Tout arrêter y compris les volumes
-cd ansible_server && docker compose down -v
-cd ../ansible_minion && docker compose down -v
-```
+1. **Deployer en production** : Voir [DEPLOYMENT/README.md](../../DEPLOYMENT/README.md)
+2. **Écrire des playbooks** : Utiliser plugin connection `relay`
+3. **Configurer les hooks** : Voir [DOC/server/HOOKS_SPEC.md](../server/HOOKS_SPEC.md)
 
 ---
 
-## Vérifications Après Déploiement
-
-```bash
-# 1. Server sain ?
-curl http://192.168.1.218:7770/health
-# {"status":"ok","db":"ok","nats":"ok"}
-
-# 2. Agents connectés ?
-docker logs secagent-minion-01 | grep "WebSocket connecté"
-docker logs secagent-minion-02 | grep "WebSocket connecté"
-docker logs secagent-minion-03 | grep "WebSocket connecté"
-
-# 3. Agents enregistrés en base ?
-# Les agents doivent d'abord être pré-autorisés (voir DEPLOYMENT.md)
-```
-
----
-
-## Déploiement Qualif Multi-Zones (v3.0.2+) (192.168.1.218)
-
-Pour la topologie multi-zones (relay-central + relay-dmz1 + relay-dmz2 avec topologie arbre) :
-
-### 1. Lancer les services
-
-```bash
-DOCKER_HOST=tcp://192.168.1.218:2375 \
-  docker compose -f DEPLOYMENT/qualif/docker-compose.proxy.yml up --build -d
-```
-
-> **Note** : les variables `RELAY_ENROLLMENT_TOKEN_*` sont **vides** au premier `up` — c'est
-> attendu. Les agents ne pourront pas s'enroller avant l'étape 2 (bootstrap).
-
-### 2. Bootstrap (tokens + relay nodes)
-
-Après que tous les services soient `healthy`, exécuter (idempotent — relançable sans doublon) :
-
-```bash
-DOCKER_HOST=tcp://192.168.1.218:2375 \
-  ADMIN_TOKEN=<votre-admin-token> \
-  bash scripts/bootstrap-qualif.sh
-```
-
-Le script crée automatiquement et dans le bon ordre :
-1. Les tokens d'enrollment pour chaque zone (relay-dmz1, relay-dmz2)
-2. Le token plugin Ansible sur relay-proxy
-3. L'enregistrement des relay nodes sur relay-proxy
-
-Les tokens générés sont écrits dans `DEPLOYMENT/qualif/.env.bootstrap` (permissions 600, non versionné).
-
-### 3. Mettre à jour `.env` et recréer les agents
-
-```bash
-# Copier les RELAY_ENROLLMENT_TOKEN_* depuis .env.bootstrap dans .env
-# puis recréer les containers (--force-recreate relit .env ; restart ne le fait pas) :
-DOCKER_HOST=tcp://192.168.1.218:2375 \
-  docker compose -f DEPLOYMENT/qualif/docker-compose.proxy.yml \
-  up -d --force-recreate agent-dmz1 agent-dmz2
-```
-
-### 4. Vérifier
-
-```bash
-ADMIN_TOKEN=<token> bash DEPLOYMENT/qualif/smoke-proxy.sh
-```
-
-Voir **`DEPLOYMENT/qualif/README.md`** pour le guide complet, les variables d'environnement
-et les limitations détaillées.
-
----
-
-## Structure
-
-```
-ansible-secagent/
-├── deploy.sh                 ← Linux/macOS
-├── deploy.bat               ← Windows
-├── ansible_server/
-│   ├── docker-compose.yml
-│   └── .env
-├── ansible_minion/
-│   └── docker-compose.yml
-└── ...
-```
-
-## Variables d'Environnement (optionnel)
-
-```bash
-# Utiliser un autre Docker host
-export DOCKER_HOST=unix:///var/run/docker.sock
-./deploy.sh status
-
-# Ou sur une seule commande
-DOCKER_HOST=unix:///var/run/docker.sock ./deploy.sh status
-```
-
----
-
-## Troubleshooting
-
-### "Cannot connect to Docker daemon at tcp://192.168.1.218:2375"
-
-→ Vérifier que Docker Remote API est accessible sur 192.168.1.218:2375
-→ Vérifier `DOCKER_HOST` environment variable
-
-### "Agents ne s'enregistrent pas"
-
-→ Vérifier que les clefs publiques sont pré-autorisées
-→ Voir DEPLOYMENT.md section "Pré-autoriser les agents"
-
-### "WebSocket connecté" mais pas de tâches
-
-→ Les agents sont bien connectés !
-→ Utiliser Ansible avec le plugin `relay` pour envoyer les tâches
-
----
-
-## Prochaines Étapes
-
-1. **Vérifier l'enrollment** → Voir DEPLOYMENT.md
-2. **Tester avec Ansible** → Voir README.md "E2E Testing"
-3. **Production Kubernetes** → Voir ARCHITECTURE.md
+**Questions ?** Consulter [DOC/](../) ou créer une issue sur GitHub.
