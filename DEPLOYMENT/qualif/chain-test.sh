@@ -74,8 +74,28 @@ bootstrap() {
   echo "bootstrap OK (jetons dans $CHAIN_DIR, non affiches)"
 }
 
-connected() { # $1 conteneur CLI, $2 commande (relays|minions), $3 nom, $4 colonne du statut : poll <= 90 s
-  wait_for "$3 connected" 90 bash -c "docker exec -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/ca.crt $1 /app/secagent-server $2 list | awk -v n='$3' -v c=$4 '\$1==n && \$c==\"connected\" {f=1} END{exit !f}'" >/dev/null
+connected() { # $1 conteneur CLI, $2 commande (relays|minions), $3 nom, $4 colonne du statut
+  # Attend (150 s max : backoff de reconnexion du minion jusqu'a 60 s) que $3 soit `connected` sur 3 releves
+  # CONSECUTIFS espaces de 2 s : un statut perime (« connected » herite de l'ancien maitre) ne suffit pas.
+  local ok=0 t0; t0=$(now)
+  while [ "$ok" -lt 3 ]; do
+    if docker exec -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/ca.crt "$1" /app/secagent-server "$2" list 2>/dev/null \
+       | awk -v n="$3" -v c="$4" '$1==n && $c=="connected" {f=1} END{exit !f}'; then ok=$((ok+1)); else ok=0; fi
+    awk -v a="$t0" -v b="$(now)" 'BEGIN{exit !(b-a>150)}' && fail "$3 n'est pas connected (150 s) sur $1"
+    sleep 2
+  done
+}
+
+# Attend (120 s max) que les DEUX minions apparaissent dans l'inventaire de la racine (propagation des hotes de
+# l'enfant) avant tout `ansible -m ping`.
+wait_inventory() {
+  local t0 inv; t0=$(now)
+  while :; do
+    inv="$(RELAY_TOKEN="$(cat "$RELAY_TOKEN_FILE")" "$INVENTORY_BIN" --list 2>/dev/null || true)"
+    if printf '%s' "$inv" | grep -q minion-root && printf '%s' "$inv" | grep -q minion-child; then return 0; fi
+    awk -v a="$t0" -v b="$(now)" 'BEGIN{exit !(b-a>120)}' && fail "minion-root et minion-child absents de l'inventaire de la racine apres 120 s"
+    sleep 3
+  done
 }
 
 control_env() { # variables du poste de controle Ansible : listes d'adresses, CA de test, jeton en FICHIER
@@ -92,9 +112,7 @@ smoke() {
   echo "== inventaire hierarchique (liste d'adresses de la racine)"
   control_env
   need INVENTORY_BIN
-  local inv; inv="$(RELAY_TOKEN="$(cat "$RELAY_TOKEN_FILE")" "$INVENTORY_BIN" --list)"
-  printf '%s' "$inv" | grep -q minion-root || fail "minion-root absent de l'inventaire"
-  printf '%s' "$inv" | grep -q minion-child || fail "minion-child (sous l'enfant) absent de l'inventaire de la racine"
+  wait_inventory
   echo "== ansible -m ping sur tous les hotes (plugin de connexion, CA de test)"
   local inv_script="$CHAIN_DIR/inventory.sh"
   printf '#!/bin/sh\nRELAY_TOKEN="$(cat "%s")" exec "%s" "$@"\n' "$RELAY_TOKEN_FILE" "$INVENTORY_BIN" | write_secret inventory.sh

@@ -244,7 +244,7 @@ jobs:
     name: Chaine en conteneurs (amorcage, smoke, bascule)
     needs: [docker-compose-checks]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       SECAGENT_IMAGE: secagent-server:ci
       SECAGENT_MINION_IMAGE: secagent-minion:ci
@@ -368,7 +368,7 @@ jobs:
     name: Sauvegarde et restauration (etat + RSA_MASTER_KEY)
     needs: [docker-compose-checks]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       SECAGENT_IMAGE: secagent-server:ci
       SECAGENT_MINION_IMAGE: secagent-minion:ci
