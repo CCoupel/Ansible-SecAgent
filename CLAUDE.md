@@ -51,23 +51,23 @@ ansible-secagent/
 ├── DEPLOYMENT/               # Scripts et configs de déploiement
 │   ├── deploy.sh / deploy.bat
 │   └── qualif/               # Docker Compose qualif (192.168.1.218)
-└── PYTHON/                   # Connection plugin Ansible (Python — contrainte Ansible)
+└── SECAGENT-PYTHON/          # Connection plugin Ansible (Python — contrainte Ansible)
 ```
 
 ## Stack technique
 
 - **Agent** : GO, gorilla/websocket, subprocess, RSA-4096, JWT
-- **Serveur** : GO, net/http, gorilla/websocket, NATS JetStream, SQLite (modernc)
+- **Serveur** : GO, net/http, gorilla/websocket, TLS natif, état fichier (v3.0.3+)
 - **Inventory** : GO binary standalone (`secagent-inventory`)
 - **Plugins Ansible** : Python (contrainte Ansible — ConnectionBase / InventoryModule)
 - **Tests** : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v`
-- **Déploiement** : systemd (agent), Docker Compose (qualif), Kubernetes (prod)
+- **Déploiement** : systemd (agent), Docker Compose multi-hôtes actif/passif (qualif + prod)
 
 ## Décisions techniques majeures (non négociables)
 
 - Transport : **WSS** obligatoire (TLS sur toutes les connexions)
 - Canal agent : **1 WebSocket persistante** par agent, multiplexée par `task_id`
-- Bus de messages : **NATS JetStream** (streams `RELAY_TASKS` + `RELAY_RESULTS`)
+- Dispatch des tâches : **WebSocket direct** (NATS retiré v3.0.3+), relay actif unique (actif/passif)
 - Plugin Ansible → serveur : **REST HTTP bloquant**
 - Auth : **JWT signé** (rôles `agent` / `plugin` / `admin`), blacklist JTI — voir `DOC/security/SECURITY.md`
 - `authorized_keys` : **table DB** (pas de fichiers), alimentée par API admin
@@ -119,7 +119,7 @@ Séquence correcte :
 | `dev-agent` | Développeur secagent-minion (GO, `GO/cmd/agent/`) | `.claude/agents/dev-agent.template.md` + compagnon `dev-agent.md` | permanent |
 | `dev-relay` | Développeur secagent-server (GO, `GO/cmd/server/`) | `.claude/agents/dev-relay.template.md` + compagnon `dev-relay.md` | permanent |
 | `dev-inventory` | Développeur secagent-inventory (GO, `GO/cmd/inventory/`) | `.claude/agents/dev-inventory.template.md` + compagnon `dev-inventory.md` | permanent |
-| `dev-connexion` | Développeur plugin connexion Ansible (Python, `PYTHON/`) | `.claude/agents/dev-connexion.template.md` (dev-plugin) + compagnon `dev-connexion.md` | permanent |
+| `dev-connexion` | Développeur plugin connexion Ansible (Python, `SECAGENT-PYTHON/`) | `.claude/agents/dev-connexion.template.md` (dev-plugin) + compagnon `dev-connexion.md` | permanent |
 | `test-writer` | Rédaction des tests (unitaires, intégration, E2E) | `.claude/agents/test-writer.template.md` | permanent |
 | `qa` | Exécution des tests, verdict GO/NOGO | `.claude/agents/qa.template.md` | permanent |
 | `security-reviewer` | Audit sécurité (TLS, JWT, become_pass, enrollment) | `.claude/agents/security-reviewer.md` | permanent |
