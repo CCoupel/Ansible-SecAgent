@@ -307,8 +307,9 @@ if stdinData != nil {
 
 | Variable | Défaut | Description |
 |---|---|---|
-| `RELAY_SERVER_URL` | `wss://localhost:7772/ws/agent` | URL(s) WSS du relay server — liste séparée par virgules pour failover (ex: `wss://relay1:7772/ws/agent,wss://relay2:7772/ws/agent`) |
-| `RELAY_API_URL` | `https://localhost:7770` | URL(s) HTTPS pour enrollment — liste séparée par virgules, pairées par position avec `RELAY_SERVER_URL` |
+| `RELAY_SERVER_URL` | `wss://localhost:7772/ws/agent` | URL(s) WSS du relay server — liste séparée par virgules pour failover (ex: `wss://relay1:7772/ws/agent,wss://relay2:7772/ws/agent`). **Historique** : anciennement `RELAY_WS_URL`, maintenant unifié en `RELAY_SERVER_URL`. Appairé par position avec `RELAY_API_URL` (mêmes longueurs de liste imposées) |
+| `RELAY_API_URL` | `https://localhost:7770` | URL(s) HTTPS pour enrollment — liste séparée par virgules, pairées par position avec `RELAY_SERVER_URL` (ex: 2 serveurs = 2 API URLs) |
+| `RELAY_WS_URL` | — | **Déprécié** — utiliser `RELAY_SERVER_URL` (unifié en v3.0.3+) |
 | `RELAY_PRIVATE_KEY` | `/etc/secagent-minion/id_rsa` | Chemin clef privée RSA-4096 |
 | `RELAY_JWT_PATH` | `/etc/secagent-minion/token.jwt` | Chemin token JWT |
 | `RELAY_MAX_TASKS` | `10` | Tâches simultanées max |
@@ -317,7 +318,42 @@ if stdinData != nil {
 
 ---
 
-## 12. Déploiement systemd
+## 11b. Environnement des tâches (liste blanche)
+
+Les tâches Ansible **ne reçoivent PAS** l'environnement complet du minion. Une liste blanche stricte prévient les fuites de secrets :
+
+**Variables **toujours interdites**:**
+- `RELAY_*` (tous) : enrollment token, JWT, clefs, URLs
+- Suffixes `*_TOKEN`, `*_KEY`, `*_SECRET`, `*_PASSWORD`, `*_PASS` (defense in depth)
+
+**Variables **autorisées**:**
+- `PATH`, `HOME`, `TZ`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`
+- Préfixe `LC_*` (locale settings)
+- **Aucune autre** — pas de variables utilisateur custom directement
+
+**Mécanisme :**
+- Ansible utilise `environment:` dans les playbooks → les variables sont écrites dans la command-line (`VAR=value cmd`), interprétées par le shell, pas passées via l'environnement du processus
+- `become_pass` voyage en `stdin`, jamais en environnement
+- Cette isolation empêche une playbook d'accéder aux secrets de la minion (enrollment token, JWT, etc.)
+
+---
+
+## 12. Ré-enrôlement et reconnexa
+
+Le minion gère automatiquement le ré-enrôlement en cas de token JWT expiré ou révoqué :
+
+1. **Close 4002 (token expiré)** → Appel immédiat à `POST /api/register` (enrollment) → nouveau JWT → reconnexion WS
+2. **Close 4003 (re-enrollment requis)** → Idem
+3. **Après échec d'enrollment (403 persistant)** → Backoff exponentiel : **1 s → 2 s → 4 s → 8 s → 16 s → 32 s → 60 s max**
+   - Chaque attempt journalise : `[ERROR] N consecutive authentication cycles without working WebSocket…`
+   - L'opérateur peut créer un nouveau jeton d'enrôlement pendant ce temps
+   - Le minion continue en boucle (pas d'abandonment, SIGTERM seul arrête)
+
+4. **Après exit 78 (enrollment refusé définitivement)** → **NE PAS redémarrer** (voir codes sortie §7)
+
+---
+
+## 13. Déploiement systemd
 
 ```ini
 # /etc/systemd/system/secagent-minion.service
