@@ -281,3 +281,81 @@ jobs:
         run: |
           bash DEPLOYMENT/qualif/chain-test.sh logs || true
           bash DEPLOYMENT/qualif/chain-test.sh down || true
+
+  # ---- Repetition a vide de la release (#174 L3) : AUCUNE publication, digest factice -------------------------
+  release-dryrun:
+    name: Repetition a vide de l'archive Compose
+    needs: [docker-compose-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Archive avec digest factice (meme script que release.yml)
+        run: |
+          set -euo pipefail
+          FAKE="sha256:$(printf '0%.0s' $(seq 64))"
+          bash scripts/ci/build_compose_archive.sh v0.0.0 0.0.0 "$FAKE" dist
+          bash scripts/ci/build_compose_archive.sh v0.0.0 0.0.0 "$FAKE" dist2   # reproductibilite de l'archive
+          cmp dist/secagent-compose-0.0.0.tar.gz dist2/secagent-compose-0.0.0.tar.gz
+          (cd dist && sha256sum ./* > SHA256SUMS-0.0.0.txt && sha256sum -c SHA256SUMS-0.0.0.txt)
+      - name: Le contenu de l'archive est valide (rendu Compose et controles)
+        env:
+          STATE_HOST_DIR: /mnt/state
+          TLS_CERT_DIR: /etc/tls
+          REPEATER_ID: ci
+          REPEATER_UPSTREAM_URL: https://parent.example:7770
+        run: |
+          set -euo pipefail
+          mkdir x && tar -xzf dist/secagent-compose-0.0.0.tar.gz -C x
+          cd x/secagent-compose-0.0.0
+          touch prod.env
+          grep -E 'image: ghcr.io/ccoupel/secagent-server:v0.0.0@sha256:[0-9a-f]{64}$' docker-compose.server.yml
+          docker compose --env-file .env.example -f docker-compose.server.yml config --format json > r.json
+          docker compose --env-file .env.example -f docker-compose.server.yml -f docker-compose.child.yml config --format json > c.json
+          python3 tools/check_compose.py --require-memory-limit r.json c.json
+      - name: Tests negatifs - l'archive est refusee avec latest ou NATS
+        run: |
+          set -u
+          FAKE="sha256:$(printf '0%.0s' $(seq 64))"
+          cp -r DEPLOYMENT/prod bad-latest && printf 'x-bad:\n  image: nginx:latest\n' >> bad-latest/docker-compose.server.yml
+          if STAGE_DIR=s1 SRC_DIR=bad-latest bash scripts/ci/build_compose_archive.sh v0.0.0 0.0.0 "$FAKE" o1; then echo "::error::latest accepte"; exit 1; fi
+          cp -r DEPLOYMENT/prod bad-nats && printf '# nats\n' >> bad-nats/docker-compose.server.yml
+          if STAGE_DIR=s2 SRC_DIR=bad-nats bash scripts/ci/build_compose_archive.sh v0.0.0 0.0.0 "$FAKE" o2; then echo "::error::NATS accepte"; exit 1; fi
+          if bash scripts/ci/build_compose_archive.sh v0.0.0 0.0.0 sha256:abc o3; then echo "::error::digest invalide accepte"; exit 1; fi
+          echo "refus attendus : OK"
+
+  # ---- Reproductibilite des images (#174 M1) : 2 builds locaux du meme commit, comparaison des digests --------
+  # Informatif : un ecart est un ::warning:: documente (cause probable : `apk` du minion), pas un echec.
+  reproducibility:
+    name: Reproductibilite ${{ matrix.image }}
+    needs: [docker-compose-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {image: secagent-server, dockerfile: Dockerfile}
+          - {image: secagent-minion, dockerfile: Dockerfile.agent}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Deux builds, comparaison des digests (aucun push)
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          for n in 1 2; do
+            docker buildx build --provenance=false --sbom=false --no-cache \
+              --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+              -f GO/${{ matrix.dockerfile }} \
+              --output "type=oci,dest=build$n.tar,rewrite-timestamp=true" GO
+            mkdir "o$n" && tar -xf "build$n.tar" -C "o$n"
+            python3 -c "import json;print(json.load(open('o$n/index.json'))['manifests'][0]['digest'])" > "d$n"
+          done
+          echo "build1=$(cat d1) build2=$(cat d2)" | tee -a "$GITHUB_STEP_SUMMARY"
+          if cmp -s d1 d2; then
+            echo "Reproductible : meme digest." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::${{ matrix.image }} : builds NON reproductibles ($(cat d1) != $(cat d2)). A documenter (cause) avant de passer en erreur."
+            for n in 1 2; do echo "couches build$n :"; python3 scripts/ci/oci_layers.py "o$n"; done
+          fi

@@ -317,29 +317,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          mkdir -p dist "stage/secagent-compose-${VERSION}"
-          cp -r DEPLOYMENT/prod/. "stage/secagent-compose-${VERSION}/"
-          rm -f "stage/secagent-compose-${VERSION}"/{prod.env,.env}
-          cp scripts/ci/check_compose.py "stage/secagent-compose-${VERSION}/tools/check_compose.py"
-          SRV="$(cat digests/secagent-server)"
-          for f in "stage/secagent-compose-${VERSION}"/docker-compose*.yml; do
-            sed -i -E "s#^([[:space:]]*image:[[:space:]]*)ghcr\.io/ccoupel/secagent-server:.*#\1ghcr.io/ccoupel/secagent-server:${TAG}@${SRV}#" "$f"
-          done
-          sed -i -E "s#^SECAGENT_VERSION=.*#SECAGENT_VERSION=${TAG}#" "stage/secagent-compose-${VERSION}/.env.example"
-          # Controles bloquants : aucun latest ni build:, chaque image en tag@digest, aucun NATS
-          if grep -rnE '(^|[[:space:]])build:|:latest' "stage/secagent-compose-${VERSION}"/docker-compose*.yml; then
-            echo "::error::'latest' ou 'build:' dans l'archive Compose"; exit 1
-          fi
-          if grep -rniE 'nats|jetstream' "stage/secagent-compose-${VERSION}"; then
-            echo "::error::Reference NATS dans l'archive Compose"; exit 1
-          fi
-          for f in "stage/secagent-compose-${VERSION}"/docker-compose.server.yml; do
-            grep -qE "image: ghcr.io/ccoupel/secagent-server:${TAG}@sha256:[0-9a-f]{64}$" "$f" \
-              || { echo "::error::$f : image non epinglee en tag@digest"; exit 1; }
-          done
-          # Archive reproductible (ordre, dates, proprietaires fixes)
-          tar --sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner \
-            -czf "dist/secagent-compose-${VERSION}.tar.gz" -C stage "secagent-compose-${VERSION}"
+          bash scripts/ci/build_compose_archive.sh "$TAG" "$VERSION" "$(cat digests/secagent-server)" dist
 
       - name: Binaires linux/amd64 + sommes de controle
         if: steps.exists.outputs.exists == 'false'
