@@ -307,9 +307,8 @@ if stdinData != nil {
 
 | Variable | Défaut | Description |
 |---|---|---|
-| `RELAY_SERVER_URL` | `wss://localhost:7772/ws/agent` | URL(s) WSS du relay server — liste séparée par virgules pour failover (ex: `wss://relay1:7772/ws/agent,wss://relay2:7772/ws/agent`). **Historique** : anciennement `RELAY_WS_URL`, maintenant unifié en `RELAY_SERVER_URL`. Appairé par position avec `RELAY_API_URL` (mêmes longueurs de liste imposées) |
-| `RELAY_API_URL` | `https://localhost:7770` | URL(s) HTTPS pour enrollment — liste séparée par virgules, pairées par position avec `RELAY_SERVER_URL` (ex: 2 serveurs = 2 API URLs) |
-| `RELAY_WS_URL` | — | **Déprécié** — utiliser `RELAY_SERVER_URL` (unifié en v3.0.3+) |
+| `RELAY_SERVER_URL` | `https://localhost:7770` | URL(s) HTTPS du relay server pour l'API d'enrollment — liste séparée par virgules pour failover (ex: `https://relay1:7770,https://relay2:7770`). Appairé par position avec `RELAY_WS_URL` (mêmes longueurs imposées) |
+| `RELAY_WS_URL` | `wss://localhost:7772/ws/agent` | URL(s) WSS du relay server pour le WebSocket agent — liste séparée par virgules, pairées par position avec `RELAY_SERVER_URL` (ex: 2 serveurs = 2 WS URLs : `wss://relay1:7772/ws/agent,wss://relay2:7772/ws/agent`) |
 | `RELAY_PRIVATE_KEY` | `/etc/secagent-minion/id_rsa` | Chemin clef privée RSA-4096 |
 | `RELAY_JWT_PATH` | `/etc/secagent-minion/token.jwt` | Chemin token JWT |
 | `RELAY_MAX_TASKS` | `10` | Tâches simultanées max |
