@@ -3,8 +3,8 @@ smoke_test.py — Smoke tests Phase 2 : secagent-server complet.
 
 Tests :
 1. GET /health                    → 200, status ok/degraded
-2. POST /api/admin/authorize      → 201, clef autorisée
-3. POST /api/register             → 200, JWT retourné
+2. POST /api/admin/tokens        → 201, jeton d'enrôlement à usage unique (#192c : plus d'enrôlement sans jeton)
+3. POST /api/register (2 phases)  → 200, JWT retourné (challenge nonce vérifié)
 4. WebSocket /ws/agent            → connexion ouverte
 5. GET /api/inventory             → format JSON Ansible valide
 6. secagent-minion Phase 1 connecté  → visible dans inventaire (status=connected)
@@ -57,34 +57,56 @@ async def test_health(client: httpx.AsyncClient) -> bool:
         return False
 
 
-async def test_admin_authorize(client: httpx.AsyncClient, hostname: str, pub_pem: str) -> bool:
-    print("\n--- Test 2 : POST /api/admin/authorize ---")
+async def test_admin_authorize(client: httpx.AsyncClient, hostname: str, pub_pem: str) -> tuple[bool, str]:
+    """Crée le jeton d'enrôlement à usage unique de ce hostname (l'enrôlement sans jeton n'existe plus)."""
+    import re
+    print("\n--- Test 2 : POST /api/admin/tokens (enrollment) ---")
     try:
         r = await client.post(
-            f"{RELAY_API_URL}/api/admin/authorize",
-            json={"hostname": hostname, "public_key_pem": pub_pem, "approved_by": "smoke-test"},
+            f"{RELAY_API_URL}/api/admin/tokens",
+            json={"role": "enrollment", "hostname_pattern": re.escape(hostname), "created_by": "smoke-test"},
             headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
         )
-        print(f"  HTTP {r.status_code} — {r.text[:200]}")
-        ok = r.status_code == 201
-        print(f"  {PASS if ok else FAIL} Admin authorize → {r.status_code}")
-        return ok
+        print(f"  HTTP {r.status_code}")
+        ok = r.status_code in (200, 201) and bool(r.json().get("token"))
+        print(f"  {PASS if ok else FAIL} Jeton d'enrôlement → {r.status_code}")
+        return ok, (r.json().get("token", "") if ok else "")
     except Exception as exc:
-        print(f"  {FAIL} Admin authorize : {exc}")
-        return False
+        print(f"  {FAIL} Jeton d'enrôlement : {exc}")
+        return False, ""
 
 
 async def test_enrollment(client: httpx.AsyncClient, hostname: str, pub_pem: str,
-                          priv_key) -> tuple[bool, str]:
-    print("\n--- Test 3 : POST /api/register ---")
+                          priv_key, enrollment_token: str) -> tuple[bool, str]:
+    print("\n--- Test 3 : POST /api/register (jeton + challenge) ---")
     try:
+        from cryptography.hazmat.primitives.asymmetric import padding
+        from cryptography.hazmat.primitives import hashes, serialization
+        oaep = padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+
+        # étape 1 : le serveur renvoie un nonce chiffré avec la clef publique de l'agent
         r = await client.post(
             f"{RELAY_API_URL}/api/register",
-            json={"hostname": hostname, "public_key_pem": pub_pem},
+            json={"hostname": hostname, "public_key_pem": pub_pem, "enrollment_token": enrollment_token},
         )
-        print(f"  HTTP {r.status_code}")
+        print(f"  étape 1 : HTTP {r.status_code}")
         if r.status_code != 200:
-            print(f"  {FAIL} Enrollment → {r.status_code} : {r.text[:200]}")
+            print(f"  {FAIL} Enrollment étape 1 → {r.status_code} : {r.text[:200]}")
+            return False, ""
+        step1 = r.json()
+        nonce = priv_key.decrypt(base64.b64decode(step1["challenge"]), oaep)
+
+        # étape 2 : preuve de possession de la clef privée = OAEP(nonce + jeton, clef publique du serveur)
+        server_pub = serialization.load_pem_public_key(step1["server_public_key_pem"].encode())
+        response = server_pub.encrypt(nonce + enrollment_token.encode(), oaep)
+        r = await client.post(
+            f"{RELAY_API_URL}/api/register",
+            json={"hostname": hostname, "public_key_pem": pub_pem, "enrollment_token": enrollment_token,
+                  "challenge_response": base64.b64encode(response).decode()},
+        )
+        print(f"  étape 2 : HTTP {r.status_code}")
+        if r.status_code != 200:
+            print(f"  {FAIL} Enrollment étape 2 → {r.status_code} : {r.text[:200]}")
             return False, ""
 
         data = r.json()
@@ -92,18 +114,7 @@ async def test_enrollment(client: httpx.AsyncClient, hostname: str, pub_pem: str
         assert "server_public_key_pem" in data, "server_public_key_pem manquant"
 
         # Déchiffre le JWT avec la clef privée RSA de l'agent
-        from cryptography.hazmat.primitives.asymmetric import padding
-        from cryptography.hazmat.primitives import hashes
-        ciphertext = base64.b64decode(data["token_encrypted"])
-        jwt_bytes = priv_key.decrypt(
-            ciphertext,
-            padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None,
-            ),
-        )
-        jwt_token = jwt_bytes.decode("utf-8")
+        jwt_token = priv_key.decrypt(base64.b64decode(data["token_encrypted"]), oaep).decode("utf-8")
         print(f"  JWT déchiffré OK ({len(jwt_token)} chars)")
         print(f"  {PASS} Enrollment agent → 200, JWT retourné")
         return True, jwt_token
@@ -232,8 +243,8 @@ async def main():
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         results["health"] = await test_health(client)
-        results["authorize"] = await test_admin_authorize(client, hostname, pub_pem)
-        ok_enroll, jwt_token = await test_enrollment(client, hostname, pub_pem, priv_key)
+        results["authorize"], enrollment_token = await test_admin_authorize(client, hostname, pub_pem)
+        ok_enroll, jwt_token = await test_enrollment(client, hostname, pub_pem, priv_key, enrollment_token)
         results["enrollment"] = ok_enroll
         if jwt_token:
             results["websocket"] = await test_websocket(jwt_token)
@@ -251,7 +262,7 @@ async def main():
     print(f"Cible : 192.168.1.218")
     print()
     print(f"{PASS if results.get('health') else FAIL} docker compose up sans erreur / GET /health → 200")
-    print(f"{PASS if results.get('authorize') else FAIL} Admin authorize → 201")
+    print(f"{PASS if results.get('authorize') else FAIL} Jeton d'enrôlement → 201")
     print(f"{PASS if results.get('enrollment') else FAIL} Enrollment agent → 200")
     print(f"{PASS if results.get('websocket') else FAIL} WS agent connectée")
     print(f"{PASS if results.get('inventory') else FAIL} Inventaire → format Ansible valide")
