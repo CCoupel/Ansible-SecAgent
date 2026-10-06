@@ -9,10 +9,10 @@
 ## 1. Connexion
 
 ```
-Endpoint  : WSS /ws/agent  (port 7772 via Caddy)
+Endpoint  : WSS /ws/agent  (port 7770 ou 7772, TLS natif v3.0.3)
 Initiateur: secagent-minion (sortant uniquement)
 Auth      : Authorization: Bearer <JWT HMAC-HS256>
-TLS       : obligatoire — connexion refusée sans TLS
+TLS       : obligatoire (TLS 1.3 natif) — connexion refusée sans TLS
 ```
 
 Handshake HTTP → upgrade WebSocket :
@@ -255,5 +255,5 @@ Si le sémaphore est saturé, l'agent répond immédiatement :
 
 - Une seule connexion WebSocket par agent (identifié par `hostname` extrait du JWT)
 - Toutes les tâches d'un même agent sont multiplexées sur cette connexion unique
-- Le serveur stocke `ws_connections[hostname]` en mémoire — perte sur restart node (NATS assure la HA)
+- Le serveur stocke `ws_connections[hostname]` en mémoire — perte sur restart node. La HA est assurée par l'état fichier (v3.0.3, voir DEPLOYMENT.md)
 - Heartbeat : ping WebSocket standard (pas de message applicatif dédié)
