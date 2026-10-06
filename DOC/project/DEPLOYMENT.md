@@ -37,7 +37,9 @@ Ansible-SecAgent v3.0.3 est composé de trois éléments :
 ## Déploiement en Qualification
 
 Pas à pas détaillé : [QUICKSTART.md](QUICKSTART.md). Compose réel : `DEPLOYMENT/qualif/docker-compose.server.yml`
-(services `secagent-server-a` et `secagent-server-b`). Les autres Compose de `qualif/` sont OBSOLETES.
+(services `secagent-server-a` et `secagent-server-b`). La topologie en chaîne (racine + relay enfant pull + 2 minions) est dans
+`DEPLOYMENT/qualif/docker-compose.chain.yml`, pilotée par `DEPLOYMENT/qualif/chain-test.sh` (voir `DEPLOYMENT/qualif/README.md`).
+Les anciens Compose `proxy`, `minion` et `ansible` ont été supprimés (#188). Images `linux/amd64` uniquement.
 
 ### Prérequis
 - Docker et Docker Compose installés
@@ -95,8 +97,9 @@ TOKEN=$(srv tokens create --role enrollment --expires 1h | grep -oE 'secagent_en
 ```
 
 Rôles de jeton : `enrollment`, `plugin`, `relay-parent` ; la révocation (`tokens revoke <id>`) ne vaut que pour
-`plugin` et `relay-parent`. Les agents sont démarrés selon la section « Agents » ci-dessous
-(`docker-compose.minion.yml` est OBSOLETE) ; vérifier leurs logs : enrôlement puis ouverture de la WebSocket.
+`plugin` et `relay-parent`. Les agents sont démarrés selon la section « Agents (variables d'environnement) » ci-dessous
+(unité systemd, ou service `minion-*` de `docker-compose.chain.yml` pour l'essai de qualif ; `docker-compose.minion.yml` a été supprimé) ;
+vérifier leurs logs : enrôlement puis ouverture de la WebSocket.
 
 ### Étape 4 : Vérifier l'inventaire
 
