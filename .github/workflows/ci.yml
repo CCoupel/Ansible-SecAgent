@@ -185,14 +185,6 @@ jobs:
           docker compose -f DEPLOYMENT/qualif/docker-compose.server.yml config --format json > render/qualif-server.json
           docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml config --format json > render/qualif-chain.json
           python3 scripts/ci/check_compose.py --require-memory-limit render/prod-root.json render/prod-child.json render/qualif-server.json render/qualif-chain.json
-          # Compose de qualif OBSOLETES (v3.0.3), listes explicitement : syntaxe seulement, exclus des controles de
-          # conformite ; ils doivent porter le bandeau OBSOLETE (une issue dediee les reconstruira).
-          for f in DEPLOYMENT/qualif/docker-compose.{minion,proxy,ansible}.yml; do
-            grep -q 'OBSOLETE v3.0.3' "$f" || { echo "::error::$f doit porter le bandeau OBSOLETE v3.0.3"; exit 1; }
-          done
-          for f in DEPLOYMENT/qualif/docker-compose.{minion,proxy,ansible}.yml; do
-            docker compose -f "$f" config -q || { echo "::error::$f invalide"; exit 1; }
-          done
 
       - name: Test negatif — un Compose qui publie 7771 sur toutes les interfaces doit echouer
         run: |
@@ -209,6 +201,8 @@ jobs:
           set -u
           fail=0
           if grep -rniE 'nats|jetstream' DEPLOYMENT/prod DEPLOYMENT/qualif/docker-compose.server.yml; then fail=1; fi
+          if grep -rniE 'RELAY_INSECURE_TLS|DATABASE_URL|caddy|^[[:space:]]*build:' --include='*.yml' DEPLOYMENT; then fail=1; fi
+          if grep -rniE 'nats|jetstream' DEPLOYMENT/qualif --include='*.yml' --include='*.sh'; then fail=1; fi
           if grep -niE 'nats|jetstream' GO/go.mod GO/go.sum; then fail=1; fi
           if grep -rniE 'nats-io|nats\.go|jetstream' GO --include='*.go' --exclude='*_test.go'; then fail=1; fi
           if [ "$fail" -ne 0 ]; then echo "::error::Reference a NATS reintroduite (#178)"; exit 1; fi
