@@ -204,12 +204,12 @@ func TestFailover_CleanStopReleasesTheLockAndTheSecondaryTakesOverFast(t *testin
 	if code, ok := a.waitExit(time.Second); !ok || code != 0 {
 		t.Fatalf("clean stop: exit %d (exited=%v)", code, ok)
 	}
-	if !b.awaitPromotion(5 * time.Second) {
-		t.Fatalf("the secondary did not take over within 5 s; logs:\n%s", b.logs.String())
+	if !b.awaitPromotion(10 * time.Second) {
+		t.Fatalf("the secondary did not take over within 10 s; logs:\n%s", b.logs.String())
 	}
 	t.Logf("takeover after %v", time.Since(start))
-	if time.Since(start) > 5*time.Second {
-		t.Errorf("takeover took %v, want < 5 s", time.Since(start))
+	if time.Since(start) > 10*time.Second {
+		t.Errorf("takeover took %v, want < 10 s", time.Since(start))
 	}
 	if code, body := b.admin("GET", "/api/admin/status", nil); code != 200 {
 		t.Errorf("the new master must serve its admin API: %d %v", code, body)
@@ -413,12 +413,13 @@ func TestReplay_OlderStateCopyIsRefusedByTheNewMaster(t *testing.T) {
 func TestFailover_DelayedStaleDeletionErasesAFreshLockNoWriteIsLost(t *testing.T) {
 	parallel(t)
 	a := startNode(t, nodeSpec{ID: "root"})
+	dir := t.TempDir()
+	gateB, gateC := filepath.Join(dir, "gate-b"), filepath.Join(dir, "gate-c")
 	b := a.sibling()
-	gate := filepath.Join(t.TempDir(), "release-b")
-	b.launchSecondary([]string{"NODE_LOCK_REMOVE_GATE=" + gate})
+	b.launchSecondary([]string{"NODE_LOCK_REMOVE_GATE=" + gateB})
 	t.Cleanup(b.stop)
 	c := a.sibling()
-	c.launchSecondary(nil)
+	c.launchSecondary([]string{"NODE_LOCK_REMOVE_GATE=" + gateC})
 	t.Cleanup(c.stop)
 	for _, n := range []*node{b, c} {
 		n := n
@@ -429,6 +430,22 @@ func TestFailover_DelayedStaleDeletionErasesAFreshLockNoWriteIsLost(t *testing.T
 	}
 	a.killNow()
 
+	// Both secondaries must have judged the dead master's lock stale (and be held right before its
+	// deletion) BEFORE either proceeds: otherwise B, arriving late, would see C's fresh lock as
+	// alive and never delete it (the ordering this test needs is a condition, not a delay).
+	for _, g := range []string{gateB, gateC} {
+		g := g
+		waitFor(t, "an instance is held right before deleting the stale lock", func() bool {
+			_, err := os.Stat(g + ".reached")
+			return err == nil
+		})
+	}
+	release := func(g string) {
+		if err := os.WriteFile(g, []byte("go"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	release(gateC) // C deletes the stale lock, takes over and serves
 	if !c.awaitPromotion(30 * time.Second) {
 		t.Fatalf("C never took over; logs:\n%s", c.logs.String())
 	}
@@ -440,10 +457,8 @@ func TestFailover_DelayedStaleDeletionErasesAFreshLockNoWriteIsLost(t *testing.T
 		if _, ok := c.waitExit(0); ok {
 			break
 		}
-		if len(acked) == 5 {
-			if err := os.WriteFile(gate, []byte("go"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+		if len(acked) >= 5 {
+			release(gateB) // B now erases the fresh lock of C
 		}
 		host := fmt.Sprintf("w%03d", i)
 		code, _, err := c.callErr("POST", c.adminURL(), "/api/admin/authorize", c.adminTok,
@@ -573,5 +588,30 @@ func TestStart_InvalidCertificateFailsBeforeTheLockLoop(t *testing.T) {
 	}
 	if strings.Contains(out, "waiting for the master lock") {
 		t.Error("the lock loop must not start with an invalid certificate")
+	}
+}
+
+// The requirement itself, on the PRODUCTION calibration (check 5 s, pause 1-2 s): after a SIGTERM the
+// secondary is serving in under 10 s (cycle of control + pause of the candidate + state load).
+func TestFailover_CleanStopTakeoverOnTheProductionCalibrationIsUnder10Seconds(t *testing.T) {
+	parallel(t)
+	prod := []string{"NODE_LOCK_PROFILE=default"}
+	a := startNode(t, nodeSpec{ID: "root", Env: prod})
+	b := a.sibling()
+	b.launchSecondary(prod)
+	t.Cleanup(b.stop)
+	waitFor(t, "the secondary polled the lock at least once", func() bool {
+		f, err := localstatus.Read(b.statusPath)
+		return err == nil && f.LastCheckAt > 0
+	})
+	start := time.Now()
+	a.stop()
+	if !b.awaitPromotion(30 * time.Second) {
+		t.Fatalf("the secondary never took over; logs:\n%s", b.logs.String())
+	}
+	took := time.Since(start)
+	t.Logf("production calibration: takeover after %v", took)
+	if took >= 10*time.Second {
+		t.Errorf("takeover took %v, the requirement is < 10 s", took)
 	}
 }

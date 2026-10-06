@@ -106,10 +106,12 @@ func TestNodeProcess(t *testing.T) {
 
 	// NODE_LOCK_REMOVE_GATE: this instance waits between judging a lock stale and deleting it
 	// (case 5 of #162: a process frozen at that exact point erases a lock someone else just took).
-	// NODE_LOCK_REMOVE_GATE=<file>: the deletion waits until that file exists (the test releases it
-	// once the other instance is master and serving: deterministic whatever the machine load).
+	// NODE_LOCK_REMOVE_GATE=<file>: the instance writes <file>.reached when it judged the lock stale, then
+	// waits until <file> exists before deleting it (the test releases the gates in the order it needs:
+	// deterministic whatever the machine load).
 	if gate := os.Getenv("NODE_LOCK_REMOVE_GATE"); gate != "" {
 		cfg.LockHooks.BeforeRemove = func() {
+			_ = os.WriteFile(gate+".reached", []byte("x"), 0o600) // observable: this instance judged the lock stale
 			for i := 0; i < 6000; i++ {
 				if _, err := os.Stat(gate); err == nil {
 					return
