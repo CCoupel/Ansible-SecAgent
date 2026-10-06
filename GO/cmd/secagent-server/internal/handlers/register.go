@@ -466,10 +466,13 @@ func RegisterAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// -----------------------------------------------------------------------
-	// Legacy flow: authorized_keys lookup (backward-compatible)
-	// -----------------------------------------------------------------------
-	registerAgentLegacy(w, ctx, req)
+	// No enrollment token: refused (#192c). The historical "pre-authorized key" flow answered with a
+	// JWT and a NEW JTI without any proof that the caller holds the private key and without looking at
+	// the revocation: a revoked agent re-registered itself, and anybody knowing a hostname and its
+	// (public) key replaced the JTI of an enrolled agent. Every enrollment now goes through an
+	// enrollment token AND the nonce challenge (registerAgentWithToken).
+	log.Printf("[SECURITY WARNING] enrollment refused: no enrollment token (hostname=%q)", req.Hostname)
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": "enrollment_token_required"})
 }
 
 // registerAgentWithToken handles enrollment-token based registration (SECURITY.md §3).
@@ -604,65 +607,6 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 	writeJSON(w, http.StatusOK, ChallengeResponse{
 		Challenge:       challengeEncrypted,
 		ServerPublicKey: pubPEM,
-	})
-}
-
-// registerAgentLegacy handles the legacy authorized_keys enrollment flow (backward-compat).
-func registerAgentLegacy(w http.ResponseWriter, ctx context.Context, req RegisterRequest) {
-	authKey, err := registerStore.GetAuthorizedKey(ctx, req.Hostname)
-	if err != nil {
-		log.Printf("RegisterAgent GetAuthorizedKey: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
-		return
-	}
-	if authKey == nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized_hostname"})
-		return
-	}
-
-	if strings.TrimSpace(authKey.PublicKeyPEM) != req.PublicKeyPEM {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "public_key_mismatch"})
-		return
-	}
-
-	server.mu.RLock()
-	jwtSecret := server.JWTSecret
-	pubPEM := server.PublicPEM
-	jwtTTL := server.JWTttl
-	server.mu.RUnlock()
-
-	jti := uuid.New().String()
-	now := time.Now()
-	claims := jwt.MapClaims{
-		"sub":  req.Hostname,
-		"role": "agent",
-		"jti":  jti,
-		"iat":  now.Unix(),
-		"exp":  now.Add(jwtTTL).Unix(),
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	rawJWT, err := token.SignedString([]byte(jwtSecret))
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "jwt_generation_failed"})
-		return
-	}
-
-	tokenEncrypted, err := encryptWithPublicKey(rawJWT, req.PublicKeyPEM)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_public_key"})
-		return
-	}
-
-	if _, err := registerStore.RegisterAgent(ctx, req.Hostname, req.PublicKeyPEM, jti); err != nil {
-		log.Printf("RegisterAgent persist: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, RegisterResponse{
-		TokenEncrypted:     tokenEncrypted,
-		ServerPublicKeyPEM: pubPEM,
 	})
 }
 

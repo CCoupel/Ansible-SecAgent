@@ -37,34 +37,19 @@ func preAuthorize(t *testing.T, hostname, pubKeyPEM string) {
 	}
 }
 
-// TestRegisterAgentSuccess tests successful agent registration
+// TestRegisterAgentSuccess tests a successful registration (enrollment token + nonce challenge, #192c)
 func TestRegisterAgentSuccess(t *testing.T) {
 	// Must use 4096-bit key: RSA-OAEP/SHA-256 with 2048-bit key can only
 	// encrypt ~190 bytes, but a JWT is ~300 bytes.
 	privKey, pubKeyPEM := genRSAPubPEM(t, 4096)
-	_ = privKey
-
 	hostname := "test-agent-01"
-	preAuthorize(t, hostname, pubKeyPEM)
+	token := "secagent_enr_register_success_01"
+	insertEnrollmentToken(t, "tok-register-success-01", token, hostname, false, nil)
 
-	req := RegisterRequest{
-		Hostname:     hostname,
-		PublicKeyPEM: pubKeyPEM,
+	code, resp := fullEnrollment(t, hostname, token, privKey, pubKeyPEM)
+	if code != http.StatusOK || resp == nil {
+		t.Fatalf("RegisterAgent: expected 200, got %d", code)
 	}
-
-	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest("POST", "/api/register", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-
-	RegisterAgent(w, httpReq)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("RegisterAgent: expected 200, got %d — body: %s", w.Code, w.Body.String())
-	}
-
-	var resp RegisterResponse
-	mustUnmarshal(t, w.Body.Bytes(), &resp)
-
 	if resp.TokenEncrypted == "" {
 		t.Error("expected token_encrypted, got empty string")
 	}
@@ -93,33 +78,20 @@ func TestRegisterAgentUnauthorizedHostname(t *testing.T) {
 	}
 }
 
-// TestRegisterAgentKeyMismatch tests that a key different from the authorized one is rejected
-func TestRegisterAgentKeyMismatch(t *testing.T) {
+// TestRegisterAgentNoTokenWhateverTheKey: without an enrollment token the answer is the same 403
+// whether the key is pre-authorized, different or unknown (#192c: no oracle, no tokenless flow).
+func TestRegisterAgentNoTokenWhateverTheKey(t *testing.T) {
 	_, authorizedPEM := genRSAPubPEM(t, 4096)
 	_, differentPEM := genRSAPubPEM(t, 4096)
-
 	hostname := "test-agent-mismatch"
 	preAuthorize(t, hostname, authorizedPEM)
-
-	req := RegisterRequest{
-		Hostname:     hostname,
-		PublicKeyPEM: differentPEM, // different from what was authorized
-	}
-
-	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest("POST", "/api/register", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-
-	RegisterAgent(w, httpReq)
-
-	if w.Code != http.StatusForbidden {
-		t.Errorf("expected 403, got %d", w.Code)
-	}
-
-	var resp map[string]string
-	mustUnmarshal(t, w.Body.Bytes(), &resp)
-	if resp["error"] != "public_key_mismatch" {
-		t.Errorf("expected public_key_mismatch, got: %v", resp["error"])
+	for name, key := range map[string]string{"the authorized key": authorizedPEM, "a different key": differentPEM} {
+		w := tokenlessRegister(hostname, key)
+		var resp map[string]string
+		mustUnmarshal(t, w.Body.Bytes(), &resp)
+		if w.Code != http.StatusForbidden || resp["error"] != "enrollment_token_required" {
+			t.Errorf("%s: %d %v, want 403 enrollment_token_required", name, w.Code, resp)
+		}
 	}
 }
 
@@ -386,14 +358,15 @@ func TestRegisterAgent_BodyClosedOnDecodeError(t *testing.T) {
 	})
 
 	t.Run("success_path", func(t *testing.T) {
-		privKey, pubKeyPEM := genRSAPubPEM(t, 4096)
-		_ = privKey
+		_, pubKeyPEM := genRSAPubPEM(t, 4096)
 		hostname := "spy-test-agent-01"
-		preAuthorize(t, hostname, pubKeyPEM)
+		token := "secagent_enr_spy_body_closed_01"
+		insertEnrollmentToken(t, "tok-spy-01", token, hostname, false, nil)
 
 		req := RegisterRequest{
-			Hostname:     hostname,
-			PublicKeyPEM: pubKeyPEM,
+			Hostname:        hostname,
+			PublicKeyPEM:    pubKeyPEM,
+			EnrollmentToken: token, // step 1: a valid token gets the nonce challenge (200)
 		}
 		body, _ := json.Marshal(req)
 		spy := &spyReadCloser{Reader: bytes.NewReader(body)}
@@ -402,7 +375,7 @@ func TestRegisterAgent_BodyClosedOnDecodeError(t *testing.T) {
 		w := httptest.NewRecorder()
 		RegisterAgent(w, httpReq)
 		if w.Code != http.StatusOK {
-			t.Errorf("expected 200 on valid enroll, got %d — body: %s", w.Code, w.Body.String())
+			t.Errorf("expected 200 on a valid step 1, got %d — body: %s", w.Code, w.Body.String())
 		}
 		if spy.closeCalled == 0 {
 			t.Error("Body.Close() was NOT called on success path — defer may be misplaced")

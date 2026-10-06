@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -420,37 +421,89 @@ func TestEnrollmentTokenChallengeResponseInvalidBase64(t *testing.T) {
 }
 
 // ========================================================================
-// Tests: backward-compatibility (legacy authorized_keys flow unchanged)
+// Tests: no enrollment without a token (#192c)
 // ========================================================================
 
-func TestEnrollmentTokenLegacyFlowUnchanged(t *testing.T) {
-	useFreshStores(t)
-	agentPrivKey, agentPubPEM := genRSAPubPEM(t, 4096)
-	_ = agentPrivKey
+// The historical tokenless flow ("pre-authorized key, one step") is gone: it issued a JWT and a NEW JTI
+// without any proof of possession of the private key and without looking at the revocation.
+func tokenlessRegister(hostname, pubPEM string) *httptest.ResponseRecorder {
+	body, _ := json.Marshal(RegisterRequest{Hostname: hostname, PublicKeyPEM: pubPEM})
+	w := httptest.NewRecorder()
+	RegisterAgent(w, httptest.NewRequest("POST", "/api/register", bytes.NewReader(body)))
+	return w
+}
 
-	hostname := "enroll-legacy-01"
+func TestRegisterWithoutEnrollmentTokenIsRefused(t *testing.T) {
+	useFreshStores(t)
+	_, agentPubPEM := genRSAPubPEM(t, 4096)
+	hostname := "enroll-tokenless-01"
 	if err := registerStore.AddAuthorizedKey(context.Background(), hostname, agentPubPEM, "test"); err != nil {
 		t.Fatalf("AddAuthorizedKey: %v", err)
 	}
-
-	// No enrollment_token → legacy flow
-	req := RegisterRequest{
-		Hostname:     hostname,
-		PublicKeyPEM: agentPubPEM,
+	w := tokenlessRegister(hostname, agentPubPEM) // the key IS pre-authorized: it must not matter
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "enrollment_token_required") {
+		t.Fatalf("tokenless register: %d %s, want 403 enrollment_token_required", w.Code, w.Body.String())
 	}
-	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest("POST", "/api/register", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-	RegisterAgent(w, httpReq)
+	if strings.Contains(w.Body.String(), "token_encrypted") {
+		t.Error("a refused enrollment must not carry a token")
+	}
+	if a, _ := registerStore.GetAgent(context.Background(), hostname); a != nil {
+		t.Error("a refused enrollment must not create the agent")
+	}
+}
 
-	if w.Code != http.StatusOK {
-		t.Errorf("legacy flow: expected 200, got %d — body: %s", w.Code, w.Body.String())
+// The revocation cannot be undone by registering again without a token, and nobody can replace the JTI
+// of an enrolled agent knowing only its hostname and public key.
+func TestRegisterWithoutTokenCannotUndoARevocationNorReplaceAJTI(t *testing.T) {
+	useFreshStores(t)
+	agentPriv, agentPubPEM := genRSAPubPEM(t, 4096)
+	hostname := "enroll-tokenless-02"
+	token := "secagent_enr_tokenless_revoke_02"
+	insertEnrollmentToken(t, "tok-tokenless-02", token, hostname, false, nil)
+	if code, _ := fullEnrollment(t, hostname, token, agentPriv, agentPubPEM); code != http.StatusOK {
+		t.Fatalf("setup enrollment: %d", code)
+	}
+	before, _ := registerStore.GetAgent(context.Background(), hostname)
+	if before == nil {
+		t.Fatal("setup: no agent")
 	}
 
-	var resp RegisterResponse
-	mustDecode(t, w.Body, &resp)
-	if resp.TokenEncrypted == "" {
-		t.Error("legacy flow: expected token_encrypted")
+	// 40 forged tokenless requests (hostname + public key are not secrets): the JTI must not move
+	for i := 0; i < 40; i++ {
+		if w := tokenlessRegister(hostname, agentPubPEM); w.Code != http.StatusForbidden {
+			t.Fatalf("forged request %d: %d", i, w.Code)
+		}
+	}
+	if cur, _ := registerStore.GetAgent(context.Background(), hostname); cur.TokenJTI != before.TokenJTI {
+		t.Fatal("a tokenless request replaced the JTI of an enrolled agent")
+	}
+
+	// revoke (blacklist the current JTI), then register again without a token
+	reason := "admin_revoke"
+	if err := registerStore.AddToBlacklist(context.Background(), before.TokenJTI, hostname, time.Now().Add(25*time.Hour).Format(time.RFC3339), &reason); err != nil {
+		t.Fatal(err)
+	}
+	if w := tokenlessRegister(hostname, agentPubPEM); w.Code != http.StatusForbidden {
+		t.Fatalf("a revoked agent registering without a token: %d, want 403", w.Code)
+	}
+	cur, _ := registerStore.GetAgent(context.Background(), hostname)
+	if cur.TokenJTI != before.TokenJTI {
+		t.Error("the revoked agent obtained a new JTI")
+	}
+	if bl, _ := registerStore.IsJTIBlacklisted(context.Background(), cur.TokenJTI); !bl {
+		t.Error("the revoked JTI must stay blacklisted")
+	}
+}
+
+// Enrollment through a token and the nonce challenge is unchanged.
+func TestEnrollmentWithATokenStillWorksAfterTheTokenlessFlowWasRemoved(t *testing.T) {
+	useFreshStores(t)
+	priv, pub := genRSAPubPEM(t, 4096)
+	hostname := "enroll-tokenless-03"
+	token := "secagent_enr_tokenless_ok_03"
+	insertEnrollmentToken(t, "tok-tokenless-03", token, hostname, false, nil)
+	if code, resp := fullEnrollment(t, hostname, token, priv, pub); code != http.StatusOK || resp == nil || resp.TokenEncrypted == "" {
+		t.Fatalf("token enrollment: %d %+v", code, resp)
 	}
 }
 
