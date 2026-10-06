@@ -67,8 +67,7 @@ ansible-secagent/
 │   └── cmd/secagent-inventory/   # Inventaire Ansible (GO binaire)
 │
 ├── SECAGENT-PYTHON/              # Plugins Ansible (Python — contrainte Ansible)
-│   ├── ansible_plugins/connection_plugins/relay.py
-│   └── ansible_plugins/inventory_plugins/secagent.py
+│   └── ansible_plugins/connection_plugins/relay.py   # seul plugin Python (l'inventaire est le binaire GO)
 │
 ├── DOC/                          # Documentation (technique et opérationnelle)
 │   ├── common/ARCHITECTURE.md    # Ce fichier
@@ -78,9 +77,9 @@ ansible-secagent/
 │   └── project/QUICKSTART.md     # Démarrage rapide
 │
 └── DEPLOYMENT/
-    ├── docker-compose.yml        # Stack locale (TLS, état, multi-hôtes)
-    ├── prod/docker-compose.yml   # Stack production actif/passif NFS
-    └── qualif/                   # Configuration qualification
+    ├── prod/docker-compose.server.yml  # Production : relay racine, actif/passif (STATE_DIR partagé)
+    ├── prod/docker-compose.child.yml   # Production : surcharge pour un relay enfant
+    └── qualif/docker-compose.{server,minion,proxy,ansible}.yml   # Qualification
 ```
 
 ### Rôles des composants (v3.0.3)
@@ -91,7 +90,7 @@ ansible-secagent/
 | `secagent-server` (GO) | Relay central, WebSocket direct (7770/7772), API REST, admin CLI | GO | Binaire standalone, état fichier (STATE_DIR), TLS natif, actif/passif |
 | `secagent-inventory` (GO) | Inventaire compatible Ansible `--list`/`--host` | GO | Binaire standalone, multi-adresses, support repeater |
 | `relay.py` (Ansible plugin) | Connection plugin — remplace SSH, appels REST bloquants | Python | **Contrainte Ansible** : API `ConnectionBase` Python |
-| `secagent.py` (Ansible plugin) | Inventory plugin — expose agents et relays hiérarchiques | Python | **Contrainte Ansible** : API `InventoryModule` Python |
+| *(pas de plugin d'inventaire Python)* | L'inventaire est fourni par le binaire `secagent-inventory` (ci-dessus) ; le plugin Python `secagent_inventory.py` n'a jamais été livré | — | Voir `DOC/plugins/PLUGINS_SPEC.md` §1b |
 
 **Stack technique v3.0.3** (plus de NATS, SQLite, FastAPI, Kubernetes) :
 - **Agent** : GO, gorilla/websocket, subprocess, RSA-4096, JWT
@@ -114,9 +113,9 @@ ansible-secagent/
                    │          │
           ┌────────▼──┐   ┌───▼──────────┐
           │ Relay #1  │   │  Relay #2    │
-          │ (ACTIF)   │   │  (PASSIF)    │
-          │ Port 7770 │   │  Port 7770   │
-          │ Port 7772 │   │  Port 7772   │
+          │ (MAÎTRE)  │   │ (SECONDAIRE) │
+          │ 7770/7771 │   │  AUCUN port  │
+          │ 7772      │   │  ouvert      │
           └────────┬──┘   └───┬──────────┘
                    │          │
           ┌────────▼──────────▼────────┐
@@ -132,7 +131,12 @@ ansible-secagent/
 |---|---|---|---|---|
 | 1 | Session agent | `secagent-minion` | Relay Server | WSS (WebSocket over TLS) |
 | 2 | Exécution tâche | Connection Plugin | Relay Server API | HTTPS (REST bloquant) |
-| 3 | Relay-to-Relay (repeater) | Relay enfant ou parent | Relay parent | WSS (port 7772) |
+| 3 | Relay-to-Relay (repeater) | Relay enfant ou parent | Relay parent | WSS (`/ws/relay`, port 7772 ou 7770) |
+
+Les ports : 7770 = API REST (+ `/ws/agent` et `/ws/relay`), 7771 = API admin, 7772 = listener WebSocket dédié
+(`/ws/agent` + `/ws/relay`, `server/routers.go`). 7772 n'est pas une redondance dépréciée : c'est le port
+par défaut de `RELAY_WS_URL` du minion (`wss://localhost:7772/ws/agent`, `secagent-minion/main.go:407`). Seul le
+maître ouvre ces ports ; le secondaire n'en ouvre aucun.
 
 **v3.0.3 remplace NATS par WebSocket direct.** État persistant centralisé en fichier (STATE_DIR) avec verrou actif/passif.
 
@@ -324,9 +328,13 @@ Pour la haute disponibilité, un **agent peut avoir plusieurs adresses de relay*
 
 ```
 RELAY_SERVER_URL="https://relay1:7770,https://relay2:7770"
-RELAY_WS_URL="wss://relay1:7772,wss://relay2:7772"
+RELAY_WS_URL="wss://relay1:7772/ws/agent,wss://relay2:7772/ws/agent"
 → tente relay1, si échec → tente relay2
 ```
+
+Le chemin **`/ws/agent` est obligatoire** dans chaque entrée de `RELAY_WS_URL` : le minion dialle l'URL telle quelle
+(`dispatcher.go:554`), sans ajouter de chemin. Les deux listes sont **appariées par position** (même relay au même
+index) et doivent avoir la même longueur, sinon le minion refuse de démarrer (`main.go:385`).
 
 Voir DEPLOYMENT/README.md pour la configuration multi-adresses.
 
@@ -1009,11 +1017,19 @@ Relay #2 (passif) → attend le verrou
 
 Agent maintient connexion à Relay #1.
 
-Relay #1 crash → le verrou est libéré
-  → Relay #2 acquiert le verrou
-  → Redevient actif, restaure l'état depuis relay.state
+Arrêt propre de Relay #1 (SIGTERM) → le verrou est relâché explicitement
+  → Relay #2 le détecte (sondage toutes les 5 s) et l'acquiert : reprise en quelques secondes
+Crash / kill -9 / perte du nœud → le fichier relay.lock RESTE : ce n'est pas un flock du
+  système de fichiers (fichier créé O_EXCL + compteur de battement). Relay #2 attend que le
+  compteur n'ait pas changé pendant 5 min (MasterStale) avant de le considérer mort.
+  → Relay #2 acquiert le verrou, restaure l'état depuis relay.state
   → Agent se reconnecte automatiquement (backoff, tentatives multi-adresses)
 ```
+
+Paramètres (`internal/lock/params.go`, constantes, aucune variable d'environnement) : battement du maître 30 s,
+contrôle/sondage 5 s, abandon volontaire du verrou après 3 min sans battement réussi, maître déclaré mort après 5 min,
+candidat abandonné après 10 s, pause aléatoire 1–2 s entre création et relecture. Un maître qui perd le verrou
+sort avec le code **75** et redémarre en secondaire (`restart: unless-stopped`).
 
 ### Gestion des connexions WebSocket (failover)
 
@@ -1032,7 +1048,7 @@ Voir §20 pour les détails de persistance. Le fichier d'état contient :
 - Liste des agents enregistrés + tokens JTI
 - Blacklist JTI (révocations)
 - authorized_keys (clefs d'enrollment)
-- Action log JSON Lines (non-persistant, nettoyage par le serveur)
+- Le journal des actions de hooks n'est **pas** dans ce fichier : c'est un fichier séparé `actions.log` (voir §20)
 
 ### Capacité estimée (v3.0.3)
 
@@ -1047,31 +1063,32 @@ Voir §20 pour les détails de persistance. Le fichier d'état contient :
 
 - **Pas de "tâches en transit"** : une tâche perd sa réponse si l'agent se déconnecte (timeout → relay retourne HTTP 504 → Ansible retry)
 - **Pas de rejeu** : au failover du relay, les agents ne re-exécutent pas les tâches déjà faites (write_seq anti-rejeu dans STATE_SPEC.md)
-- **Verrou réseau** : si le NFS est lent/hors ligne, les deux relays se bloquent (accès exclusif) — voir DEPLOYMENT.md pour les bonnes pratiques
+- **Verrou et stockage partagé** : un maître qui ne parvient plus à écrire son battement pendant 3 min abandonne le verrou (`lock/lock.go`) et sort avec le code 75 ; une écriture plus lente que 500 ms annule une candidature. Un stockage partagé lent ou instable provoque donc des bascules, pas un blocage silencieux — voir DEPLOYMENT/prod/README.md (stockage non testé = non supporté)
 
 ---
 
 ## 16. Configuration
 
-### Agent (`/etc/ansible-secagent/agent.conf`)
+### Agent (`secagent-minion` — variables d'environnement uniquement)
 
-```ini
-[relay]
-server_url = wss://relay.example.com/ws/agent
-token_file = /etc/ansible-secagent/token.jwt
-key_file = /etc/ansible-secagent/id_rsa
+Le minion n'a **aucun fichier de configuration** : tout vient de l'environnement (unité systemd `Environment=` /
+`EnvironmentFile=`), lu par `loadConfig()` (`secagent-minion/main.go`).
 
-[agent]
-hostname =                    # auto-détecté si vide (socket.gethostname())
-max_concurrent_tasks = 10
-async_jobs_dir = /var/lib/ansible-secagent/async/
-stdout_max_bytes = 5242880    # 5MB
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `RELAY_SERVER_URL` | `https://localhost:7770` | URL(s) REST du relay (liste séparée par des virgules) |
+| `RELAY_WS_URL` | `wss://localhost:7772/ws/agent` | URL(s) WebSocket, **chemin `/ws/agent` inclus**, même longueur que `RELAY_SERVER_URL` |
+| `RELAY_AGENT_HOSTNAME` | hostname de la machine | Nom d'hôte annoncé |
+| `RELAY_PRIVATE_KEY` | `/etc/secagent-minion/id_rsa` | Clef privée RSA-4096 du minion |
+| `RELAY_JWT_PATH` | `/etc/secagent-minion/token.jwt` | Fichier du JWT agent |
+| `RELAY_ENROLLMENT_TOKEN` | — | Jeton d'enrôlement (première connexion) |
+| `RELAY_CA_BUNDLE` | — | CA personnalisée |
+| `RELAY_ASYNC_DIR` | `/var/lib/secagent-minion/async` | Registre des tâches asynchrones |
+| `RELAY_INSECURE_TLS` | — | `true` = pas de vérification TLS (tests uniquement) |
+| `MAX_CONCURRENT_TASKS` | `10` | Tâches simultanées |
 
-[logging]
-level = INFO
-file = /var/log/ansible-secagent/agent.log
-mask_become_stdin = true
-```
+Le tampon stdout (5 MiB) est une constante du code, sans variable. Les journaux vont sur la sortie standard/erreur
+(journald sous systemd).
 
 ### Relay server (v3.0.3 — Variables d'environnement)
 
@@ -1085,7 +1102,8 @@ STATE_DIR=/data/relay-state
 TLS_CERT=/etc/secagent-server/server.crt
 TLS_KEY=/etc/secagent-server/server.key
 
-# Admin CLI
+# API admin : sans ADMIN_ADDR le défaut est :7771 (toutes interfaces) ; une adresse non loopback
+# exige ADMIN_TLS=true (ou la dérogation ADMIN_INSECURE_HTTP + ADMIN_INSECURE_HTTP_ACK), sinon refus de démarrer
 ADMIN_ADDR=127.0.0.1:7771
 ADMIN_TLS=false
 
@@ -1102,21 +1120,22 @@ LOG_LEVEL=INFO
 
 ```ini
 [defaults]
-inventory = /etc/ansible/secagent_inventory.py
-connection_plugins = /usr/lib/ansible/plugins/connection
+inventory = /usr/local/bin/secagent-inventory   # binaire GO ; variables RELAY_SERVER_URL / RELAY_TOKEN
+connection_plugins = /usr/lib/ansible-secagent/connection_plugins   # contient relay.py
 pipelining = true
 timeout = 30
 
 [secagent_connection]
-secagent_server = https://relay.example.com
-token_file = /etc/ansible/secagent_plugin.jwt
-key_file = /etc/ansible/secagent_plugin_id_rsa
-
-[secagent_inventory]
-secagent_server = https://relay.example.com
-token_file = /etc/ansible/secagent_plugin.jwt
-only_connected = false
+server = https://relay.example.com:7770          # ou liste séparée par des virgules (relay actif/passif)
+token_file = /etc/ansible/secagent_plugin.jwt     # fichier contenant le jeton plugin
+ca_bundle = /etc/ssl/certs/ca.pem
+timeout = 30
+connect_timeout = 5
 ```
+
+Clés réelles : `server`, `token_file`, `ca_bundle`, `timeout`, `connect_timeout` (variables hôte
+`ansible_secagent_*`, variables d'environnement `RELAY_SERVER_URL|RELAY_TOKEN_FILE|RELAY_CA_BUNDLE|RELAY_TIMEOUT|RELAY_CONNECT_TIMEOUT`).
+Il n'y a ni `key_file` ni section `[secagent_inventory]`. Détail : `DOC/plugins/PLUGINS_SPEC.md` §3.
 
 ---
 
@@ -1136,7 +1155,7 @@ only_connected = false
 | relay server : GO + WebSocket handler (TLS natif) | v3.0.3 ✅ |
 | relay server : WebSocket direct (pas NATS) | v3.0.3 ✅ |
 | relay server : REST API exec/upload/fetch | v3.0.3 ✅ |
-| relay server : JWT auth (rôles agent/plugin/admin) | v3.0.3 ✅ |
+| relay server : auth (JWT agent, jetons opaques plugin/enrollment, `ADMIN_TOKEN` admin) | v3.0.3 ✅ |
 | relay server : enrollment + blacklist révocation | v3.0.3 ✅ |
 | relay server : authorized_keys en état fichier | v3.0.3 ✅ |
 | relay server : endpoint admin /api/admin/authorize | v3.0.3 ✅ |
@@ -1144,7 +1163,7 @@ only_connected = false
 | relay server : Docker Compose actif/passif (pas Caddy) | v3.0.3 ✅ |
 | connection plugin : exec_command + put_file + fetch_file | MVP |
 | connection plugin : pipelining | MVP |
-| inventory plugin : tous agents + only_connected | MVP |
+| inventaire : binaire `secagent-inventory` (tous agents + `RELAY_ONLY_CONNECTED`) | v3.0.2+ |
 | Scope OS | Linux uniquement |
 
 ### V4+ Roadmap
@@ -1260,117 +1279,79 @@ journalctl -u secagent-minion -f
 
 **Kubernetes déprecié en v3.0.3.** Déploiement via Docker Compose multi-hôtes avec état persistant partagé.
 
-### Docker Compose — Qualification mono-hôte
+### Fichiers Compose livrés
 
-Cible : tests, CI, démonstration, petits déploiements.
+Les fichiers de référence sont dans `DEPLOYMENT/` (ne pas se fier à des noms génériques `docker-compose.yml`, qui n'existent pas) :
 
-```yaml
-# DEPLOYMENT/docker-compose.yml
+| Environnement | Fichiers |
+|---|---|
+| Qualification | `DEPLOYMENT/qualif/docker-compose.{server,minion,proxy,ansible}.yml` (services `secagent-server-a`/`-b`, `secagent-minion-go-01..03`, …) |
+| Production | `DEPLOYMENT/prod/docker-compose.server.yml` (relay racine), `docker-compose.child.yml` (surcharge d'un relay enfant) |
 
-services:
-  relay:
-    image: registry/secagent-server:3.0.3
-    environment:
-      STATE_DIR: /data/relay
-      RELAY_STATUS_FILE: /data/relay.status
-      TLS_CERT: /certs/server.crt
-      TLS_KEY: /certs/server.key
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
-      ADMIN_TOKEN: ${ADMIN_TOKEN}
-      RSA_MASTER_KEY: ${RSA_MASTER_KEY}  # v3.0.3+ encryption pour relay state
-    volumes:
-      - ./data:/data
-      - ./certs:/certs:ro
-    ports:
-      - "7770:7770"    # API REST + WebSocket /ws/agent (7772 redéclaré par le serveur)
-      - "7771:7771"    # Admin CLI (loopback par défaut)
-      - "7772:7772"    # WebSocket relay-to-relay (repeater)
-    healthcheck:
-      test: ["CMD", "curl", "-f", "--cert", "/certs/client.crt", "--key", "/certs/client.key",
-             "--cacert", "/certs/ca.crt", "https://localhost:7770/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-```
+### Docker Compose — Production actif/passif (extrait de `prod/docker-compose.server.yml`)
 
-### Docker Compose — Production Actif/Passif
-
-Cible : haute disponibilité multi-hôtes, état partagé sur NFS.
+Cible : haute disponibilité multi-hôtes. **Le même Compose est déployé à l'identique sur N hôtes** (un relay
+par hôte), tous avec le même `STATE_DIR` (stockage partagé). Une instance prend `relay.lock` et devient maître
+(ports 7770/7771/7772 ouverts) ; les autres sont secondaires et **n'ouvrent aucun port**.
 
 ```yaml
-# DEPLOYMENT/prod/docker-compose.yml
-
 services:
-  relay-1:
-    image: registry/secagent-server:3.0.3
+  secagent-server:
+    image: ghcr.io/ccoupel/secagent-server:${SECAGENT_VERSION}
+    restart: unless-stopped
+    user: "10001:10001"
+    stop_grace_period: 30s              # arrêt propre : relâche relay.lock
+    env_file: [./prod.env]              # JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY (secrets, hors dépôt)
     environment:
-      STATE_DIR: /nfs/relay/state        # NFS partagé, hard mount mode=0700
-      RELAY_STATUS_FILE: /nfs/relay/relay-1.status
-      TLS_CERT: /certs/server.crt
-      TLS_KEY: /certs/server.key
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
-      ADMIN_TOKEN: ${ADMIN_TOKEN}
-      RSA_MASTER_KEY: ${RSA_MASTER_KEY}
+      STATE_DIR: /data                  # stockage partagé (bind mount du partage NFS)
+      RELAY_STATUS_FILE: /run/secagent/status.json   # LOCAL (tmpfs), JAMAIS sur le partage
+      API_ADDR: "0.0.0.0:7770"
+      WS_ADDR: "0.0.0.0:7772"
+      ADMIN_ADDR: "0.0.0.0:7771"        # dans le conteneur ; publié seulement sur la boucle locale de l'hôte
+      ADMIN_TLS: "true"                 # obligatoire pour une adresse admin non loopback
+      TLS_CERT: /certs/tls.crt
+      TLS_KEY: /certs/tls.key
     volumes:
-      - nfs-relay:/nfs/relay
-      - ./certs:/certs:ro
+      - type: bind
+        source: ${STATE_HOST_DIR}       # point de montage du partage
+        target: /data
+      - type: bind
+        source: ${TLS_CERT_DIR}
+        target: /certs
+        read_only: true
+    tmpfs:
+      - /run/secagent:uid=10001,gid=10001,mode=0700
     ports:
       - "7770:7770"
-      - "7771:7771"
       - "7772:7772"
-    depends_on:
-      - nfs-server
-
-  relay-2:
-    image: registry/secagent-server:3.0.3
-    environment:
-      STATE_DIR: /nfs/relay/state        # Même NFS
-      RELAY_STATUS_FILE: /nfs/relay/relay-2.status
-      TLS_CERT: /certs/server.crt
-      TLS_KEY: /certs/server.key
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
-      ADMIN_TOKEN: ${ADMIN_TOKEN}
-      RSA_MASTER_KEY: ${RSA_MASTER_KEY}
-    volumes:
-      - nfs-relay:/nfs/relay
-      - ./certs:/certs:ro
-    ports:
-      - "7771:7770"    # Port décalé pour éviter conflits
-      - "7772:7771"
-      - "7773:7772"
-    depends_on:
-      - nfs-server
-
-  nfs-server:
-    # Services NFS externes (ex: NAS, NFS v4) — ici exemple simplifié
-    # En prod : utiliser NFS dédié, hardmounts, timeouts élevés
-    image: nfs-server:latest
-    volumes:
-      - relay-data:/export/relay
-    environment:
-      EXPORT_PATH: /export/relay
-
-volumes:
-  nfs-relay:
-    driver: local
-    driver_opts:
-      type: nfs
-      o: "addr=nfs-server,vers=4,soft,timeo=30,retrans=3"  # Soft mount = plus flexible
-      device: ":/export/relay"
-  relay-data:
+      - "${ADMIN_PUBLISH_ADDR:-127.0.0.1}:7771:7771"   # jamais sans adresse d'hôte
+    healthcheck:
+      test: ["CMD", "/app/secagent-server", "status", "--local"]
 ```
+
+Sans `ADMIN_ADDR` ni `ADMIN_TLS`, le défaut est `:7771` (toutes interfaces) et le serveur **refuse de démarrer** :
+une API admin en HTTP clair sur une adresse non loopback est interdite (`server/tls.go` `adminExposure`). Un exemple Compose
+qui publie 7771 doit donc définir `ADMIN_TLS=true` (avec `TLS_CERT`/`TLS_KEY`) ou, à défaut, lier `ADMIN_ADDR` à la boucle locale.
+
+Le montage du partage est fait sur l'hôte (`fstab`, options `hard,noatime…`) puis bind-mounté ; alternative : volume Docker NFS
+avec `type: nfs` et `o: "addr=…,nfsvers=4.1,hard,noatime,actimeo=1,rw"`.
+
+> **Montage NFS : toujours `hard`, jamais `soft`.** Un montage `soft` peut rendre un échec d'E/S au serveur au milieu d'une
+> écriture du fichier d'état ou du verrou (erreurs transmises au lieu d'attendre), au risque d'un état tronqué ou d'un verrou
+> incohérent. `DEPLOYMENT/prod/README.md` impose `hard`. Le fichier de statut `RELAY_STATUS_FILE` ne doit **jamais** être sur
+> le partage (le serveur refuse un chemin dans `STATE_DIR`).
 
 ### Points clés du déploiement
 
-1. **STATE_DIR** : répertoire NFS partagé (mode 0700, prop root:secagent)
+1. **STATE_DIR** : répertoire du stockage partagé (mode 0700, propriétaire UID/GID 10001:10001, identique sur tous les hôtes)
 2. **Verrou fichier** : `STATE_DIR/relay.lock` — un seul relay peut l'acquérir
 3. **Multi-adresses agent** : 
    ```
    RELAY_SERVER_URL="https://relay1:7770,https://relay2:7770"
-   RELAY_WS_URL="wss://relay1:7772,wss://relay2:7772"
+   RELAY_WS_URL="wss://relay1:7772/ws/agent,wss://relay2:7772/ws/agent"
    ```
-   → Les agents tentent les deux et s'adaptent automatiquement au failover
-4. **Certificats TLS** : générés une fois, bind-mounted sur les deux relays
+   → Les agents tentent les deux adresses ; seul le maître répond, ils s'adaptent au failover
+4. **Certificats TLS** : générés une fois, bind-mounted en lecture seule sur chaque hôte
 5. **Timeouts réseau** : configurés pour NFS (voir DEPLOYMENT/README.md)
 
 Voir **DEPLOYMENT/README.md** pour les procédures de promotion QUALIF → PROD avec health checks.
@@ -1385,16 +1366,24 @@ Voir **DEPLOYMENT/README.md** pour les procédures de promotion QUALIF → PROD 
 
 ```
 STATE_DIR/                       # Répertoire configuré via $STATE_DIR (défaut: /data)
-├── relay.state                  # Fichier état principal (JSON), chiffré au repos (RSA_MASTER_KEY)
-├── relay.lock                   # Verrou en fichier (exclusivité actif/passif)
-├── relay.state.backup           # Sauvegarde auto (rotate daily)
-├── write_seq                    # Compteur anti-rejeu (simple entier)
-└── action_log.jsonl             # JSON Lines — logs d'actions (cleanup serveur)
+├── relay.state                  # Fichier d'état principal, authentifié HMAC-SHA-256 ; secrets chiffrés AES-256-GCM
+├── relay.state.prev             # Génération précédente (conservée à chaque écriture)
+├── relay.state.tmp              # Écriture en cours (transitoire)
+├── relay.lock                   # Verrou en fichier (exclusivité actif/passif, contient write_seq publié)
+├── actions.log                  # Journal des actions de hooks (10 MiB × 5 fichiers : .1 … .4), hors état
+├── state-restore.log            # Journal des `state restore` (sans secret)
+└── relay.state.bak-<UTC>        # Copies faites par `state restore` uniquement (+ relay.state.prev.bak-<UTC>)
 ```
+
+Aucune sauvegarde automatique quotidienne n'existe ; `write_seq` est un **champ** (dans `relay.state` et `relay.lock`), pas
+un fichier. Le chemin du journal peut être changé par `RELAY_ACTION_LOG`.
 
 ### Format de l'état (relay.state)
 
-Fichier JSON, signé HMAC-SHA256 et chiffré RSA (RSA_MASTER_KEY). Voir STATE_SPEC.md pour le schéma détaillé.
+Fichier **authentifié par HMAC-SHA-256** (clef dérivée de `RSA_MASTER_KEY`, qui est un secret de type chaîne, pas une clef RSA) ;
+seuls les **secrets** (`server_config`, jetons de relays push) y sont chiffrés, en AES-256-GCM (préfixe `enc:`) — le reste du
+fichier n'est pas chiffré (`state/engine.go`, `state/model.go`). Le serveur ne crée jamais l'état de lui-même : il
+faut `secagent-server state init` (qui exige `RSA_MASTER_KEY`). Voir STATE_SPEC.md pour le schéma détaillé.
 
 Contient :
 - Liste des agents enregistrés + tokens JTI actifs
@@ -1422,8 +1411,9 @@ Serveur démarre → agent appelle POST /api/register
 Exclusivité actif/passif :
 - Relay acquiert un verrou exclusif sur `relay.lock`
 - Seul le relay détenant le verrou peut servir les requêtes
-- Si le relay crash → verrou automatiquement libéré par le système de fichiers
-- Le relay passif peut alors acquérir le verrou et redémarrer le service
+- Le verrou n'est **pas** un `flock` : c'est un fichier créé en `O_EXCL` dont le propriétaire incrémente un compteur (battement)
+- Arrêt propre → verrou relâché ; crash / `kill -9` → le fichier reste jusqu'à péremption (5 min sans battement, `MasterStale`)
+- Le relay secondaire sonde toutes les 5 s, acquiert le verrou une fois libre ou périmé, puis sert les requêtes
 
 Voir DEPLOYMENT/README.md pour la configuration NFS (hard mount recommandé).
 
@@ -1438,7 +1428,7 @@ Voir STATE_SPEC.md pour les codes détaillés (0-8) :
 | Envir. | Stratégie |
 |---|---|
 | Compose (qualif) | Copie volumne `data/`, snapshots disque VM |
-| Prod (NFS) | Snapshots NFS quotidiens, `relay.state.backup` auto |
+| Prod (NFS) | Snapshots NFS quotidiens ; `relay.state.prev` (génération précédente) ; `state restore --from <fichier>` |
 
 En cas de perte :
 - Les agents se reconnectent quand le serveur revient (backoff exponentiel)
@@ -1455,7 +1445,7 @@ Le binaire `secagent-server` est le point d'entrée unique pour le serveur ET po
 
 ```
 secagent-server           # démarre en mode serveur (foreground)
-secagent-server -d        # démarre en mode serveur (daemon background)
+                          # pas d'option -d : aucun daemon, le serveur reste au premier plan (Docker/systemd le supervisent)
 secagent-server <cmd>     # mode CLI — agit sur le serveur local via env vars
 ```
 
@@ -2228,23 +2218,25 @@ services:
       STATE_DIR: /data/relay-state
       TLS_CERT: /etc/secagent/certs/server.crt
       TLS_KEY: /etc/secagent/certs/server.key
-      ADMIN_ADDR: "127.0.0.1:7771"
+      ADMIN_ADDR: "0.0.0.0:7771"        # dans le conteneur ; publié sur la boucle locale de l'hôte
+      ADMIN_TLS: "true"                 # obligatoire pour une adresse admin non loopback
       RELAY_GROUP_VARS: '{"env":"prod"}'
     volumes:
       - relay-state:/data/relay-state:rw
       - ./certs/server.crt:/etc/secagent/certs/server.crt:ro
       - ./certs/server.key:/etc/secagent/certs/server.key:ro
     ports:
-      - "7770:7770"   # REST API + /ws/agent (WSS natif)
-      - "7771:7771"   # Admin CLI (loopback uniquement)
-      - "7772:7772"   # Optional WSS alt port
+      - "7770:7770"   # REST API + /ws/agent + /ws/relay (TLS natif)
+      - "127.0.0.1:7771:7771"   # API admin (TLS), boucle locale de l'hôte uniquement
+      - "7772:7772"   # listener WebSocket dédié (/ws/agent, /ws/relay)
 
 volumes:
   relay-state:
-    driver: nfs
+    driver: local
     driver_opts:
       type: nfs
-      o: addr=${NFS_SERVER},vers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2
+      # ${NFS_SERVER} : variable d'interpolation Compose de l'exemple, pas une variable du serveur
+      o: addr=${NFS_SERVER},nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2
       device: ":/export/relay-state"
 ```
 
