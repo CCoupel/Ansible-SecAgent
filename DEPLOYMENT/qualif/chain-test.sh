@@ -5,6 +5,7 @@
 #   chain-test.sh bootstrap    # state init (racine, enfant), relays add, jetons enrolement/plugin, demarrage
 #   chain-test.sh smoke        # relais connectes, minions connectes, inventaire hierarchique, ansible -m ping
 #   chain-test.sh failover     # arret propre du maitre de la racine (failover-test.sh) puis smoke
+#   chain-test.sh backup-restore  # sauvegarde de l etat + de RSA_MASTER_KEY (a part), perte du volume, restauration
 #   chain-test.sh logs | down
 #
 # Variables : SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (obligatoires, references promues ou locales),
@@ -104,6 +105,45 @@ smoke() {
   echo "smoke OK"
 }
 
+# Sauvegarde / restauration en conteneurs (#170) : l'etat (relay.state) et RSA_MASTER_KEY sont sauvegardes SEPAREMENT
+# (repertoires distincts, hors du volume). Perte totale du volume d'etat, puis restauration sur un volume vierge :
+# sans la cle, `state verify` refuse (code 6) ; avec une MAUVAISE cle il refuse (code 2) ; avec la bonne cle l'etat
+# est restaure, la racine redemarre et le minion DEJA enrole se reconnecte SANS re-enrolement (meme identite).
+backup_restore() {
+  local m bk key; m="$(master)" || fail "pas de maitre sur la racine"
+  bk="$CHAIN_DIR/backup-state"; key="$CHAIN_DIR/backup-key"
+  rm -rf "$bk" "$key"; mkdir -p "$bk" "$key"; chmod 700 "$key"
+  connected "$m" minions minion-root 2    # le minion doit etre enrole et connecte avant la sauvegarde
+  echo "== sauvegarde (etat) et sauvegarde distincte de RSA_MASTER_KEY"
+  docker exec "$m" /app/secagent-server state verify /data/relay.state >/dev/null || fail "etat source invalide"
+  docker cp "$m:/data/relay.state" "$bk/relay.state"; chmod 755 "$bk"; chmod 644 "$bk/relay.state"
+  grep '^RSA_MASTER_KEY=' "$HERE/qualif.env" | write_secret "backup-key/rsa_master_key"
+  echo "== sinistre : arret de la racine, perte du volume d'etat, perte de la cle sur l'hote"
+  "${DC[@]}" rm -sf secagent-server-a secagent-server-b >/dev/null
+  docker volume rm "${PROJECT}_secagent_state" >/dev/null
+  cp "$HERE/qualif.env" "$CHAIN_DIR/qualif.env.lost"; chmod 600 "$CHAIN_DIR/qualif.env.lost"
+  sed -i '/^RSA_MASTER_KEY=/d' "$HERE/qualif.env"
+  local rc=0
+  "${DC[@]}" run --rm --no-deps -v "$bk:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 6 ] || fail "sans RSA_MASTER_KEY : code 6 attendu, obtenu $rc"
+  echo "sans la cle : refus (code 6) comme attendu"
+  rc=0
+  "${DC[@]}" run --rm --no-deps -e RSA_MASTER_KEY=mauvaise-cle -v "$bk:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 2 ] || fail "avec une mauvaise cle : code 2 attendu, obtenu $rc"
+  echo "mauvaise cle : refus (code 2) comme attendu"
+  echo "== restauration de la cle (depuis la sauvegarde distincte) puis de l'etat sur un volume vierge"
+  { cat "$key/rsa_master_key"; echo; } >> "$HERE/qualif.env"
+  "${DC[@]}" run --rm --no-deps -v "$bk:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null || fail "etat sauvegarde refuse avec la cle restauree"
+  "${DC[@]}" run --rm --no-deps -v "$bk:/backup:ro" secagent-server-a state restore --from /backup/relay.state
+  "${DC[@]}" up -d secagent-server-a secagent-server-b
+  wait_for "racine healthy apres restauration" 120 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_A)\" = healthy ] && [ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_B)\" = healthy ]" >/dev/null
+  sleep 3
+  m="$(master)" || fail "pas de maitre apres restauration"
+  echo "== le minion DEJA enrole se reconnecte sans re-enrolement (aucun nouveau jeton cree)"
+  connected "$m" minions minion-root 2
+  echo "backup-restore OK (meme identite : le minion, authentifie par l'etat restaure, est reconnecte)"
+}
+
 failover() {
   need INVENTORY_BIN
   control_env
@@ -117,6 +157,7 @@ case "${1:-}" in
   bootstrap) bootstrap ;;
   smoke) smoke ;;
   failover) failover ;;
+  backup-restore) backup_restore ;;
   logs) "${DC[@]}" logs --tail=100 ;;
   down) "${DC[@]}" down -v ;;
   *) sed -n '2,16p' "$0"; exit 2 ;;

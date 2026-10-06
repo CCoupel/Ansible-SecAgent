@@ -359,3 +359,30 @@ jobs:
             echo "::warning::${{ matrix.image }} : builds NON reproductibles ($(cat d1) != $(cat d2)). A documenter (cause) avant de passer en erreur."
             for n in 1 2; do echo "couches build$n :"; python3 scripts/ci/oci_layers.py "o$n"; done
           fi
+
+  # ---- Sauvegarde / restauration de l'etat et de RSA_MASTER_KEY en conteneurs (#170 L4) ----------------------
+  backup-restore-containers:
+    name: Sauvegarde et restauration (etat + RSA_MASTER_KEY)
+    needs: [docker-compose-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SECAGENT_IMAGE: secagent-server:ci
+      SECAGENT_MINION_IMAGE: secagent-minion:ci
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Images serveur et minion du commit (locales, sans push)
+        run: |
+          docker build -t secagent-server:ci -f GO/Dockerfile GO
+          docker build -t secagent-minion:ci -f GO/Dockerfile.agent GO
+      - name: PKI de test, secrets jetables, amorcage
+        run: |
+          bash DEPLOYMENT/qualif/chain-test.sh ci-prepare
+          bash DEPLOYMENT/qualif/chain-test.sh bootstrap
+      - name: Sinistre et restauration
+        run: bash DEPLOYMENT/qualif/chain-test.sh backup-restore
+      - name: Journaux et nettoyage
+        if: always()
+        run: |
+          bash DEPLOYMENT/qualif/chain-test.sh logs || true
+          bash DEPLOYMENT/qualif/chain-test.sh down || true
