@@ -44,9 +44,32 @@ jobs:
           - {image: secagent-server, dockerfile: Dockerfile}
           - {image: secagent-minion, dockerfile: Dockerfile.agent}
     steps:
+      # Validation AVANT tout checkout : jamais le code d'une pull request (y compris d'un fork).
+      - name: Valider le ref demande
+        env:
+          REF: ${{ inputs.ref || 'milestone/v3.0.3' }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF" == refs/pull/* || "$REF" == pull/* ]]; then
+            echo "::error::Un ref de pull request est refuse (${REF}) : seuls une branche ou un commit du depot sont acceptes."; exit 1
+          fi
+          if ! [[ "$REF" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]; then
+            echo "::error::Ref invalide (caracteres autorises : lettres, chiffres, . _ / -)."; exit 1
+          fi
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.ref || 'milestone/v3.0.3' }}
+          fetch-depth: 0
+
+      # Le commit construit doit appartenir a une BRANCHE du depot (un commit n'existant que dans une PR est refuse).
+      - name: Le commit appartient a une branche du depot
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          if [ -z "$(git branch -r --contains HEAD)" ]; then
+            echo "::error::Le commit $(git rev-parse HEAD) n'est sur aucune branche du depot : refuse."; exit 1
+          fi
 
       - name: Commit construit
         id: commit
@@ -77,5 +100,6 @@ jobs:
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           SHA: ${{ steps.commit.outputs.sha }}
+          IMAGE: ${{ matrix.image }}
         run: |
-          echo "ghcr.io/ccoupel/${{ matrix.image }}:sha-${SHA}@${DIGEST}" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "ghcr.io/ccoupel/${IMAGE}:sha-${SHA}@${DIGEST}" | tee -a "$GITHUB_STEP_SUMMARY"
