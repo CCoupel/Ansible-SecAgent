@@ -91,7 +91,7 @@ Le challenge est un nonce de **16 octets** chiffré avec la clef publique de l'a
 
 | HTTP | Signification |
 |---|---|
-| `403` | Jeton invalide (`token_not_found`), expiré (`token_expired`), déjà utilisé (`token_already_used`) ou hostname refusé (`hostname_not_allowed`) |
+| `403` | Jeton invalide (`token_not_found`), expiré (`token_expired`), déjà utilisé (`token_already_used`), hostname refusé (`hostname_not_allowed`) ou **hostname révoqué (`agent_revoked`)** |
 | `400` | Payload malformé (`invalid_request`), champs manquants (`missing_fields`) ou clef publique illisible (`invalid_public_key`) |
 | `500` | Erreur interne (`db_error`, `server_key_not_initialized`…) |
 
@@ -137,13 +137,17 @@ Les champs `hostname`, `public_key_pem` et `enrollment_token` sont renvoyés à 
 
 | HTTP | Signification |
 |---|---|
-| `403` | Jeton invalide (mêmes codes qu'à l'étape 1), `challenge_expired_or_not_issued` (pas de challenge en cours ou délai de 60 s dépassé), `challenge_response_invalid_encoding`, `challenge_response_decryption_failed` ou `challenge_response_mismatch` (nonce ou jeton qui ne correspondent pas) |
+| `403` | Jeton invalide ou hostname révoqué (mêmes codes qu'à l'étape 1, dont `agent_revoked`), `challenge_expired_or_not_issued` (pas de challenge en cours ou délai de 60 s dépassé), `challenge_response_invalid_encoding`, `challenge_response_decryption_failed` ou `challenge_response_mismatch` (nonce ou jeton qui ne correspondent pas) |
 | `400` | `invalid_public_key` |
 | `500` | `jwt_generation_failed`, `db_error` |
 
 (Un challenge incorrect donne donc un `403`, pas un `400`.)
 
 ---
+
+## 4a. Hostname révoqué : `403 agent_revoked`
+
+Un hôte révoqué (`POST /api/admin/revoke/{hostname}`) porte un **drapeau persistant** `revoked` dans l'état. Tant que cette révocation n'est pas levée, `POST /api/register` répond `403 {"error":"agent_revoked"}` **quel que soit le jeton** (y compris un jeton réutilisable ou à `hostname_pattern` large) : à l'étape 1 avant tout challenge, et à l'étape 2 (le refus est pris dans la transaction d'enrôlement). Le jeton n'est **pas consommé** et aucun JWT/JTI n'est émis. Le drapeau survit à l'expiration de l'entrée de blacklist (25 h). La révocation se lève explicitement par `DELETE /api/admin/minions/{hostname}` (`REST_ADMIN.md`) ; l'hôte peut ensuite s'enrôler avec un jeton. Les autres hostnames ne sont pas affectés (`handlers/register.go:495-505,577-580`, `storage/store.go:260-270,522-554`).
 
 ## 4b. Requête sans jeton d'enrôlement : refusée
 
@@ -241,6 +245,7 @@ Le JWT se renouvelle par deux chemins seulement :
 | Pas de `RELAY_ENROLLMENT_TOKEN` et pas de JWT | Erreur de configuration permanente : arrêt avec le code **78** |
 | `401` sur `/ws/agent` | Ré-enrollment complet automatique (nécessite `RELAY_ENROLLMENT_TOKEN`) puis reconnexion |
 | WS close `4001` | **Arrêt définitif** (code de sortie **77**) — NE PAS ré-enroller sans intervention admin |
+| `403 agent_revoked` à l'enrôlement | Même traitement que tout `403` : refus permanent, sortie code **78** ; l'opérateur doit lever la révocation (`DELETE`) puis créer un jeton |
 | Message WS `rekey` | Le minion déchiffre `token_encrypted` avec sa clef privée, remplace son JWT (fichier + mémoire) et garde la connexion ouverte : pas de ré-enrôlement |
 
 Il n'existe pas de réponse `409` : le serveur ne renvoie pas de conflit de hostname, et aucun code de fermeture WS `4003`/`4004` n'est émis (voir `WEBSOCKET.md` §5).
