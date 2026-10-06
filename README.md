@@ -164,7 +164,7 @@ ansible-secagent/
   - ✅ v3.0.2 : Événements origin-first, inventory hiérarchique, group vars validés
   - ✅ v3.0.3 : État fichier (retiré NATS), TLS natif, Compose multi-hôtes, verrou HA
 
-**Version actuelle : v3.0.3** — Production stable (GO rewrite 100%, NATS retiré, state file HA)
+**Version actuelle : v3.0.3** — GO rewrite 100%, state file HA
 
 ## Contacts & Support
 
@@ -175,4 +175,4 @@ ansible-secagent/
 
 ---
 
-**MVP Status** : ✅ COMPLETE — Prêt pour qualification et production Kubernetes
+**MVP Status** : ✅ COMPLETE — Prêt pour qualification
