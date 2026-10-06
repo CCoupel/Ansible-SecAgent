@@ -210,9 +210,7 @@ curl -X DELETE http://localhost:7771/api/admin/relays/dmz1 \
 
 ### Voir les logs du serveur
 ```bash
-export DOCKER_HOST=tcp://192.168.1.218:2375
-docker logs relay-api --follow
-docker logs relay-nats --follow
+docker compose logs relay -f
 ```
 
 ### Voir les logs des agents
@@ -236,37 +234,31 @@ cd ../ansible_server && docker compose down
 docker restart secagent-minion-02
 ```
 
-### Nettoyer les volumes (données persistantes)
+### Nettoyer l'état (données persistantes)
 ```bash
-docker volume rm ansible_minion_secagent_agent_01_data
-docker volume rm ansible_minion_secagent_agent_02_data
-docker volume rm ansible_minion_secagent_agent_03_data
-docker volume rm ansible_server_secagent_data
-docker volume rm ansible_server_nats_data
+# Les données d'état sont stockées sur le filesystem (STATE_DIR, défaut: ./state)
+rm -rf DEPLOYMENT/qualif/state/*
+# Le relay se ré-initialisera au prochain démarrage
 ```
 
 ---
 
 ## Variables d'Environnement
 
-### Server Core (.env)
-```
-JWT_SECRET_KEY=dev-secret-key-for-qualification-only-change-in-prod
-ADMIN_TOKEN=dev-admin-token-for-qualification-only-change-in-prod
-NATS_URL=nats://nats:4222
-DATABASE_URL=relay.db
-RSA_MASTER_KEY=dev-rsa-master-key-for-push-tokens-change-in-prod
-RELAY_PLUGIN_TOKEN=dev-plugin-token-change-in-prod
-```
+### Server Core (.env) — v3.0.3
 
-### Server Network Binding (v3.0.2)
-```
-API_ADDR=:7770                     # Écoute API publique + WS agent/relay (défaut :7770)
-ADMIN_ADDR=:7771                   # Écoute API admin (défaut :7771, JAMAIS exposé)
-WS_ADDR=:7772                      # Écoute WebSocket (défaut :7772)
-TLS_CERT=/path/to/cert.pem         # Certificat TLS (optionnel, sinon Caddy)
-TLS_KEY=/path/to/key.pem           # Clef TLS (optionnel, sinon Caddy)
-```
+| Variable | Default | Description |
+|---|---|---|
+| `STATE_DIR` | `/data` | Répertoire d'état (relay.state, relay.lock, actions.log) |
+| `TLS_CERT` | — | Certificat TLS (PEM, obligatoire sauf TLS_DISABLE) |
+| `TLS_KEY` | — | Clef privée TLS (PEM, obligatoire sauf TLS_DISABLE) |
+| `ADMIN_ADDR` | `:7771` | Adresse admin (ex: `127.0.0.1:7771` loopback, ou `0.0.0.0:7771` réseau) |
+| `ADMIN_TLS` | `false` | TLS sur admin si non-loopback |
+
+**Ports (non-configurables)** :
+- 7770 : API REST + WebSocket
+- 7771 : Admin CLI
+- 7772 : WebSocket compat
 
 ### Server Repeater Mode (enfant pull)
 ```
@@ -322,57 +314,42 @@ RELAY_DATA_DIR=/var/lib/secagent-minion
 
 ---
 
-## Architecture Réseau
+## Architecture Réseau v3.0.3
 
 ```
-┌─────────────────────────────────────────┐
-│     192.168.1.218 (Docker Host)         │
-├─────────────────────────────────────────┤
-│                                         │
-│  ┌─ ansible_server (bridge net) ────┐  │
-│  │ ┌──────────┐                     │  │
-│  │ │ relay-nats (4222/6222/8222) │  │  │
-│  │ └─────┬────┘                     │  │
-│  │       │                          │  │
-│  │ ┌─────▼────────────────────────┐ │  │
-│  │ │ relay-api (7770/7771/7772)  │ │  │
-│  │ │ - Enrollment + WebSocket     │ │  │
-│  │ │ - Plugin REST API            │ │  │
-│  │ │ - Admin inventory            │ │  │
-│  │ └────▲─┬───────────────────────┘ │  │
-│  │      │ │                          │  │
-│  │ ┌────┘ └───────────────────────┐ │  │
-│  │ │ caddy (7443 TLS)             │ │  │
-│  │ └─────────────────────────────┘ │  │
-│  └───────────┬──────────────────────┘  │
-│              │                          │
-│  ┌───────────▼──────────────────────┐  │
-│  │ ansible_minion (host network)    │  │
-│  │                                  │  │
-│  │ ┌──────────────────────────────┐ │  │
-│  │ │ secagent-minion-01 (localhost)   │ │  │
-│  │ │ secagent-minion-02 (localhost)   │ │  │
-│  │ │ secagent-minion-03 (localhost)   │ │  │
-│  │ └──────────────────────────────┘ │  │
-│  └──────────────────────────────────┘  │
-│                                         │
-└─────────────────────────────────────────┘
+┌──────────────────────────────┐
+│  Host 1 (192.168.1.218)      │
+├──────────────────────────────┤
+│                              │
+│  secagent-server (GO)        │
+│  ├─ Port 7770 (TLS natif)   │
+│  ├─ Port 7771 (admin)        │
+│  └─ Port 7772 (compat)       │
+│                              │
+│  STATE_DIR → NFS partagé     │
+│  ├─ relay.state              │
+│  ├─ relay.lock (verrou)      │
+│  └─ actions.log              │
+└──────────────────────────────┘
+
+┌──────────────────────────────┐
+│  Host 2-N (passifs)          │
+├──────────────────────────────┤
+│  secagent-server (identique) │
+│  (en attente du verrou)      │
+│  STATE_DIR → NFS (partagé)   │
+└──────────────────────────────┘
+
+┌──────────────────────────────┐
+│  Agents (partout)            │
+├──────────────────────────────┤
+│  secagent-minion (GO)        │
+│  → WebSocket vers relay:7770 │
+│  (multi-adresses failover)   │
+└──────────────────────────────┘
 ```
 
-Les agents (host network) accèdent au server (bridge network) via `localhost:7770`.
-
----
-
-## Prochain Pas : Production (Kubernetes)
-
-La configuration de production utilisera :
-- **Helm Chart** pour le déploiement serveur
-- **DaemonSet** pour les agents (un par nœud)
-- **StatefulSet** pour NATS JetStream (persistance)
-- **Secrets** pour les tokens JWT/admin
-- **Ingress** pour le TLS/proxy
-
-Voir `ARCHITECTURE.md` pour les détails complets.
+**Production** : Docker Compose multi-hôtes avec NFS `STATE_DIR` partagé. Un relay acquiert le verrou, les autres restent passifs.
 
 
 ## Supervision du lien amont (relay enfant)
