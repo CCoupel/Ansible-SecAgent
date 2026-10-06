@@ -132,9 +132,12 @@ Admin                    Server                        Agent (hôte cible)
 - `permanent + hostname_pattern = "vp.*"` → pipeline CI/CD : N hôtes `vp-*` peuvent s'enrôler à volonté
 - `permanent + hostname_pattern = ".*" + expires_at = now+30d` → token de bootstrap temporaire pour une vague de déploiement
 
-### Table DB
+### Modèle de données
+
+> Depuis la v3.0.3 il n'y a plus de base SQL : ces enregistrements vivent dans le fichier d'état (`relay.state`). Le schéma ci-dessous est un **modèle logique** des champs conservés, pas une table existante. Le jeton en clair (`secagent_enr_` + 64 hex, opaque, non-JWT) n'est jamais stocké.
 
 ```sql
+-- modèle logique (champs de l'enregistrement dans l'état)
 CREATE TABLE enrollment_tokens (
     id               TEXT PRIMARY KEY,        -- UUID
     token_hash       TEXT NOT NULL UNIQUE,    -- SHA-256(token) — jamais en clair
@@ -155,7 +158,7 @@ CREATE TABLE enrollment_tokens (
 1. token_hash présent en DB ?                          → sinon 403 token_not_found
 2. expires_at IS NOT NULL AND expires_at < now() ?     → sinon 403 token_expired
 3. reusable = 0 AND use_count > 0 ?                    → sinon 403 token_already_used
-4. regexp.MatchString("^" + hostname_pattern + "$", hostname) ?  → sinon 403 hostname_not_allowed
+4. regexp.MatchString("^(?:" + hostname_pattern + ")$", hostname) ?  → sinon 403 hostname_not_allowed
    [enrollment autorisé → challenge-response → JWT]
 5. use_count++ ; last_used_at = now()                  → toujours, quel que soit reusable
 ```
@@ -291,9 +294,12 @@ Le plugin (inventory + connection) tourne sur l'**Ansible Control Node**, une ma
 administrée et de confiance. Il n'a pas de keypair RSA — il utilise un token statique
 émis par l'admin et hashé en DB.
 
-### Table DB
+### Modèle de données
+
+> Depuis la v3.0.3 il n'y a plus de table `plugin_tokens` : les jetons plugin sont des enregistrements du fichier d'état, et le jeton lui-même (`secagent_plg_` + 64 hex) est une chaîne opaque, **pas un JWT**. Le schéma ci-dessous est un modèle logique des champs conservés.
 
 ```sql
+-- modèle logique (champs de l'enregistrement dans l'état)
 CREATE TABLE plugin_tokens (
     id                       TEXT PRIMARY KEY,    -- UUID (identifiant public, affiché en CLI)
     token_hash               TEXT NOT NULL UNIQUE,-- SHA-256(token) — jamais le token en clair
@@ -319,7 +325,7 @@ Authorization: Bearer <token>
 X-Relay-Client-Host: ansible-control-prod   ← optionnel, déclaré par le client
 
 Server :
-  1. SHA-256(token) → lookup dans plugin_tokens
+  1. SHA-256(token) → recherche de l'empreinte dans l'état (enregistrements plugin)
   2. revoked == 0 ?
   3. expires_at IS NULL OR expires_at > now() ?
   4. allowed_ips IS NOT NULL → r.RemoteAddr ∈ au moins un des CIDRs ?
@@ -352,15 +358,15 @@ Pour une preuve cryptographique du hostname : utiliser mTLS (PKI interne, hors s
 
 ### Authentification plugin par relay (HAUT-6, v3.0.0)
 
-**Modèle v3.0.0** : Chaque relay signe ses propres plugin tokens (RELAY_PLUGIN_TOKEN)
-- Plugin pointe vers **UN relay uniquement** (pas de multi-relays)
-- Plugin s'authentifie avec le `RELAY_PLUGIN_TOKEN` du relay
-- Relay valide le token avec son JWT_SECRET_KEY (signature HS256)
+**Modèle** : chaque relay conserve ses propres jetons plugin dans son état et ne reconnaît que ceux-là.
+- Un jeton plugin est une chaîne opaque `secagent_plg_…` créée par `tokens create --role plugin` ; le relay n'en garde que l'empreinte SHA-256 (il n'est **pas** signé : ce n'est pas un JWT et `JWT_SECRET_KEY` n'intervient pas)
+- Le binaire `secagent-inventory` lit le jeton dans `RELAY_TOKEN` ; le plugin de connexion le lit dans un **fichier** (`RELAY_TOKEN_FILE`). Il n'existe pas de variable `RELAY_PLUGIN_TOKEN`
+- Le plugin s'adresse à **un seul relay** ; il peut recevoir plusieurs adresses (les instances du même relay en actif/passif), pas plusieurs relays distincts
 - **Jamais de partage** de JWT_SECRET_KEY ou des jetons plugin (`secagent_plg_…`) entre relays
 
-**Isolation** : Un token plugin signé par relay-central ne marche pas sur relay-dmz1
-- Chaque relay valide les tokens indépendamment
-- Pas de colonne `allowed_relay_ids` — l'isolation se fait par la clé de signature
+**Isolation** : un jeton plugin créé sur relay-central n'est pas connu de relay-dmz1
+- Chaque relay valide les jetons indépendamment, par recherche de l'empreinte dans son état
+- Il n'y a pas de champ `allowed_relay_ids` — l'isolation vient du fait que l'empreinte n'existe que dans l'état du relay qui l'a créé
 
 **Évolution envisagée (v3.0.1+)** : Centraliser la signature des tokens à la racine
 - Permettre au plugin de parler à plusieurs relays avec un seul token

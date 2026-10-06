@@ -58,16 +58,16 @@ GO/cmd/secagent-minion/
 
 ```
 1. Génère RSA-4096 si absent → stocke à RELAY_PRIVATE_KEY (mode 0600)
-2. POST /api/register {hostname, pubkey_pem, enrollment_token}
-3. Server répond : {challenge: OAEP(nonce, agent_pubkey)}
-4. Agent déchiffre nonce → répond : {response: OAEP(nonce+token, server_pubkey)}
-5. Server valide → répond : {jwt: OAEP(jwt, agent_pubkey)}
+2. POST /api/register {hostname, public_key_pem, enrollment_token}
+3. Server répond : {challenge: OAEP(nonce, agent_pubkey), server_public_key_pem}
+4. Agent déchiffre nonce → POST /api/register {hostname, public_key_pem, enrollment_token, challenge_response: OAEP(nonce+token, server_pubkey)}
+5. Server valide → répond : {token_encrypted / jwt_encrypted: OAEP(jwt, agent_pubkey), server_public_key_pem}
 6. Agent déchiffre JWT → stocke à RELAY_JWT_PATH
 7. Ouvre WSS /ws/agent avec Authorization: Bearer <JWT>
 ```
 
-**Sur 403 :** token invalide ou expiré → log + retry selon politique backoff.
-**Sur 401 après rotation clefs :** ré-enrollment automatique.
+**Sur 403 :** token invalide, expiré ou déjà consommé → refus permanent, aucun retry, sortie avec le code 78.
+**Sur 401 à l'upgrade WebSocket (JWT rejeté, par ex. après rotation des clefs) :** ré-enrollment automatique. Autre échec (réseau, 5xx) : retry avec backoff.
 
 ---
 
