@@ -154,7 +154,8 @@ docker exec secagent-server secagent-server minions revoke <hostname>
 
 # Lever la révocation : seule voie = supprimer l'agent (pas de « unrevoke ») ; ses variables sont perdues
 curl --cacert tls.crt -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" https://localhost:7771/api/admin/minions/<hostname>
-# puis créer un jeton d'enrôlement et ré-enrôler le minion (RELAY_ENROLLMENT_TOKEN ; effacer son token.jwt)
+# puis créer un jeton d'enrôlement et ré-enrôler le minion (RELAY_ENROLLMENT_TOKEN) : le JWT local devenu invalide
+# est rejeté en 401 à la connexion WS, ce qui déclenche le ré-enrôlement ; l'effacer à la main n'est pas nécessaire
 docker exec secagent-server secagent-server tokens create --role enrollment --hostname-pattern "<hostname>" --expires 1h
 ```
 
@@ -197,12 +198,23 @@ docker exec secagent-server secagent-server tokens revoke <token-id>
 # - Parent ne peut plus se reconnecter avec ce token (401)
 ```
 
+### Identifiant d'un relay : l'UUID, pas le `relay_id`
+
+Les routes `/api/admin/relays/{id}/revoke` et `DELETE /api/admin/relays/{id}`, ainsi que `relays remove <id>`, attendent l'**UUID** du relay (champ `id`), **pas** son nom `relay_id` (`dmz1`) : avec le nom, la réponse est `404 relay_not_found` (`handlers/admin_relays.go` : recherche par `id`). Le tableau de `relays list` n'affiche que le `RELAY_ID` ; l'UUID se lit dans la sortie JSON :
+
+```bash
+docker exec secagent-server secagent-server relays list --format json
+# [ { "id": "3f1c…-uuid", "relay_id": "dmz1", "mode": "pull", "status": "…", … } ]
+# ou, en API : GET https://localhost:7771/api/admin/relays  →  {"relays":[{"id":"<uuid>","relay_id":"dmz1",…}]}
+RELAY_UUID=<valeur du champ "id" du relay dont "relay_id" vaut dmz1>
+```
+
 ### Révoquer un relay enfant (mode pull)
 
 ```bash
 # Via API uniquement (port 7771, admin ; https si ADMIN_TLS=true) :
-# il n'existe pas de sous-commande `relays revoke`
-curl --cacert tls.crt -X POST https://localhost:7771/api/admin/relays/dmz1/revoke \
+# il n'existe pas de sous-commande `relays revoke` ; l'identifiant est l'UUID (voir ci-dessus)
+curl --cacert tls.crt -X POST https://localhost:7771/api/admin/relays/$RELAY_UUID/revoke \
   -H "Authorization: Bearer <ADMIN_TOKEN>"
 
 # Effets :
@@ -216,15 +228,15 @@ curl --cacert tls.crt -X POST https://localhost:7771/api/admin/relays/dmz1/revok
 ⚠️ **Règle importante** : Toujours révoquer AVANT de supprimer (sinon 409 relay_not_revoked)
 
 ```bash
-# 1. Révoquer d'abord (API, voir ci-dessus)
-curl --cacert tls.crt -X POST https://localhost:7771/api/admin/relays/dmz1/revoke \
+# 1. Révoquer d'abord (API, UUID du relay, voir ci-dessus)
+curl --cacert tls.crt -X POST https://localhost:7771/api/admin/relays/$RELAY_UUID/revoke \
   -H "Authorization: Bearer <ADMIN_TOKEN>"
 
-# 2. Puis supprimer (CLI : sous-commandes relays add | list | remove <id> | status)
-docker exec secagent-server secagent-server relays remove dmz1
+# 2. Puis supprimer (CLI : sous-commandes relays add | list | remove <uuid> | status)
+docker exec secagent-server secagent-server relays remove $RELAY_UUID
 
 # Ou via API
-curl --cacert tls.crt -X DELETE https://localhost:7771/api/admin/relays/dmz1 \
+curl --cacert tls.crt -X DELETE https://localhost:7771/api/admin/relays/$RELAY_UUID \
   -H "Authorization: Bearer <ADMIN_TOKEN>"
 ```
 
