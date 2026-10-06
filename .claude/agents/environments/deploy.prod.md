@@ -7,7 +7,7 @@ Installation de l'artefact déjà publié par PUBLISH PROD (tag `vX.Y.Z`, images
 Docker Compose. Pas de Kubernetes/Helm, pas de Swarm, pas de NATS, pas de Caddy, pas de SQLite.
 
 ## Cible de déploiement
-- Hôtes : N hôtes de prod (actif/passif), le MÊME Compose et le MÊME stockage partagé (`STATE_HOST_DIR` → `STATE_DIR`) sur chacun. Prod et QUALIF ne partagent pas d'hôte par construction.
+- Hôtes : N hôtes de prod (actif/passif), le MÊME Compose et le MÊME stockage partagé (`STATE_HOST_DIR` → `STATE_DIR`) sur chacun. Si un hôte de prod héberge aussi la QUALIF, vérifier avant `up` l'absence de collision de ports publiés (`docker ps --format '{{.Names}} {{.Ports}}'`) et alerter le teamleader sans arrêter la QUALIF.
 - Méthode : Docker sur chaque hôte (adresses fournies par le teamleader / l'utilisateur ; ne jamais supposer 192.168.1.218, c'est la QUALIF).
 - Fichier Compose : `DEPLOYMENT/prod/docker-compose.server.yml` (service `secagent-server`) ; relay enfant : ajouter `-f DEPLOYMENT/prod/docker-compose.child.yml` (`REPEATER_*` obligatoires).
 - Projet compose dédié : `docker compose -p secagent-prod-<relay_id> ...` — jamais un projet de QUALIF.
