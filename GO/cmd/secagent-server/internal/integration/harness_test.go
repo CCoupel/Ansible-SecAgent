@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -390,12 +391,62 @@ func (n *node) enrollAgentErr(host string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if code, raw, err := n.callErr("POST", n.adminURL(), "/api/admin/authorize", n.adminTok, map[string]any{"hostname": host, "public_key_pem": pubPEM, "approved_by": "harness"}); err != nil || code >= 300 {
-		return "", fmt.Errorf("authorize %s on %s: %d %s %v", host, n.id, code, raw, err)
+	// 1. the operator creates a one-shot enrollment token bound to this hostname (#192c: there is no
+	// tokenless enrollment any more)
+	code, raw, err := n.callErr("POST", n.adminURL(), "/api/admin/tokens", n.adminTok,
+		map[string]any{"role": "enrollment", "hostname_pattern": regexp.QuoteMeta(host), "created_by": "harness"})
+	if err != nil || code >= 300 {
+		return "", fmt.Errorf("enrollment token for %s on %s: %d %s %v", host, n.id, code, raw, err)
 	}
-	code, raw, err := n.callErr("POST", n.apiURL(), "/api/register", "", map[string]any{"hostname": host, "public_key_pem": pubPEM})
+	var tok struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(raw, &tok); err != nil || tok.Token == "" {
+		return "", fmt.Errorf("enrollment token response of %s: %v %s", host, err, raw)
+	}
+	// 2. step 1: the server answers with a nonce encrypted with the agent's public key
+	code, raw, err = n.callErr("POST", n.apiURL(), "/api/register", "",
+		map[string]any{"hostname": host, "public_key_pem": pubPEM, "enrollment_token": tok.Token})
 	if err != nil || code != http.StatusOK {
-		return "", fmt.Errorf("register %s on %s: %d %s %v", host, n.id, code, raw, err)
+		return "", fmt.Errorf("register step 1 of %s on %s: %d %s %v", host, n.id, code, raw, err)
+	}
+	var ch struct {
+		Challenge       string `json:"challenge"`
+		ServerPublicKey string `json:"server_public_key_pem"`
+	}
+	if err := json.Unmarshal(raw, &ch); err != nil || ch.Challenge == "" || ch.ServerPublicKey == "" {
+		return "", fmt.Errorf("register step 1 response of %s: %v %s", host, err, raw)
+	}
+	ctBytes, err := base64.StdEncoding.DecodeString(ch.Challenge)
+	if err != nil {
+		return "", err
+	}
+	nonce, err := rsa.DecryptOAEP(sha256.New(), nil, key, ctBytes, nil)
+	if err != nil {
+		return "", fmt.Errorf("decrypt the challenge of %s: %w", host, err)
+	}
+	// 3. step 2: prove possession of the private key: OAEP(nonce + token, server public key)
+	block, _ := pem.Decode([]byte(ch.ServerPublicKey))
+	if block == nil {
+		return "", fmt.Errorf("server public key of %s: no PEM block", host)
+	}
+	pubAny, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	serverPub, ok := pubAny.(*rsa.PublicKey)
+	if !ok {
+		return "", fmt.Errorf("server public key of %s is not RSA", host)
+	}
+	resp2, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, serverPub, append(append([]byte{}, nonce...), []byte(tok.Token)...), nil)
+	if err != nil {
+		return "", err
+	}
+	code, raw, err = n.callErr("POST", n.apiURL(), "/api/register", "",
+		map[string]any{"hostname": host, "public_key_pem": pubPEM, "enrollment_token": tok.Token,
+			"challenge_response": base64.StdEncoding.EncodeToString(resp2)})
+	if err != nil || code != http.StatusOK {
+		return "", fmt.Errorf("register step 2 of %s on %s: %d %s %v", host, n.id, code, raw, err)
 	}
 	var resp struct {
 		TokenEncrypted string `json:"token_encrypted"`
