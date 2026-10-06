@@ -6,6 +6,7 @@
 #   build_compose_archive.sh <vX.Y.Z> <X.Y.Z> <sha256:digest> <repertoire_de_sortie>
 # Variables : SRC_DIR (defaut DEPLOYMENT/prod), STAGE_DIR (defaut ./stage), REPO (racine du depot).
 set -euo pipefail
+umask 022   # modes de fichiers independants de l'umask de l'appelant (reproductibilite)
 TAG="${1:?tag}"; VERSION="${2:?version}"; SRV="${3:?digest}"; OUT="${4:?sortie}"
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 SRC_DIR="${SRC_DIR:-$REPO/DEPLOYMENT/prod}"; STAGE_DIR="${STAGE_DIR:-stage}"
@@ -28,7 +29,12 @@ if grep -rniE --exclude-dir=tools 'nats|jetstream' "$D"; then
 fi
 grep -qE "image: ghcr.io/ccoupel/secagent-server:${TAG}@sha256:[0-9a-f]{64}\$" "$D/docker-compose.server.yml" \
   || { echo "::error::docker-compose.server.yml : image non epinglee en tag@digest"; exit 1; }
+# Modes explicites (independants du systeme de fichiers source) : 755 pour les dossiers et tools/*.py, 644 sinon
+find "$D" -type d -exec chmod 755 {} +
+find "$D" -type f -exec chmod 644 {} +
+chmod 755 "$D"/tools/*.py
 # Archive reproductible (ordre, dates, proprietaires fixes)
 tar --sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner \
+  --exclude='__pycache__' --exclude='*.pyc' \
   -cf - -C "$STAGE_DIR" "secagent-compose-${VERSION}" | gzip -n > "$OUT/secagent-compose-${VERSION}.tar.gz"
 echo "archive : $OUT/secagent-compose-${VERSION}.tar.gz"
