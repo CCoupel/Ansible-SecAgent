@@ -1,6 +1,6 @@
 # Ansible-SecAgent — GO Implementation (Phase 7-14, v3.0.3)
 
-**Status**: ✅ v3.0.3 STABLE — Production Ready (NATS removed, state file, TLS native)
+**Status**: v3.0.3 (NATS removed, state file, TLS native) — voir `CHANGELOG.md` et les rapports de qualification pour l'état de validation
 
 This directory contains the high-performance GO implementation of Ansible-SecAgent server, agents, and inventory components.
 
@@ -18,8 +18,9 @@ GO/
 │   │       ├── server/                      # Core server (tls.go, config.go)
 │   │       ├── handlers/                    # REST API endpoints
 │   │       ├── ws/                          # WebSocket handlers (/ws/agent, /ws/relay)
-│   │       ├── storage/                     # File-based state + lock (STATE_DIR, v3.0.3)
-│   │       ├── lock/                        # Failover lock management (actif/passif)
+│   │       ├── state/                       # State engine: relay.state / relay.state.prev (HMAC, AES-GCM secrets), `state init|verify|restore`
+│   │       ├── lock/                        # Failover lock (relay.lock, actif/passif)
+│   │       ├── storage/                     # Data access layer over the state (agents, tokens, relays; store.go, store_*.go)
 │   │       ├── cli/                         # Admin CLI (Cobra)
 │   │       └── repeater/                    # Relay-to-relay support (v3.0.1+)
 │   ├── secagent-minion/
@@ -33,11 +34,10 @@ GO/
 │       └── main.go                          # Standalone inventory binary
 ├── go.mod                                   # Module definition
 ├── go.sum                                   # Dependency lock
-├── Dockerfile                               # Container image
-├── DEPLOYMENT/
-│   ├── docker-compose.yml                   # Qualification setup
-│   └── prod/docker-compose.yml              # Production HA setup (multi-host NFS)
-└── README.md                                # This file
+├── Dockerfile / Dockerfile.agent / Dockerfile.ansible   # Container images
+└── internal/endpoints/, internal/testnet/               # Shared packages (address lists, test helpers)
+
+(Compose files are NOT under GO/: see ../DEPLOYMENT/qualif/ and ../DEPLOYMENT/prod/.)
 ```
 
 ## Features
@@ -92,38 +92,35 @@ GO/
 - `RegisterFuture()`: Create result channel
 - `ResolveFuturesForHostname()`: Cleanup on disconnect
 
-### 3. Storage Layer (storage/) — v3.0.3
+### 3. State and Storage (state/, storage/) — v3.0.3
 
-**state.go** (v3.0.3 - removed SQLite, file-based state)
-- File-based state persistence (STATE_DIR)
-- **relay.state**: JSON file (signed HMAC, encrypted RSA)
-- **relay.lock**: Failover lock (exclusive access)
-- Atomic reads/writes with write_seq anti-replay
+**internal/state/** (file-based state engine, no SQLite)
+- `relay.state` (+ `relay.state.prev`, transient `relay.state.tmp`) in STATE_DIR
+- File authenticated by HMAC-SHA-256 (key derived from `RSA_MASTER_KEY`); only the secrets are encrypted (AES-256-GCM, `enc:` prefix)
+- Atomic writes (tmp + rename + fsync), `write_seq` anti-replay field, write guard tied to the lock identity
+- CLI: `state init`, `state verify <file>`, `state restore --from <file>` (`internal/cli/state*.go`)
 
-Methods (file-based, not DB):
-- `ReadState()`, `WriteState()` - atomic file I/O
-- `AcquireLock()`, `ReleaseLock()` - exclusive failover
-- `ValidateState()` - HMAC verify, anti-replay check
+**internal/storage/** (store.go, store_*.go)
+- Data access layer over the state engine: agents, authorized keys, enrollment / plugin tokens, relays, routing
+- Volatile data (status, last_seen) is kept in memory and written to the file only piggybacked on another write
 
 ### 4. Lock Management (lock/) — v3.0.3
 
 **Failover lock** (file-based, NFS-friendly)
-- Heartbeat-based lock acquisition (30s interval)
-- Self-retire after 3min no heartbeat
-- Candidate stale timeout 10s
-- Atomic lock verification per state write
+- `relay.lock` is a file created with `O_EXCL` + a heartbeat counter (not a `flock`)
+- Heartbeat 30s; master identity check / secondary polling every 5s
+- Self-retire after 3min without a successful heartbeat; master considered dead after 5min without change
+- Candidate stale timeout 10s; random pause 1-2s between creation and re-read
+- Lock identity verified before every state write (write guard); a lost lock exits with code 75
+- Constants in `internal/lock/params.go` (no environment variable)
 
 No more NATS JetStream. Direct WebSocket dispatch to agents.
 
-## Performance Targets
+## Performance
 
-| Metric | Python | GO | Improvement |
-|--------|--------|-----|------------|
-| Latency (p95) | 100ms | 5ms | **20x** |
-| Memory per instance | 100MB | 10MB | **10x** |
-| Startup time | 500ms | 10ms | **50x** |
-| Max concurrent agents | ~50 | 500+ | **10x** |
-| Throughput (req/s) | ~500 | 5000+ | **10x** |
+No Python-vs-GO benchmark is kept in this repository: the figures that used to be listed here (latency, memory,
+startup, throughput) were never measured by the project and have been removed. Scale validation (several thousand
+agents, memory footprint) is described in `DEPLOYMENT/prod/README.md` (« Dimensionnement ») and the QA reports in `_work/reports/`.
 
 ## Dependencies
 
@@ -152,14 +149,14 @@ go get github.com/gorilla/websocket
 ## Build
 
 ```bash
-# Build server binary
-go build -o secagent-server ./cmd/server
+# Build server binary (from GO/, module `secagent-server`; also ./cmd/secagent-minion, ./cmd/secagent-inventory)
+go build -o secagent-server ./cmd/secagent-server
 
 # Build with optimizations
-go build -ldflags="-s -w" -o secagent-server ./cmd/server
+go build -ldflags="-s -w" -o secagent-server ./cmd/secagent-server
 
 # Cross-compile (Linux)
-GOOS=linux GOARCH=amd64 go build -o secagent-server ./cmd/server
+GOOS=linux GOARCH=amd64 go build -o secagent-server ./cmd/secagent-server
 ```
 
 ## Usage
@@ -170,9 +167,10 @@ GOOS=linux GOARCH=amd64 go build -o secagent-server ./cmd/server
 - `STATE_DIR`: Directory for relay.state and relay.lock (default: /data, required for production)
 - `RELAY_STATUS_FILE`: Healthcheck file path (local, outside STATE_DIR, optional)
 - `TLS_CERT`, `TLS_KEY`: TLS certificate paths (required for production WSS)
-- `TLS_DISABLE`: Set to allow HTTP (tests only, unsafe)
-- `ADMIN_TLS`, `ADMIN_INSECURE_HTTP`: Admin CLI TLS options
-- `RSA_MASTER_KEY`: Master key for AES-256-GCM encryption (production recommended)
+- `TLS_DISABLE`: `true` serves plain HTTP (tests/CI only, unsafe, never in production)
+- `ADMIN_TLS`, `ADMIN_INSECURE_HTTP` (+ `ADMIN_INSECURE_HTTP_ACK`): admin API TLS options (strict `true`/`false`)
+- `RSA_MASTER_KEY`: Master secret (string, not an RSA key): required by `state init` and by the server (HMAC of relay.state, AES-256-GCM of the secrets); only `--insecure-test-mode` goes without it
+- `ADMIN_ADDR` (default `:7771`, all interfaces: a non-loopback address requires `ADMIN_TLS=true`), `API_ADDR` (`:7770`), `WS_ADDR` (`:7772`)
 
 ### Quick Start (v3.0.3)
 ```bash
@@ -194,90 +192,87 @@ export TLS_KEY="./certs/server.key"
 
 ### CLI Access via Container
 
-**Start the stack** :
+**Start the stack** : Compose files live in `DEPLOYMENT/qualif/` (`docker-compose.server.yml`, `docker-compose.minion.yml`, …) — see `DEPLOYMENT/qualif/README.md`. There is no Compose file under `GO/`. The CLI must be run in the container of the instance that currently holds the lock (the secondary opens no port):
 ```bash
-cd GO/
-docker-compose up -d
+SECAGENT="docker exec secagent-qualif-a secagent-server"   # or secagent-qualif-b
 ```
 
 **Access CLI commands via container** (Phase 6 — admin commands) :
 ```bash
 # Minions management
-docker-compose exec relay-api secagent-server minions list --format table
-docker-compose exec relay-api secagent-server minions get <hostname>
-docker-compose exec relay-api secagent-server minions suspend <hostname>
-docker-compose exec relay-api secagent-server minions resume <hostname>
-docker-compose exec relay-api secagent-server minions revoke <hostname>
-docker-compose exec relay-api secagent-server minions vars set <hostname> <key> <value>
+$SECAGENT minions list --format table
+$SECAGENT minions get <hostname>
+$SECAGENT minions suspend <hostname>
+$SECAGENT minions resume <hostname>
+$SECAGENT minions revoke <hostname>
+$SECAGENT minions vars set <hostname> key=value [key=value ...]
 
 # Security — Key rotation
-docker-compose exec relay-api secagent-server security keys status
-docker-compose exec relay-api secagent-server security keys rotate --grace 2h
-docker-compose exec relay-api secagent-server security tokens list
-docker-compose exec relay-api secagent-server security blacklist list
+$SECAGENT security keys status
+$SECAGENT security keys rotate --grace 2h
+$SECAGENT security tokens list
+$SECAGENT security blacklist list
 
 # Inventory
-docker-compose exec relay-api secagent-server inventory list --only-connected
+$SECAGENT inventory list --only-connected
 
 # Server status
-docker-compose exec relay-api secagent-server server status --format json
+$SECAGENT server status --format json
 ```
 
 **Format options** : `--format table|json|yaml` (default: table)
 
-**Authentication** : CLI uses `ADMIN_TOKEN` env var from container (set in docker-compose.yml)
+**Authentication** : CLI uses the `ADMIN_TOKEN` env var of the container (set in the Compose env file)
 
 ## Testing
 
 ### Unit Tests
 ```bash
 cd GO/
-RSA_MASTER_KEY=test ADMIN_TOKEN=test go test ./cmd/server/... -v -count=1
-RSA_MASTER_KEY=test go test ./cmd/agent/... -v -count=1
+JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v -count=1
 ```
 
 ### Integration Tests — CLI via Docker
 
 **Smoke tests (basic CLI validation)** :
 ```bash
-docker-compose up -d
-docker-compose exec relay-api secagent-server minions list
-docker-compose exec relay-api secagent-server security keys status
-docker-compose exec relay-api secagent-server server status
-docker-compose down
+# (stack started as described above)
+$SECAGENT minions list
+$SECAGENT security keys status
+$SECAGENT server status
+# (stop the stack with `docker compose ... down`)
 ```
 
 **Enrollment workflow test (Phase 6)** :
 Test the full enrollment flow by revoking agents and validating ré-enrôlement:
 ```bash
-# Start stack with 3 connected agents
-docker-compose up -d
+# Start the qualif stack with 3 connected agents (see above)
 
 # 1. Verify agents are connected
-docker-compose exec relay-api secagent-server minions list --format table
+$SECAGENT minions list --format table
 # Expected: qualif-host-01/02/03 with status=enrolled
 
 # 2. Revoke agents to force ré-enrôlement
-docker-compose exec relay-api secagent-server minions revoke qualif-host-01
-docker-compose exec relay-api secagent-server minions revoke qualif-host-02
-docker-compose exec relay-api secagent-server minions revoke qualif-host-03
+$SECAGENT minions revoke qualif-host-01
+$SECAGENT minions revoke qualif-host-02
+$SECAGENT minions revoke qualif-host-03
 
 # 3. Verify revocation (agents should disconnect then ré-enroll)
 sleep 5
-docker-compose exec relay-api secagent-server minions list --format table
+$SECAGENT minions list --format table
 # Expected: status should cycle through revoked → enrolled as agents reconnect
 
 # 4. Validate ré-enrôlement completed
-docker-compose exec relay-api secagent-server minions get qualif-host-01 --format json
-# Check: enrolled_at timestamp updated, token_jti set in DB
+$SECAGENT minions get qualif-host-01 --format json
+# Check: enrolled_at timestamp updated, token_jti recorded in relay.state
 
 # 5. Test authorized_keys flow (optional)
 # Pre-authorize an agent's public key, then trigger ré-enrôlement
-docker-compose exec relay-api secagent-server minions authorize qualif-host-01 --key-file agent_pubkey.pem
-docker-compose exec relay-api secagent-server minions revoke qualif-host-01
+$SECAGENT minions authorize qualif-host-01 --key-file agent_pubkey.pem
+$SECAGENT minions revoke qualif-host-01
 # Verify agent ré-enrôles with authorized key validation passing
 
-docker-compose down
+# (stop the stack with `docker compose ... down`)
 ```
 
 **What this validates** :
@@ -351,15 +346,15 @@ docker-compose down
 - ✅ handlers/inventory.go — Ansible inventory format (kept)
 - ✅ handlers/admin.go — Admin endpoints (minions, status) (kept)
 - ✅ ws/handler.go — WebSocket connections, dispatch (kept, direct WS in v3.0.3)
-- ⚠️ storage/store.go — SQLite persistence (removed v3.0.3)
+- ⚠️ storage/store.go — was the SQLite persistence; the file still exists in v3.0.3 as the data access layer over the file state (SQLite removed)
 - ⚠️ broker/nats.go — NATS JetStream client (removed v3.0.3)
 - ✅ main.go — HTTP server setup, request routing (kept)
 - ✅ Unit tests — 80%+ coverage
-- ✅ Docker — Dockerfile + docker-compose.yml
+- ✅ Docker — Dockerfile (Compose files: see ../DEPLOYMENT/)
 - ✅ go.mod/go.sum — Dependency lock files
 
 ### Phase 8 — Agent Rewrite ✅
-- ✅ cmd/agent/main.go — Agent daemon
+- ✅ cmd/secagent-minion/main.go — Agent daemon (renamed from cmd/agent)
 - ✅ internal/ws/dispatcher.go — WebSocket handler, rekey support
 - ✅ internal/executor/executor.go — Subprocess execution
 - ✅ internal/enrollment/ — RSA-4096, enrollment flow
@@ -368,7 +363,7 @@ docker-compose down
 - ✅ Handler rekey + 401 ré-enrôlement
 
 ### Phase 9 — Inventory Plugin ✅
-- ✅ cmd/inventory/main.go — secagent-inventory binary
+- ✅ cmd/secagent-inventory/main.go — secagent-inventory binary
 - ✅ Ansible plugin wrapper
 - ✅ Dynamic inventory format
 
@@ -390,7 +385,7 @@ docker-compose down
 - **Bearer tokens**: Admin authorization
 - **JTI blacklist**: Token revocation
 - **Constant-time comparison**: Timing attack prevention
-- **TLS 1.3**: Native HTTP/WSS (no reverse proxy required)
+- **TLS 1.2+**: Native HTTP/WSS (`MinVersion` TLS 1.2, no reverse proxy required)
 
 ## Performance Optimization
 
