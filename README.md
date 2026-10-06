@@ -97,26 +97,29 @@ ansible-secagent/
 
 ## Concept
 
-### Flux d'Exécution
+### Flux d'Exécution v3.0.3
 
 ```
-┌─────────┐        ┌──────────┐        ┌─────────┐        ┌──────────┐
-│ Ansible │        │  Relay   │        │  NATS   │        │  Relay   │
-│ Control │───────▶│ Server   │───────▶│ Message │◀──────▶│  Agent   │
-│ Machine │        │ (FastAPI)│        │  Broker │        │ (Minion) │
-└─────────┘        └──────────┘        └─────────┘        └──────────┘
-                         │                                       │
-                         └──────────── WebSocket ───────────────┘
-                                     (Bidirectionnel)
+┌─────────────┐        ┌──────────────┐        ┌──────────────┐
+│   Ansible   │        │  Relay v3.0.3│        │  Relay Agent │
+│  Control    │───────▶│  Server      │◀──────▶│  (Minion)    │
+│  Machine    │        │  (GO, TLS)   │        │  (GO)        │
+└─────────────┘        └──────────────┘        └──────────────┘
+       │                       │                       │
+       └── HTTPS REST ─────────┘                       │
+       │                  ▲                            │
+       │                  │                            │
+       └─ WSS (7772) ─ WebSocket Direct ──────────────┘
+              (Connexion persistante, multiplexée par task_id)
 ```
 
-1. **Playbook Ansible** → Plugin connection_relay (HTTP/REST)
-2. **Server relay-api** → Enqueue task dans NATS stream
-3. **Agent WebSocket** → Reçoit tâche via canal persistant
+1. **Playbook Ansible** → Plugin connection_relay (HTTPS/REST)
+2. **Server relay** → Dispatch direct via WebSocket (7772) au minion
+3. **Agent minion** → Reçoit tâche via WSS persistante
 4. **Agent subprocess** → Exécute la commande Ansible
-5. **Agent → Server** → Upload résultat via HTTP
-6. **Server → NATS** → Persiste résultat
-7. **Plugin reads** → Récupère résultat via /api/exec/{task_id}
+5. **Agent → Server** → Retour résultat via WebSocket
+6. **Server → STATE_DIR** → Persiste dans relay.state (file-based)
+7. **Plugin reads** → Récupère résultat via REST HTTP
 
 ### Avantages par rapport à SSH
 
@@ -128,14 +131,16 @@ ansible-secagent/
 | **Scaling** | N connexions SSH | 1 WebSocket par agent |
 | **NAT Friendly** | Difficile | Natif (agents derrière NAT) |
 
-## Stack Technique
+## Stack Technique v3.0.3
 
-- **Agent** : Python 3.11+, asyncio, websockets, RSA-4096
-- **Serveur** : Python 3.11+, FastAPI, NATS JetStream, SQLite/PostgreSQL
-- **Plugins Ansible** : Python, ConnectionBase, InventoryModule
-- **Transport** : WSS (obligatoire TLS), HTTP/REST
-- **Authentification** : JWT HMAC-SHA256, RSA challenge-response
-- **Orchestration** : Docker Compose (qualif), Kubernetes Helm (prod)
+- **Agent (secagent-minion)** : GO, gorilla/websocket, subprocess, RSA-4096, JWT
+- **Serveur (secagent-server)** : GO, net/http natif, TLS natif, état fichier (STATE_DIR), verrou actif/passif
+- **Inventaire (secagent-inventory)** : GO binary, multi-adresses, support repeater
+- **Plugins Ansible** : Python, ConnectionBase, InventoryModule (contrainte Ansible)
+- **Transport** : WSS (TLS obligatoire sur 7770/7772), HTTPS/REST
+- **Authentification** : JWT HMAC-SHA256, RSA-4096 challenge-response, JTI blacklist
+- **État** : Fichier (relay.state), signé HMAC, chiffré RSA, verrou multi-hôtes (NFS)
+- **Orchestration** : Docker Compose multi-hôtes (qualif + prod actif/passif)
 
 ## Sécurité MVP
 
@@ -148,16 +153,18 @@ ansible-secagent/
 - TLS obligatoire pour production
 - Rôles RBAC (agent/plugin/admin)
 
-## Phase de Développement
+## Phases de Développement
 
-- ✅ **Phases 1–9** : Agents, serveur, NATS, WebSocket, plugins Ansible, inventaire, JWT, CLI, sécurité RSA-4096
-- ✅ **Phase 10** : Enrollment Token (système de tokens pré-signés)
-- ✅ **Phase 11** : Event Hooks unifiés (JSON config, 4 executors, action_log)
-- ✅ **Phase 12** : Proxy/Gateway multi-zone (pull/push, inventaire agrégé, chaînage, JWT rôle relay)
-- ✅ **Phase 13** : Repeater Relay Chain v3.0.1 (arbre hiérarchique, pull/push modes, token relay-parent, révocation JTI, état des liens dans l'API d'administration et /health avec drapeau degraded)
-- ⏳ **Phase 14** : Production Kubernetes (après validation qualif)
+- ✅ **Phases 1–9** : Agents GO, serveur WebSocket, plugins Ansible, inventaire, JWT, CLI, RSA-4096
+- ✅ **Phase 10** : Enrollment Token (tokens pré-signés)
+- ✅ **Phase 11** : Event Hooks (JSON, 4 executors, action_log JSON Lines)
+- ✅ **Phase 12** : Proxy/Gateway multi-zone (relays enfants/parents)
+- ✅ **Phase 13** : Repeater Chain v3.0.1 (arbre hiérarchique, pull/push)
+- ✅ **Phase 14** : Stabilité v3.0.2-3.0.3 (event propagation, group vars, topologie dynamique)
+  - ✅ v3.0.2 : Événements origin-first, inventory hiérarchique, group vars validés
+  - ✅ v3.0.3 : État fichier (retiré NATS), TLS natif, Compose multi-hôtes, verrou HA
 
-**Version actuelle : v3.0.1** — Repeater chain IMPLEMENTED (GO rewrite 100% complete)
+**Version actuelle : v3.0.3** — Production stable (GO rewrite 100%, NATS retiré, state file HA)
 
 ## Contacts & Support
 
