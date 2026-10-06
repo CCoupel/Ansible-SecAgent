@@ -19,8 +19,9 @@
       "platform": "Ansible (connection + inventory)"
     },
     "database": {
-      "primary": "sqlite",
-      "orm": "modernc.org/sqlite"
+      "primary": "file-state",
+      "orm": null,
+      "note": "fichier d'état relay.state (HMAC, STATE_DIR) + verrou relay.lock ; pas de SQLite, pas de NATS, CGO_ENABLED=0"
     }
   },
   "infrastructure": {
@@ -31,11 +32,16 @@
         "order": 1,
         "publish": {
           "mode": "promote",
-          "target": "build/qualif_v{X.Y.Z}/"
+          "trigger": "workflow_dispatch",
+          "pipeline": ".github/workflows/candidate-images.yml",
+          "target": "ghcr.io/ccoupel/secagent-{server,minion}:sha-<commit>@sha256:<digest> (linux/amd64)"
         },
         "deploy": {
           "mechanism": "docker-compose",
-          "target": "docker-compose.qualif.yml"
+          "target": "DEPLOYMENT/qualif/docker-compose.server.yml",
+          "chain": "DEPLOYMENT/qualif/docker-compose.chain.yml",
+          "script": "DEPLOYMENT/qualif/chain-test.sh",
+          "host": "192.168.1.218"
         }
       },
       {
