@@ -9,27 +9,54 @@ All notable changes to this project will be documented in this file.
 ### Added
 - (future features for next milestone)
 
+---
+
+## [v3.0.3] — 2026-10-06 — Relay Actif/Passif et État sans SQLite
+
+**⚠️ BREAKING CHANGES — Migration Required**
+
+### Migration et Avis de Sécurité
+
+**Migration (obligatoire)** : 
+- **Tokens agent sans `role: "agent"`** sont refusés en 401 après la mise à jour. Les agents doivent **se ré-enrôler** (nouveau jeton d'enrôlement, redémarrage du minion).
+- **État vierge, aucune migration de `relay.db`** — v3 repart de zéro. Anciens tokens, hôtes et configurations sont perdus ; tous les agents se ré-enrôlent.
+- **`DATABASE_URL` définie = erreur au démarrage** — utiliser `STATE_DIR` (défaut `/data`).
+- Exécutez `secagent-server state init` pour initialiser le nouvel état avant le 1er démarrage.
+
+**Avis de sécurité** (#181) :
+- **v1.0.0 et v2.0.0 affectées** : endpoints `/ws/agent` et `/ws/relay` (mode proxy) acceptaient connexions sans token. Exploitation : usurpation d'agent/relay, interception de tâches et `become_pass`. **Corrigé en v3.0.3**, fail-closed. Mitigations pour déploiements v2.0.0 : restriction réseau des ports 7770/7772 + **rotation des `become_pass`**.
+- **v1.0.0 et v2.0.0 affectées** : secrets de webhooks (HMAC, jetons) enregistrés en clair dans `action_log`. Exposition via `GET /api/admin/hooks/log` et via accès au fichier `relay.db`. **Corrigé en v3.0.3** avec journal append-only masqué. Actions : **évaluer et faire tourner les secrets de webhooks** et **purger les anciennes copies de `relay.db`**.
+
+### Changed (breaking)
+- **Le Store passe sur le fichier d'état, SQLite et CGO sont retirés (#160)** : `STATE_DIR` (défaut `/data`, créé par `secagent-server state init`) remplace `DATABASE_URL` ; `DATABASE_URL` définie = **erreur au démarrage** (aucune migration d'un ancien `relay.db`). Enrôlement et révocation d'un relay en une seule mutation ; statut, `last_seen`, routage et `relay_chain` en mémoire ; purge horaire de la blacklist ; `last_used_*` des tokens plugin approximatifs (champ `last_used_approximate`). Tokens relay : `token_hash` (pull) et `token_secret` scellé (push) distincts. Sans garde d'écriture le serveur est en lecture seule. Binaire et image serveur en `CGO_ENABLED=0`.
+
 ### Changed (breaking)
 - **Le Store passe sur le fichier d'état, SQLite et CGO sont retirés (#160)** : `STATE_DIR` (défaut `/data`, créé par `secagent-server state init`) remplace `DATABASE_URL` ; `DATABASE_URL` définie = **erreur au démarrage** (aucune migration d'un ancien `relay.db`). Enrôlement et révocation d'un relay en une seule mutation ; statut, `last_seen`, routage et `relay_chain` en mémoire ; purge horaire de la blacklist ; `last_used_*` des tokens plugin approximatifs (champ `last_used_approximate`). Tokens relay : `token_hash` (pull) et `token_secret` scellé (push) distincts. Sans garde d'écriture le serveur est en lecture seule. Binaire et image serveur en `CGO_ENABLED=0`.
 
 ### Added
+- **Fichier d'état avec HMAC et anti-rejeu (#159, #160, #162, #163)** : `relay.state` (JSON, authentifié HMAC-SHA-256, crypté champ par champ, écriture atomique) remplace SQLite ; créé par `secagent-server state init` (sans aucune source de données externes, état vierge obligatoire). Verrou d'exclusivité du maître (`relay.lock`, variante A : inode + `instance_id` + battement) avec garde `write_seq` anti-rejeu en mémoire.
 - **Actif/passif dans `secagent-server` (#163)** : une instance démarre secondaire (aucun port, aucun état chargé, rien d'écrit hors `relay.lock`), devient maître par le verrou, charge l'état puis ouvre ses ports ; `BeforeWrite` branché sur le verrou. Perte du verrou : listeners et WebSockets fermés (`1001`, jamais `4001`), hooks non vidés, sortie code 75. SIGTERM : verrou supprimé, reprise < 10 s (mesurée 3-6 s : cycle de contrôle ≤ 5 s + pause du candidat 1-2 s). Garde de `write_seq` (rejeu d'une copie plus ancienne refusé). `secagent-server status --local` et fichier `RELAY_STATUS_FILE` (healthcheck sans port). `/health` : `role`, `instance_id`. **`RELAY_SINGLE_INSTANCE` supprimée** (ignorée avec un avertissement : le verrou est toujours actif).
+- **TLS natif dans secagent-server (#175)** : `TLS_CERT` et `TLS_KEY` chargés depuis fichiers PEM, appliqués aux ports 7770 (API) et 7772 (WebSocket). Rechargement à chaud via `GetCertificate` sans redémarrage. Port 7771 (admin) : HTTP en clair si loopback, TLS obligatoire si non-loopback (`ADMIN_TLS=true`), ou dérogation explicite `ADMIN_INSECURE_HTTP=true` + `ADMIN_INSECURE_HTTP_ACK=i-understand-the-risk` (warning à chaque démarrage).
+- **Journal des actions de hooks masqué (#161)** : `action_log` (SQLite) remplacé par un journal JSON Lines append-only `actions.log` (`RELAY_ACTION_LOG`, défaut `STATE_DIR/actions.log`), sans fsync par ligne, rotation par taille (10 Mio × 5). Le `config_snapshot` ne contient plus aucun secret (masquage systématique des HMAC, tokens et en-têtes d'authentification).
+- **Commandes de diagnostic et reprise d'état (#187)** : `secagent-server state verify` (vérifie intégrité HMAC, schema, invariants sans écrire), `secagent-server state restore --from` (restauration atomique d'une copie préalablement vérifiée, avec garde verrou vivant et min-write-seq).
+- **Listes d'adresses multi-instances (#164-168)** : agents, plugins et inventaire supportent listes d'adresses ; relay aussi en mode pull/push. Client try-first, roundrobin, distinction « avant envoi » / « après envoi ». Variante DNS supportée nativement.
+
+### Changed
+- **TLS_DISABLE=true (tests seul)** — option pour les tests, sinon TLS obligatoire
+- **Ports 7770/7771/7772 clarifiés** : 7770 = API publique + `/ws/agent` + `/ws/relay` (compat), 7771 = admin jamais exposé, 7772 = WebSocket (option historique, redondance 7770)
 
 ### Removed
 - **NATS JetStream retiré du serveur et du déploiement (#178)** : aucun usage fonctionnel (l'exec passe par WebSocket direct), aucune perte. Suppression de `internal/broker`, de `GO/nats.conf`, des services/volumes `nats*` des Compose hors prod, des dépendances `nats-io` du `go.mod`. `NATS_URL` encore définie : un seul `[WARN] NATS_URL is obsolete and ignored`, démarrage normal.
 - **[BREAKING]** `GET /api/admin/status` et `secagent-server server status` ne renvoient plus le champ `nats`.
-
-### Added
-- **Fichier d'état et verrou (#159, #162)** : package `state` (fichier d'état unique, écriture atomique, group commit, `secagent-server state init`), package `lock` (verrou d'exclusivité du maître, variante A). Pas encore branchés au serveur (#160, #163).
-
-### Changed
-- **Journal des actions de hooks (#161)** : `action_log` (SQLite) remplacé par un journal JSON Lines append-only `actions.log` (`RELAY_ACTION_LOG`, défaut `STATE_DIR/actions.log`), sans fsync par ligne, rotation par taille (10 Mio × 5). Le `config_snapshot` ne contient plus aucun secret (il enregistrait en clair le secret HMAC et les en-têtes d'authentification des webhooks).
+- **Kubernetes et Helm retirés (#170, #157)** : déploiement cible = Docker Compose multi-hôtes actif/passif (prod). Helm et K8s ne sont plus cibles supportées.
+- **Caddy et scripts deploy.sh / deploy.bat retirés (#174, #188)** : TLS natif dans le serveur ; Compose sans reverse proxy ; déploiement par Compose direct.
 
 ### Security
-- **#176** : suppression de `completedResults` et de `GET /api/async_status/{task_id}` (map sans mutex, non bornée, sans appelant en production).
-- **#169** : `/ws/agent` refuse (401, avant l'upgrade) un JTI blacklisté, remplacé ou un agent inconnu ; fail closed.
+- **#169** : `/ws/agent` refuse (401, avant l'upgrade) un JTI blacklisté, remplacé ou un agent inconnu ; fail closed. Bearer obligatoire, pas de repli `?hostname=`.
 - **#177** : `X-Forwarded-For` n'est pris en compte que derrière `TRUSTED_PROXY_CIDRS` (vide par défaut = ignoré).
 - **#173** : `agents.suspended` appliqué à exec/upload/fetch (503 `agent_suspended`, relayé par les parents).
+- **#176** : suppression de `completedResults` et de `GET /api/async_status/{task_id}` (map sans mutex, non bornée, sans appelant en production).
+- **#175b** : port 7771 (admin) refuse HTTP en clair si non-loopback, sauf dérogation explicite.
 
 ---
 
