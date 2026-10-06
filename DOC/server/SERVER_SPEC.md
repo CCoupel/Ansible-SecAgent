@@ -76,7 +76,7 @@ Le port 7771 ne doit **jamais** être publié sur une interface publique (hôte 
 | `POST /api/token/refresh` | JWT agent expiré (challenge RSA) |
 | `/api/admin/*` | `Bearer <ADMIN_TOKEN>` (port 7771 ; `POST /api/admin/authorize` aussi sur 7770 par compatibilité) |
 | `WSS /ws/agent` | `Bearer <JWT agent>` (rôle `agent` uniquement) |
-| `WSS /ws/relay` | `Bearer <JWT relay-child / relay-parent>` |
+| `WSS /ws/relay` | `Bearer <JWT rôle `relay` ou `relay-parent`>` |
 
 Les jetons plugin et d'enrôlement sont des **jetons opaques** (`secagent_plg_` / `secagent_enr_` + 64 hex), enregistrés (hachés) dans l'état — pas des JWT. Preuve : `handlers/plugin_auth.go`, `handlers/inventory.go`.
 
@@ -343,9 +343,16 @@ RELAY_GROUP_VARS='{"region":"dmz"}'
 
 ```
 WSS /ws/relay
-Authorization: Bearer <JWT rôle="relay-child ou relay-parent selon le sens d'ouverture", sub=REPEATER_ID>
+Authorization: Bearer <JWT rôle "relay" (enfant qui ouvre vers le parent) ou "relay-parent" (parent qui ouvre vers l'enfant, push), sub=relay_id du porteur>
 Port : 7772 (listener WebSocket dédié) ou 7770 (même handler, compatibilité)
 ```
+
+Rôles JWT acceptés sur `/ws/relay` : **`relay`** (nommé « relay-child » dans le reste de la documentation) et **`relay-parent`** ; tout autre rôle est refusé
+(`ws/relay_handler.go:817-855`, `extractRelayAuth`). Le `sub` doit respecter `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`, le `jti` est obligatoire et ne doit être
+ni blacklisté ni (pour un enfant) marqué `revoked` ; sinon refus **HTTP 401** avant l'upgrade (`relay_handler.go:1064`).
+
+Délais (`repeater/client.go:40-46`, `ws/relay_handler.go`) : handshake 15 s ; heartbeat WebSocket (ping) 30 s ; `agent_list` toutes les 30 s ; lecture côté serveur : 120 s sans trafic coupe le lien ;
+reconnexion de l'enfant : backoff exponentiel 5 s → 60 s.
 
 #### Handshake — Séquence d'établissement (symétrique pour pull et push)
 
@@ -362,7 +369,9 @@ Le client envoie son identité avec JWT(sub = son REPEATER_ID) :
 Serveur (récepteur) valide :
 - ✅ `relay_hello.relay_id` présent ET `relay_hello.relay_id == jwt.sub` (identité du client)
 - ✅ Détection de boucle : C ∉ {P} ∪ ancêtres(P) (voir ARCHITECTURE.md §23.2)
-- ❌ Rejeter (close **4010** — refus permanent) si l'une de ces vérifications échoue
+- ❌ Rejeter (close **4010** — refus permanent) si l'une de ces vérifications échoue (`relay_handler.go:891-902` côté enfant entrant, `1315-1334` côté lien parent)
+- ❌ Close **4012** (corrigible) si le premier message n'est pas un `relay_hello` ou si `ancestors` dépasse 32 éléments (`relay_handler.go:1316,1324`) ; en mode pull, le serveur ne vérifie
+  pas `ancestors` (le hello du client pull n'est contrôlé que sur `relay_id`)
 
 **Étape 2 — relay_ack (serveur → client)** :
 
@@ -400,7 +409,10 @@ Validation du snapshot :
 - Nombre de relays ≤ `MAX_SNAPSHOT_RELAYS` (défaut 1000)
 - Nombre d'hôtes ≤ `MAX_SNAPSHOT_HOSTS` (défaut 10000)
 - Taille du message ≤ `MAX_WS_MESSAGE_SIZE_RELAY` (défaut 10MB)
-- Rejeter (close **4012** — refus corrigible — + log) si validation échoue
+- Rejeter (close **4012** — refus corrigible — + log) si validation échoue. Contrôles réels (`validateSnapshot`, `relay_handler.go:1393-1470`) : chaque `relay_chain` commence par l'enfant émetteur et se termine par le propriétaire
+  (relay ou hôte), ≤ 32 éléments, IDs conformes, sans répétition ni identifiant de ce nœud ou de ses ancêtres ; pas de relay en double ; chaque hôte conforme à `hostnameShape`, sans doublon, rattaché à un relay déclaré
+- Refus 4012 aussi : snapshot reçu avant `relay_hello`, **plus de 40 remplacements par 60 s** sur un lien (`relay_handler.go:79,1483-1492`), `group_vars` invalides, relay déjà déclaré par un autre pair ou connecté directement,
+  **hôte connecté localement ou déjà routé via un autre pair** (`checkHostConflicts`, `relay_handler.go:344-365`) : un snapshot qui détournerait une route est **refusé**, il n'y a pas de « dernier arrivé gagne » pour les snapshots
 
 **→ Après snapshot validé, la connexion est établie** (relay_nodes, relay_routing, inventaire initialisés)
 
@@ -408,7 +420,8 @@ Validation du snapshot :
 ```json
 {"type":"agent_list", "agents":[{"hostname":"host-A", "status":"connected", "last_seen":"..."}]}
 ```
-Contient **uniquement les agents directs** du relay.
+Contient **uniquement les agents directs** du relay. Le serveur répond `agent_list_ack` (`count`). Hostnames mal formés ignorés ; liste > `MAX_AGENT_LIST_HOSTS` : close 4012
+(`relay_handler.go:946-1003`). Entre relays, le dernier arrivé gagne (avec `host.conflict`), mais un agent connecté localement n'est jamais re-routé (§9.5a).
 
 #### event_forward — Propagation des changements du sous-arbre
 
@@ -433,24 +446,27 @@ Après handshake établi, tous les changements (hôtes, relays) sont notifiés v
   "type":"event_forward",
   "event":"relay.updated",
   "relay_id":"zone-a",
-  "relay_chain":["dmz1","zone-a"],
+  "relay_chain":["zone-a","dmz1"],
   "group_vars":{"region":"zone2"},
   "timestamp":"..."
 }
 ```
 
+**Ordre de `relay_chain` dans un `event_forward`** : **origine en premier, pair émetteur en dernier** (`relay_handler.go:1620-1632`) ; pour `relay.updated`, le premier élément est le relay décrit
+(`eventShapeError`, `relay_handler.go:1695`). Les snapshots utilisent l'ordre inverse (l'enfant émetteur en premier, le propriétaire en dernier).
+
 **Design** : `event_forward` unifie tous les événements ascendants (hôtes et relays) avec des types distincts (`host.{up,down,new}`, `relay.updated`).
 
 **Logique (topologie arbre, un seul chemin)** :
-1. Événement local → relay ajoute son REPEATER_ID à relay_chain
-2. Transmet au parent, parent ajoute son ID, continue vers la racine
-3. **Anti-boucle** : refuse de transmettre si REPEATER_ID ∈ relay_chain
+1. Événement local → transmis au parent par l'uplink, qui ajoute l'ID du relay à `relay_chain`
+2. Le parent ajoute son ID à son tour et continue vers la racine
+3. **Anti-boucle** : un event dont la chaîne contient l'ID du récepteur est ignoré ; un `event_forward` reçu **du parent** est ignoré et jamais renvoyé vers le haut (`repeater/uplink.go:310`)
 4. **Pas de déduplication** : un seul chemin → un seul event
-5. **Rate limit par relay** : à dimensionner à l'implémentation selon la charge attendue (pour éviter une inondation d'events par un relay compromis)
+5. **Rate limit par lien** : 200 `event_forward` par seconde (`maxEventsPerSecond`, `relay_handler.go:84`) ; au-delà, les events sont **ignorés** (journalisés), le lien reste ouvert
+6. Un event invalide (chaîne > 32, dernier élément ≠ pair authentifié, descendant inconnu, forme invalide, type inconnu, hôte hors du sous-arbre du pair) est **abandonné** sans fermer le lien (`handleEventForward`, `relay_handler.go:1599-1651`)
 
-**Validation du relay_chain à la réception** : Voir ARCHITECTURE.md §23.2 (HAUT-1) pour la règle unifiée :
-- Mode pull : relay_chain[-1] == jwt.sub (JWT relay-child du WS client)
-- Mode push : relay_chain[-1] == relay_ack.relay_id du pair serveur
+**Validation du relay_chain à la réception** : Voir ARCHITECTURE.md §23.2 (HAUT-1) pour la règle unifiée. Le code applique une seule règle : `relay_chain[-1]` == le pair authentifié du lien
+(`jwt.sub` en pull, identité confirmée par `relay_ack` en push) ; les éléments précédents doivent être des descendants déclarés par ce pair dans son snapshot.
 
 **Événement host.conflict** (détection de détournement de route) :
 Quand un relay déclare un hôte dans `topology_snapshot` ou `agent_list` alors qu'il est déjà routé vers un autre relay :
@@ -465,7 +481,9 @@ Quand un relay déclare un hôte dans `topology_snapshot` ou `agent_list` alors 
   "timestamp":"..."
 }
 ```
-**Comportement** : le dernier arrivé gagne (reroute vers le nouveau relay). ⚠️ **Production** : Configurer un hook d'alerte sur `host.conflict` pour détcter les mouvements de route suspects.
+**Comportement** : pour un `agent_list` ou un `host.up`/`host.new` reçus d'un pair, le dernier arrivé gagne entre relays (reroute), **sauf** si l'hôte est un agent connecté localement : il n'est jamais re-routé.
+Un `topology_snapshot` qui contredirait une route est refusé (4012), sans `host.conflict`. L'événement est émis une seule fois par changement de propriétaire et par lien (`reportConflictOnce`) ; un `host.conflict` détecté ici est aussi
+remonté au parent, et déclenche les hooks `host.conflict` à chaque niveau (`server/server.go:343-353`). ⚠️ **Production** : configurer un hook d'alerte sur `host.conflict` pour détecter les mouvements de route suspects.
 
 #### task_forward et dispatch vers enfant
 
@@ -486,11 +504,10 @@ Enfant qui reçoit `task_forward` lookup sa `relay_routing` pour savoir s'il est
 
 | Code | Nature | Signification | Comportement du pair qui reçoit le close |
 |---|---|---|---|
-| `4010` | **Refus permanent** | Identité non autorisée pour ce lien : token révoqué, `relay_id` ≠ `jwt.sub`, identité du pair différente de celle attendue, boucle détectée (C ∈ {P} ∪ ancêtres(P)) | **Ne pas reconnecter** : le client pull ou le dialer push s'arrête (état terminal, log ERROR « operator action required » ) ; une action opérateur est nécessaire (#153 : une trame 4010 sur un lien push établi rend le Dialer terminal) |
-| `4011` | Token expiré | Token relay expiré (TTL dépassé) | Rafraîchir le token puis reconnecter |
-| `4012` | **Refus corrigible** | Erreur protocolaire ou de validation pouvant se résoudre : `topology_snapshot` invalide / déjà reçu / reçu avant `relay_hello`, conflit de routage ou de relay déclaré, slot « parent unique » occupé | Reconnexion avec backoff exponentiel (5 s → 60 s max) |
-| `4000` | Normal | Fermeture normale ou initiée par le client | — |
-| `1000` | Normal | Fermeture WebSocket standard | — |
+| `4010` | **Refus permanent** (émis : `relay_id` ≠ `jwt.sub`, boucle, nœud n'acceptant pas de parent, et à la révocation / remplacement du token / suppression du relay — `handlers/admin_relays.go:284,460,552`) | Identité non autorisée pour ce lien : token révoqué, `relay_id` ≠ `jwt.sub`, identité du pair différente de celle attendue, boucle détectée (C ∈ {P} ∪ ancêtres(P)) | **Ne pas reconnecter** : le client pull ou le dialer push s'arrête (état terminal, log ERROR « operator action required » ) ; une action opérateur est nécessaire (#153 : une trame 4010 sur un lien push établi rend le Dialer terminal) |
+| `4011` | **Non émis** | Constante réservée (`ws/relay_handler.go:37`), jamais envoyée ni traitée : un token expiré est refusé par un **401** avant l'upgrade | — |
+| `4012` | **Refus corrigible** | Erreur protocolaire ou de validation pouvant se résoudre : `topology_snapshot` invalide / reçu avant `relay_hello` / au-delà de 40 remplacements par minute / en conflit de routage ou de relay, `agent_list` trop longue, premier message ≠ `relay_hello`, slot « parent unique » occupé | Reconnexion avec backoff exponentiel (5 s → 60 s max) |
+| `4000` | Constante définie, non émise sur les liens relay | — | — |
 
 > Un refus HTTP 401 avant l'upgrade (token invalide, révoqué à la reconnexion, secret non configuré) n'a pas de code de fermeture : le client le traite comme une erreur de connexion (backoff 5 s → 60 s). Un refus 401 à la reconnexion n'est **pas** terminal pour un parent qui redémarre.
 
@@ -523,7 +540,7 @@ GET /api/admin/relays?only_connected=false
 POST /api/admin/relays
 {
   "relay_id": "dmz1",
-  "urls": ["wss://dmz1-a.internal:7772", "wss://dmz1-b.internal:7772"],
+  "urls": ["wss://dmz1-a.internal:7772", "wss://dmz1-b.internal:7772"],   // l'URL est celle du relay ENFANT, wss:// seulement
   "token": "${REPEATER_UPSTREAM_TOKEN_DMZ1}",
   "mode": "push"
 }
@@ -551,7 +568,7 @@ DELETE /api/admin/relays/{relay_id}
 secagent-server relays list
 secagent-server relays status
 secagent-server relays add --id <relay_id> [--description …] [--mode pull]           # pull : JWT affiché une fois
-secagent-server relays add --id <relay_id> --mode push --url <url> --token <token>    # push
+secagent-server relays add --id <relay_id> --mode push --url wss://enfant-a:7772[,wss://enfant-b:7772] --token <token>   # push : --url accepte une liste séparée par des virgules (`cli/relays.go:118-124`)
 secagent-server relays remove <uuid>
 # Pas de `relays get/revoke/delete` : la révocation se fait par l'API POST /api/admin/relays/{id}/revoke
 ```
@@ -562,7 +579,7 @@ secagent-server relays remove <uuid>
 
 **Deux rôles JWT distincts** :
 
-**Rôle `relay-child`** (présenté par l'enfant au handshake) :
+**Rôle `relay`** (appelé « relay-child » ailleurs ; présenté par l'enfant au handshake) :
 - Permissions : ouvrir `/ws/relay`, envoyer `relay_hello`, `agent_list`, `event_forward`
 - Restrictions : pas d'accès `/api/inventory`, `/api/exec`, `/ws/agent`, `/api/admin`
 - JWT créé sur : le relay parent (l'entité qui accueille l'enfant)
@@ -575,13 +592,13 @@ secagent-server relays remove <uuid>
 - JWT signé par : JWT_SECRET_KEY du relay enfant (vérification par l'enfant récepteur)
 
 **Modèle de signature (HAUT-6)** : Chaque relay crée et signe ses tokens avec sa JWT_SECRET_KEY :
-- relay-child (créé par le parent) : parent signe, enfant ne peut pas valider (isolation clef)
+- `relay` (créé par le parent) : parent signe, enfant ne peut pas valider (isolation clef)
 - relay-parent (créé par l'enfant) : enfant signe, parent ne peut pas valider (isolation clef)
 - Jamais de signature centralisée par la racine (évolution envisagée pour v3.0.1+)
 
 Les tokens relay sont créés via CLI avec le rôle approprié :
 
-**Relay-child** (créé sur le parent, présenté par l'enfant qui ouvre vers le parent) :
+**Rôle `relay`** (créé sur le parent, présenté par l'enfant qui ouvre vers le parent) :
 > *Pas encore disponible via `tokens create`* (modèle de rôles complet : #146). Aujourd'hui le JWT de l'enfant
 > (rôle `relay`, 30 j) est émis à l'enregistrement : `POST /api/admin/relays` (`relays add`, mode pull).
 
@@ -743,7 +760,7 @@ le routage (`relay_routing` : clé simple `hostname`, `relay_id`, `hop_type` age
 
 | Type | Déclencheur | Chaîne | Remarques |
 |---|---|---|---|
-| `host.up` | Agent se connecte via `/ws/agent` | `[relay_id]` (l'agent direct) | Non propagé à l'ancêtre si l'agent n'est qu'un agent local du relay |
+| `host.up` | Agent se connecte via `/ws/agent` | `[relay_id]` (l'agent direct) | Propagé au parent par l'uplink (et exécute les hooks locaux) ; reçu d'un enfant, il met à jour la route sauf si l'hôte est connecté localement |
 | `host.down` | Agent se déconnecte | `[relay_id]` | — |
 | `host.new` | Agent apparaît via `agent_list` d'un enfant | `[relay_id_origine, relay_parent, ...]` (chaîne de l'agent) | — |
 | `host.conflict` | Un relay déclare un hôte déjà routé vers un autre relay | `[relay_id_nouveau_propriétaire]` (l'hôte va au nouveau proprietaire) | Rare ; indicatif d'une mal-configuration ou d'une attaque (détournement de route). Un événement max par changement de propriétaire. |
@@ -751,22 +768,20 @@ le routage (`relay_routing` : clé simple `hostname`, `relay_id`, `hop_type` age
 
 **Sémantique chaîne** :
 - Chaque relay ajoute son propre ID à la chaîne lors du relayage vers le parent
-- Un événement local n'est pas re-forwardé au parent (évite les boucles)
+- Un `event_forward` reçu du parent n'est jamais renvoyé vers le haut (`repeater/uplink.go:310`)
 - Anti-boucle : un relay refuse de transmettre si son ID est déjà dans la chaîne
 
-**Rate limit** : Chaque lien relay-parent peut accepter **40 topology_snapshot** replacements par 60 s. Au-delà, fermeture WebSocket **4012** (refus corrigible) ; le relay enfant se reconnecte avec backoff.
+**Rate limit** : chaque lien accepte **40 `topology_snapshot` de remplacement par 60 s** (`relay_handler.go:79-80`) ; au-delà, fermeture WebSocket **4012** (refus corrigible), l'enfant se reconnecte avec backoff. L'uplink regroupe les changements : délai de 200 ms puis au moins 2 s entre deux snapshots (`repeater/client.go:43-44`). Les `event_forward` sont limités à 200/s par lien (§9.2).
 
-**Variables de hook** : Lors de l'exécution d'un hook, les événements injectent deux variables supplémentaires :
-- `{{relay_chain}}` : chaîne d'événement JSON (ex: `["zone-a","dmz1"]`)
-- `{{relay_origin}}` : premier élément de la chaîne (relay d'où l'événement provient ; ex: `"zone-a"`)
+**Variables de hook** : lors de l'exécution d'un hook, les événements injectent deux variables supplémentaires (`hooks/dispatcher.go:41-56`) :
+- `{{relay_chain}}` : chaîne séparée par des virgules, origine en premier (ex : `zone-a,dmz1`) ; variable d'environnement `SECAGENT_RELAY_CHAIN` (shell) ; tableau JSON `relay_chain` dans le corps d'un webhook
+- `{{relay_origin}}` : premier élément de la chaîne (relay d'où l'événement provient ; ex: `zone-a`) ; `SECAGENT_RELAY_ORIGIN`
 
 **Filtrage des hooks** (`relay_chain_contains`) : Permet un hook d'accepter les événements seulement si un relay spécifique figure dans la chaîne :
-```yaml
-hooks:
-  - event: "host.up"
-    filter: "relay_chain_contains:dmz1"
-    cmd: "notify-mgmt.sh {{hostname}}"
+```json
+{ "hooks": [ { "event": "host.up", "filter": { "relay_chain_contains": "dmz1" }, "actions": [ … ] } ] }
 ```
+(configuration JSON, voir `DOC/server/HOOKS_SPEC.md` ; un objet `filter` vide est refusé, `hooks/config.go:22-62`)
 Le filtre est validé au chargement de la config (fichier rejeté en bloc si malformé ; config précédente conservée au SIGHUP) — **fail-closed**.
 
 ---
@@ -829,7 +844,7 @@ Les fichiers Compose de référence sont `DEPLOYMENT/prod/docker-compose.server.
 | **Routage** | Lookup simple `hostname` (un seul chemin, pas de sélection multi-chemins) |
 | **Events** | Remontée parent-à-parent, pas de déduplication (un seul chemin) |
 | **Anti-cycle** | Rejet si `REPEATER_ID ∈ relay_chain` |
-| **Auth** | Deux rôles JWT fixés : `relay-child` (enfant ouvre) + `relay-parent` (parent ouvre) ; chaque relay signe ses tokens avec sa JWT_SECRET_KEY |
+| **Auth** | Deux rôles JWT fixés : `relay` (dit « relay-child », enfant ouvre) + `relay-parent` (parent ouvre) ; chaque relay signe ses tokens avec sa JWT_SECRET_KEY |
 | **Suppression** | REPEATER_UPSTREAMS_FILE, seen-set, event_id dedup, priority, multi-upstream |
 
 
