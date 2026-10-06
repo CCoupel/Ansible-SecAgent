@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -48,32 +47,68 @@ func TestProbe_UnchangedMasterLockIsStaleOnlyAfterTheMasterLimit(t *testing.T) {
 func TestProbe_CandidateLockUsesTheShortLimit(t *testing.T) {
 	dir := t.TempDir()
 	writeLock(t, dir, content{InstanceID: "c", Role: RoleCandidate})
-	start := time.Now()
-	st, _, _ := Probe(context.Background(), nil, nil, dir, probeParams())
-	if st != ProbeStale || time.Since(start) > 110*time.Millisecond {
-		t.Fatalf("candidate: %v after %v", st, time.Since(start))
+	clock := &stepClock{now: time.Unix(1000, 0)}
+	st, info, _ := Probe(context.Background(), nil, clock, dir, probeParams())
+	// virtual time: concluded after exactly CandidateStale (40 ms, polled every 5 ms), never after the master limit
+	if st != ProbeStale || info.Waited < 40*time.Millisecond || info.Waited > 45*time.Millisecond {
+		t.Fatalf("candidate: %v after %v (virtual), want stale after the 40 ms candidate limit", st, info.Waited)
 	}
 }
 
+// stepClock is a virtual clock: Sleep advances the time instantly and then runs onSleep(n), n = the
+// number of sleeps so far — the "other instance" of a test acts at a precise poll of the probe, never
+// at a wall-clock instant a loaded machine could stretch.
+type stepClock struct {
+	now     time.Time
+	n       int
+	onSleep func(n int)
+}
+
+func (c *stepClock) Now() time.Time { return c.now }
+
+func (c *stepClock) Sleep(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.n++
+	c.now = c.now.Add(d)
+	if c.onSleep != nil {
+		c.onSleep(c.n)
+	}
+	return nil
+}
+
+// A lock whose content changes is a live instance, whatever the beat period relative to the limit:
+// the probe polls every 5 ms and judges a master stale after 120 ms (24 polls) without any change.
+// The change happens at an exact poll of a virtual clock (the former version used a goroutine writing
+// every 20 ms of real time: a stalled goroutine on a loaded machine let the 120 ms elapse -> stale).
 func TestProbe_AChangingLockIsActive(t *testing.T) {
-	dir := t.TempDir()
-	path := writeLock(t, dir, content{InstanceID: "alive", Role: RoleMaster, Beat: 1})
-	var beat atomic.Uint64
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		for {
-			select {
-			case <-stop:
-				return
-			case <-time.After(20 * time.Millisecond):
-				_ = os.WriteFile(path, encodeContent(content{InstanceID: "alive", Role: RoleMaster, Beat: 2 + beat.Add(1)}), 0o700)
+	for _, tc := range []struct {
+		name     string
+		changeAt int // poll number at which the other instance rewrites the lock
+		want     ProbeState
+	}{
+		{"beat after 20 ms", 4, ProbeActive},
+		{"beat at the very last poll before the limit", 23, ProbeActive},
+		{"beat during the poll that reaches the limit", 24, ProbeActive}, // the content is compared BEFORE the limit
+		{"beat only after the limit was reached", 25, ProbeStale},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := writeLock(t, dir, content{InstanceID: "alive", Role: RoleMaster, Beat: 1})
+			clock := &stepClock{now: time.Unix(1000, 0)}
+			clock.onSleep = func(n int) {
+				if n == tc.changeAt {
+					if err := os.WriteFile(path, encodeContent(content{InstanceID: "alive", Role: RoleMaster, Beat: 2}), 0o700); err != nil {
+						t.Error(err)
+					}
+				}
 			}
-		}
-	}()
-	st, info, err := Probe(context.Background(), nil, nil, dir, probeParams())
-	if err != nil || st != ProbeActive || info.InstanceID != "alive" {
-		t.Fatalf("%v %+v %v", st, info, err)
+			st, info, err := Probe(context.Background(), nil, clock, dir, probeParams())
+			if err != nil || st != tc.want || info.InstanceID != "alive" {
+				t.Fatalf("%v %+v %v, want %v", st, info, err, tc.want)
+			}
+		})
 	}
 }
 
