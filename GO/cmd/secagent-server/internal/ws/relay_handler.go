@@ -56,8 +56,6 @@ type RelayConnection struct {
 	descendants  map[string]struct{} // relays declared in the validated topology_snapshot
 	helloDone    bool                // relay_hello accepted: required before topology_snapshot / event_forward
 	snapshotDone bool
-	snapWindow   time.Time // replacement-snapshot rate limit window start
-	snapCount    int
 	reject       *relayRejection // set by a handler to make the read loop close the link
 	evWindow     time.Time       // event_forward rate limit window start
 	evCount      int
@@ -912,6 +910,12 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 			rejectPermanent(conn, "relay_hello relay_id does not match jwt.sub")
 			return
 		}
+		// An identity that spent its snapshot quota is refused at the handshake, before any snapshot (#156).
+		if snapshotQuotaExhausted(conn.RelayID, time.Now()) {
+			logSnapshotQuota(conn.RelayID)
+			reject(conn, "topology_snapshot rate limit exceeded")
+			return
+		}
 		// Structural loop check (also enforced at upgrade time).
 		if loopedWith(conn.RelayID) {
 			rejectPermanent(conn, "loop detected: relay is the parent or one of its ancestors")
@@ -1431,6 +1435,9 @@ func isNormalClose(err error) bool {
 
 // resetRelayState clears all relay global state (used in tests).
 func resetRelayState() {
+	snapQuotaMu.Lock()
+	snapQuotas = map[string]*snapQuota{}
+	snapQuotaMu.Unlock()
 	descOwnerMu.Lock()
 	for k := range descendantOwner {
 		delete(descendantOwner, k)
@@ -1544,19 +1551,12 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 		return
 	}
 	replacing := conn.snapshotDone
-	if replacing {
-		// A later snapshot REPLACES the subtree atomically (late-joining relays, lost links), but
-		// is rate limited per link: every replacement rewrites routing.
-		now := time.Now()
-		if now.Sub(conn.snapWindow) >= snapshotReplaceWindow {
-			conn.snapWindow, conn.snapCount = now, 0
-		}
-		conn.snapCount++
-		if conn.snapCount > snapshotReplaceLimit {
-			log.Printf("[SECURITY WARNING] topology_snapshot rate limit exceeded: relay_id=%q (> %d per %s)", conn.RelayID, snapshotReplaceLimit, snapshotReplaceWindow)
-			reject(conn, "topology_snapshot rate limit exceeded")
-			return
-		}
+	// Every snapshot (the first of a link included) counts in the quota of the IDENTITY: each one rewrites
+	// routing, and a reconnection must not reset the counter (#156). Refused before any processing.
+	if !allowSnapshot(conn.RelayID, time.Now()) {
+		logSnapshotQuota(conn.RelayID)
+		reject(conn, "topology_snapshot rate limit exceeded")
+		return
 	}
 	relays, byRelay, err := validateSnapshot(conn, msg)
 	if err != nil {

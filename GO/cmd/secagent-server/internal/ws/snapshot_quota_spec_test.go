@@ -29,7 +29,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const specSnapshotQuotaByIdentity = false // dev-relay: true when #156 lands
+const specSnapshotQuotaByIdentity = true // dev-relay: true when #156 lands
 
 // specSnapshotQuotaEntries returns the number of identities tracked by the quota table. Wired by
 // dev-relay (snapshot_quota_spec_wire_test.go) once the table exists; nil = the purge test is skipped.
