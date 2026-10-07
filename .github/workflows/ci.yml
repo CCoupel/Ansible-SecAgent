@@ -83,7 +83,7 @@ jobs:
   ansible-inventory:
     name: Inventaire Ansible
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     # Bloquant. Valide la sortie reelle du binaire secagent-inventory avec le vrai
     # `ansible-inventory --list` (plugin `script`). ANSIBLE_E2E=1 rend le test OBLIGATOIRE :
     # ansible-inventory introuvable => echec (jamais de skip silencieux). Le job « Build + tests Go »
@@ -99,10 +99,17 @@ jobs:
           cache: pip
           cache-dependency-path: .github/ci/requirements-ansible.txt
 
-      - name: Installer ansible-core (version epinglee)
+      # Tout est installe dans un venv jetable du job (jamais dans le Python du systeme) : ansible-core et httpx
+      # (requis par le plugin de connexion relay.py) epingles dans requirements-ansible.txt ; ansible-playbook,
+      # ansible-inventory et python3 (interpreteur des modules cote cible) viennent de ce venv.
+      - name: Installer ansible-core et httpx (venv, versions epinglees)
         run: |
-          python -m pip install -r .github/ci/requirements-ansible.txt
-          ansible-inventory --version
+          python -m venv "$RUNNER_TEMP/ansible-venv"
+          "$RUNNER_TEMP/ansible-venv/bin/python" -m pip install -r .github/ci/requirements-ansible.txt
+          echo "$RUNNER_TEMP/ansible-venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/ansible-venv/bin/ansible-inventory" --version
+          "$RUNNER_TEMP/ansible-venv/bin/ansible-playbook" --version
+          "$RUNNER_TEMP/ansible-venv/bin/python" -c "import httpx; print('httpx', httpx.__version__)"
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
@@ -120,11 +127,24 @@ jobs:
         # qu'au moins un test « Ansible » ait reellement PASSE.
         run: |
           set -o pipefail
-          go test -race -run 'Ansible' -v ./cmd/secagent-server/internal/integration/... -timeout 300s | tee ansible-test.log
+          go test -race -run 'Ansible' -v ./cmd/secagent-server/internal/integration/... -timeout 600s | tee ansible-test.log
           if ! grep -qE '^--- PASS: .*Ansible' ansible-test.log; then
             echo "::error::Aucun test Ansible execute et passe (absent ou skippe) : le job ne valide rien."
             exit 1
           fi
+          # Aucun skip silencieux : ANSIBLE_E2E=1 rend tout test Ansible obligatoire.
+          if grep -qE '^\s*--- SKIP: .*Ansible' ansible-test.log; then
+            echo "::error::Un test Ansible a ete SKIPPE (ANSIBLE_E2E=1 interdit les skips)."
+            grep -E '^\s*--- SKIP: .*Ansible' ansible-test.log
+            exit 1
+          fi
+          # #171 D : chacun des scenarios async/poll doit avoir reellement PASSE (noms exacts des tests).
+          for t in TestAnsibleAsync_D1_ TestAnsibleAsync_D2_ TestAnsibleAsync_D3_JobSurvives TestAnsibleAsync_D3_PollInFlight TestAnsibleAsync_D4_; do
+            if ! grep -qE "^--- PASS: ${t}" ansible-test.log; then
+              echo "::error::Test ${t}* absent ou non passe (#171 D) : le job ne prouve pas l'async/poll."
+              exit 1
+            fi
+          done
 
   # ---- Conteneurs et Compose (#174 M4/M5) ---------------------------------------------------------
   docker-compose-checks:
@@ -261,9 +281,11 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: .github/ci/requirements-ansible.txt
-      - name: Poste de controle Ansible (ansible-core epingle, secagent-inventory)
+      - name: Poste de controle Ansible (venv, ansible-core + httpx epingles, secagent-inventory)
         run: |
-          python -m pip install -r .github/ci/requirements-ansible.txt
+          python -m venv "$RUNNER_TEMP/ansible-venv"
+          "$RUNNER_TEMP/ansible-venv/bin/python" -m pip install -r .github/ci/requirements-ansible.txt
+          echo "$RUNNER_TEMP/ansible-venv/bin" >> "$GITHUB_PATH"
           cd GO && CGO_ENABLED=0 go build -trimpath -o secagent-inventory ./cmd/secagent-inventory
       - name: Images serveur et minion du commit (locales, sans push)
         run: |
