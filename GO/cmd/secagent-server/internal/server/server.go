@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -15,10 +16,12 @@ import (
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/actionlog"
+	"secagent-server/cmd/secagent-server/internal/auth"
 	"secagent-server/cmd/secagent-server/internal/config"
 	"secagent-server/cmd/secagent-server/internal/forward"
 	"secagent-server/cmd/secagent-server/internal/handlers"
 	"secagent-server/cmd/secagent-server/internal/hooks"
+	"secagent-server/cmd/secagent-server/internal/link"
 	"secagent-server/cmd/secagent-server/internal/lock"
 	"secagent-server/cmd/secagent-server/internal/logsafe"
 	"secagent-server/cmd/secagent-server/internal/proxy"
@@ -250,6 +253,71 @@ func Build(cfg Config) (node *Node, err error) {
 		return store.IsJTIBlacklisted(ctx, jti)
 	})
 	ws.SetRelayRevokedFunc(handlers.RelayRevokedCheck)
+	ws.SetRelayTokenSeenFunc(func(relayID, jti string, exp int64) {
+		info, _ := store.GetRelayTokenInfo(relayID)
+		if info.JTI == jti || info.Revoked { // unchanged, or revoked: never clear a revocation here
+			return
+		}
+		if err := store.SetRelayTokenInfo(relayID, jti, exp); err != nil {
+			log.Printf("relay %q: link token jti not recorded: %v", relayID, err)
+		}
+	})
+
+	// Link tokens (v3.0.4, #141/#146): the root signs and mints; /ws/relay verifies with the link
+	// verifier only. The root has neither a parent we dial (REPEATER_UPSTREAM_URL), nor a pinned trust
+	// anchor (REPEATER_ROOT_ID / REPEATER_ROOT_LINK_KEY_FILE / link_trust): a child whose parent dials
+	// in (push mode) is anchored too.
+	anchorCfg, err := config.LoadLinkAnchorConfig()
+	if err != nil {
+		return nil, err
+	}
+	nonRoot := repeaterCfg != nil || anchorCfg != nil || !store.LinkTrust().IsZero()
+	linkMgr := &link.Manager{
+		Store:      store,
+		MasterKey:  func() (string, bool) { v := os.Getenv("RSA_MASTER_KEY"); return v, v != "" },
+		LocalID:    func() string { id, _ := ws.RelayIdentity(); return id },
+		IsRoot:     func() bool { return !nonRoot },
+		Broadcast:  ws.BroadcastLinkFrame,
+		CloseByJTI: ws.CloseLinksByJTI,
+		States: func() map[string]link.ConfirmedState {
+			out := map[string]link.ConfirmedState{}
+			for id, st := range ws.LinkStates() {
+				out[id] = link.ConfirmedState{Seq: st.Seq, KID: st.KID}
+			}
+			return out
+		},
+		Known: ws.KnownRelayIDs,
+	}
+	handlers.SetLinkManager(linkMgr)
+	var linkTrust *repeater.LinkTrust // non-root: the pinned anchor, its rotation and the revocations from the parent
+	if nonRoot {
+		ltCfg := repeater.LinkTrustConfig{Store: trustStore{store}, Blacklist: linkBlacklist{store}}
+		if anchorCfg != nil {
+			ltCfg.RootID, ltCfg.Anchor = anchorCfg.RootID, anchorCfg.Key
+		}
+		if linkTrust, err = repeater.NewLinkTrust(ltCfg); err != nil {
+			return nil, fmt.Errorf("link trust anchor: %w", err) // e.g. the pinned key disagrees with link_trust: no start
+		}
+		// verified frames: relayed unchanged to the children; a revoked token closes the links it authenticates
+		linkTrust.OnForward(ws.BroadcastLinkFrame)
+		linkTrust.OnRevoked(func(jti string) { ws.CloseLinksByJTI(jti) })
+		ws.SetLinkTrustFunc(func() (auth.LinkTrust, string, error) {
+			if !linkTrust.Anchored() {
+				return auth.LinkTrust{}, "", ws.ErrLinkNoTrust // S21: no anchor, every incoming link is refused
+			}
+			return linkTrust.Trust(), linkTrust.RootID(), nil
+		})
+		ws.SetLinkSyncFunc(linkTrust.Replay) // what a new child must learn: the open rotation, the revocations
+	} else {
+		ws.SetLinkTrustFunc(func() (auth.LinkTrust, string, error) {
+			t, id, terr := linkMgr.Trust()
+			if terr != nil { // the root has no signing key yet (or no master key): no token can be valid, 401
+				return auth.LinkTrust{}, "", errors.New("no_link_signing_key")
+			}
+			return t, id, nil
+		})
+		ws.SetLinkSyncFunc(linkMgr.SyncFrames)
+	}
 	ws.SetRelayHostRouteFunc(store.GetRelayForHostname)
 	ws.SetRelayNodeRegisterFunc(func(relayID string) error { return registerPullRelay(store, relayID) })
 	// Ansible group vars of the relays (#139): stored per relay, served in the inventory.
@@ -276,6 +344,7 @@ func Build(cfg Config) (node *Node, err error) {
 	// Tasks sent down by our parent: resolve the next hop (live agent first, then relay_routing).
 	forwarder := &forward.Forwarder{NextHop: store.GetNextHopForHostname, Suspended: handlers.AgentSuspended}
 	upOpts := repeater.Options{
+		LinkTrust:       linkTrust,
 		GroupVars:       cfg.GroupVars,
 		DirectAgents:    directAgents,
 		Snapshot:        func() repeater.Snapshot { return buildSnapshot(selfID, store) },
@@ -316,6 +385,11 @@ func Build(cfg Config) (node *Node, err error) {
 		queueUpstream(upEvents, repeater.Event{Event: m.Event, Hostname: m.Hostname, RelayID: m.RelayID, Status: m.Status,
 			RelayChain: m.RelayChain, GroupVars: m.GroupVars, Timestamp: m.Timestamp, OldRelay: m.OldRelay, NewRelay: m.NewRelay,
 			EnrolledAt: m.EnrolledAt})
+	})
+
+	// link_state frames of the relays below travel UP to the root through our parent link (informative).
+	ws.SetLinkStateUpstreamFunc(func(frame []byte) {
+		_ = n.uplink.SendUpstream(json.RawMessage(frame)) // no parent link: nothing to tell
 	})
 
 	// Event propagation (#126). Local events of this node (agent connect / disconnect, enrollment)

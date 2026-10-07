@@ -165,8 +165,8 @@ func TestLinkJWT_AlgorithmConfusion(t *testing.T) {
 		t.Fatal("unsigned token accepted")
 	}
 	// the HS256 service must not mint something the link verifier accepts
-	svc := New(func() (string, string, time.Time) { return "secret", "", time.Time{} }, time.Hour)
-	raw, _, _ := svc.SignRelayParent("parent")
+	raw, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": "parent", "role": "relay-parent", "jti": "j",
+		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix()}).SignedString([]byte("secret"))
 	if _, err := VerifyLinkToken(f.trust(), raw, want, f.now); err == nil {
 		t.Fatal("HS256 relay token accepted by the link verifier")
 	}

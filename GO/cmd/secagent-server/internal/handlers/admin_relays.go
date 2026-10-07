@@ -8,7 +8,6 @@
 package handlers
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,7 +19,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"secagent-server/cmd/secagent-server/internal/auth"
 	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/state"
 	"secagent-server/cmd/secagent-server/internal/storage"
@@ -96,16 +94,13 @@ type RelayCreateRequest struct {
 	Description string   `json:"description,omitempty"`
 }
 
-// RelayCreateResponse is returned from POST /api/admin/relays.
-// For pull mode, JWTToken is set (shown only once).
+// RelayCreateResponse is returned from POST /api/admin/relays. No token is ever returned (v3.0.4).
 type RelayCreateResponse struct {
 	ID          string `json:"id"`
 	RelayID     string `json:"relay_id"`
 	Mode        string `json:"mode"`
 	Status      string `json:"status"`
 	Description string `json:"description,omitempty"`
-	// pull mode only — shown ONCE, never stored in plain text
-	JWTToken string `json:"jwt_token,omitempty"`
 	// push mode only: the addresses ("url" = the first one, for older clients)
 	URLs      []string `json:"urls,omitempty"`
 	URL       string   `json:"url,omitempty"`
@@ -138,8 +133,8 @@ type RelayStatusResponse struct {
 
 // AdminCreateRelay registers a new relay node.
 //
-// Pull mode (default): generates a JWT relay token (role=relay) that the relay
-// will use to authenticate to /ws/relay. The token is returned once in jwt_token.
+// Pull mode (default): declares the expected child. No token is minted (v3.0.4): the relay-child
+// link token is minted on the root (POST /api/admin/tokens).
 //
 // Push mode: the admin provides the relay's base URL and a bearer token.
 // The proxy will call the relay's REST API using these credentials.
@@ -222,27 +217,11 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		Status:      "pending",
 	}
 
-	var jwtToken string
-	var newJTI string
-	var newJTIExp int64
-	var previous storage.RelayTokenInfo
-
 	switch req.Mode {
 	case "pull":
-		// Generate a long-lived JWT relay token (30 days)
-		jwtSvc := auth.New(GetServerJWTSecrets, 720*time.Hour)
-		rawJWT, jti, err := jwtSvc.SignRelay(req.RelayID)
-		if err != nil {
-			log.Printf("AdminCreateRelay SignRelay: %v", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "jwt_generation_failed"})
-			return
-		}
-		jwtToken = rawJWT
-		newJTI, newJTIExp = jti, time.Now().Add(720*time.Hour).Unix() // SignRelay lifetime
-		// Store SHA-256 of the JWT for future reference (not strictly required for pull)
-		h := sha256.Sum256([]byte(rawJWT))
-		node.TokenHash = fmt.Sprintf("%x", h)
-
+		// v3.0.4 (#141/#146): a pull relay is only DECLARED here. Its relay-child link token is minted
+		// by the ROOT (POST /api/admin/tokens) and carried by the child (REPEATER_UPSTREAM_TOKEN).
+		// Nothing is minted nor returned, and no token hash is stored.
 	case "push":
 		node.URLs = req.URLs
 		// The dialer needs the clear token: stored encrypted (RSA_MASTER_KEY), never returned.
@@ -259,30 +238,10 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		node.TokenSecret = sealed
 	}
 
-	// Re-registering a relay issues a NEW token: remember the previous JTI so it can be cut off.
-	if req.Mode == "pull" {
-		previous, _ = adminStore.GetRelayTokenInfo(req.RelayID)
-	}
-
 	if err := adminStore.UpsertRelayNode(node); err != nil {
 		log.Printf("AdminCreateRelay UpsertRelayNode: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 		return
-	}
-
-	if req.Mode == "pull" && newJTI != "" {
-		// Persist the JTI/expiry (never the token): required to revoke this relay later (#153).
-		if err := adminStore.SetRelayTokenInfo(req.RelayID, newJTI, newJTIExp); err != nil {
-			log.Printf("AdminCreateRelay SetRelayTokenInfo: %v", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
-			return
-		}
-		if previous.JTI != "" && previous.JTI != newJTI {
-			if err := adminStore.BlacklistJTI(r.Context(), previous.JTI, req.RelayID, "token replaced by re-registration", previous.Exp); err != nil {
-				log.Printf("AdminCreateRelay: blacklist previous token: %v", err)
-			}
-			ws.CloseRelay(req.RelayID, ws.WSRelayCloseRevoked, "token replaced")
-		}
 	}
 
 	log.Printf("Relay registered: relay_id=%q mode=%q id=%q", req.RelayID, req.Mode, id)
@@ -305,7 +264,6 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		Mode:        req.Mode,
 		Status:      "pending",
 		Description: req.Description,
-		JWTToken:    jwtToken, // empty for push mode
 		URLs:        req.URLs, // empty for pull mode
 		URL:         firstOf(req.URLs),
 		CreatedAt:   now.Format(time.RFC3339),

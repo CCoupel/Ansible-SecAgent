@@ -15,15 +15,10 @@ import (
 // channel of a push link, where the parent opens the connection).
 func TestGroupVars_ChildPublishesItsVarsInTheSnapshot(t *testing.T) {
 	t.Setenv("REPEATER_ID", "dmz1")
-	_, _, admin, wsAddr := startNode(t, func(c *Config) { c.GroupVars = map[string]any{"env": "staging", "datacenter": "paris"} })
+	root, nodeID := newTestRoot(t), "dmz1"
+	_, _, _, wsAddr := startNode(t, root.anchored(func(c *Config) { c.GroupVars = map[string]any{"env": "staging", "datacenter": "paris"} }))
 
-	code, body := adminCall(t, admin, "POST", "/api/admin/tokens", map[string]any{
-		"role": "relay-parent", "sub": "central", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
-	if code != http.StatusCreated {
-		t.Fatalf("mint: %d %s", code, body)
-	}
-	var tok struct{ Token string }
-	_ = json.Unmarshal(body, &tok)
+	tok := struct{ Token string }{root.token(t, "relay-parent", "central", nodeID)}
 	c, _, err := dialRelayWS(wsAddr, tok.Token)
 	if err != nil {
 		t.Fatal(err)

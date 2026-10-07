@@ -36,31 +36,7 @@ func (s *JWTService) Sign(hostname string) (rawJWT, jti string, err error) {
 	return s.signWithRole(hostname, "agent", s.ttl)
 }
 
-// SignRelay creates a signed HS256 JWT for a relay node with role "relay".
-// The relay_id is stored in the "sub" claim.
-// Uses a 30-day TTL so relay tokens remain valid across short outages.
-// Returns (rawJWT, jti, error).
-func (s *JWTService) SignRelay(relayID string) (rawJWT, jti string, err error) {
-	return s.signWithRole(relayID, "relay", 720*time.Hour) // 30 days
-}
-
-// SignRelayParent creates a signed HS256 JWT with role "relay-parent": the token a child relay
-// issues (signed with ITS secret) so that its parent can open a push-mode link to it (#140).
-// The parent's relay_id is stored in "sub". Returns (rawJWT, jti, error).
-func (s *JWTService) SignRelayParent(parentID string) (rawJWT, jti string, err error) {
-	return s.SignRelayParentTTL(parentID, 720*time.Hour) // 30 days
-}
-
-// SignRelayParentTTL is SignRelayParent with an explicit lifetime. A relay-parent token ALWAYS
-// expires: a non-positive ttl is refused.
-func (s *JWTService) SignRelayParentTTL(parentID string, ttl time.Duration) (rawJWT, jti string, err error) {
-	if ttl <= 0 {
-		return "", "", fmt.Errorf("relay_parent_token_requires_expiry")
-	}
-	return s.signWithRole(parentID, "relay-parent", ttl)
-}
-
-// signWithRole is the shared implementation for Sign and SignRelay.
+// signWithRole is the HS256 implementation of the agent token (link tokens are EdDSA, see linkjwt.go).
 // Returns (rawJWT, jti, error).
 func (s *JWTService) signWithRole(sub, role string, ttl time.Duration) (rawJWT, jti string, err error) {
 	current, _, _ := s.secrets()

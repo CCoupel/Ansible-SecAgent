@@ -17,7 +17,6 @@ import (
 
 	"secagent-server/cmd/secagent-server/internal/auth"
 	"secagent-server/cmd/secagent-server/internal/storage"
-	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
 // ========================================================================
@@ -35,7 +34,8 @@ type TokenCreateRequest struct {
 	AllowedHostnamePattern string `json:"allowed_hostname_pattern,omitempty"` // plugin only
 	ExpiresAt              string `json:"expires_at,omitempty"`               // RFC3339 or empty = no expiry (REQUIRED for relay-parent)
 	CreatedBy              string `json:"created_by,omitempty"`
-	Sub                    string `json:"sub,omitempty"` // relay-parent only: relay_id of the parent the JWT is minted for
+	Sub                    string `json:"sub,omitempty"` // relay-child / relay-parent: relay_id of the presenter
+	Aud                    string `json:"aud,omitempty"` // relay-child / relay-parent: relay_id of the verifier
 }
 
 // TokenCreateResponse is returned from POST /api/admin/tokens.
@@ -52,29 +52,15 @@ type TokenCreateResponse struct {
 	Description            string `json:"description,omitempty"`
 	AllowedIPs             string `json:"allowed_ips,omitempty"`
 	AllowedHostnamePattern string `json:"allowed_hostname_pattern,omitempty"`
-	// relay-parent fields
+	// link token fields (relay-child / relay-parent)
 	Sub string `json:"sub,omitempty"`
+	Aud string `json:"aud,omitempty"`
 	JTI string `json:"jti,omitempty"`
+	KID string `json:"kid,omitempty"`
 	// audit
 	UseCount  int    `json:"use_count"`
 	CreatedAt string `json:"created_at"`
 }
-
-// RelayParentTokenSummary is the list view for relay-parent tokens: metadata only, never the JWT.
-type RelayParentTokenSummary struct {
-	ID          string `json:"id"`
-	Role        string `json:"role"`
-	Sub         string `json:"sub"`
-	JTI         string `json:"jti"`
-	Description string `json:"description,omitempty"`
-	ExpiresAt   string `json:"expires_at"`
-	Revoked     bool   `json:"revoked"`
-	RevokedAt   string `json:"revoked_at,omitempty"`
-	CreatedAt   string `json:"created_at"`
-}
-
-// MaxRelayParentTokenLifetime caps the lifetime of a relay-parent token (#150).
-const MaxRelayParentTokenLifetime = 365 * 24 * time.Hour
 
 var relayIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
 
@@ -137,7 +123,7 @@ func AdminCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Role = strings.TrimSpace(req.Role)
-	if req.Role != "enrollment" && req.Role != "plugin" && req.Role != "relay-parent" {
+	if req.Role != "enrollment" && req.Role != "plugin" && req.Role != auth.RoleRelayChild && req.Role != auth.RoleRelayParent {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_role"})
 		return
 	}
@@ -149,8 +135,8 @@ func AdminCreateToken(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	if req.Role == "relay-parent" {
-		createRelayParentToken(ctx, w, req)
+	if req.Role == auth.RoleRelayChild || req.Role == auth.RoleRelayParent {
+		createLinkToken(ctx, w, req)
 		return
 	}
 
@@ -259,77 +245,6 @@ func AdminCreateToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
-// createRelayParentToken mints a relay-parent JWT on THIS (child) relay for its parent (#150).
-// The JWT is signed with this node's secret, shown once in the response and never stored or
-// logged: only its metadata (JTI, parent, expiry) is persisted so it can be listed and revoked.
-func createRelayParentToken(ctx context.Context, w http.ResponseWriter, req TokenCreateRequest) {
-	sub := strings.TrimSpace(req.Sub)
-	if !relayIDPattern.MatchString(sub) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_sub"})
-		return
-	}
-	if strings.TrimSpace(req.ExpiresAt) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expires_required_for_relay_parent"})
-		return
-	}
-	exp, err := time.Parse(time.RFC3339, req.ExpiresAt)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_expires_at"})
-		return
-	}
-	now := time.Now().UTC()
-	ttl := exp.Sub(now)
-	if ttl <= 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expires_in_the_past"})
-		return
-	}
-	if ttl > MaxRelayParentTokenLifetime {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expires_exceeds_maximum_365d"})
-		return
-	}
-	// A parent cannot be an ancestor-looping identity of this node.
-	if ws.RelayWouldLoop(sub) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sub_would_create_loop"})
-		return
-	}
-
-	rawJWT, jti, err := auth.New(GetServerJWTSecrets, ttl).SignRelayParentTTL(sub, ttl)
-	if err != nil {
-		log.Printf("AdminCreateToken relay-parent: sign failed: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "jwt_generation_failed"})
-		return
-	}
-	id := uuid.New().String()
-	rec := storage.RelayParentToken{ID: id, JTI: jti, ParentID: sub, Description: req.Description,
-		CreatedAt: now, ExpiresAt: now.Add(ttl)}
-	if err := adminStore.CreateRelayParentToken(ctx, rec); err != nil {
-		log.Printf("AdminCreateToken relay-parent: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
-		return
-	}
-	writeJSON(w, http.StatusCreated, TokenCreateResponse{
-		Token:       rawJWT, // shown ONCE
-		ID:          id,
-		Role:        "relay-parent",
-		ExpiresAt:   rec.ExpiresAt.Format(time.RFC3339),
-		Description: req.Description,
-		Sub:         sub,
-		JTI:         jti,
-		CreatedAt:   now.Format(time.RFC3339),
-	})
-}
-
-func relayParentTokenToSummary(t storage.RelayParentToken) RelayParentTokenSummary {
-	s := RelayParentTokenSummary{
-		ID: t.ID, Role: "relay-parent", Sub: t.ParentID, JTI: t.JTI, Description: t.Description,
-		ExpiresAt: t.ExpiresAt.Format(time.RFC3339), Revoked: t.Revoked(), CreatedAt: t.CreatedAt.Format(time.RFC3339),
-	}
-	if t.RevokedAt != nil {
-		s.RevokedAt = t.RevokedAt.Format(time.RFC3339)
-	}
-	return s
-}
-
 // ========================================================================
 // GET /api/admin/tokens?role=enrollment|plugin|relay-parent|all
 // ========================================================================
@@ -350,7 +265,7 @@ func AdminListTokens(w http.ResponseWriter, r *http.Request) {
 	if role == "" {
 		role = "all"
 	}
-	if role != "enrollment" && role != "plugin" && role != "relay-parent" && role != "all" {
+	if role != "enrollment" && role != "plugin" && role != auth.RoleRelayChild && role != auth.RoleRelayParent && role != "all" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_role"})
 		return
 	}
@@ -382,15 +297,11 @@ func AdminListTokens(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if role == "relay-parent" || role == "all" {
-		tokens, err := adminStore.ListRelayParentTokens(ctx)
-		if err != nil {
-			log.Printf("AdminListTokens relay-parent: %v", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
-			return
-		}
-		for _, t := range tokens {
-			result = append(result, relayParentTokenToSummary(t))
+	if role == auth.RoleRelayChild || role == auth.RoleRelayParent || role == "all" {
+		for _, t := range adminStore.ListLinkTokens() { // registry of the link tokens: metadata only
+			if role == "all" || t.Role == role {
+				result = append(result, linkTokenSummary(t))
+			}
 		}
 	}
 
@@ -442,20 +353,8 @@ func AdminRevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Relay-parent token: blacklist the JTI and cut the live parent link (close 4010).
-	if rt, ok, rerr := adminStore.RevokeRelayParentToken(ctx, id); rerr != nil {
-		log.Printf("AdminRevokeToken relay-parent: %v", rerr)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
-		return
-	} else if ok {
-		disconnected := ws.RevokeRelayParentLink(rt.JTI)
-		log.Printf("Relay-parent token revoked: id=%q parent=%q link_closed=%v", id, rt.ParentID, disconnected)
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"revoked":      true,
-			"id":           id,
-			"disconnected": disconnected,
-			"updated_at":   time.Now().UTC().Format(time.RFC3339),
-		})
+	// Link token (relay-child / relay-parent): registry + blacklist + seq in one mutation, links cut (4010).
+	if revokeLinkToken(ctx, w, id) {
 		return
 	}
 
