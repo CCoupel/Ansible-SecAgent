@@ -76,15 +76,10 @@ func TestUplink_RevocationOfOwnLinkTokenIsPermanent(t *testing.T) {
 	if c.Terminal() == nil {
 		t.Fatal("no terminal error")
 	}
-	// the parent saw a 4010 close
-	_ = conn.SetReadDeadline(time.Now().Add(waitTimeout))
-	for {
-		if _, _, err := conn.ReadMessage(); err != nil {
-			if ce, ok := err.(*websocket.CloseError); !ok || ce.Code != CloseCodePermanent {
-				t.Fatalf("close = %v", err)
-			}
-			break
-		}
+	// never reconnects with a revoked token
+	time.Sleep(300 * time.Millisecond)
+	if n := p.accepted.Load(); n != 1 {
+		t.Fatalf("the client reconnected %d time(s) with a revoked token", n-1)
 	}
 }
 

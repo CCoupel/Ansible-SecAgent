@@ -2,6 +2,7 @@ package repeater
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"errors"
 	"net/http"
@@ -10,20 +11,33 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 
+	"secagent-server/cmd/secagent-server/internal/auth"
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
 const interopSecret = "interop-child-secret"
 
+// interopRoot is the root signing key of the interop tests (#141): link tokens are EdDSA, signed by it.
+var (
+	interopRootPub, interopRootPriv = func() (ed25519.PublicKey, ed25519.PrivateKey) {
+		pub, priv, err := auth.GenerateLinkKey()
+		if err != nil {
+			panic(err)
+		}
+		return pub, priv
+	}()
+)
+
+// parentJWT mints a link token for the child "dmz1" signed by the test root. The legacy role "relay"
+// stands for "a child-role token" and is minted as relay-child.
 func parentJWT(t *testing.T, sub, role string) string {
 	t.Helper()
-	raw, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": sub, "role": role, "jti": "interop-jti-" + sub,
-		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
-	}).SignedString([]byte(interopSecret))
+	if role == "relay" {
+		role = auth.RoleRelayChild
+	}
+	raw, _, err := auth.SignLinkToken(interopRootPriv, "root", sub, "dmz1", role, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +51,11 @@ func childNode(t *testing.T, childID string, agents []AgentInfo) (string, *Uplin
 	oldJWT := ws.JWTSecretsFunc
 	ws.JWTSecretsFunc = func() (string, string, time.Time) { return interopSecret, "", time.Time{} }
 	ws.SetRelayLocalIDFunc(func() string { return childID })
+	lt, err := NewLinkTrust(LinkTrustConfig{RootID: "root", Anchor: interopRootPub, Store: &fakeTrustStore{}, Blacklist: &fakeBlacklist{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.SetLinkTrustFunc(func() (auth.LinkTrust, string, error) { return lt.Trust(), lt.RootID(), nil })
 	ws.SetRelayAncestorsFunc(func() []string { return nil })
 	ws.SetRelayJTIBlacklistFunc(func(string) (bool, error) { return false, nil })
 	ws.SetRelayRevokedFunc(func(string) (bool, error) { return false, nil })
@@ -53,6 +72,7 @@ func childNode(t *testing.T, childID string, agents []AgentInfo) (string, *Uplin
 		srv.Close()
 		ws.JWTSecretsFunc = oldJWT
 		ws.SetRelayLocalIDFunc(nil)
+		ws.SetLinkTrustFunc(nil)
 		ws.SetRelayAncestorsFunc(nil)
 		ws.SetRelayJTIBlacklistFunc(nil)
 		ws.SetRelayRevokedFunc(nil)
