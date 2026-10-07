@@ -85,6 +85,9 @@ load_images() {
   [ -f "$d/images.env" ] && [ -f "$d/SHA256SUMS" ] || fail "$d : images.env ou SHA256SUMS absent"
   ( cd "$d" && sha256sum -c SHA256SUMS ) || fail "empreintes de l'artefact invalides"
   [ -f "$d/images.ids" ] || fail "$d/images.ids absent (artefact trop ancien)"
+  # upload-artifact perd le bit d'execution : il est restaure ici (et le binaire est obligatoire).
+  [ -f "$d/secagent-inventory" ] || fail "$d/secagent-inventory absent de l'artefact (binaire du poste de controle)"
+  chmod +x "$d/secagent-inventory"
   local a; for a in "$d"/secagent-server-ci-*.tar.gz "$d"/secagent-minion-ci-*.tar.gz; do
     [ -f "$a" ] || fail "archive d'image absente ($a)"
     gunzip -c "$a" | docker load
