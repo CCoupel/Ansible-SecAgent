@@ -6,6 +6,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v3.0.4 — Jetons de lien relay signés par la racine (#141, #146) — en cours
+
+**⚠️ BREAKING CHANGES — une seule rupture, pas de fenêtre HS256, pas de retour arrière vers v3.0.3**
+
+- **[BREAKING] Rôle `relay` supprimé** : `/ws/relay` n'accepte plus que les rôles `relay-child` (lien pull) et `relay-parent` (lien push), jetons **JWT Ed25519 (`alg=EdDSA`)** avec `iss` (racine), `sub`, `aud`, `kid`, `jti`, `exp`. Tout jeton HS256 (`relay`, ancien `relay-parent`) est refusé (`link_role_legacy` / `link_alg_not_allowed`). Les jetons `agent`, `plugin`, `enrollment` et admin ne changent pas : **les agents restent connectés**.
+- **[BREAKING] Les jetons de lien sont émis par la racine** (`tokens create --role relay-child|relay-parent --sub X --aud Y`, `POST /api/admin/tokens`) : `409 not_root` sur un nœud qui a un parent, `503 master_key_required` sans `RSA_MASTER_KEY`. Un `relay-parent` n'est **plus minté par l'enfant**.
+- **[BREAKING] `POST /api/admin/relays` en mode pull ne minte ni ne renvoie plus de jeton** (`jwt_token` supprimé) : le jeton `relay-child` est minté sur la racine et configuré sur l'enfant (`REPEATER_UPSTREAM_TOKEN`).
+- **[BREAKING] Ancre de confiance obligatoire pour les relays non racine** : `REPEATER_ROOT_LINK_KEY_FILE` (clé publique racine, `keys link-pubkey`) et `REPEATER_ROOT_ID` ; sans ancre un relay refuse tout lien entrant (close `4010`).
+- **[BREAKING] `schema_version` 2 du fichier d'état** (`link_tokens`, `link_trust`, `server_config.link_signing_key_*`) : migration automatique v1→v2 au premier démarrage du maître (sauvegarde `relay.state.v1.bak`), mais **un binaire v3.0.3 refuse un état v2** (`ErrSchemaVersion`) : monter les deux instances d'une paire ensemble ; retour arrière = restaurer la sauvegarde + binaires v3.0.3 + anciens jetons.
+- Ajouts : rotation de la clé racine (`keys rotate-link`, `retire-link-previous`, double acceptation), révocation propagée de proche en proche (`link_revocations`, `link_keys`, `link_state`), `GET /api/admin/link/{pubkey,status}`. Voir `DOC/security/DECISION_141.md`.
+
 ### Added
 - (future features for next milestone)
 
