@@ -207,6 +207,17 @@ Options déclarées dans `relay.py` (`DOCUMENTATION`) :
 | `secagent_timeout` | `timeout` | `RELAY_TIMEOUT` | `ansible_secagent_timeout` | `30` (s) |
 | `secagent_connect_timeout` | `connect_timeout` | `RELAY_CONNECT_TIMEOUT` | `ansible_secagent_connect_timeout` | `5` (s, par adresse) |
 
+**Ordre de priorité** (`get_option()` d'Ansible ; `relay.py:_get_opt`), pour `server`, `token_file`, `ca_bundle`, `timeout` et `connect_timeout`, quel que soit le mode de chargement du plugin (`connection_plugins` d'`ansible.cfg` ou `ANSIBLE_CONNECTION_PLUGINS`) :
+
+1. variable d'hôte `ansible_secagent_*` (inventaire, `group_vars`, `host_vars`, variables de play) ;
+2. variable d'environnement `RELAY_*` ;
+3. `[secagent_connection]` d'`ansible.cfg` ;
+4. valeur par défaut.
+
+Le repli sur `os.environ` dans `_get_opt` ne sert qu'à un plugin instancié hors d'Ansible (tests unitaires) ou à une option valant `None`.
+
+> **Changement de comportement (v3.0.3)** : une variable d'hôte passe désormais avant l'environnement. Avant le correctif, la classe se nommait `ConnectionPlugin` ; Ansible dérive le type du plugin du nom de la classe (`plugins/__init__.py`, ansible-core 2.21.4), donc `get_option()` levait une erreur absorbée par le repli et **seul `RELAY_*` était pris en compte** (variables d'hôte et `[secagent_connection]` ignorées). La classe se nomme maintenant `Connection` (nom exigé par Ansible ; `ConnectionPlugin = Connection` reste un alias, `relay.py:578`). Conséquence : un `ansible_secagent_server` / `ansible_secagent_token_file` présent dans un inventaire, jusque-là inopérant, devient effectif et l'emporte sur `RELAY_*`.
+
 ```ini
 # ansible.cfg
 [secagent_connection]
@@ -231,6 +242,12 @@ connect_timeout = 5
   - **Limite** : le plugin ne contrôle que le fichier lui-même ; le **répertoire parent doit être protégé** (non inscriptible par d'autres utilisateurs), sinon le fichier peut être remplacé.
 - La vérification TLS est toujours active (`verify=True`, ou le `ca_bundle` s'il est fourni) ; il n'existe pas d'option
   `verify_tls` dans le plugin.
+
+### Tâches asynchrones (`async` / `poll`) et bascule du maître
+
+Les modes `async` + `poll > 0`, fire-and-forget puis `async_status` fonctionnent de bout en bout avec le plugin : le job s'exécute **une seule fois** sur le minion (jamais rejoué), y compris si le maître du relay s'arrête proprement ou est tué (`kill -9`) pendant le job ; le résultat lu après la reprise est celui du job. Scénarios D1-D4 de `GO/cmd/secagent-server/internal/integration/ansible_async_test.go` (`ansible-playbook` réel, plugin réel, minion réel), exécutés par le job CI « Inventaire Ansible » qui exige leur `PASS`.
+
+**Constat (D3, poll en vol)** : lors d'un arrêt propre du maître, un `poll` **en vol** à cet instant peut échouer, car le plugin ne rejoue pas une requête déjà envoyée (voir « Multi-adresses »). Les `poll` suivants atteignent le nouveau maître grâce à la liste d'adresses du plugin (`server` en liste). Dans le scénario testé, le playbook en `poll: 1` s'est terminé en `rc=0` ; le test tolère les deux issues. Si un `poll` échoue pendant une bascule, relancer la lecture (`async_status`) plutôt que le job.
 
 Variables hôte (`host_vars/my-host.yml`) :
 ```yaml
