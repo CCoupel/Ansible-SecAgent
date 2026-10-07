@@ -6,6 +6,8 @@
 #   bash pki/gen.sh [repertoire_de_sortie]
 # Produit : ca.crt (bundle de confiance : REPEATER_CA_FILE, RELAY_CA_BUNDLE), tls.crt + tls.key (TLS_CERT/TLS_KEY).
 # SAN : localhost, 127.0.0.1, secagent-server-a/-b, secagent-child (noms DNS du reseau Compose).
+# SAN supplementaires (hote distant, ex. la qualif reelle) : PKI_EXTRA_SAN="IP:192.168.1.218,DNS:qualif.lan"
+# (liste separee par des virgules ; defaut vide = comportement inchange, utilise par la CI).
 # Choix : UN certificat pour toutes les instances (au lieu d'un par instance) : le Compose monte un seul repertoire
 # QUALIF_TLS_DIR ; une CA de test et des SAN explicites suffisent a verifier la chaine TLS sans skip-verify.
 set -euo pipefail
@@ -24,8 +26,16 @@ umask 077
 openssl req -x509 -newkey rsa:2048 -nodes -days "$DAYS" -subj "/CN=secagent-test-ca" \
   -keyout ca.key -out ca.crt 2>/dev/null
 openssl req -newkey rsa:2048 -nodes -subj "/CN=secagent-chain" -keyout tls.key -out tls.csr 2>/dev/null
-cat > san.ext <<'EXT'
-subjectAltName=DNS:localhost,IP:127.0.0.1,DNS:secagent-server-a,DNS:secagent-server-b,DNS:secagent-child
+SAN="DNS:localhost,IP:127.0.0.1,DNS:secagent-server-a,DNS:secagent-server-b,DNS:secagent-child"
+if [ -n "${PKI_EXTRA_SAN:-}" ]; then
+  IFS=',' read -r -a EXTRA <<< "$PKI_EXTRA_SAN"
+  for e in "${EXTRA[@]}"; do
+    [[ "$e" =~ ^(IP|DNS):[A-Za-z0-9.:_-]{1,253}$ ]] || { echo "ERREUR : SAN supplementaire invalide '$e' (attendu IP:<adresse> ou DNS:<nom>)" >&2; exit 1; }
+    SAN="$SAN,$e"
+  done
+fi
+cat > san.ext <<EXT
+subjectAltName=$SAN
 extendedKeyUsage=serverAuth
 keyUsage=digitalSignature,keyEncipherment
 basicConstraints=CA:FALSE
