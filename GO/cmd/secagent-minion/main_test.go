@@ -130,3 +130,18 @@ func TestMinionProcess_EnrollmentRefusedExits78(t *testing.T) {
 		t.Fatal("the minion did not stop after a 403")
 	}
 }
+
+func TestLoadConfig_EnrollmentTokenFromFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "enr")
+	if err := os.WriteFile(p, []byte("secagent_enr_fromfile\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RELAY_ENROLLMENT_TOKEN", "")
+	t.Setenv("RELAY_ENROLLMENT_TOKEN_FILE", p)
+	if got := loadConfig().enrollmentToken; got != "secagent_enr_fromfile" {
+		t.Fatalf("enrollmentToken = %q", got)
+	}
+}

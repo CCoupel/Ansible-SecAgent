@@ -194,7 +194,7 @@ func DialFirst[T any](ctx context.Context, r *Rotor, timeout time.Duration,
 		}
 		r.Failure(i)
 		slog.Warn("endpoints: address failed before send",
-			"address", i+1, "host", u.Host, "tls", isTLS(err), "error", redact(err))
+			"address", i+1, "host", u.Host, "tls_error", isTLS(err), "error", redact(err))
 		msgs = append(msgs, fmt.Sprintf("#%d: %s", i+1, redact(err)))
 	}
 	return zero, nil, &allFailedError{msgs: msgs}

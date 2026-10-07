@@ -340,7 +340,7 @@ func TestDialFirst_InvalidCertThenSuccess(t *testing.T) {
 	if got != "good" || u.String() != good.URL {
 		t.Fatalf("got %q from %v", got, u)
 	}
-	if !strings.Contains(logs.String(), "tls=true") || !strings.Contains(logs.String(), "address=1") {
+	if !strings.Contains(logs.String(), "tls_error=true") || !strings.Contains(logs.String(), "address=1") {
 		t.Fatalf("TLS failure must be logged, logs: %s", logs.String())
 	}
 }
