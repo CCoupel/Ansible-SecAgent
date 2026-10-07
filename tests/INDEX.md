@@ -13,3 +13,5 @@
 | GO/cmd/secagent-server/internal/state/migration_v2_spec_test.go | unit-spec | secagent-server | #141/#146 L1b migration état v1→v2 (sauvegarde, idempotence, crash à chaque étape) | feature | critical |
 | GO/cmd/secagent-server/internal/integration/link_isolation_spec_test.go | integration | secagent-server | #146 un jeton de lien n'ouvre aucun endpoint (matrice complète 7770/7771//ws/agent) | feature | critical |
 | GO/cmd/secagent-server/internal/integration/link_mint_spec_test.go | integration | secagent-server | #141 mint racine, 409 not_root, clé chiffrée, bascule même kid (révocation 2 niveaux / fail closed : en attente L1e) | feature | critical |
+| GO/cmd/secagent-server/internal/repeater/dialpolicy_spec_*_test.go | unit-spec | secagent-server | #151 politique de dial deny/allow/loopback (matrice, CIDR invalides, rebinding+ALLOW, mutants) + non-suivi des 3xx (dialer push, client pull) | feature | critical |
+| GO/cmd/secagent-server/internal/server/dialpolicy_spec_test.go | unit-spec | secagent-server | #151 ligne push stockée interdite par la politique jamais dialée au démarrage | feature | critical |
