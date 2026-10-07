@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,6 +38,7 @@ const (
 	specMutAudIgnored         specMutant = "aud-not-verified"
 	specMutPrevAlwaysOK       specMutant = "previous-kid-always-accepted"
 	specMutSeqIgnored         specMutant = "seq-not-verified"
+	specMutIssIgnored         specMutant = "iss-not-verified"
 	specKidLen                           = 12
 	specLegacyRoleRelay                  = "relay"
 	specRoleChild                        = "relay-child"
@@ -87,7 +89,14 @@ func specKeysPayload(newCur, prev ed25519.PublicKey, seq uint64) []byte {
 
 // specOracle builds the reference implementation, optionally mutated.
 func specOracle(m specMutant) *specLinkImpl {
-	impl := &specLinkImpl{KidOf: specRefKid}
+	impl := &specLinkImpl{KidOf: specRefKid, Code: func(err error) string {
+		for _, c := range []string{"jwt_missing_kid", "jwt_unknown_kid", "jwt_missing_aud", "jwt_wrong_aud", "jwt_wrong_issuer"} {
+			if strings.Contains(err.Error(), c) {
+				return c
+			}
+		}
+		return err.Error()
+	}}
 
 	impl.VerifyToken = func(trust specLinkTrust, token string, want specLinkWant, now time.Time) (bool, error) {
 		p := jwt.NewParser(jwt.WithValidMethods([]string{"EdDSA"}), jwt.WithTimeFunc(func() time.Time { return now }))
@@ -95,7 +104,7 @@ func specOracle(m specMutant) *specLinkImpl {
 		_, err := p.ParseWithClaims(token, claims, func(t *jwt.Token) (interface{}, error) {
 			kid, _ := t.Header["kid"].(string)
 			if kid == "" {
-				return nil, errors.New("kid_absent")
+				return nil, errors.New("jwt_missing_kid")
 			}
 			if m == specMutPrevAlwaysOK {
 				specAllKeysMu.Lock()
@@ -103,7 +112,7 @@ func specOracle(m specMutant) *specLinkImpl {
 				if pub, ok := specAllKeys[kid]; ok {
 					return pub, nil
 				}
-				return nil, errors.New("kid_unknown")
+				return nil, errors.New("jwt_unknown_kid")
 			}
 			if trust.Current != nil && kid == specRefKid(trust.Current) {
 				return trust.Current, nil
@@ -111,7 +120,7 @@ func specOracle(m specMutant) *specLinkImpl {
 			if trust.Previous != nil && kid == specRefKid(trust.Previous) {
 				return trust.Previous, nil
 			}
-			return nil, errors.New("kid_unknown")
+			return nil, errors.New("jwt_unknown_kid")
 		})
 		if err != nil {
 			return true, err
@@ -126,9 +135,17 @@ func specOracle(m specMutant) *specLinkImpl {
 			return true, errors.New("sub_required")
 		}
 		if m != specMutAudIgnored {
+			if claims["aud"] == nil {
+				return true, errors.New("jwt_missing_aud")
+			}
 			aud, err := claims.GetAudience()
 			if err != nil || len(aud) != 1 || aud[0] != want.LocalID {
-				return true, errors.New("aud_mismatch")
+				return true, errors.New("jwt_wrong_aud")
+			}
+		}
+		if m != specMutIssIgnored {
+			if iss, _ := claims["iss"].(string); iss == "" || iss != want.RootID {
+				return true, errors.New("jwt_wrong_issuer")
 			}
 		}
 		if role, _ := claims["role"].(string); role != want.Role {
@@ -273,6 +290,20 @@ func specAccept(impl *specLinkImpl, v specVerdict) string {
 	return ""
 }
 
+// specRefuseWithCode is specRefuse plus the stable refusal code (checked when the impl exposes Code).
+func specRefuseWithCode(impl *specLinkImpl, v specVerdict, code string) string {
+	_, err := v.ask(impl)
+	if err == nil {
+		return "must be refused, accepted"
+	}
+	if impl.Code != nil {
+		if got := impl.Code(err); got != code {
+			return fmt.Sprintf("refusal code %q, want %q (%v)", got, code, err)
+		}
+	}
+	return ""
+}
+
 func specRefuse(impl *specLinkImpl, v specVerdict) string {
 	if _, err := v.ask(impl); err == nil {
 		return "must be refused, accepted"
@@ -291,7 +322,7 @@ func specRefusePermanent(impl *specLinkImpl, v specVerdict) string {
 	return ""
 }
 
-var childWant = specLinkWant{LocalID: specParentID, Role: specRoleChild}
+var childWant = specLinkWant{LocalID: specParentID, RootID: specRootID, Role: specRoleChild}
 
 // specLinkCases is the whole table. Names are stable: the mutants are expected to fail them by name.
 func specLinkCases() []specCase {
@@ -307,7 +338,7 @@ func specLinkCases() []specCase {
 			c := specBaseClaims("j2")
 			c["sub"], c["aud"], c["role"] = specParentID, specChildID, specRoleParent
 			tok := specForge(t, jwt.SigningMethodEdDSA, k.priv, impl.KidOf(k.pub), c)
-			return specAccept(impl, specVerdict{specLinkTrust{Current: k.pub}, tok, specLinkWant{LocalID: specChildID, Role: specRoleParent}})
+			return specAccept(impl, specVerdict{specLinkTrust{Current: k.pub}, tok, specLinkWant{LocalID: specChildID, RootID: specRootID, Role: specRoleParent}})
 		}},
 		{"accept_previous_key_during_double_acceptation", func(t *testing.T, impl *specLinkImpl) string {
 			old, cur := specNewKey(t), specNewKey(t)
@@ -358,12 +389,12 @@ func specLinkCases() []specCase {
 		{"refuse_unknown_kid", func(t *testing.T, impl *specLinkImpl) string {
 			root := specNewKey(t)
 			tok := specForge(t, jwt.SigningMethodEdDSA, root.priv, "no-such-kid", specBaseClaims("j10"))
-			return specRefuse(impl, specVerdict{specLinkTrust{Current: root.pub}, tok, childWant})
+			return specRefuseWithCode(impl, specVerdict{specLinkTrust{Current: root.pub}, tok, childWant}, "jwt_unknown_kid")
 		}},
 		{"refuse_absent_kid", func(t *testing.T, impl *specLinkImpl) string {
 			root := specNewKey(t)
 			tok := specForge(t, jwt.SigningMethodEdDSA, root.priv, nil, specBaseClaims("j11"))
-			return specRefuse(impl, specVerdict{specLinkTrust{Current: root.pub}, tok, childWant})
+			return specRefuseWithCode(impl, specVerdict{specLinkTrust{Current: root.pub}, tok, childWant}, "jwt_missing_kid")
 		}},
 		{"refuse_non_string_kid", func(t *testing.T, impl *specLinkImpl) string {
 			root := specNewKey(t)
@@ -383,14 +414,14 @@ func specLinkCases() []specCase {
 		{"refuse_token_presented_to_another_relay_aud_mismatch", func(t *testing.T, impl *specLinkImpl) string {
 			root := specNewKey(t)
 			tok := specForge(t, jwt.SigningMethodEdDSA, root.priv, impl.KidOf(root.pub), specBaseClaims("j12")) // aud = relay-p
-			return specRefusePermanent(impl, specVerdict{specLinkTrust{Current: root.pub}, tok, specLinkWant{LocalID: "relay-q", Role: specRoleChild}})
+			return specRefusePermanent(impl, specVerdict{specLinkTrust{Current: root.pub}, tok, specLinkWant{LocalID: "relay-q", RootID: specRootID, Role: specRoleChild}})
 		}},
 		{"refuse_absent_aud", func(t *testing.T, impl *specLinkImpl) string {
 			root := specNewKey(t)
 			c := specBaseClaims("j13")
 			delete(c, "aud")
 			tok := specForge(t, jwt.SigningMethodEdDSA, root.priv, impl.KidOf(root.pub), c)
-			return specRefuse(impl, specVerdict{specLinkTrust{Current: root.pub}, tok, childWant})
+			return specRefuseWithCode(impl, specVerdict{specLinkTrust{Current: root.pub}, tok, childWant}, "jwt_missing_aud")
 		}},
 		{"refuse_audience_list_naming_several_verifiers", func(t *testing.T, impl *specLinkImpl) string {
 			root := specNewKey(t)
@@ -399,6 +430,21 @@ func specLinkCases() []specCase {
 			tok := specForge(t, jwt.SigningMethodEdDSA, root.priv, impl.KidOf(root.pub), c)
 			return specRefuse(impl, specVerdict{specLinkTrust{Current: root.pub}, tok, childWant})
 		}},
+		// ── issuer (R1): the token must come from THE root this relay trusts ──
+		{"refuse_issuer_other_than_the_configured_root", func(t *testing.T, impl *specLinkImpl) string {
+			root := specNewKey(t)
+			c := specBaseClaims("j13c")
+			c["iss"] = "some-other-relay" // signed by the right key, claiming another origin
+			tok := specForge(t, jwt.SigningMethodEdDSA, root.priv, impl.KidOf(root.pub), c)
+			return specRefuseWithCode(impl, specVerdict{specLinkTrust{Current: root.pub}, tok, childWant}, "jwt_wrong_issuer")
+		}},
+		{"refuse_absent_issuer", func(t *testing.T, impl *specLinkImpl) string {
+			root := specNewKey(t)
+			c := specBaseClaims("j13d")
+			delete(c, "iss")
+			tok := specForge(t, jwt.SigningMethodEdDSA, root.priv, impl.KidOf(root.pub), c)
+			return specRefuseWithCode(impl, specVerdict{specLinkTrust{Current: root.pub}, tok, childWant}, "jwt_wrong_issuer")
+		}},
 		// ── test 4: role ──
 		{"refuse_relay_child_presented_as_parent", func(t *testing.T, impl *specLinkImpl) string {
 			root := specNewKey(t)
@@ -406,7 +452,7 @@ func specLinkCases() []specCase {
 			c2 := specBaseClaims("j14b")
 			c2["aud"] = specChildID
 			tok2 := specForge(t, jwt.SigningMethodEdDSA, root.priv, impl.KidOf(root.pub), c2) // still role relay-child
-			return specRefusePermanent(impl, specVerdict{specLinkTrust{Current: root.pub}, tok2, specLinkWant{LocalID: specChildID, Role: specRoleParent}})
+			return specRefusePermanent(impl, specVerdict{specLinkTrust{Current: root.pub}, tok2, specLinkWant{LocalID: specChildID, RootID: specRootID, Role: specRoleParent}})
 		}},
 		{"refuse_relay_parent_presented_as_child", func(t *testing.T, impl *specLinkImpl) string {
 			root := specNewKey(t)
@@ -682,6 +728,7 @@ func TestSpecLink_MutantsAreKilled(t *testing.T) {
 	}{
 		{specMutAudIgnored, []string{"refuse_token_presented_to_another_relay_aud_mismatch", "refuse_absent_aud"}},
 		{specMutPrevAlwaysOK, []string{"refuse_previous_key_after_retire_link_previous"}},
+		{specMutIssIgnored, []string{"refuse_issuer_other_than_the_configured_root", "refuse_absent_issuer"}},
 		{specMutSeqIgnored, []string{"link_revocations_seq_equal_or_lower_is_refused", "link_keys_replayed_seq_is_refused"}},
 	} {
 		t.Run(string(tc.mutant), func(t *testing.T) {

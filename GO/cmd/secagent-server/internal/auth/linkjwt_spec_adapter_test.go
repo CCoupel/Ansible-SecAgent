@@ -43,6 +43,7 @@ type specLinkTrust struct {
 // specLinkWant is what the local relay expects from the presenter.
 type specLinkWant struct {
 	LocalID string // aud must equal this
+	RootID  string // iss must equal this (the root relay_id configured locally)
 	Role    string // "relay-child" (we are the parent, pull link) or "relay-parent" (we are the child, push link)
 }
 
@@ -61,6 +62,10 @@ type specLinkImpl struct {
 	// VerifyToken returns nil when the link token is accepted. permanent=true means the refusal must
 	// never be retried by the child (wrong role, legacy role, wrong audience, bad signature...).
 	VerifyToken func(trust specLinkTrust, token string, want specLinkWant, now time.Time) (permanent bool, err error)
+
+	// Code returns the stable refusal code of an error (jwt_missing_kid, jwt_unknown_kid, jwt_missing_aud,
+	// jwt_wrong_issuer, …). nil = the code assertions are skipped.
+	Code func(err error) string
 
 	// SignToken mints a link token with the real signer (used for the round trip checks only).
 	SignToken func(priv ed25519.PrivateKey, iss, sub, aud, role string, ttl time.Duration) (token, jti string, err error)

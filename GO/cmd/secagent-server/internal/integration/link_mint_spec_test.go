@@ -13,6 +13,7 @@ package integration
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -161,6 +162,29 @@ func TestLinkMint_ThePrivateKeyIsEncryptedAtRestAndNeverLogged(t *testing.T) {
 		t.Error("the node logged key material or a link token")
 	}
 	assertNoSecrets(t, logs, tok, root.adminTok, root.jwtSecret)
+
+	// T10c: nor in `state verify`, nor in any API answer
+	rep, err := state.VerifyFile(filepath.Join(root.stateDir, state.StateFile), state.VerifyOptions{MasterKey: "integration-master-key-root"})
+	if err != nil {
+		t.Fatalf("state verify: %v", err)
+	}
+	if !rep.LinkSigningKeyCurrent {
+		t.Error("state verify must say that a signing key exists (a boolean, never the key)")
+	}
+	reportText, _ := json.Marshal(rep)
+	for _, path := range []string{"/api/admin/tokens", "/api/admin/relays", "/api/admin/status", "/api/admin/security/keys/status", "/api/admin/security/tokens", "/api/admin/stats"} {
+		_, body := root.callOn(root.adminURL(), "GET", path, root.adminTok, nil)
+		for _, leak := range []string{stored, "link_signing_key_current\":\"", "PRIVATE KEY"} {
+			if strings.Contains(string(body), leak) {
+				t.Errorf("%s leaks key material (%q)", path, leak)
+			}
+		}
+	}
+	for _, leak := range []string{stored, "PRIVATE KEY"} {
+		if strings.Contains(string(reportText), leak) || strings.Contains(fmt.Sprintf("%+v", *rep), leak) {
+			t.Errorf("state verify leaks key material (%q)", leak)
+		}
+	}
 }
 
 // test 8: active/passive. After a switchover the new master signs with the SAME key (same kid):
