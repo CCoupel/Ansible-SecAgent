@@ -180,7 +180,12 @@ Content-Type: application/json
 | `503` | `{"error": "agent_state_unavailable"}` | `AnsibleConnectionError` (état de suspension illisible, fail closed) |
 | `504` | `{"error": "timeout"}` | `AnsibleConnectionError` (timeout) |
 | `500` | `{"error": "agent_disconnected"}` | `AnsibleConnectionError` |
-| `429` | `{"error": "agent_busy"}` | `AnsibleConnectionError` (le serveur sait produire ce code, mais le minion Go signale « busy » par `rc: -1` / `stderr: "agent_busy"` dans un résultat ordinaire : voir `WEBSOCKET.md` §6) |
+| `429` | `{"error": "agent_busy"}` + `Retry-After: <s>` | `AnsibleConnectionFailure` explicite (#179 : l'agent a déjà `MAX_TASKS_PER_AGENT` tâches en vol sur ce relay ; **rien n'est envoyé à l'agent**) — sans rejeu |
+| `429` | `{"error": "too_many_tasks"}` + `Retry-After: <s>` | `AnsibleConnectionFailure` explicite (#179 : le relay a déjà `MAX_TASKS_INFLIGHT` tâches en vol, tâches relayées comprises) — sans rejeu |
+| `503` | `{"error": "memory_budget_exhausted"}` + `Retry-After: <s>` | `AnsibleConnectionFailure` explicite (#179 : le budget global de tampons stdout `MAX_STDOUT_BUFFER_TOTAL` ne permet plus d'admettre une tâche de plus de 5 Mo) — sans rejeu |
+
+**Admission (#179)** — les trois refus ci-dessus sont rendus **à l'admission**, avant tout envoi à l'agent, pour `exec`, `upload` et `fetch` (et pour une tâche reçue d'un parent, qui est comptée à chaque saut). `Retry-After` est un nombre entier de secondes ≥ 1 ; le plugin ne rejoue **jamais** automatiquement (la tâche n'a pas été envoyée, mais le choix de réessayer appartient à Ansible / l'opérateur) et expose le code `error` et `Retry-After` dans le message d'erreur. Le « busy » du minion Go (`rc: -1`, `stderr: "agent_busy"` dans un résultat ordinaire, `WEBSOCKET.md` §6) reste un résultat normal, distinct du 429 du serveur.
+Un slot d'admission est libéré sur **tous** les chemins : résultat, timeout, déconnexion de l'agent ou du relay, révocation, perte du verrou maître. Un job async (`async_status`) ne garde pas de slot après son résultat final.
 | `401` | `{"error": "missing_authorization"}` | `AnsibleAuthenticationFailure` |
 | `403` | `{"error": "token_not_found" \| "token_revoked" \| "token_expired" \| "ip_not_allowed" \| "hostname_not_allowed"}` | `AnsibleAuthenticationFailure` |
 
@@ -218,6 +223,7 @@ Content-Type: application/json
 | HTTP | Corps JSON | Exception Ansible |
 |---|---|---|
 | `413` | `{"error": "payload_too_large"}` | `AnsibleError` |
+| `429` / `503` | `agent_busy`, `too_many_tasks` / `memory_budget_exhausted` (+ `Retry-After`) | `AnsibleConnectionFailure` (voir §3, Admission) |
 | `503` | `{"error": "agent_offline"}` | `AnsibleConnectionError` |
 | `504` | `{"error": "timeout"}` | `AnsibleConnectionError` |
 
@@ -253,6 +259,7 @@ Content-Type: application/json
 
 | HTTP | Corps JSON | Exception Ansible |
 |---|---|---|
+| `429` / `503` | `agent_busy`, `too_many_tasks` / `memory_budget_exhausted` (+ `Retry-After`) | `AnsibleConnectionFailure` (voir §3, Admission) |
 | `503` | `{"error": "agent_offline"}` | `AnsibleConnectionError` |
 | `504` | `{"error": "timeout"}` | `AnsibleConnectionError` |
 | `500` | `{"error": "file_not_found"}` | `AnsibleError` |
