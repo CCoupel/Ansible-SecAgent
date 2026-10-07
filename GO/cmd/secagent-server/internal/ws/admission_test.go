@@ -15,7 +15,7 @@ func setLimits(t *testing.T, perAgent, inflight int, budget int64) {
 }
 
 func TestAdmission_PerAgentGlobalAndBudgetRefusalsAreTyped(t *testing.T) {
-	setLimits(t, 2, 3, 12<<20)
+	setLimits(t, 2, 3, 0)
 	for _, id := range []string{"a1", "a2"} {
 		if _, err := RegisterFuture(id, "host-a"); err != nil {
 			t.Fatal(err)
@@ -33,19 +33,16 @@ func TestAdmission_PerAgentGlobalAndBudgetRefusalsAreTyped(t *testing.T) {
 	if inFlightAll() != 3 || inFlightOf("host-a") != 2 {
 		t.Errorf("a refusal must not count: all=%d host-a=%d", inFlightAll(), inFlightOf("host-a"))
 	}
-	// the budget: 12 MiB, 8 MiB held leave 4 MiB < 5 MiB
+	// the budget is a RESERVATION of 5 MiB per task: 12 MiB hold two tasks
 	resetAdmission()
 	SetTaskLimits(10, 100, 12<<20)
 	_, _ = RegisterFuture("m1", "h1")
 	_, _ = RegisterFuture("m2", "h2")
-	for _, id := range []string{"m1", "m2"} {
-		HandleMessage(Message{TaskID: id, Type: "stdout", Chunk: strings.Repeat("x", 4<<20)}, "h")
-	}
-	if got := stdoutHeldBytes(); got != 8<<20 {
-		t.Fatalf("held = %d, want 8 MiB", got)
-	}
 	if _, err := RegisterFuture("m3", "h3"); !errors.Is(err, ErrMemoryBudget) {
-		t.Errorf("budget exhausted: %v, want ErrMemoryBudget", err)
+		t.Errorf("budget reserved by two tasks: %v, want ErrMemoryBudget (nothing produced yet)", err)
+	}
+	if _, err := RegisterRelayTaskFuture("r3"); !errors.Is(err, ErrMemoryBudget) {
+		t.Errorf("a relayed task reserves too: %v", err)
 	}
 	HandleMessage(Message{TaskID: "m1", Type: "result"}, "h1")
 	if _, err := RegisterFuture("m3", "h3"); err != nil {
@@ -84,25 +81,23 @@ func TestAdmission_ReleaseIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestAdmission_StdoutIsTruncatedWhenTheBudgetRunsOutMidway(t *testing.T) {
+func TestAdmission_StdoutOfATaskIsCappedAndReleased(t *testing.T) {
 	setLimits(t, 10, 100, 6<<20)
 	_, _ = RegisterFuture("big", "h")
-	_, _ = RegisterFuture("big2", "h2")
 	HandleMessage(Message{TaskID: "big", Type: "stdout", Chunk: strings.Repeat("x", 4<<20)}, "h")
-	HandleMessage(Message{TaskID: "big2", Type: "stdout", Chunk: strings.Repeat("y", 4<<20)}, "h2") // only 2 MiB fit
-	if got := stdoutHeldBytes(); got != 6<<20 {
-		t.Errorf("held = %d, want the 6 MiB budget", got)
+	HandleMessage(Message{TaskID: "big", Type: "stdout", Chunk: strings.Repeat("y", 4<<20)}, "h") // only 1 MiB fits
+	if got := stdoutHeldBytes(); got != 5<<20 {
+		t.Errorf("held = %d, want the 5 MiB of one task", got)
 	}
 	// stdout of a task that was never admitted keeps nothing
 	HandleMessage(Message{TaskID: "ghost", Type: "stdout", Chunk: "zzz"}, "h")
 	buffersMu.RLock()
-	_, kept := stdoutBuffers["ghost"]
+	kept := stdoutString("ghost")
 	buffersMu.RUnlock()
-	if kept && stdoutBuffers["ghost"] != "" {
+	if kept != "" {
 		t.Error("stdout of an unknown task must be dropped")
 	}
 	UnregisterFuture("big")
-	UnregisterFuture("big2")
 	if stdoutHeldBytes() != 0 {
 		t.Errorf("held after release = %d", stdoutHeldBytes())
 	}

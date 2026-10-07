@@ -65,7 +65,7 @@ var (
 	tasksMu      = sync.RWMutex{}
 
 	// task_id -> accumulated stdout string
-	stdoutBuffers = make(map[string]string)
+	stdoutBuffers = make(map[string]*strings.Builder)
 	buffersMu     = sync.RWMutex{}
 
 	// task_id -> hostname mapping for cleanup on disconnect
@@ -277,7 +277,6 @@ func HandleMessage(msg Message, hostname string) {
 		// Accumulate stdout: 5 MiB per task and the global budget (#179). A chunk that does not fit is
 		// truncated (the existing "truncated" flag): the last resort, admission normally prevents it.
 		buffersMu.Lock()
-		buf := stdoutBuffers[taskID]
 		allow := reserveStdout(taskID, int64(len(msg.Chunk)))
 		chunk := cutUTF8(msg.Chunk, allow)
 		if given := int64(len(chunk)); given < allow {
@@ -287,13 +286,25 @@ func HandleMessage(msg Message, hostname string) {
 		if int64(len(chunk)) < int64(len(msg.Chunk)) {
 			log.Printf("Stdout buffer truncated: task_id=%q hostname=%q", taskID, hostname)
 		}
-		stdoutBuffers[taskID] = buf + chunk
+		if chunk != "" {
+			// a Builder grows by doubling: no copy of the whole buffer per chunk (a 5 MiB stdout in 1 MiB
+			// chunks used to allocate 15 MiB), and String() below does not copy
+			b := stdoutBuffers[taskID]
+			if b == nil {
+				b = &strings.Builder{}
+				stdoutBuffers[taskID] = b
+			}
+			b.WriteString(chunk)
+		}
 		buffersMu.Unlock()
 
 	case "result":
 		// Final result — resolve future
 		buffersMu.Lock()
-		accumulatedStdout := stdoutBuffers[taskID]
+		accumulatedStdout := ""
+		if b := stdoutBuffers[taskID]; b != nil {
+			accumulatedStdout = b.String()
+		}
 		buffersMu.Unlock()
 
 		if msg.Stdout == "" && accumulatedStdout != "" {

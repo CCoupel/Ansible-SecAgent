@@ -58,7 +58,7 @@ func specAccounting() accounting {
 	tasksMu.RUnlock()
 	buffersMu.RLock()
 	for _, b := range stdoutBuffers {
-		a.stdout += int64(len(b))
+		a.stdout += int64(b.Len())
 	}
 	buffersMu.RUnlock()
 	return a

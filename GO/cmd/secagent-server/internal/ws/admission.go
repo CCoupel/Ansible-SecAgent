@@ -5,8 +5,9 @@ package ws
 //
 //	MAX_TASKS_PER_AGENT      tasks in flight of one agent on this node          -> ErrAgentBusy       (429)
 //	MAX_TASKS_INFLIGHT       tasks in flight on this node, relayed ones included -> ErrTooManyTasks    (429)
-//	MAX_STDOUT_BUFFER_TOTAL  memory budget of the stdout buffers: a task is admitted only if
-//	                         the budget left is at least stdoutMaxBytes (5 MiB)   -> ErrMemoryBudget   (503)
+//	MAX_STDOUT_BUFFER_TOTAL  memory budget of the stdout buffers: every admitted task RESERVES
+//	                         stdoutMaxBytes (5 MiB, the most it may hold) at admission, so
+//	                         (tasks in flight + 1) x 5 MiB must fit in the budget   -> ErrMemoryBudget   (503)
 //
 // Every path that ends a task calls releaseTask, which is idempotent: the counters are decremented
 // exactly once per admitted task (result, timeout, disconnection, revocation, loss of the lock...).
@@ -101,7 +102,9 @@ func admitTask(taskID, host string) error {
 		err = ErrAgentBusy
 	case inflightTotal >= maxInflight:
 		err = ErrTooManyTasks
-	case maxStdoutTotal-stdoutHeld < int64(stdoutMaxBytes):
+	case int64(inflightTotal+1)*int64(stdoutMaxBytes) > maxStdoutTotal:
+		// a reservation, not the bytes held so far: the stdout of a task arrives AFTER its admission, so
+		// counting what is held would admit far more tasks than the memory can take (#179 load test)
 		err = ErrMemoryBudget
 	}
 	if err != nil {

@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -268,6 +270,8 @@ func ExecCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	extendWriteDeadline(w, req.Timeout)
+
 	// Generate or use provided task ID
 	taskID := req.TaskID
 	if taskID == nil || *taskID == "" {
@@ -371,12 +375,7 @@ func ExecCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("Exec complete: hostname=%q task_id=%q rc=%d", hostname, *taskID, result.RC)
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"rc":        result.RC,
-		"stdout":    result.Stdout,
-		"stderr":    result.Stderr,
-		"truncated": result.Truncated,
-	})
+	writeExecResult(w, result.RC, result.Stdout, result.Stderr, result.Truncated)
 }
 
 // POST /api/upload/{hostname} — Transfer a file to a remote agent
@@ -414,6 +413,8 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	extendWriteDeadline(w, 60) // blocking: the answer comes after the task (file timeout)
 
 	// Generate or use provided task ID
 	taskID := req.TaskID
@@ -518,6 +519,8 @@ func FetchFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+
+	extendWriteDeadline(w, 60) // blocking: the answer comes after the task (file timeout)
 
 	// Generate or use provided task ID
 	taskID := req.TaskID
@@ -651,4 +654,70 @@ func writeAdmissionError(w http.ResponseWriter, err error) bool {
 	}
 	writeAdmissionCode(w, err.Error())
 	return true
+}
+
+// extendWriteDeadline gives the blocking answer of a task the time the task may take. The API server
+// has a short WriteTimeout (15 s) meant for ordinary requests: without this, a task that lasts longer
+// than that is executed but its answer is cut (the TLS record is truncated and the client sees
+// "bad record MAC"). Best effort: a writer that does not support deadlines keeps the server default.
+func extendWriteDeadline(w http.ResponseWriter, taskTimeoutSec int) {
+	if taskTimeoutSec <= 0 {
+		taskTimeoutSec = 60
+	}
+	d := time.Duration(taskTimeoutSec+timeoutMarginSec+30) * time.Second
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(d)); err != nil {
+		log.Printf("write deadline not extended: %v", err)
+	}
+}
+
+// writeExecResult writes {"rc","stdout","stderr","truncated"} without building the whole body in
+// memory: the stdout (up to 5 MiB) is escaped and written piece by piece. json.NewEncoder(w).Encode of
+// a map would hold a second, escaped copy of it per request, which doubles the memory of the exec
+// answers when many tasks end together (#179).
+func writeExecResult(w http.ResponseWriter, rc int, stdout, stderr string, truncated bool) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if _, err := fmt.Fprintf(w, `{"rc":%d,"stdout":`, rc); err != nil {
+		return
+	}
+	if err := writeJSONString(w, stdout); err != nil {
+		return
+	}
+	if _, err := io.WriteString(w, `,"stderr":`); err != nil {
+		return
+	}
+	if err := writeJSONString(w, stderr); err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(w, `,"truncated":%t}`+"\n", truncated)
+}
+
+// writeJSONString writes s as a JSON string, escaped by pieces of at most 64 KiB (cut on rune boundaries).
+func writeJSONString(w io.Writer, s string) error {
+	if _, err := io.WriteString(w, `"`); err != nil {
+		return err
+	}
+	const piece = 64 << 10
+	for len(s) > 0 {
+		n := len(s)
+		if n > piece {
+			n = piece
+			for n > 0 && !utf8.RuneStart(s[n]) {
+				n--
+			}
+			if n == 0 {
+				n = piece
+			}
+		}
+		b, err := json.Marshal(s[:n]) // escapes like the encoder (invalid UTF-8 becomes U+FFFD)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(b[1 : len(b)-1]); err != nil {
+			return err
+		}
+		s = s[n:]
+	}
+	_, err := io.WriteString(w, `"`)
+	return err
 }

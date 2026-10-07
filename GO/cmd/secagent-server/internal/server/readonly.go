@@ -110,6 +110,9 @@ type holdWriter struct {
 	buf    bytes.Buffer
 }
 
+// Unwrap lets http.ResponseController reach the connection (write deadline of the blocking exec).
+func (h *holdWriter) Unwrap() http.ResponseWriter { return h.ResponseWriter }
+
 func (h *holdWriter) WriteHeader(code int) {
 	if h.status != 0 {
 		return

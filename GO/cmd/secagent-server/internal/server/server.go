@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"secagent-server/cmd/secagent-server/internal/tlsca"
 	"sync"
 	"syscall"
@@ -189,6 +190,14 @@ func Build(cfg Config) (node *Node, err error) {
 	// Admission limits of the tasks (#179): per agent, in flight on this node, stdout buffer budget
 	ws.SetTaskLimits(cfg.MaxTasksPerAgent, cfg.MaxTasksInflight, cfg.MaxStdoutBufferTotal)
 	log.Printf("[OK] Task limits: per_agent=%d in_flight=%d stdout_budget=%d bytes", orInt(cfg.MaxTasksPerAgent, ws.DefaultMaxTasksPerAgent), orInt(cfg.MaxTasksInflight, ws.DefaultMaxTasksInflight), orInt64(cfg.MaxStdoutBufferTotal, ws.DefaultMaxStdoutBufferTot))
+
+	// Soft memory limit of the Go runtime (#179): the stdout buffers (budget) are the live data; the
+	// decoding of the WebSocket messages makes garbage in proportion, and with the default GC pacing the
+	// heap would peak at about twice the live data. Unless the operator set GOMEMLIMIT, the GC works
+	// harder as the heap nears budget + 768 MiB (a soft limit: never a failure).
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(orInt64(cfg.MaxStdoutBufferTotal, ws.DefaultMaxStdoutBufferTot) + 768<<20)
+	}
 
 	// Inject JWT secrets getter into WS handler for dual-key validation
 	ws.SetJWTSecretsFunc(handlers.GetServerJWTSecrets)

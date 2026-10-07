@@ -23,3 +23,13 @@ func resetAdmission() {
 	admMu.Unlock()
 	SetTaskLimits(0, 0, 0)
 }
+
+// stdoutString returns the stdout accumulated for a task ("" when none).
+func stdoutString(id string) string {
+	buffersMu.RLock()
+	defer buffersMu.RUnlock()
+	if b := stdoutBuffers[id]; b != nil {
+		return b.String()
+	}
+	return ""
+}

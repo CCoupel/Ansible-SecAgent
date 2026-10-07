@@ -265,9 +265,7 @@ func TestHandleMessageStdoutAccumulates(t *testing.T) {
 	HandleMessage(Message{TaskID: "task-1", Type: "stdout", Chunk: "hello "}, "host-a")
 	HandleMessage(Message{TaskID: "task-1", Type: "stdout", Chunk: "world"}, "host-a")
 
-	buffersMu.RLock()
-	buf := stdoutBuffers["task-1"]
-	buffersMu.RUnlock()
+	buf := stdoutString("task-1")
 
 	if buf != "hello world" {
 		t.Errorf("buffer: got %q, want %q", buf, "hello world")
@@ -284,9 +282,7 @@ func TestHandleMessageStdoutTruncatesAt5MB(t *testing.T) {
 	}
 	HandleMessage(Message{TaskID: "task-1", Type: "stdout", Chunk: string(large)}, "host-a")
 
-	buffersMu.RLock()
-	buf := stdoutBuffers["task-1"]
-	buffersMu.RUnlock()
+	buf := stdoutString("task-1")
 
 	if len([]byte(buf)) > stdoutMaxBytes {
 		t.Errorf("buffer exceeds max: got %d bytes, want <= %d", len([]byte(buf)), stdoutMaxBytes)
