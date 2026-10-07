@@ -11,7 +11,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+	"time"
 )
 
 // genRSAPubPEM generates a fresh RSA key of bitSize and returns the PEM-encoded public key.
@@ -42,9 +44,11 @@ func TestRegisterAgentSuccess(t *testing.T) {
 	// Must use 4096-bit key: RSA-OAEP/SHA-256 with 2048-bit key can only
 	// encrypt ~190 bytes, but a JWT is ~300 bytes.
 	privKey, pubKeyPEM := genRSAPubPEM(t, 4096)
-	hostname := "test-agent-01"
-	token := "secagent_enr_register_success_01"
-	insertEnrollmentToken(t, "tok-register-success-01", token, hostname, false, nil)
+	// unique per execution: the store of the handler tests is process-wide, a test must be replayable (-count=N)
+	run := uniqueRun()
+	hostname := "test-agent-01-" + run
+	token := "secagent_enr_register_success_" + run
+	insertEnrollmentToken(t, "tok-register-success-"+run, token, hostname, false, nil)
 
 	code, resp := fullEnrollment(t, hostname, token, privKey, pubKeyPEM)
 	if code != http.StatusOK || resp == nil {
@@ -359,9 +363,10 @@ func TestRegisterAgent_BodyClosedOnDecodeError(t *testing.T) {
 
 	t.Run("success_path", func(t *testing.T) {
 		_, pubKeyPEM := genRSAPubPEM(t, 4096)
-		hostname := "spy-test-agent-01"
-		token := "secagent_enr_spy_body_closed_01"
-		insertEnrollmentToken(t, "tok-spy-01", token, hostname, false, nil)
+		run := uniqueRun()
+		hostname := "spy-test-agent-01-" + run
+		token := "secagent_enr_spy_body_closed_" + run
+		insertEnrollmentToken(t, "tok-spy-"+run, token, hostname, false, nil)
 
 		req := RegisterRequest{
 			Hostname:        hostname,
@@ -382,3 +387,7 @@ func TestRegisterAgent_BodyClosedOnDecodeError(t *testing.T) {
 		}
 	})
 }
+
+// uniqueRun is a short identifier unique per call (not per process): ids, tokens and hostnames built
+// from it can be created again by a replayed test (-count=N) in the process-wide store.
+func uniqueRun() string { return strconv.FormatInt(time.Now().UnixNano(), 36) }
