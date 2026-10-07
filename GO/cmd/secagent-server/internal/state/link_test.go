@@ -216,7 +216,7 @@ func TestMigrationV1_WithMasterKeyKeepsTheHMAC(t *testing.T) {
 
 func TestSchemaV1CannotCarryLinkData(t *testing.T) {
 	p := newPayload()
-	p.LinkTrust = LinkTrust{CurrentPub: pub32(1), CurrentKID: "k1"}
+	p.LinkTrust = LinkTrust{RootID: "root", CurrentPub: pub32(1), CurrentKID: "k1"}
 	raw, _ := json.Marshal(&p)
 	sum := sha256.Sum256(raw)
 	data, _ := json.Marshal(envelope{SchemaVersion: 1, WrittenAt: time.Now(), WriteSeq: 1, SHA256: hex.EncodeToString(sum[:]), Payload: raw})
@@ -235,7 +235,7 @@ func TestV303RefusesAV2File_SchemaIs2(t *testing.T) {
 
 // ── link data ─────────────────────────────────────────────────────────────────
 
-func pub32(b byte) string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32)) }
+func pub32(b byte) string { return base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32)) }
 
 func linkTok(id string) LinkToken {
 	now := time.Now().UTC()
@@ -405,13 +405,14 @@ func TestLinkSigningKey_PreviousNeedsCurrent_AndSecretRules(t *testing.T) {
 func TestLinkTrust_Coherence_RoundTrip(t *testing.T) {
 	e, dir := sealedEngine(t)
 	cases := map[string]LinkTrust{
-		"pub without kid":     {CurrentPub: pub32(1)},
+		"pub without kid":     {RootID: "root", CurrentPub: pub32(1)},
+		"pub without root id": {CurrentPub: pub32(1), CurrentKID: "k"},
 		"kid without pub":     {CurrentKID: "k"},
-		"not base64":          {CurrentPub: "%%%", CurrentKID: "k"},
-		"wrong length":        {CurrentPub: base64.StdEncoding.EncodeToString([]byte("short")), CurrentKID: "k"},
-		"previous no current": {PreviousPub: pub32(2), PreviousKID: "k2"},
+		"not base64":          {RootID: "root", CurrentPub: "%%%", CurrentKID: "k"},
+		"wrong length":        {RootID: "root", CurrentPub: base64.RawURLEncoding.EncodeToString([]byte("short")), CurrentKID: "k"},
+		"previous no current": {RootID: "root", PreviousPub: pub32(2), PreviousKID: "k2"},
 		"seq no current":      {Seq: 4},
-		"same kid":            {CurrentPub: pub32(1), CurrentKID: "k", PreviousPub: pub32(2), PreviousKID: "k"},
+		"same kid":            {RootID: "root", CurrentPub: pub32(1), CurrentKID: "k", PreviousPub: pub32(2), PreviousKID: "k"},
 	}
 	for name, lt := range cases {
 		if err := e.Mutate(func(tx *Tx) error { return tx.SetLinkTrust(lt) }); !errors.Is(err, ErrInvalid) {
@@ -421,7 +422,7 @@ func TestLinkTrust_Coherence_RoundTrip(t *testing.T) {
 	if !e.Snapshot().LinkTrust().IsZero() {
 		t.Fatal("refused anchors must leave no trace")
 	}
-	good := LinkTrust{CurrentPub: pub32(1), CurrentKID: "k1", PreviousPub: pub32(2), PreviousKID: "k0", Seq: 9}
+	good := LinkTrust{RootID: "root", CurrentPub: pub32(1), CurrentKID: "k1", PreviousPub: pub32(2), PreviousKID: "k0", Seq: 9}
 	if err := e.Mutate(func(tx *Tx) error { return tx.SetLinkTrust(good) }); err != nil {
 		t.Fatal(err)
 	}

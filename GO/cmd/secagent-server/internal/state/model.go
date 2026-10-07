@@ -129,11 +129,13 @@ type LinkToken struct {
 	Description string     `json:"description,omitempty"`
 }
 
-// LinkTrust is the trust anchor of a non-root relay (schema v2): the root's PUBLIC link keys
-// (current and previous, base64 of the 32 raw Ed25519 bytes, with their kid) and the sequence number
-// of the last revocation list accepted (anti-replay). Public data: never encrypted. The zero value
+// LinkTrust is the trust anchor of a non-root relay (schema v2): the relay_id of the root (the
+// expected "iss"), its PUBLIC link keys (current and previous, base64url WITHOUT padding of the 32
+// raw Ed25519 bytes: the encoding of the link_keys wire message, with their kid) and the sequence
+// number of the last link message accepted (anti-replay). Public data: never encrypted. The zero value
 // means "no anchor": a non-root relay then refuses every incoming link (fail closed).
 type LinkTrust struct {
+	RootID      string `json:"root_id,omitempty"`
 	CurrentPub  string `json:"current_pub,omitempty"`
 	CurrentKID  string `json:"current_kid,omitempty"`
 	PreviousPub string `json:"previous_pub,omitempty"`
@@ -416,13 +418,16 @@ func checkLinkTrust(l LinkTrust) error {
 			return fmt.Errorf("%w: link_trust %s needs both a public key and a kid", ErrInvalid, s.name)
 		}
 		if s.pub != "" {
-			raw, err := base64.StdEncoding.DecodeString(s.pub)
+			raw, err := base64.RawURLEncoding.DecodeString(s.pub)
 			if err != nil || len(raw) != 32 {
-				return fmt.Errorf("%w: link_trust %s public key is not a base64 Ed25519 key (32 bytes)", ErrInvalid, s.name)
+				return fmt.Errorf("%w: link_trust %s public key is not a base64url Ed25519 key (32 bytes)", ErrInvalid, s.name)
 			}
 		}
 	}
-	if l.CurrentPub == "" && (l.PreviousPub != "" || l.Seq != 0) {
+	if l.CurrentPub != "" && l.RootID == "" {
+		return fmt.Errorf("%w: link_trust has a public key but no root_id", ErrInvalid)
+	}
+	if l.CurrentPub == "" && (l.PreviousPub != "" || l.Seq != 0 || l.RootID != "") {
 		return fmt.Errorf("%w: link_trust has a previous key or a sequence number but no current key", ErrInvalid)
 	}
 	if l.PreviousKID != "" && l.PreviousKID == l.CurrentKID {
