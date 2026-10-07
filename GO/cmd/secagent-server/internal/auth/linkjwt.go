@@ -36,6 +36,9 @@ const (
 	linkIATLeeway     = 60 * time.Second
 	maxLinkEntries    = 10000
 	maxLinkMessageLen = 2 << 20 // 2 MiB
+
+	// MaxLinkTTL is the longest lifetime SignLinkToken accepts (365 days).
+	MaxLinkTTL = 365 * 24 * time.Hour
 )
 
 // Error codes of LinkError.
@@ -142,6 +145,9 @@ func SignLinkToken(priv ed25519.PrivateKey, iss, sub, aud, role string, ttl time
 	}
 	if ttl <= 0 {
 		return "", "", errors.New("link_token_requires_expiry")
+	}
+	if ttl > MaxLinkTTL {
+		return "", "", errors.New("link_token_ttl_too_long")
 	}
 	jti = uuid.New().String()
 	now := time.Now()

@@ -325,3 +325,16 @@ func TestLinkJWT_SubEqualToAudIsRefused(t *testing.T) {
 	_, err := VerifyLinkToken(f.trust(), tok, LinkWant{LocalID: "parent", RootID: "root", Role: RoleRelayChild}, f.now)
 	wantCode(t, err, LinkErrClaims, true)
 }
+
+func TestLinkJWT_SignRefusesATTLAboveTheMaximum(t *testing.T) {
+	f := newLinkFixture(t)
+	if _, _, err := SignLinkToken(f.priv, "root", "c", "p", RoleRelayChild, MaxLinkTTL); err != nil {
+		t.Fatalf("the maximum itself must be accepted: %v", err)
+	}
+	if _, _, err := SignLinkToken(f.priv, "root", "c", "p", RoleRelayChild, MaxLinkTTL+time.Second); err == nil {
+		t.Fatal("ttl above the maximum accepted")
+	}
+	if _, _, err := SignLinkToken(f.priv, "root", "c", "p", RoleRelayChild, 100*365*24*time.Hour); err == nil {
+		t.Fatal("100 years accepted")
+	}
+}
