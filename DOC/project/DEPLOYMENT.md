@@ -112,6 +112,21 @@ curl --cacert tls/tls.crt -H "Authorization: Bearer $PLG" \
 # Doit afficher les agents enrôlés
 ```
 
+### Qualification sans registre (artefact de run CI + `docker load`)
+
+Aucun pull GHCR n'est requis en qualif : chaque **push** construit les images serveur et minion (job `images-artifact`) et les publie en **artefact du run** `secagent-images-<sha>` (7 jours : archives `docker save`, binaire `secagent-inventory`, `images.env`, `SHA256SUMS` ; aucun push de registre). Procédure complète et variables : `DEPLOYMENT/qualif/README.md` (« Images sans registre »).
+
+```bash
+gh run download <id-du-run> -n secagent-images-<sha-complet> -D images
+export DOCKER_HOST=tcp://192.168.1.218:2375      # ou `docker -H tcp://…` ; réseau de confiance uniquement
+bash DEPLOYMENT/qualif/chain-test.sh load-images images   # vérifie SHA256SUMS puis docker load sur l'hôte distant
+set -a; . images/images.env; set +a                       # tags locaux ci-<sha12>, SECAGENT_PULL_POLICY=never
+```
+
+Le déploiement se fait ensuite dans le projet Compose **`secagent-qualif`** (mode hôte distant : `TLS_MODE=volume`, `chain-test.sh push-tls`, `SECAGENT_ENDPOINT_HOST`, `PKI_EXTRA_SAN`). `down`, `teardown` et `backup-restore` sont refusés sur un hôte distant pour tout autre projet.
+
+**Production** : le Compose de la release exige des images **`tag@sha256:<digest>`** (`vX.Y.Z@sha256:…`, jamais `latest`, jamais de tag local) ; la répétition à vide de l'archive de release le vérifie par `check_compose.py --require-digest`. Les images chargées par `docker load` ne sont acceptées qu'en qualif.
+
 ---
 
 ## Codes de Sortie et Redémarrage
