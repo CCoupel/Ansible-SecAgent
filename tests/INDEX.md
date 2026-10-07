@@ -18,3 +18,6 @@
 | GO/cmd/secagent-server/internal/ws/snapshot_quota_spec_test.go | unit-spec | secagent-server | #156 quota des topology_snapshot par relay_id (6 critères) — armé par specSnapshotQuotaByIdentity | feature | critical |
 | GO/cmd/secagent-server/internal/ws/task_purge_spec_test.go | unit-spec | secagent-server | #179 un chemin de purge = un test (résultat, timeout, déconnexion, révocation, perte de verrou), purge une seule fois | feature | critical |
 | GO/cmd/secagent-server/internal/integration/task_limits_spec_test.go | integration | secagent-server | #179 limites par agent/globale/budget stdout (429 agent_busy, 429 too_many_tasks, 503 memory_budget_exhausted), tout fin de tâche libère son slot, charge 3 000 agents (perf, RSS<2 Gio) — armé par specTaskLimits179 | feature | slow |
+| GO/cmd/secagent-server/internal/hooks/burst_slow_test.go | unit | secagent-server | #183 rafale de 3 000 événements (tag de build `slow`, job CI slow-tests) | feature | slow |
+| GO/cmd/secagent-server/internal/integration/hooks_burst_slow_test.go | integration | secagent-server | #183 3 000 agents se reconnectent (tag de build `slow`, job CI slow-tests) | feature | slow |
+| GO/cmd/secagent-server/internal/integration/task_limits_load_slow_test.go | integration | secagent-server | #179 charge 3 000 agents (tag de build `slow`, job CI slow-tests) | feature | slow |

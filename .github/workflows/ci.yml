@@ -47,6 +47,29 @@ jobs:
           ADMIN_TOKEN: test
         run: go test -race ./... -timeout 300s
 
+  # Tests lents (rafales de 3 000 agents, ~4 min a eux seuls) : exclus de la boucle rapide ci-dessus par
+  # le tag de build `slow`, mais JOUES a chaque push dans ce job dedie (le garde-fou n'est pas retire).
+  slow-tests:
+    name: Tests lents (tag slow, 3 000 agents)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: GO/go.work
+          cache-dependency-path: GO/go.sum
+
+      - name: Rafales et charge (-tags slow)
+        working-directory: GO
+        env:
+          JWT_SECRET_KEY: test
+          ADMIN_TOKEN: test
+        run: |
+          go test -race -tags slow -run 'TestBurst_3000EventsAreAllExecutedAndJournaled' ./cmd/secagent-server/internal/hooks/ -timeout 600s
+          go test -race -tags slow -run 'TestHooksBurst_3000AgentsReconnectingAllRunTheirHook|TestTaskLimits_Load3000' ./cmd/secagent-server/internal/integration/ -timeout 1200s
+
   lint:
     name: Lint Go
     runs-on: ubuntu-latest
