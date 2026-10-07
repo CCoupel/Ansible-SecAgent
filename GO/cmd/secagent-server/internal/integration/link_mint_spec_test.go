@@ -215,9 +215,9 @@ func TestLinkMint_SwitchoverKeepsTheSameKey(t *testing.T) {
 
 // ── pending L1d / L1e: they need both ends of the link ───────────────────────
 
-func TestLinkRevocation_ClosesTheTargetedLinkTwoLevelsDeepWith4001(t *testing.T) {
-	t.Skip("PENDING L1d+L1e: needs link_revocations on both ends (root → relay1 → relay2). Spec (rev2 §3 test 6): chain root→relay1→relay2 up; " +
-		"`tokens revoke <id of relay2's link token>` on the ROOT; relay2's link is closed with code 4001 and relay2 reports refused_permanent; " +
+func TestLinkRevocation_ClosesTheTargetedLinkTwoLevelsDeepWith4010(t *testing.T) {
+	t.Skip("PENDING L1d+L1e: needs link_revocations on both ends (root → relay1 → relay2). Spec (rev2 §3 test 6; 4010, not the stale 4001): chain root→relay1→relay2 up; " +
+		"`tokens revoke <id of relay2's link token>` on the ROOT; relay2's link is closed with code 4010 (WSRelayCloseRevoked, permanent: SERVER_SPEC §9.2.1) and relay2 reports refused_permanent; " +
 		"relay1's link is untouched; the JTI is in the blacklist of relay1 and relay2; a relay2 reconnecting after a cut gets the full list. " +
 		"Write the body with the harness ParentToken/ROOT_LINK_KEY_FILE wiring chosen by L1e.")
 }
