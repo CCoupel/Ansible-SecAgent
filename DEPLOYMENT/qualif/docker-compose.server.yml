@@ -37,6 +37,11 @@ x-secagent: &secagent
   tmpfs:
     - /run/secagent:uid=10001,gid=10001,mode=0700
     - /tmp:uid=10001,gid=10001,mode=1777
+  # Hooks de qualif (#197) : `hooks.json` injecte par `configs:` (copie dans le conteneur, PAS un bind mount :
+  # fonctionne contre un demon distant). Chemin par defaut du serveur ; le journal est ecrit dans /run/secagent (tmpfs).
+  configs:
+    - source: secagent_hooks
+      target: /etc/secagent-server/hooks.json
   healthcheck:
     test: ["CMD", "/app/secagent-server", "status", "--local"]
     interval: 10s
@@ -76,6 +81,10 @@ services:
       - "8770:7770"
       - "8772:7772"
       - "127.0.0.1:8771:7771"
+
+configs:
+  secagent_hooks:
+    file: ./hooks.json
 
 volumes:
   # Volume local partage par les 2 conteneurs (meme hote). Pour tester un vrai partage reseau (NFS),

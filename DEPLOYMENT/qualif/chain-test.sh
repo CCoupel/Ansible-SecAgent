@@ -8,11 +8,14 @@
 #   chain-test.sh backup-restore  # sauvegarde de l etat + de RSA_MASTER_KEY (a part), perte du volume, restauration
 #   chain-test.sh load-images <dir>  # docker load des images d'un artefact CI (sans registre), SECAGENT_PULL_POLICY=never
 #   chain-test.sh push-tls     # TLS_MODE=volume : copie les certificats dans le volume Docker (hote distant)
+#   chain-test.sh hooks        # journal des hooks (host.up/host.down) de la racine et de l'enfant (#197, hooks.json)
+#   chain-test.sh negative-ca  # essai CA negatif (profil Compose `negative`) : un minion sans la CA est refuse (#197)
 #   chain-test.sh logs | down
 #
 # Variables : SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (obligatoires, references promues ou locales),
 #   QUALIF_TLS_DIR (defaut ./pki/out), INVENTORY_BIN (binaire secagent-inventory du poste de controle),
 #   ANSIBLE_BIN (defaut `ansible`), PROJECT (defaut secagent-chain), TOKEN_TTL (defaut 2h).
+#   LINK_TOKENS=1 : SQUELETTE des jetons de lien v3.0.4 (TODO L1d, refuse tant que non implemente), voir link_tokens_*.
 # Les jetons sont ecrits UNIQUEMENT dans ./chain/ (0700, fichiers 0600, ignore par git) : jamais affiches.
 # Le poste de controle Ansible (plugin SECAGENT-PYTHON + secagent-inventory) est ici le poste qui lance ce script,
 # il joint la racine par les ports d'hote 7770 (a) et 8770 (b) avec la CA de test.
@@ -141,8 +144,8 @@ bootstrap() {
     | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton minion-root non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-root.env; }
   adm "$C_CHILD" tokens create --role enrollment --hostname-pattern '^minion-child$' --expires "$TOKEN_TTL" 2>&1 \
     | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton minion-child non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-child.env; }
-  adm "$m" tokens create --role plugin --description chain-smoke --expires "$TOKEN_TTL" 2>&1 \
-    | extract 'secagent_plg_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton plugin non extrait"; printf '%s' "$t" | write_secret plugin.token; }
+  plugin_token
+  link_tokens_prepare   # no-op sans LINK_TOKENS=1 (squelette v3.0.4, TODO L1d)
   echo "== minions"
   "${DC[@]}" up -d minion-root minion-child
   echo "bootstrap OK (jetons dans $CHAIN_DIR, non affiches)"
@@ -172,7 +175,18 @@ wait_inventory() {
   done
 }
 
+# Jeton plugin FRAIS a chaque appel (#197) : plus de dependance a un jeton cree au bootstrap qui expire (TOKEN_TTL).
+# Cree sur le maitre courant (l'etat est partage par a/b), ecrit en FICHIER 0600, jamais affiche. Un ancien jeton
+# non revoque expire de lui-meme (TTL) ; description horodatee pour les reperer dans `tokens list`.
+plugin_token() {
+  local m; m="$(master)" || fail "pas de maitre sur la racine (jeton plugin)"
+  mkdir -p "$CHAIN_DIR"; chmod 700 "$CHAIN_DIR"
+  adm "$m" tokens create --role plugin --description "chain-smoke-$(date +%s)" --expires "$TOKEN_TTL" 2>&1 \
+    | extract 'secagent_plg_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton plugin non extrait"; printf '%s' "$t" | write_secret plugin.token; }
+}
+
 control_env() { # variables du poste de controle Ansible : listes d'adresses, CA de test, jeton en FICHIER
+  plugin_token   # jeton frais a chaque appel (smoke, failover, hooks)
   export RELAY_SERVER_URL="https://${ENDPOINT_HOST}:7770,https://${ENDPOINT_HOST}:8770" RELAY_CA_BUNDLE="$QUALIF_TLS_DIR/ca.crt"
   export RELAY_TOKEN_FILE="$CHAIN_DIR/plugin.token"
 }
@@ -245,6 +259,72 @@ backup_restore() {
   echo "backup-restore OK (meme identite : le minion, authentifie par l'etat restaure, est reconnecte)"
 }
 
+# --- Jetons de lien v3.0.4 (#141/#146) : SQUELETTE, activable par LINK_TOKENS=1 -------------------------------------
+# Modele (rev2 §1.8, §4) : la RACINE mint un jeton par lien, la cle publique racine est montee dans chaque relay.
+#   pull : racine `tokens create --role relay-child  --sub <enfant>  --aud <parent>`  -> REPEATER_UPSTREAM_TOKEN de l'enfant
+#   push : racine `tokens create --role relay-parent --sub <parent>  --aud <enfant>`  -> enregistre sur le parent
+# Les COMMANDES EXACTES (options, format de sortie, nom du jeton extrait) arrivent avec L1d : NE PAS DEVINER.
+# Tant que L1d n'est pas livre, chaque etape ci-dessous echoue explicitement (jamais de repli silencieux sur HS256).
+link_tokens_prepare() {
+  [ "${LINK_TOKENS:-0}" = 1 ] || return 0
+  local m; m="$(master)" || fail "pas de maitre sur la racine"
+  # TODO(L1d) : exporter la cle publique racine -- attendu `secagent-server keys link-pubkey` (sortie PEM, non secrete) :
+  #   adm "$m" keys link-pubkey > "$CHAIN_DIR/root-link.pub"
+  # TODO(L1d) : minter le jeton du lien pull dmz1 -> racine (REPLACE le jeton issu de `relays add`, qui ne mint plus) :
+  #   adm "$m" tokens create --role relay-child --sub dmz1 --aud <relay_id racine> --expires "$TOKEN_TTL"
+  #   -> extraire le jeton (TODO format) puis `printf 'REPEATER_UPSTREAM_TOKEN=%s\n' "$t" | write_secret child.env`
+  # TODO(L1d) : (optionnel) lien push racine -> enfant : `tokens create --role relay-parent --sub <racine> --aud dmz1`.
+  # TODO(L1e) : pousser root-link.pub dans le volume `${PROJECT}_link` monte par secagent-child (voir compose, modele push_tls)
+  #   et positionner REPEATER_ROOT_LINK_KEY_FILE dans l'environnement de l'enfant.
+  : "$m"
+  fail "LINK_TOKENS=1 : jetons de lien non implementes (TODO L1d/L1e : syntaxe finale non connue, voir link_tokens_prepare)"
+}
+
+# --- Hooks en reel (#197 item 1) -----------------------------------------------------------------------------------
+# hooks.json (DEPLOYMENT/qualif/hooks.json, injecte par `configs:`) ecrit chaque host.up / host.down dans
+# /run/secagent/events.log (tmpfs) de chaque conteneur. Seul le MAITRE de la racine execute ses hooks.
+events_log() { docker exec "$1" cat /run/secagent/events.log 2>/dev/null || true; }
+# $1 conteneur, $2 hote, $3 UP|DOWN : une ligne "<horodatage> <UP|DOWN> <hote>" existe dans le journal.
+hook_seen() { events_log "$1" | awk -v h="$2" -v k="$3" '$2==k && $3==h {f=1} END{exit !f}'; }
+
+check_hooks() {
+  local m; m="$(master)" || fail "pas de maitre sur la racine"
+  echo "== hooks : host.up de minion-root au maitre ($m), de minion-child a l'enfant ($C_CHILD)"
+  wait_for "host.up minion-root dans le journal du maitre $m" 60 hook_seen "$m" minion-root UP >/dev/null
+  wait_for "host.up minion-child dans le journal de l'enfant" 60 hook_seen "$C_CHILD" minion-child UP >/dev/null
+  echo "hooks OK (journaux : docker exec <conteneur> cat /run/secagent/events.log)"
+}
+
+# Bascule avec hooks : apres l'arret propre du maitre, le NOUVEAU maitre doit journaliser host.up de minion-root
+# (reconnexion du minion). minion-child : informatif (il reste connecte a l'enfant, qui ne redemarre pas ; l'evenement
+# remonte-t-il a la nouvelle racine ? TODO a confirmer a l'execution, pas de verdict ici).
+check_hooks_after_failover() {
+  local m; m="$(master)" || fail "pas de maitre apres la bascule"
+  echo "== hooks apres bascule : nouveau maitre $m"
+  wait_for "host.up minion-root journalise par le nouveau maitre $m" 150 hook_seen "$m" minion-root UP >/dev/null
+  if hook_seen "$m" minion-child UP; then echo "info : host.up minion-child aussi journalise par $m"; else echo "info : host.up minion-child absent du journal de $m (a analyser a l'execution)"; fi
+  echo "hooks apres bascule OK"
+}
+
+# --- Essai CA negatif (#197 item 2) : service Compose `minion-negca`, profil `negative` -----------------------------
+negative_ca() {
+  verify_images
+  local m; m="$(master)" || fail "pas de maitre sur la racine"
+  echo "== minion sans la CA privee (store systeme seul) : doit etre REFUSE"
+  "${DC[@]}" --profile negative up -d --no-deps minion-negca
+  local ok=0 i
+  for i in $(seq 1 30); do
+    if "${DC[@]}" --profile negative logs minion-negca 2>&1 | grep -Eiq 'x509|certificate|unknown authority'; then ok=1; break; fi
+    sleep 2
+  done
+  local listed=0
+  adm "$m" minions list 2>/dev/null | awk '$1=="minion-negca" {f=1} END{exit !f}' && listed=1
+  "${DC[@]}" --profile negative rm -sf minion-negca >/dev/null
+  [ "$ok" = 1 ] || fail "negative-ca : aucune erreur de certificat dans les logs de minion-negca (60 s)"
+  [ "$listed" = 0 ] || fail "negative-ca : minion-negca figure dans minions list malgre l'absence de CA"
+  echo "negative-ca OK (erreur de certificat, minion absent de la liste)"
+}
+
 failover() {
   verify_images
   need INVENTORY_BIN
@@ -252,6 +332,7 @@ failover() {
   # Arret propre du maitre : l'enfant et les minions doivent se reconnecter par leurs listes, ping OK ensuite.
   bash "$HERE/failover-test.sh" run stop
   smoke
+  check_hooks_after_failover
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
@@ -264,7 +345,9 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     logs) "${DC[@]}" logs --tail=100 ;;
     load-images) load_images "${2:-}" ;;
     push-tls) push_tls ;;
+    hooks) check_hooks ;;
+    negative-ca) negative_ca ;;
     down) guard_project; "${DC[@]}" down -v ;;
-    *) sed -n '2,16p' "$0"; exit 2 ;;
+    *) sed -n '2,18p' "$0"; exit 2 ;;
   esac
 fi

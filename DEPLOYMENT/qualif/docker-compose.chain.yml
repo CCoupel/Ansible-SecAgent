@@ -30,6 +30,12 @@ x-child-env: &child-env
   REPEATER_UPSTREAM_URL: wss://secagent-server-a:7772,wss://secagent-server-b:7772
   REPEATER_CA_FILE: /certs/ca.crt
   # REPEATER_UPSTREAM_TOKEN : secret, dans ./chain/child.env (env_file ci-dessous)
+  # TODO(L1d/L1e, jetons de lien v3.0.4) : ne pas deviner la syntaxe finale. Quand L1e livre `REPEATER_ROOT_LINK_KEY_FILE`
+  # (cle publique racine PEM, NON secrete, exportee par `keys link-pubkey` sur la racine) :
+  #   REPEATER_ROOT_LINK_KEY_FILE: /run/secagent-link/root-link.pub
+  # et la monter dans CHAQUE relay non racine (ici secagent-child). Pas de bind mount (mode distant interdit) : soit un
+  # volume nomme `${PROJECT}_link` alimente par `chain-test.sh push-link-key` (modele de push-tls), soit `configs:` si le
+  # fichier existe au rendu. Voir chain-test.sh (link_tokens_*) et REHEARSAL_v3.0.4.md.
 
 services:
   secagent-child:
@@ -49,6 +55,9 @@ services:
       - path: ./chain/child.env
         required: false
     environment: *child-env
+    configs:
+      - source: secagent_hooks            # defini dans docker-compose.server.yml (inclus) : hooks.json de qualif
+        target: /etc/secagent-server/hooks.json
     volumes:
       - child_state:/data
       - type: bind
@@ -107,6 +116,22 @@ services:
         target: /certs
         read_only: true
     mem_limit: 512m
+
+  # Essai CA NEGATIF (#197, profil `negative`, jamais demarre par `up` sans --profile) : un minion SANS RELAY_CA_BUNDLE
+  # (store systeme seul) face a la CA privee de la racine doit REFUSER la connexion TLS. `chain-test.sh negative-ca`
+  # le lance, verifie l'erreur de certificat et l'absence du minion dans `minions list`, puis le supprime.
+  # Jeton d'enrolement FACTICE (forme valide, 64 zeros, non secret) : le refus doit survenir AVANT toute authentification.
+  minion-negca:
+    profiles: ["negative"]
+    image: ${SECAGENT_MINION_IMAGE:?SECAGENT_MINION_IMAGE est obligatoire (image minion sha-<commit>@sha256:<digest>)}
+    hostname: minion-negca
+    pull_policy: ${SECAGENT_PULL_POLICY:-missing}
+    restart: "no"
+    environment:
+      RELAY_SERVER_URL: https://secagent-server-a:7770
+      RELAY_WS_URL: wss://secagent-server-a:7772/ws/agent
+      RELAY_ENROLLMENT_TOKEN: secagent_enr_0000000000000000000000000000000000000000000000000000000000000000
+    mem_limit: 256m
 
 volumes:
   child_state:

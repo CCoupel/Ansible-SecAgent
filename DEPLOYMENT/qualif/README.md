@@ -76,6 +76,34 @@ Les opérations destructives (`down`, `teardown`, `backup-restore`) sont refusé
 - **Ne jamais lancer `failover-test.sh` isolément contre un démon distant** : sans les variables du mode volume (`COMPOSE_FILE`, `COMPOSE_OVERRIDES`, `SECAGENT_TLS_VOLUME`) que `chain-test.sh` exporte, Compose recréait les conteneurs avec un bind mount d'un chemin **du poste**, créant des répertoires vides sur l'hôte distant. Le script **refuse** désormais en mode distant (`DOCKER_HOST` non local ou `SECAGENT_ENDPOINT_HOST`/`CONTROL_HOST` non local) sans `TLS_MODE=volume`, reprend lui-même le mode volume sinon, et refuse tout bind mount dans le rendu. Point d'entrée : `chain-test.sh failover`.
 - **`chmod 600` n'est pas honoré sur `/mnt/c` (NTFS)** : le plugin refuse un fichier de jeton qui n'est pas 0600. Lancer les scripts depuis une copie **hors `/mnt/c`** : `git archive HEAD | tar -x -C ~/qualif-run` (puis `cd ~/qualif-run/DEPLOYMENT/qualif`), jamais depuis le dépôt monté.
 
+## Compléments de qualif v3.0.4 (#197) : hooks, CA négative, jeton plugin frais, CLI Docker épinglé
+
+- **Hooks en réel** : `hooks.json` (même répertoire) est injecté par `configs:` Compose (copie dans le conteneur, pas de bind mount : compatible hôte distant) dans `/etc/secagent-server/hooks.json` de `secagent-server-a/-b` et de `secagent-child`. Il écrit chaque `host.up` / `host.down` dans `/run/secagent/events.log` (tmpfs) du conteneur. `bash chain-test.sh hooks` vérifie `host.up` de `minion-root` (maître de la racine) et `minion-child` (enfant) ; `bash chain-test.sh failover` vérifie ensuite que le **nouveau maître** journalise `host.up` de `minion-root` après la bascule.
+- **Essai CA négatif** : service `minion-negca` (profil Compose `negative`, jamais démarré par un `up` ordinaire), minion **sans** `RELAY_CA_BUNDLE` (store système seul) face à la CA privée. `bash chain-test.sh negative-ca` exige une erreur de certificat dans ses logs et son absence de `minions list`, puis le supprime. Le jeton d'enrôlement du service est factice (forme valide, 64 zéros) : le refus doit précéder toute authentification.
+- **Jeton plugin frais** : `chain-test.sh` crée un jeton plugin neuf (fichier 0600) à chaque `smoke`, `failover` et `hooks` ; plus de dépendance au jeton du bootstrap qui expire (`TOKEN_TTL`).
+- **Jetons de lien v3.0.4** : squelette seulement (`LINK_TOKENS=1`, fonction `link_tokens_prepare`, bloc `TODO(L1d/L1e)` dans `docker-compose.chain.yml`). Les commandes exactes (`tokens create --role relay-child|relay-parent --sub --aud`, `keys link-pubkey`, `REPEATER_ROOT_LINK_KEY_FILE`) arrivent avec L1d/L1e ; tant qu'elles ne sont pas livrées, `LINK_TOKENS=1` échoue explicitement.
+- **Montée v3.0.3 → v3.0.4** : plan de répétition dans `REHEARSAL_v3.0.4.md`.
+
+### CLI Docker statique épinglé
+
+Pour un poste sans Docker (WSL sans intégration Docker Desktop, runner), le CLI statique officiel est épinglé :
+
+| Élément | Valeur |
+|---|---|
+| Version | `docker-29.8.2.tgz` |
+| URL | `https://download.docker.com/linux/static/stable/x86_64/docker-29.8.2.tgz` |
+| sha256 | `995d1ef289677f74fd58d8d2c35727b6a4ee389c69db8638a3e42d0487aa5b0f` |
+
+Origine du sha256 : calculé le 2026-10-07 sur le fichier téléchargé en HTTPS depuis `download.docker.com` ; Docker ne publie pas de fichier de sommes pour ces archives (le `.sha256` voisin répond 404), l'empreinte n'est donc pas recoupée par une source indépendante. Vérification avant extraction, **dans un répertoire dédié, vide** (jamais dans le dépôt) :
+
+```bash
+d=$(mktemp -d) && cd "$d" && curl -fsSLO https://download.docker.com/linux/static/stable/x86_64/docker-29.8.2.tgz \
+  && echo "995d1ef289677f74fd58d8d2c35727b6a4ee389c69db8638a3e42d0487aa5b0f  docker-29.8.2.tgz" | sha256sum -c - \
+  && tar -xzf docker-29.8.2.tgz docker/docker && ./docker/docker --version
+```
+
+Le CLI statique n'inclut pas `docker compose` (plugin séparé) : les scripts de qualif l'exigent. Rien n'est installé par les agents hors scratchpad ; l'installation sur le poste reste une décision de l'utilisateur.
+
 ## Prérequis
 
 - Docker remote access actif sur `192.168.1.218:2375`
