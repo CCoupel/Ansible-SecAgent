@@ -58,6 +58,15 @@ export INVENTORY_BIN="$PWD/images/secagent-inventory"
 ```
 `SECAGENT_PULL_POLICY=never` empêche Compose de chercher ces tags locaux dans un registre. La production, elle, exige `tag@sha256` (archive de release, `check_compose.py --require-digest`).
 
+**Procédure « qualification sans registre »** (le job `images-artifact` ne tourne que sur un **push**, après `docker-compose-checks`) :
+
+1. Récupérer l'artefact du run du commit à qualifier : `gh run download <id> -n secagent-images-<sha-complet> -D images` (expire après 7 jours).
+2. Pointer le client Docker vers l'hôte de qualif : `export DOCKER_HOST=tcp://192.168.1.218:2375` (équivalent de `docker -H tcp://192.168.1.218:2375` à chaque commande ; `docker compose` et les scripts utilisent `DOCKER_HOST`).
+3. `bash chain-test.sh load-images images` : `sha256sum -c SHA256SUMS` puis `docker load` des deux archives, directement sur l'hôte distant. Charger ensuite `images/images.env` (tags locaux `secagent-*:ci-<sha12>`, `SECAGENT_PULL_POLICY=never`) et `INVENTORY_BIN` comme ci-dessus.
+4. Déployer le projet `secagent-qualif` avec les étapes de la section « Hôte Docker distant » : `TLS_MODE=volume`, `SECAGENT_ENDPOINT_HOST`, `PKI_EXTRA_SAN`, `ci-prepare`, `push-tls`, `bootstrap`, `smoke`.
+
+Les opérations destructives (`down`, `teardown`, `backup-restore`) sont refusées par `guard_project` sur un hôte distant pour tout projet autre que `secagent-qualif`.
+
 **Un seul projet `secagent-qualif`** pour la chaîne ET les tests de basculement (mêmes noms de conteneurs `secagent-qualif-a/-b`) : lancer `chain-test.sh` et `failover-test.sh` **l'un après l'autre**, jamais en parallèle. `backup-restore` passe par des volumes nommés (`<projet>_backup`), donc fonctionne avec un démon distant ; `CONTROL_HOST` (alias de `SECAGENT_ENDPOINT_HOST`) désigne l'hôte joint par le poste de contrôle.
 
 ## Prérequis
