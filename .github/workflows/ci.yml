@@ -446,15 +446,17 @@ jobs:
             echo "SECAGENT_MINION_IMAGE=secagent-minion:ci-${SHA12}"
             echo "SECAGENT_PULL_POLICY=never"
           } > out/images.env
-          # ID reels des images (non secrets) : verifies par `chain-test.sh load-images` puis avant chaque demarrage.
+          # Empreintes STABLES des images (sha256 des couches RootFS.Layers ; l'ID varie selon le magasin containerd) :
+          # non secrets, verifiees par `chain-test.sh load-images` puis avant chaque demarrage (meme calcul que image_fp).
+          fp() { docker image inspect --format '{{json .RootFS.Layers}}' "$1" | sha256sum | cut -d' ' -f1; }
           {
-            echo "secagent-server:ci-${SHA12} $(docker image inspect --format '{{.Id}}' "secagent-server:ci-${SHA12}")"
-            echo "secagent-minion:ci-${SHA12} $(docker image inspect --format '{{.Id}}' "secagent-minion:ci-${SHA12}")"
+            echo "secagent-server:ci-${SHA12} $(fp "secagent-server:ci-${SHA12}")"
+            echo "secagent-minion:ci-${SHA12} $(fp "secagent-minion:ci-${SHA12}")"
           } > out/images.ids
           (cd out && sha256sum ./* > SHA256SUMS && cat SHA256SUMS)
           {
-            echo "image id serveur : $(docker image inspect --format '{{.Id}}' "secagent-server:ci-${SHA12}")"
-            echo "image id minion  : $(docker image inspect --format '{{.Id}}' "secagent-minion:ci-${SHA12}")"
+            echo "empreinte couches serveur : $(fp "secagent-server:ci-${SHA12}")"
+            echo "empreinte couches minion  : $(fp "secagent-minion:ci-${SHA12}")"
           } | tee -a "$GITHUB_STEP_SUMMARY"
           chmod +x out/secagent-inventory
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

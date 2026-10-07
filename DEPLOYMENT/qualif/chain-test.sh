@@ -62,6 +62,11 @@ push_tls() {
   echo "certificats de test pousses dans le volume $SECAGENT_TLS_VOLUME"
 }
 
+# Empreinte STABLE d'une image : sha256 de la liste des couches (RootFS.Layers). L'ID `.Id` varie selon le magasin
+# (overlay2 / containerd, Docker >= 29, Desktop) ; les couches (diff ids) sont identiques apres save/load.
+# Meme calcul dans le job `images-artifact` de ci.yml (images.ids = "<ref> <empreinte>").
+image_fp() { docker image inspect --format '{{json .RootFS.Layers}}' "$1" 2>/dev/null | sha256sum | cut -d' ' -f1; }
+
 # Garde (BAS-3) : avec SECAGENT_PULL_POLICY=never, Docker reutiliserait SILENCIEUSEMENT un tag local preexistant. Avant
 # tout demarrage, l'ID reel des images du demon doit etre celui enregistre par `load-images` (non secret).
 verify_images() {
@@ -72,8 +77,9 @@ verify_images() {
     ref="${!var:-}"; [ -n "$ref" ] || fail "$var non defini"
     want="$(awk -v r="$ref" '$1==r {print $2}' "$f")"
     [ -n "$want" ] || fail "$ref ne figure pas dans $f (images non chargees par load-images)"
-    id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null)" || fail "image $ref absente du demon Docker"
-    [ "$id" = "$want" ] || fail "ID de $ref different de l'artefact charge (demon: $id, attendu: $want) : un tag local preexistant ? relancer load-images"
+    docker image inspect "$ref" >/dev/null 2>&1 || fail "image $ref absente du demon Docker"
+    id="$(image_fp "$ref")"
+    [ "$id" = "$want" ] || fail "empreinte des couches de $ref differente de l'artefact charge (demon: $id, attendu: $want) : un tag local preexistant ? relancer load-images"
   done
 }
 
@@ -92,12 +98,13 @@ load_images() {
     [ -f "$a" ] || fail "archive d'image absente ($a)"
     gunzip -c "$a" | docker load
   done
-  # ID reels apres chargement == ID de l'artefact ; ils sont enregistres dans l'etat local (verify_images).
+  # Empreintes reelles apres chargement == celles de l'artefact ; ils sont enregistres dans l'etat local (verify_images).
   local ref want id; mkdir -p "$CHAIN_DIR"; chmod 700 "$CHAIN_DIR"
   while read -r ref want; do
     [ -n "$ref" ] || continue
-    id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null)" || fail "image $ref absente apres docker load"
-    [ "$id" = "$want" ] || fail "ID de $ref apres chargement ($id) != artefact ($want)"
+    docker image inspect "$ref" >/dev/null 2>&1 || fail "image $ref absente apres docker load"
+    id="$(image_fp "$ref")"
+    [ "$id" = "$want" ] || fail "empreinte de $ref apres chargement ($id) != artefact ($want)"
   done < "$d/images.ids"
   cp "$d/images.ids" "$CHAIN_DIR/image-ids"; chmod 600 "$CHAIN_DIR/image-ids"
   echo "images chargees. A exporter :"; cat "$d/images.env"
