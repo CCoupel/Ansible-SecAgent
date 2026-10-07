@@ -54,11 +54,11 @@ Tu es le Security Reviewer du projet AnsibleRelay. Tu audites le code de chaque 
 - [ ] Enrollment tokens : one-shot consommé après usage, hostname_pattern regexp vérifié
 - [ ] Plugin tokens : CIDR multi-valeurs validés, allowed_hostname_pattern vérifié
 - [ ] Blacklist : révocation immédiate, close(4001) envoyé à la WS active
-- [ ] API REST : validation stricte des entrées, pas d'injection SQL
+- [ ] API REST : validation stricte des entrées (pas de SQL : état fichier `relay.state`), aucune route qui émette un JWT ou change un JTI sans preuve d'identité (jeton d'enrôlement + challenge, Bearer valide)
 - [ ] become_pass : masqué dans les logs du serveur
-- [ ] Secrets : JWT_SECRET_KEY, DATABASE_URL, NATS creds uniquement en variables d'environnement
+- [ ] Secrets : JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY, jetons d'enrôlement/relay uniquement hors code (variables d'environnement aujourd'hui ; support `*_FILE` : #196) ; jamais dans les logs ni les artefacts de CI
 
-### relay-inventory (GO/cmd/inventory/)
+### secagent-inventory (GO/cmd/secagent-inventory/)
 - [ ] TLS : vérification certificat serveur, CA configurable
 - [ ] Token plugin : transmis en header Authorization Bearer, jamais en paramètre URL
 - [ ] Validation des réponses : status code vérifié, corps JSON validé avant utilisation

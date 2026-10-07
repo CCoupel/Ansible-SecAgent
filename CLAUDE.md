@@ -87,11 +87,14 @@ ansible-secagent/
 - Logs : `log/slog` (GO) — **masquer `become_pass` dans tous les logs** (CRITIQUE sécurité)
 - Tests GO : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v`
 - Tests Python : pytest, fichier `test_<module>.py` par module
-- Commits : conventionnel (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`)
+- Commits : conventionnel (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`) ; **trailer exact en dernière ligne** : `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` (contrôlé sur tous les commits avant un push) ; jamais `git commit --amend` en arbre partagé
+- Push : **jamais sans feu vert explicite de l'utilisateur**, toujours délégué à `deployer` (SHA complet explicite, jamais `HEAD`, jamais de force, jamais `main` hors PR validée) ; un tag publie (GHCR + release) : confirmation dédiée
+- Environnement de l'utilisateur : aucun agent n'installe quoi que ce soit hors du scratchpad (ni WSL, ni `~/.local`), ne démarre Docker Desktop, ne modifie la config système ; kills par PID enregistré seulement (jamais `pkill`/`killall` par nom)
+- Agents de documentation : toujours lancés avec un modèle suffisant (`model: sonnet`) ; leurs « vérifié » sont revérifiés contre le code (`qa`, `security-reviewer`)
 
 ## Workflow équipe
 
-- `/start-session` : démarre la team complète Ansible-SecAgent (11 agents spécialisés)
+- `/start-session` : démarre la team complète Ansible-SecAgent (9 agents spécialisés permanents + team-lead)
 - Le rôle CDP est tenu par le **team-lead** (Claude principal) — aucun agent cdp séparé
 - Ordre d'implémentation MVP : `secagent-minion` → `relay server` → `plugins Ansible`
 - Chaque composant est validé par `qa` avant de passer au suivant
@@ -115,7 +118,7 @@ Séquence correcte :
 
 ## Agents Disponibles
 
-Équipe spécialisée du projet (10 agents + team-lead/CDP fusionné, voir [[project_team_structure]]) :
+Équipe spécialisée du projet (9 agents permanents + team-lead/CDP fusionné) :
 
 | Nom | Rôle | Fichier | Spawn |
 |-----|------|---------|-------|
@@ -162,6 +165,8 @@ Tu **coordonnes et dispatches**. Tu n'exécutes aucune tâche technique toi-mêm
 
 **`Read` autorisé uniquement pour** : `CLAUDE.md`, `MEMORY.md`, `project-config.json`, `_work/handoff/*.md`, `_work/reports/*.md`, `contracts/CHANGELOG.md`
 
+**Exception projet (décision de l'utilisateur, 2026-10-07)** : le teamleader écrit lui-même les fichiers de coordination `_work/handoff/*.md` (tâches > 3-4 lignes) ; le code, les Compose, scripts, workflows et la documentation restent délégués.
+
 **Ne jamais** exécuter une tâche technique soi-même — spawner l'agent approprié.
 
 ### Dispatcher une tâche
@@ -173,6 +178,8 @@ Tous les teammates sont spawned au démarrage (`/start-session`) et sont en IDLE
 SendMessage({ to: "<nom-canonique>", content: "<tâche complète>" })
 → Attendre ACTIF (confirmation) + DONE (références fichiers)
 ```
+
+**Projet** : toute tâche de plus de 3-4 lignes est écrite dans `_work/handoff/<agent>-<date>.md` ; le `SendMessage` ne contient que le chemin et une consigne d'une ligne. Les agents répondent en UNE ligne (SHA, chemin du rapport dans `_work/reports/`).
 
 Plusieurs agents en parallèle — même tour :
 ```
@@ -199,7 +206,7 @@ pas de `[O/n]`, pas de « dis-moi »). Ça vaut aussi pour les questions remont�
 (`BLOQUE` / `BLOCKED` / `FAILED` / `BESOIN CADRAGE`).
 
 Chaîne : les teammates ne parlent jamais à l'utilisateur — ils t'envoient leurs questions et options
-(`SendMessage` vers `main`), **tu les convertis en `AskUserQuestion`**, puis tu leur renvoies les réponses
+(`SendMessage` vers `team-lead`), **tu les convertis en `AskUserQuestion`**, puis tu leur renvoies les réponses
 via `SendMessage`.
 
 - Questions fermées, 2 à 4 options, label court + description (contexte/conséquence), option par défaut
@@ -207,7 +214,7 @@ via `SendMessage`.
 - Tout regrouper dans **un seul appel** `AskUserQuestion` (jusqu'à 4 questions).
 - Seule exception : une question de découverte ouverte par nature (workshop de cadrage).
 
-Détail et checklist avant chaque message à l'utilisateur : `.claude/agents/teamleader.md`, section « Questions à l'utilisateur ».
+Détail et checklist avant chaque message à l'utilisateur : `.claude/agents/teamleader.template.md`, section « Questions à l'utilisateur ».
 
 ### Relayer l'avancement
 
