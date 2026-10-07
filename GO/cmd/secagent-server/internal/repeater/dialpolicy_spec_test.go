@@ -233,6 +233,9 @@ func TestSpecDialPolicy_AllowCanNeverLiftABuiltInProhibition(t *testing.T) {
 		{"100.64.0.0/10", "100.100.100.200:80"},
 		{"fc00::/7", "[fd00:ec2::254]:80"},
 		{"168.63.129.0/24", "168.63.129.16:80"},
+		{"255.255.255.255/32", "255.255.255.255:80"},
+		{"224.0.0.0/4", "224.0.0.1:80"},
+		{"0.0.0.0/8", "0.0.0.0:80"},
 	} {
 		withGuard(t)
 		restore, err := p.Configure(true, "", tc.allow)

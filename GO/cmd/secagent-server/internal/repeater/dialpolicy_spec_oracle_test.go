@@ -80,12 +80,14 @@ func specOraclePolicy(m specPolicyMutant) *specDialPolicy {
 		if v4 := ip.To4(); v4 != nil {
 			ip = v4 // IPv4-mapped IPv6 is judged as the IPv4 address
 		}
+		builtin := false
 		if why := internalReason(ip); why != "" && why != "loopback" { // the built-in guard of #151a
-			if !(m == specPolAllowLiftsBuilt && len(allow) > 0 && in(allow, ip)) {
-				return "builtin"
-			}
+			builtin = true
 		}
 		if ip.Equal(net.IPv4bcast) {
+			builtin = true
+		}
+		if builtin && !(m == specPolAllowLiftsBuilt && len(allow) > 0 && in(allow, ip)) {
 			return "builtin"
 		}
 		if ip.IsLoopback() && !loop {
@@ -165,6 +167,19 @@ var specPolicyCases = []specPolicyCase{
 	{"allow_cannot_lift_azure", false, "", "168.63.129.0/24", "168.63.129.16", "builtin", false},
 	{"allow_cannot_lift_multicast", false, "", "224.0.0.0/4", "224.0.0.1", "builtin", true},
 	{"allow_cannot_lift_unspecified", false, "", "0.0.0.0/8", "0.0.0.0", "builtin", true},
+	{"allow_cannot_lift_unspecified_host_route", false, "", "0.0.0.0/32", "0.0.0.0", "builtin", true},
+	{"allow_cannot_lift_unspecified_v6", false, "", "::/128", "::", "builtin", true},
+	{"allow_cannot_lift_non_routable_0_8", false, "", "0.0.0.0/8", "0.1.2.3", "builtin", true},
+	{"allow_cannot_lift_broadcast", false, "", "255.255.255.255/32", "255.255.255.255", "builtin", true},
+	{"allow_cannot_lift_broadcast_via_its_range", false, "", "255.255.255.0/24", "255.255.255.255", "builtin", true},
+	{"allow_cannot_lift_broadcast_with_opt_in_loopback", true, "", "255.255.255.255/32,127.0.0.0/8", "255.255.255.255", "builtin", true},
+	{"allow_cannot_lift_link_local_v4", false, "", "169.254.0.0/16", "169.254.1.1", "builtin", true},
+	{"allow_cannot_lift_link_local_v6", false, "", "fe80::/10", "fe80::1", "builtin", true},
+	{"allow_cannot_lift_multicast_v6", false, "", "ff00::/8", "ff02::1", "builtin", true},
+	{"allow_cannot_lift_oracle_192_0_0_192", false, "", "192.0.0.0/24", "192.0.0.192", "builtin", false},
+	{"allow_cannot_lift_mapped_metadata", false, "", "169.254.0.0/16", "::ffff:169.254.169.254", "builtin", true},
+	{"allow_cannot_lift_nat64_metadata", false, "", "64:ff9b::/96", "64:ff9b::a9fe:a9fe", "builtin", false},
+	{"allow_cannot_lift_6to4_metadata", false, "", "2002::/16", "2002:a9fe:a9fe::1", "builtin", false},
 	// loopback needs ALLOW_LOOPBACK even when ALLOW names it; and ALLOW names must include it when set
 	{"allow_naming_loopback_does_not_lift_it", false, "", "127.0.0.0/8", "127.0.0.1", "loopback", false},
 	{"allow_loopback_with_allow_list_requires_loopback_in_the_list", true, "", "192.168.0.0/16", "127.0.0.1", "not_allowed", false},
@@ -267,7 +282,7 @@ func TestSpecDialPolicy_MutantsAreKilled(t *testing.T) {
 	}{
 		{specPolDenyIgnored, []string{"deny_refuses_inside", "deny_v6", "deny_wins_over_allow", "deny_applies_to_loopback_even_when_allowed"}},
 		{specPolAllowIgnored, []string{"allow_refuses_outside_private", "allow_refuses_outside_public", "allow_loopback_with_allow_list_requires_loopback_in_the_list"}},
-		{specPolAllowLiftsBuilt, []string{"allow_cannot_lift_alibaba", "allow_cannot_lift_aws_v6", "allow_cannot_lift_azure"}},
+		{specPolAllowLiftsBuilt, []string{"allow_cannot_lift_alibaba", "allow_cannot_lift_aws_v6", "allow_cannot_lift_azure", "allow_cannot_lift_broadcast", "allow_cannot_lift_broadcast_via_its_range", "allow_cannot_lift_oracle_192_0_0_192"}},
 	} {
 		t.Run(string(tc.m), func(t *testing.T) {
 			f := specRunPolicyCases(t, specOraclePolicy(tc.m))

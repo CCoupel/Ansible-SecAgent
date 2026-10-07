@@ -111,6 +111,10 @@ type nodeSpec struct {
 	// minted through registerChild; give it explicitly for a push child (its parent dials in).
 	Root *node
 	Env  []string
+	// NoMasterKey starts the node WITHOUT RSA_MASTER_KEY on a state created in the explicit test mode
+	// (secrets in clear, `state init --insecure-test-mode`): the only way a node can run without a master
+	// key. Used to test what the server must refuse to do without one (mint of link tokens → 503).
+	NoMasterKey bool
 	// Hooks builds the node's hooks configuration (JSON) from the file its file-actions append to;
 	// nil = no hooks file (the node starts with 0 hooks).
 	Hooks func(out string) string
@@ -307,7 +311,14 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 			t.Fatal(err)
 		}
 	}
-	seedState(t, stateDir, masterKey)
+	if spec.NoMasterKey {
+		if err := state.Init(state.InitOptions{Dir: stateDir, AllowPlaintext: true, RSABits: 2048}); err != nil {
+			t.Fatal(err)
+		}
+		masterKey = ""
+	} else {
+		seedState(t, stateDir, masterKey)
+	}
 
 	n.statusPath = filepath.Join(t.TempDir(), "status.json")
 	n.env = append(append(os.Environ(),
@@ -319,6 +330,7 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 		"ADMIN_TOKEN="+n.adminTok,
 		"JWT_SECRET_KEY="+n.jwtSecret,
 		"RSA_MASTER_KEY="+masterKey,
+		"NODE_INSECURE_STATE="+map[bool]string{true: "1", false: ""}[spec.NoMasterKey],
 		"STATE_DIR="+stateDir,
 		"RELAY_ACTION_LOG="+filepath.Join(filepath.Dir(stateDir), "actions.log"),
 		"RELAY_HOOKS_CONFIG="+n.hooksPath, // absent unless spec.Hooks: 0 hooks active

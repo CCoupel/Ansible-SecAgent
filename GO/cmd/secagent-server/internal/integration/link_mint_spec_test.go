@@ -333,7 +333,24 @@ func TestLinkFailClosed_ANonRootRelayWithoutAnchorRefusesEveryIncomingLink(t *te
 }
 
 func TestLinkFailClosed_MintWithoutMasterKeyIs503(t *testing.T) {
-	t.Skip("PENDING L1d: the harness always starts nodes with a master key. Spec (test 10): a root whose RSA_MASTER_KEY is absent answers 503 " +
-		"to POST /api/admin/tokens {role:relay-child} and writes no key (same rule as SealPushToken). Covered at handler level by dev-relay, " +
-		"or here once the harness can start a node without a master key.")
+	parallel(t)
+	n := startNode(t, nodeSpec{ID: "root", NoMasterKey: true})
+	// the node really runs without a master key (otherwise this test proves nothing)
+	if code, _ := n.admin("GET", "/api/admin/status", nil); code != http.StatusOK {
+		t.Fatalf("a node without master key on a clear test state must serve: %d", code)
+	}
+	for _, role := range []string{"relay-child", "relay-parent"} {
+		code, tok, _, body := linkMint(n, role, "relay-x", "relay-p")
+		if code == http.StatusBadRequest && body["error"] != nil && strings.Contains(fmt.Sprint(body["error"]), "role") {
+			t.Skipf("PENDING L1d: the root does not mint %s yet (HTTP %d)", role, code)
+		}
+		if code != http.StatusServiceUnavailable || tok != "" {
+			t.Errorf("%s without RSA_MASTER_KEY: %d %v, want 503 and no token", role, code, body)
+		}
+	}
+	// and nothing was generated: no signing key in the state
+	if v := n.statePayload()["server_config"]; strings.Contains(string(v), state.ConfigLinkSigningKeyCurrent) {
+		t.Error("a refused mint must not generate a signing key")
+	}
+	n.logs.expectLog(t, "RSA_MASTER_KEY", "the refusal must name the missing master key in the log")
 }

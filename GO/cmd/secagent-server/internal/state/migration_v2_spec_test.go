@@ -9,6 +9,7 @@ package state
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -252,15 +253,167 @@ func TestSpecV2_LinkSigningKeysAreSecretsEncryptedAtRest(t *testing.T) {
 	}
 }
 
-// ── pending L1b/L1d: the registry API does not exist yet ─────────────────────
+// ── link token registry and trust anchor (Tx.PutLinkToken / SetLinkTrust, L1b) ─────────────────────
 
-func TestSpecV2_RevokedLinkTokenMustBeBlacklistedInTheSameMutation(t *testing.T) {
-	t.Skip("PENDING L1b: Tx.PutLinkToken is not in the tree yet. Spec (rev2 §3 L1b): a link token with revoked_at set whose JTI " +
-		"is not in the blacklist is refused with ErrInvalid by Mutate, and refused at load (as TestRevokedRelayMustBeBlacklistedAtomically " +
-		"does for relays); revoke + blacklist land together. Write the body when the Tx API is committed.")
+func specLinkToken(id string, exp time.Time) LinkToken {
+	return LinkToken{ID: id, JTI: "jti-" + id, Role: RoleRelayChild, Sub: "relay-x", Aud: "relay-p", KID: "kid-1",
+		CreatedAt: time.Now().UTC(), ExpiresAt: exp.UTC()}
 }
 
+// writeRaw puts a crafted payload on disk as a (test-mode) state file and opens it.
+func openCrafted(t *testing.T, p *Payload) error {
+	t.Helper()
+	dir := t.TempDir()
+	data, err := encode(p, 5, "crafted", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWrite(OSFS{}, dir, data, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Open(Options{Dir: dir})
+	return err
+}
+
+func specSigningKeyPayload() Payload {
+	p := newPayload()
+	p.ServerConfig[ConfigLinkSigningKeyCurrent] = EncPrefix + "abc"
+	return p
+}
+
+// A revoked link token whose JTI has not expired is blacklisted IN THE SAME MUTATION — whatever the
+// order of the two writes inside it — or nothing is written; and a file that breaks the rule is refused at load.
+func TestSpecV2_RevokedLinkTokenMustBeBlacklistedInTheSameMutation(t *testing.T) {
+	dir := t.TempDir()
+	seedState(t, dir)
+	e := openEngine(t, dir, func(o *Options) { o.RequireEncryptedSecrets = true })
+	exp := time.Now().Add(24 * time.Hour)
+	mustMutate(t, e, func(tx *Tx) error {
+		if err := tx.SetConfig(ConfigLinkSigningKeyCurrent, EncPrefix+"abc"); err != nil {
+			return err
+		}
+		for _, id := range []string{"a", "b", "c"} {
+			if err := tx.PutLinkToken(specLinkToken(id, exp)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	now := time.Now().UTC()
+	revoked := func(id string) LinkToken { tk := specLinkToken(id, exp); tk.RevokedAt = &now; return tk }
+	bl := func(id string) BlacklistEntry {
+		return BlacklistEntry{JTI: "jti-" + id, RevokedAt: now, Reason: "link_revoked", ExpiresAt: exp.UTC()}
+	}
+
+	// 1. revocation alone: refused, and not even the flag is visible afterwards
+	if err := e.Mutate(func(tx *Tx) error { return tx.PutLinkToken(revoked("a")) }); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("revoking without blacklisting must be refused: %v", err)
+	}
+	if tk, _ := e.Snapshot().LinkToken("a"); tk.RevokedAt != nil || e.Snapshot().Blacklisted("jti-a") {
+		t.Fatal("the refused revocation left a trace")
+	}
+	// 2. blacklist alone is not a revocation of the token: fine, but the token stays active
+	mustMutate(t, e, func(tx *Tx) error { return tx.PutBlacklist(bl("b")) })
+	if tk, _ := e.Snapshot().LinkToken("b"); tk.RevokedAt != nil {
+		t.Fatal("blacklisting a jti does not by itself mark the registry entry")
+	}
+	// 3. both, in either order, in ONE mutation
+	mustMutate(t, e, func(tx *Tx) error { // blacklist first
+		if err := tx.PutBlacklist(bl("a")); err != nil {
+			return err
+		}
+		return tx.PutLinkToken(revoked("a"))
+	})
+	mustMutate(t, e, func(tx *Tx) error { // token first
+		if err := tx.PutLinkToken(revoked("c")); err != nil {
+			return err
+		}
+		return tx.PutBlacklist(bl("c"))
+	})
+	for _, id := range []string{"a", "c"} {
+		if tk, _ := e.Snapshot().LinkToken(id); tk.RevokedAt == nil || !e.Snapshot().Blacklisted("jti-"+id) {
+			t.Errorf("%s: flag and blacklist entry must land together", id)
+		}
+	}
+	// 4. an EXPIRED revoked token needs no blacklist entry (it may have been purged)
+	mustMutate(t, e, func(tx *Tx) error {
+		tk := specLinkToken("old", now.Add(-time.Hour))
+		tk.RevokedAt = &now
+		return tx.PutLinkToken(tk)
+	})
+	// 5. at load: a file with a revoked, unexpired, non blacklisted link token does not load
+	p := specSigningKeyPayload()
+	tk := revoked("x")
+	p.LinkTokens["x"] = tk
+	if err := openCrafted(t, &p); err == nil {
+		t.Error("a revoked link token whose jti is not blacklisted must not load")
+	}
+	p.Blacklist["jti-x"] = bl("x")
+	if err := openCrafted(t, &p); err != nil {
+		t.Errorf("the same file with the blacklist entry must load: %v", err)
+	}
+	// 6. link tokens need the key that signed them
+	p2 := newPayload()
+	p2.LinkTokens["y"] = specLinkToken("y", exp)
+	if err := openCrafted(t, &p2); err == nil {
+		t.Error("link tokens without a link signing key must not load")
+	}
+}
+
+func specPub(seed byte) string {
+	b := make([]byte, 32)
+	for i := range b {
+		b[i] = seed
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// An incoherent trust anchor is refused by the write AND at load; the zero value is "no anchor".
 func TestSpecV2_LinkTrustCoherence(t *testing.T) {
-	t.Skip("PENDING L1b: spec (rev2 §3 L1b): link_trust with a public key but a mismatching kid, or a malformed key, is refused at load; " +
-		"the zero LinkTrust means 'no anchor' (a non-root relay then refuses every incoming link: test 10).")
+	bad := map[string]LinkTrust{
+		"public key without kid":        {RootID: "root", CurrentPub: specPub(1)},
+		"kid without public key":        {RootID: "root", CurrentKID: "k"},
+		"public key without root id":    {CurrentPub: specPub(1), CurrentKID: "k"},
+		"not base64":                    {RootID: "root", CurrentPub: "%%%", CurrentKID: "k"},
+		"not 32 bytes":                  {RootID: "root", CurrentPub: base64.RawURLEncoding.EncodeToString([]byte("short")), CurrentKID: "k"},
+		"previous without current":      {RootID: "root", PreviousPub: specPub(2), PreviousKID: "k2"},
+		"sequence without current":      {Seq: 4},
+		"root id alone":                 {RootID: "root"},
+		"same kid for current+previous": {RootID: "root", CurrentPub: specPub(1), CurrentKID: "k", PreviousPub: specPub(2), PreviousKID: "k"},
+	}
+	good := LinkTrust{RootID: "root", CurrentPub: specPub(1), CurrentKID: "k1", PreviousPub: specPub(2), PreviousKID: "k0", Seq: 9}
+
+	dir := t.TempDir()
+	seedState(t, dir)
+	e := openEngine(t, dir, nil)
+	for name, lt := range bad {
+		if err := e.Mutate(func(tx *Tx) error { return tx.SetLinkTrust(lt) }); !errors.Is(err, ErrInvalid) {
+			t.Errorf("write, %s: %v", name, err)
+		}
+		p := newPayload()
+		p.LinkTrust = lt
+		if err := openCrafted(t, &p); err == nil {
+			t.Errorf("load, %s: an incoherent link_trust must not load", name)
+		}
+	}
+	if !e.Snapshot().LinkTrust().IsZero() {
+		t.Fatal("refused anchors left a trace")
+	}
+	// the zero value and a coherent anchor are valid, and survive a restart
+	p := newPayload()
+	if err := openCrafted(t, &p); err != nil {
+		t.Errorf("no anchor must load: %v", err)
+	}
+	mustMutate(t, e, func(tx *Tx) error { return tx.SetLinkTrust(good) })
+	if got := openEngine(t, dir, nil).Snapshot().LinkTrust(); got != good {
+		t.Errorf("round trip: %+v", got)
+	}
+	p.LinkTrust = good
+	if err := openCrafted(t, &p); err != nil {
+		t.Errorf("a coherent anchor must load: %v", err)
+	}
+	mustMutate(t, e, func(tx *Tx) error { return tx.SetLinkTrust(LinkTrust{}) })
+	if !e.Snapshot().LinkTrust().IsZero() {
+		t.Error("clearing the anchor")
+	}
 }
