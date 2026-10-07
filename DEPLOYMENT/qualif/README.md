@@ -71,6 +71,11 @@ Les opérations destructives (`down`, `teardown`, `backup-restore`) sont refusé
 
 **Un seul projet `secagent-qualif`** pour la chaîne ET les tests de basculement (mêmes noms de conteneurs `secagent-qualif-a/-b`) : lancer `chain-test.sh` et `failover-test.sh` **l'un après l'autre**, jamais en parallèle. `backup-restore` passe par des volumes nommés (`<projet>_backup`), donc fonctionne avec un démon distant ; `CONTROL_HOST` (alias de `SECAGENT_ENDPOINT_HOST`) désigne l'hôte joint par le poste de contrôle.
 
+### Pièges du mode distant (incident E2) et du poste WSL
+
+- **Ne jamais lancer `failover-test.sh` isolément contre un démon distant** : sans les variables du mode volume (`COMPOSE_FILE`, `COMPOSE_OVERRIDES`, `SECAGENT_TLS_VOLUME`) que `chain-test.sh` exporte, Compose recréait les conteneurs avec un bind mount d'un chemin **du poste**, créant des répertoires vides sur l'hôte distant. Le script **refuse** désormais en mode distant (`DOCKER_HOST` non local ou `SECAGENT_ENDPOINT_HOST`/`CONTROL_HOST` non local) sans `TLS_MODE=volume`, reprend lui-même le mode volume sinon, et refuse tout bind mount dans le rendu. Point d'entrée : `chain-test.sh failover`.
+- **`chmod 600` n'est pas honoré sur `/mnt/c` (NTFS)** : le plugin refuse un fichier de jeton qui n'est pas 0600. Lancer les scripts depuis une copie **hors `/mnt/c`** : `git archive HEAD | tar -x -C ~/qualif-run` (puis `cd ~/qualif-run/DEPLOYMENT/qualif`), jamais depuis le dépôt monté.
+
 ## Prérequis
 
 - Docker remote access actif sur `192.168.1.218:2375`
