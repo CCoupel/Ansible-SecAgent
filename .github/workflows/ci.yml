@@ -412,3 +412,48 @@ jobs:
         run: |
           bash DEPLOYMENT/qualif/chain-test.sh logs || true
           bash DEPLOYMENT/qualif/chain-test.sh down || true
+
+  # ---- Artefact d'images pour la qualif distante (sans registre) : docker save + docker load ----------------
+  # Les images du commit sont construites (memes Dockerfiles, flags deterministes), exportees par `docker save` et
+  # televersees comme ARTEFACT du run (7 jours), avec le binaire secagent-inventory du poste de controle Ansible.
+  # AUCUN login registre, AUCUN push, aucune permission packages: write. Sur l'hote : `chain-test.sh load-images`.
+  images-artifact:
+    name: Artefact d'images (docker save) et secagent-inventory
+    if: github.event_name == 'push'
+    needs: [docker-compose-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: GO/go.work
+          cache-dependency-path: GO/go.sum
+      - name: Construire, exporter, empreintes
+        run: |
+          set -euo pipefail
+          SHA12="${GITHUB_SHA::12}"
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          mkdir -p out
+          docker build --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" -t "secagent-server:ci-${SHA12}" -f GO/Dockerfile GO
+          docker build --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" -t "secagent-minion:ci-${SHA12}" -f GO/Dockerfile.agent GO
+          docker save "secagent-server:ci-${SHA12}" | gzip -n > "out/secagent-server-ci-${SHA12}.tar.gz"
+          docker save "secagent-minion:ci-${SHA12}" | gzip -n > "out/secagent-minion-ci-${SHA12}.tar.gz"
+          (cd GO && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w" -o ../out/secagent-inventory ./cmd/secagent-inventory)
+          {
+            echo "SECAGENT_IMAGE=secagent-server:ci-${SHA12}"
+            echo "SECAGENT_MINION_IMAGE=secagent-minion:ci-${SHA12}"
+            echo "SECAGENT_PULL_POLICY=never"
+          } > out/images.env
+          (cd out && sha256sum ./* > SHA256SUMS && cat SHA256SUMS)
+          {
+            echo "image id serveur : $(docker image inspect --format '{{.Id}}' "secagent-server:ci-${SHA12}")"
+            echo "image id minion  : $(docker image inspect --format '{{.Id}}' "secagent-minion:ci-${SHA12}")"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          chmod +x out/secagent-inventory
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: secagent-images-${{ github.sha }}
+          path: out/
+          retention-days: 7
+          if-no-files-found: error

@@ -12,6 +12,8 @@ cases = [
     ("with:\n  push: true\n", True),
     ("outputs: type=image,push=true\n", True),
     ("on:\n  pull_request_target:\n", True),
+    ("- uses: actions/upload-artifact@abc # v4\n  with:\n    retention-days: 7\n", False),   # artefact de run : autorise
+    ("run: docker save x | gzip > o.tar.gz\n", False),
 ]
 bad = 0
 for text, want in cases:
