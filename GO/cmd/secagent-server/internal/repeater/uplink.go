@@ -27,7 +27,8 @@ type Uplink struct {
 	ancestors []string   // ancestors of this node, parent first
 	wmu       sync.Mutex // serialises writes on the current conn
 	cur       *websocket.Conn
-	revoked   atomic.Bool // the token of THIS link was revoked by the root (link_revocations)
+	states    map[string]json.RawMessage // last link_state frame per relay_id (own and relayed), re-sent after each snapshot
+	revoked   atomic.Bool                // the token of THIS link was revoked by the root (link_revocations)
 }
 
 // ErrUplinkBusy is returned by Serve when a parent link is already active (single parent).
@@ -134,6 +135,7 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 	if err := u.sendSnapshot(conn); err != nil {
 		return false, err
 	}
+	u.resendLinkStates(conn)
 	lastSnap := time.Now()
 	established = true
 
@@ -213,6 +215,7 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 			if err := u.sendSnapshot(conn); err != nil {
 				return true, err
 			}
+			u.resendLinkStates(conn)
 			lastSnap = time.Now()
 		case <-u.changed():
 			if err := u.sendAgentList(conn); err != nil {
@@ -360,7 +363,7 @@ func (u *Uplink) handleLinkFrame(conn *websocket.Conn, raw []byte) {
 		return
 	}
 	res, err := lt.HandleFrame(raw)
-	if err != nil || !res.Applied {
+	if err != nil || (!res.Applied && !res.Confirm) {
 		return
 	}
 	for _, jti := range res.Revoked {
@@ -373,12 +376,49 @@ func (u *Uplink) handleLinkFrame(conn *websocket.Conn, raw []byte) {
 		}
 	}
 	// informative acknowledgement towards the parent (unsigned, never a decision)
-	_ = u.write(conn, struct {
+	frame, merr := json.Marshal(struct {
 		Type       string `json:"type"`
 		RelayID    string `json:"relay_id"`
 		Seq        uint64 `json:"seq"`
 		CurrentKID string `json:"current_kid"`
 	}{"link_state", u.id, res.Seq, res.KID})
+	if merr != nil {
+		return
+	}
+	u.rememberLinkState(u.id, frame)
+	_ = u.write(conn, json.RawMessage(frame))
+}
+
+const maxRememberedLinkStates = 1024
+
+// rememberLinkState keeps the last link_state of a relay so that it can be re-sent once the parent
+// knows the topology (the parent ignores a link_state of a relay it has not seen declared yet).
+func (u *Uplink) rememberLinkState(relayID string, frame []byte) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.states == nil {
+		u.states = map[string]json.RawMessage{}
+	}
+	if _, known := u.states[relayID]; !known && len(u.states) >= maxRememberedLinkStates {
+		return
+	}
+	u.states[relayID] = append(json.RawMessage(nil), frame...)
+}
+
+// resendLinkStates re-sends the remembered link_state frames: called right after a topology_snapshot,
+// which is what makes the sender (and the relays below it) known to the parent.
+func (u *Uplink) resendLinkStates(conn *websocket.Conn) {
+	u.mu.Lock()
+	frames := make([]json.RawMessage, 0, len(u.states))
+	for _, f := range u.states {
+		frames = append(frames, f)
+	}
+	u.mu.Unlock()
+	for _, f := range frames {
+		if err := u.write(conn, f); err != nil {
+			return
+		}
+	}
 }
 
 // SendUpstream writes a message on the current parent link (used to retransmit a child's
@@ -387,6 +427,15 @@ func (u *Uplink) SendUpstream(v any) error {
 	u.mu.Lock()
 	conn := u.cur
 	u.mu.Unlock()
+	if raw, ok := v.(json.RawMessage); ok {
+		var m struct {
+			Type    string `json:"type"`
+			RelayID string `json:"relay_id"`
+		}
+		if json.Unmarshal(raw, &m) == nil && m.Type == "link_state" && m.RelayID != "" {
+			u.rememberLinkState(m.RelayID, raw)
+		}
+	}
 	if conn == nil {
 		return errors.New("no parent link")
 	}

@@ -362,3 +362,72 @@ func TestLinkTrust_NoSecretOrKeyInLogs(t *testing.T) {
 		t.Fatalf("no security warning: %q", buf.String())
 	}
 }
+
+// A relay deployed AFTER the rotation is anchored on the new key: the replayed link_keys (signed by the
+// OLD key) cannot be verified, yet it announces the key it already trusts: idempotent, confirmed, no
+// security warning, nothing written.
+func TestLinkTrust_RotationReplayOnAnAlreadyCurrentRelayIsConfirmed(t *testing.T) {
+	root := newLT(t) // the root: first key
+	newPub, newPriv, _ := auth.GenerateLinkKey()
+	frame := root.keys(t, root.priv, newPub, root.pub, 7) // rotation signed by the old key
+
+	store, bl := &fakeTrustStore{}, &fakeBlacklist{}
+	m, err := NewLinkTrust(LinkTrustConfig{RootID: "root", Anchor: newPub, Store: store, Blacklist: bl})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fwd [][]byte
+	m.OnForward(func(raw []byte) { fwd = append(fwd, raw) })
+	saves := store.saves
+
+	var buf strings.Builder
+	prevOut, prevFlags := logWriterSwap(&buf)
+	defer logWriterRestore(prevOut, prevFlags)
+
+	res, err := m.HandleFrame(frame)
+	if err != nil || res.Applied || !res.Confirm || res.Seq != 7 || res.KID != auth.LinkKID(newPub) {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if store.saves != saves || store.rec.Seq != 0 {
+		t.Fatal("an idempotent replay wrote the state")
+	}
+	if strings.Contains(buf.String(), "SECURITY WARNING") {
+		t.Fatalf("no security warning expected: %s", buf.String())
+	}
+	if len(fwd) != 1 || string(fwd[0]) != string(frame) {
+		t.Fatal("the frame must still be relayed to the children")
+	}
+	// tokens of the old key stay refused: nothing was adopted from the unverifiable frame
+	old, _, _ := auth.SignLinkToken(root.priv, "root", "c", "me", auth.RoleRelayChild, time.Hour)
+	if _, err := m.VerifyToken(old, "me", auth.RoleRelayChild, time.Now()); err == nil {
+		t.Fatal("old key accepted")
+	}
+	_ = newPriv
+}
+
+// A really broken chain is still refused with a warning: unknown key, forged signature.
+func TestLinkTrust_BrokenChainIsStillRefused(t *testing.T) {
+	f := newLT(t)
+	_, evil, _ := auth.GenerateLinkKey()
+	evilPub := evil.Public().(ed25519.PublicKey)
+	var buf strings.Builder
+	prevOut, prevFlags := logWriterSwap(&buf)
+	defer logWriterRestore(prevOut, prevFlags)
+
+	res, err := f.m.HandleFrame(f.keys(t, evil, evilPub, f.pub, 3)) // unknown current key, forged signature
+	if err == nil || res.Confirm || res.Applied {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if !strings.Contains(buf.String(), "SECURITY WARNING") {
+		t.Fatal("a broken chain must warn")
+	}
+	// the announced current key is ours but the frame is garbage: not confirmed either
+	if _, err := f.m.HandleFrame([]byte(`{"type":"link_keys","current_pub":"x","seq":1}`)); err == nil {
+		t.Fatal("malformed frame accepted")
+	}
+	// a frame whose kid contradicts the key is not a confirmation
+	bad := strings.Replace(string(f.keys(t, f.priv, f.pub, nil, 9)), `"current_kid":"`, `"current_kid":"zz`, 1)
+	if res, err := f.m.HandleFrame([]byte(bad)); err == nil && res.Confirm {
+		t.Fatal("kid mismatch confirmed")
+	}
+}

@@ -3,6 +3,7 @@ package repeater
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -94,5 +95,60 @@ func TestUplink_LinkFramesWithoutLinkTrustAreIgnored(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if st := c.Status(); st.State != LinkConnected {
 		t.Fatalf("link dropped: %+v", st)
+	}
+}
+
+// The confirmation (link_state) is sent for an idempotent rotation replay, with the frame's seq.
+func TestUplink_RotationReplayOnUpToDateRelayIsConfirmedByLinkState(t *testing.T) {
+	root := newLT(t)
+	newPub, _, _ := auth.GenerateLinkKey()
+	frame := root.keys(t, root.priv, newPub, root.pub, 7)
+	f := &lt{store: &fakeTrustStore{}, bl: &fakeBlacklist{}}
+	m, err := NewLinkTrust(LinkTrustConfig{RootID: "root", Anchor: newPub, Store: f.store, Blacklist: f.bl})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.m = m
+	tok, _, _ := auth.SignLinkToken(root.priv, "root", "dmz1", "central", auth.RoleRelayChild, time.Hour)
+	p := newMockParent(t, "central")
+	startLinkClient(t, p, f, tok)
+	conn := p.conn(t)
+	_ = p.next(t, "topology_snapshot")
+	if err := conn.WriteMessage(websocket.TextMessage, frame); err != nil {
+		t.Fatal(err)
+	}
+	st := p.next(t, "link_state")
+	if st["seq"] != float64(7) || st["current_kid"] != auth.LinkKID(newPub) || st["relay_id"] != "dmz1" {
+		t.Fatalf("link_state = %v", st)
+	}
+}
+
+// The parent ignores a link_state of a relay it has not seen declared yet: the uplink re-sends the
+// remembered link_state frames right after every topology_snapshot.
+func TestUplink_LinkStatesAreResentAfterEachSnapshot(t *testing.T) {
+	f := newLT(t)
+	tok, _, _ := auth.SignLinkToken(f.priv, "root", "dmz1", "central", auth.RoleRelayChild, time.Hour)
+	p := newMockParent(t, "central")
+	topo := make(chan struct{}, 1)
+	opts := Options{LinkTrust: f.m, TopologyChanged: topo, TopologyDebounce: 10 * time.Millisecond, TopologyMinGap: 10 * time.Millisecond,
+		TLSConfig: &tls.Config{InsecureSkipVerify: true}, MinBackoff: 10 * time.Millisecond, MaxBackoff: 40 * time.Millisecond} //nolint:gosec // test server cert
+	c := New(config.RepeaterConfig{ID: "dmz1", UpstreamURL: p.url(), UpstreamToken: tok}, opts)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := c.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_ = p.conn(t)
+	_ = p.next(t, "topology_snapshot")
+	if err := c.Uplink().SendUpstream(json.RawMessage(`{"type":"link_state","relay_id":"relay2","seq":4,"current_kid":"k"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if st := p.next(t, "link_state"); st["relay_id"] != "relay2" {
+		t.Fatalf("immediate link_state = %v", st)
+	}
+	topo <- struct{}{} // a new snapshot: the remembered state follows it
+	_ = p.next(t, "topology_snapshot")
+	if st := p.next(t, "link_state"); st["relay_id"] != "relay2" || st["seq"] != float64(4) {
+		t.Fatalf("link_state after the snapshot = %v", st)
 	}
 }

@@ -66,6 +66,7 @@ type LinkTrustConfig struct {
 type FrameResult struct {
 	Type    string   // link_keys | link_revocations
 	Applied bool     // true when the trust / blacklist changed or was re-synchronised
+	Confirm bool     // true when the relay is already on the announced state: send link_state, nothing written
 	Seq     uint64   // last accepted seq after the frame
 	KID     string   // current kid after the frame
 	Revoked []string // JTI newly blacklisted by this frame
@@ -298,12 +299,21 @@ func (m *LinkTrust) applyKeys(raw []byte) (FrameResult, error) {
 	res := FrameResult{Type: "link_keys", Seq: m.trust.LastSeq, KID: auth.LinkKID(m.trust.Current)}
 	nt, err := auth.ApplyLinkKeys(m.trust, raw)
 	if err != nil {
-		var le *auth.LinkError
-		if errors.As(err, &le) && le.Code == auth.LinkErrMsgSeq && m.sameKeysFrame(raw) {
-			// Re-sent state identical to ours (after a reconnection or our restart): nothing to
-			// trust anew, but the children connecting to us need it (kept for Replay).
-			m.keys = append([]byte(nil), raw...)
+		// A frame that announces the key we ALREADY trust as current changes nothing, whatever signed
+		// it (a relay deployed after the rotation is anchored on the new key and cannot verify the
+		// frame, signed by the old one): an idempotent replay, not a broken chain. Nothing is written
+		// and nothing is adopted; the relay confirms its state (link_state) and relays the frame.
+		if seq, ok := m.alreadyCurrent(raw); ok {
+			if seq > res.Seq {
+				res.Seq = seq
+			}
+			res.Confirm = true
+			if m.trust.Previous != nil {
+				m.keys = append([]byte(nil), raw...)
+			}
+			log.Printf("[LINK] link_keys already on the trusted current key (kid=%s): confirmed, nothing written", res.KID)
 			m.fanOut(raw)
+			return res, nil
 		}
 		return res, err
 	}
@@ -319,26 +329,27 @@ func (m *LinkTrust) applyKeys(raw []byte) (FrameResult, error) {
 	} else {
 		m.keys = nil // window closed: nothing to replay
 	}
-	res.Applied, res.Seq, res.KID = true, nt.LastSeq, auth.LinkKID(nt.Current)
+	res.Applied, res.Confirm, res.Seq, res.KID = true, true, nt.LastSeq, auth.LinkKID(nt.Current)
 	log.Printf("[LINK] root link keys updated: kid=%s seq=%d previous=%t", res.KID, res.Seq, nt.Previous != nil)
 	m.fanOut(raw)
 	return res, nil
 }
 
-// sameKeysFrame reports whether a (seq-replayed) link_keys frame announces exactly our trusted keys.
-func (m *LinkTrust) sameKeysFrame(raw []byte) bool {
+// alreadyCurrent reports whether a link_keys frame announces exactly the key we trust as current (and
+// is well formed), with its seq.
+func (m *LinkTrust) alreadyCurrent(raw []byte) (seq uint64, ok bool) {
 	var k struct {
-		CurrentPub  string `json:"current_pub"`
-		PreviousPub string `json:"previous_pub"`
-		Seq         uint64 `json:"seq"`
+		CurrentPub string `json:"current_pub"`
+		CurrentKID string `json:"current_kid"`
+		Seq        uint64 `json:"seq"`
 	}
-	if json.Unmarshal(raw, &k) != nil || k.Seq != m.trust.LastSeq || k.CurrentPub != b64(m.trust.Current) {
-		return false
+	if json.Unmarshal(raw, &k) != nil || k.CurrentPub != b64(m.trust.Current) {
+		return 0, false
 	}
-	if m.trust.Previous == nil {
-		return k.PreviousPub == ""
+	if k.CurrentKID != "" && k.CurrentKID != auth.LinkKID(m.trust.Current) {
+		return 0, false
 	}
-	return k.PreviousPub == b64(m.trust.Previous)
+	return k.Seq, true
 }
 
 func (m *LinkTrust) applyRevocations(raw []byte) (FrameResult, error) {
