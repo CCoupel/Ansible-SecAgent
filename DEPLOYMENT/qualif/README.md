@@ -21,6 +21,30 @@ bash chain-test.sh down
 ```
 Les secrets (`qualif.env`, `chain/`, `pki/out/`) sont ignorés par git. En CI, le job « Chaîne en conteneurs » rejoue ce scénario à chaque push.
 
+### Hôte Docker distant (qualif réelle 192.168.1.218), sans tunnel ni copie de certificats par scp
+
+Projet dédié **`secagent-qualif`** (seul projet autorisé pour `down -v`, `teardown` et `backup-restore` quand `DOCKER_HOST` est distant ; refus sinon, et refus si `COMPOSE_PROJECT_NAME` diffère). Noms et ports sur l'hôte :
+
+| Élément | Valeur |
+|---|---|
+| Conteneurs | `secagent-qualif-a`, `secagent-qualif-b` (racine), `secagent-qualif-child`, `secagent-qualif-minion-root-1`, `secagent-qualif-minion-child-1` |
+| Ports publiés | 7770 et 7772 (racine a, `0.0.0.0`) ; 8770 et 8772 (racine b, `0.0.0.0`) ; admin **127.0.0.1** uniquement : 7771 (a), 8771 (b), 9771 (enfant) |
+| Volumes | `secagent-qualif_secagent_state`, `…_child_state`, `…_minion_*_data`, `secagent-qualif_tls` (mode volume) |
+
+**Libérer ces ports avant** (ancienne qualif v2 : 7770-7772) : le script ne s'en occupe pas.
+
+```bash
+export DOCKER_HOST=tcp://192.168.1.218:2375      # API Docker sans authentification : réseau de confiance uniquement
+export TLS_MODE=volume                            # certificats dans un volume nommé, alimenté par un conteneur éphémère
+export SECAGENT_ENDPOINT_HOST=192.168.1.218       # adresse que le poste de contrôle utilise pour 7770 / 8770
+export PKI_EXTRA_SAN="IP:192.168.1.218"           # SAN supplémentaire dans le certificat de test
+export SECAGENT_IMAGE=… SECAGENT_MINION_IMAGE=… INVENTORY_BIN=…
+bash chain-test.sh ci-prepare                     # PKI + qualif.env jetables, en LOCAL (jamais ceux de prod)
+bash chain-test.sh push-tls                       # copie tls.crt/tls.key/ca.crt dans le volume secagent-qualif_tls de l'hôte
+bash chain-test.sh bootstrap && bash chain-test.sh smoke
+```
+`qualif.env` et `chain/*.env` sont lus côté client (`env_file`) ; seul `/certs` est un montage résolu sur l'hôte, d'où le volume. La clé de test (0644) est jetable et ne quitte jamais le poste que par ce flux.
+
 ## Prérequis
 
 - Docker remote access actif sur `192.168.1.218:2375`

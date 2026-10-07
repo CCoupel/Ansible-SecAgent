@@ -1,0 +1,24 @@
+# Surcharge « hote Docker DISTANT » : les certificats ne sont plus un bind mount (resolu SUR l'hote distant, ou
+# QUALIF_TLS_DIR n'existe pas) mais un VOLUME Docker nomme, alimente depuis le poste par
+# `chain-test.sh push-tls` (conteneur ephemere, flux tar sur stdin : rien n'est copie ailleurs que dans le volume).
+#   export DOCKER_HOST=tcp://192.168.1.218:2375 TLS_MODE=volume
+#   docker compose -p secagent-qualif -f docker-compose.chain.yml -f docker-compose.remote-tls.yml ...
+# (chain-test.sh ajoute ce fichier tout seul quand TLS_MODE=volume). Non utilise par la CI (bind mount local).
+x-tls-volume: &tls-volume
+  volumes:
+    - type: volume
+      source: secagent_tls
+      target: /certs
+      read_only: true
+
+services:
+  secagent-server-a: *tls-volume
+  secagent-server-b: *tls-volume
+  secagent-child: *tls-volume
+  minion-root: *tls-volume
+  minion-child: *tls-volume
+
+volumes:
+  secagent_tls:
+    external: true
+    name: ${SECAGENT_TLS_VOLUME:-secagent-qualif_tls}

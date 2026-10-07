@@ -20,6 +20,8 @@ PROJECT="${PROJECT:-secagent-failover}"
 C_A="${C_A:-secagent-qualif-a}"; C_B="${C_B:-secagent-qualif-b}"
 STOP_MAX_S="${STOP_MAX_S:-10}"; KILL_MAX_S="${KILL_MAX_S:-600}"
 DC=(docker compose -p "$PROJECT" -f "$COMPOSE_FILE")
+# Fichiers de surcharge optionnels (ex. docker-compose.remote-tls.yml pour un hote Docker distant) : liste separee par des espaces.
+for f in ${COMPOSE_OVERRIDES:-}; do DC+=(-f "$f"); done
 fail() { echo "ECHEC: $*" >&2; exit 1; }
 now() { date +%s.%N; }
 
@@ -32,6 +34,26 @@ is_master() { listening "$1" 7770 && listening "$1" 7772; }
 is_silent() { ! listening "$1" 7770 && ! listening "$1" 7772 && ! listening "$1" 7771; }
 lock_count() { docker exec "$1" sh -c 'ls /data | grep -c "^relay\.lock" || true'; }
 health() { docker inspect -f '{{.State.Health.Status}}' "$1" 2>/dev/null || echo none; }
+
+# Garde-fou des operations DESTRUCTIVES (down -v, teardown, backup-restore) : jamais hors des projets de test.
+# Hote Docker DISTANT (DOCKER_HOST non local) : uniquement le projet `secagent-qualif`. Local/CI : les projets de
+# test des scripts (ALLOWED_PROJECTS, defaut secagent-qualif secagent-chain secagent-failover). Tout autre projet
+# (ex. l'ancienne qualif v2) est refuse.
+guard_project() {
+  local remote=0
+  case "${DOCKER_HOST:-}" in ""|unix://*|npipe://*) ;; *) remote=1 ;; esac
+  if [ "$remote" = 1 ]; then
+    [ "$PROJECT" = secagent-qualif ] || fail "operation destructive refusee : hote Docker distant (${DOCKER_HOST}) et projet '$PROJECT' != secagent-qualif"
+  else
+    case " ${ALLOWED_PROJECTS:-secagent-qualif secagent-chain secagent-failover} " in
+      *" $PROJECT "*) ;;
+      *) fail "operation destructive refusee : projet '$PROJECT' hors de la liste (${ALLOWED_PROJECTS:-secagent-qualif secagent-chain secagent-failover})" ;;
+    esac
+  fi
+  if [ -n "${COMPOSE_PROJECT_NAME:-}" ] && [ "$COMPOSE_PROJECT_NAME" != "$PROJECT" ]; then
+    fail "COMPOSE_PROJECT_NAME ($COMPOSE_PROJECT_NAME) differe de PROJECT ($PROJECT) : refus"
+  fi
+}
 
 wait_for() { # $1 description, $2 delai max, $3... commande
   local what="$1" max="$2"; shift 2; local t0; t0=$(now)
@@ -114,7 +136,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
     setup-ci) setup_ci ;;
     run) run "${2:?mode stop|kill}" ;;
-    teardown) "${DC[@]}" down -v ;;
+    teardown) guard_project; "${DC[@]}" down -v ;;
     *) sed -n '2,15p' "$0"; exit 2 ;;
   esac
 fi

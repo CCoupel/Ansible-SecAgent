@@ -6,6 +6,7 @@
 #   chain-test.sh smoke        # relais connectes, minions connectes, inventaire hierarchique, ansible -m ping
 #   chain-test.sh failover     # arret propre du maitre de la racine (failover-test.sh) puis smoke
 #   chain-test.sh backup-restore  # sauvegarde de l etat + de RSA_MASTER_KEY (a part), perte du volume, restauration
+#   chain-test.sh push-tls     # TLS_MODE=volume : copie les certificats dans le volume Docker (hote distant)
 #   chain-test.sh logs | down
 #
 # Variables : SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (obligatoires, references promues ou locales),
@@ -17,7 +18,17 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-export COMPOSE_FILE="$HERE/docker-compose.chain.yml" PROJECT="${PROJECT:-secagent-chain}"
+# Projet dedie `secagent-qualif` (conteneurs secagent-qualif-a/-b/-child, ports d'hote 7770/7772 + 8770/8772 pour b,
+# admin 127.0.0.1:7771/8771/9771). Deployer sur un hote qui heberge deja une ancienne qualif : liberer ces ports avant.
+export COMPOSE_FILE="$HERE/docker-compose.chain.yml" PROJECT="${PROJECT:-${COMPOSE_PROJECT_NAME:-secagent-qualif}}"
+# TLS_MODE=volume : certificats dans un VOLUME Docker nomme (hote Docker distant) au lieu d'un bind mount.
+if [ "${TLS_MODE:-bind}" = volume ]; then
+  export SECAGENT_TLS_VOLUME="${SECAGENT_TLS_VOLUME:-${PROJECT}_tls}"
+  export COMPOSE_OVERRIDES="$HERE/docker-compose.remote-tls.yml"
+fi
+# Hote sur lequel le poste de controle joint la racine (ports d'hote 7770 et 8770) ; defaut : poste local / runner.
+# Hote distant : SECAGENT_ENDPOINT_HOST=192.168.1.218 (doit figurer dans les SAN : PKI_EXTRA_SAN=IP:192.168.1.218).
+ENDPOINT_HOST="${SECAGENT_ENDPOINT_HOST:-127.0.0.1}"
 export QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$HERE/pki/out}"
 C_A="secagent-qualif-a"; C_B="secagent-qualif-b"; C_CHILD="secagent-qualif-child"
 export C_A C_B
@@ -37,6 +48,18 @@ write_secret() { # $1 fichier relatif a chain/, valeur lue sur stdin : jamais af
 }
 extract() { grep -oE "$1" | tail -1; }   # extrait un jeton de la sortie du CLI sans l'afficher
 need() { [ -n "${!1:-}" ] || fail "variable $1 obligatoire"; }
+
+# Pousse tls.crt/tls.key/ca.crt de QUALIF_TLS_DIR dans le volume `$SECAGENT_TLS_VOLUME` de l'hote Docker (distant ou
+# non) via un conteneur ephemere (flux tar sur stdin, image alpine epinglee) : TLS_MODE=volume requis.
+push_tls() {
+  [ "${TLS_MODE:-bind}" = volume ] || fail "push-tls exige TLS_MODE=volume"
+  local f; for f in tls.crt tls.key ca.crt; do [ -f "$QUALIF_TLS_DIR/$f" ] || fail "$QUALIF_TLS_DIR/$f absent (lancer ci-prepare)"; done
+  docker volume create "$SECAGENT_TLS_VOLUME" >/dev/null
+  tar -C "$QUALIF_TLS_DIR" -cf - tls.crt tls.key ca.crt | docker run --rm -i -v "$SECAGENT_TLS_VOLUME:/certs" \
+    alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
+    sh -c 'tar -xf - -C /certs && chmod 755 /certs && chmod 644 /certs/tls.crt /certs/tls.key /certs/ca.crt'
+  echo "certificats de test pousses dans le volume $SECAGENT_TLS_VOLUME"
+}
 
 ci_prepare() {
   bash "$HERE/pki/gen.sh" "$QUALIF_TLS_DIR"
@@ -99,7 +122,7 @@ wait_inventory() {
 }
 
 control_env() { # variables du poste de controle Ansible : listes d'adresses, CA de test, jeton en FICHIER
-  export RELAY_SERVER_URL="https://127.0.0.1:7770,https://127.0.0.1:8770" RELAY_CA_BUNDLE="$QUALIF_TLS_DIR/ca.crt"
+  export RELAY_SERVER_URL="https://${ENDPOINT_HOST}:7770,https://${ENDPOINT_HOST}:8770" RELAY_CA_BUNDLE="$QUALIF_TLS_DIR/ca.crt"
   export RELAY_TOKEN_FILE="$CHAIN_DIR/plugin.token"
 }
 
@@ -128,6 +151,7 @@ smoke() {
 # sans la cle, `state verify` refuse (code 6) ; avec une MAUVAISE cle il refuse (code 2) ; avec la bonne cle l'etat
 # est restaure, la racine redemarre et le minion DEJA enrole se reconnecte SANS re-enrolement (meme identite).
 backup_restore() {
+  guard_project
   local m bk key; m="$(master)" || fail "pas de maitre sur la racine"
   bk="$CHAIN_DIR/backup-state"; key="$CHAIN_DIR/backup-key"
   rm -rf "$bk" "$key"; mkdir -p "$bk" "$key"; chmod 700 "$key"
@@ -177,6 +201,7 @@ case "${1:-}" in
   failover) failover ;;
   backup-restore) backup_restore ;;
   logs) "${DC[@]}" logs --tail=100 ;;
-  down) "${DC[@]}" down -v ;;
+  push-tls) push_tls ;;
+  down) guard_project; "${DC[@]}" down -v ;;
   *) sed -n '2,16p' "$0"; exit 2 ;;
 esac
