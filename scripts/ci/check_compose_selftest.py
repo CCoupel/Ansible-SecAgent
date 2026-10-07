@@ -41,6 +41,14 @@ for name, doc, want_fail in [("mem ok", m, False), ("mem absente", svc([], ok), 
     print(("ok  " if got == want_fail else "KO  ") + name)
     if got != want_fail:
         sys.exit(1)
+dg = svc([], ok, "ghcr.io/x/y:v1@sha256:" + "0" * 64)
+loc = svc([], ok, "secagent-server:ci-0123456789ab")
+for name, doc, want_fail, rd in [("digest exige : tag@digest OK", dg, False, True), ("digest exige : tag local refuse", loc, True, True),
+                                 ("qualif : tag local accepte", loc, False, False)]:
+    got = bool(check(doc, False, False, rd))
+    print(("ok  " if got == want_fail else "KO  ") + name)
+    if got != want_fail:
+        sys.exit(1)
 bad = 0
 for name, doc, want_fail in cases:
     got = bool(check(doc, False))

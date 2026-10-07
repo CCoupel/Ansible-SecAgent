@@ -16,6 +16,8 @@
 
 x-secagent: &secagent
   image: ${SECAGENT_IMAGE:?SECAGENT_IMAGE est obligatoire (image candidate sha-<commit>@sha256:<digest>)}
+  # `never` pour des images chargees localement (docker load d'un artefact CI) ; `missing` (defaut) pour un registre.
+  pull_policy: ${SECAGENT_PULL_POLICY:-missing}
   restart: unless-stopped
   user: "10001:10001"
   stop_grace_period: 30s

@@ -335,7 +335,7 @@ jobs:
           grep -E 'image: ghcr.io/ccoupel/secagent-server:v0.0.0@sha256:[0-9a-f]{64}$' docker-compose.server.yml
           docker compose --env-file .env.example -f docker-compose.server.yml config --format json > r.json
           docker compose --env-file .env.example -f docker-compose.server.yml -f docker-compose.child.yml config --format json > c.json
-          python3 tools/check_compose.py --require-memory-limit r.json c.json
+          python3 tools/check_compose.py --require-memory-limit --require-digest r.json c.json
       - name: Tests negatifs - l'archive est refusee avec latest ou NATS
         run: |
           set -u

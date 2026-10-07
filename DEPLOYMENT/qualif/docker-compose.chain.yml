@@ -7,7 +7,8 @@
 # (justification : l'actif/passif de la racine est le cas teste ; un enfant a deux instances n'apporte que la
 # meme preuve) ; l'enfant PUSH (optionnel dans #188) n'est pas deploye ici.
 # Images : SECAGENT_IMAGE (serveur) et SECAGENT_MINION_IMAGE (minion), references promues
-# (`sha-<commit>@sha256:<digest>`) ; aucun `build:`, aucun `latest`. TLS de bout en bout avec une CA privee :
+# (`sha-<commit>@sha256:<digest>`) OU tag local `secagent-*:ci-<sha12>` charge par `docker load` (artefact CI,
+# SECAGENT_PULL_POLICY=never) ; aucun `build:`, aucun `latest`. TLS de bout en bout avec une CA privee :
 # REPEATER_CA_FILE / RELAY_CA_BUNDLE, aucune desactivation de la verification TLS.
 # Les jetons sont produits par `chain-test.sh bootstrap` dans ./chain/ (ignore par git, fichiers 0600) :
 # jamais dans le depot, jamais dans les logs. Le poste de controle Ansible est HORS Compose (voir README).
@@ -34,6 +35,7 @@ services:
   secagent-child:
     image: ${SECAGENT_IMAGE:?SECAGENT_IMAGE est obligatoire (image candidate sha-<commit>@sha256:<digest>)}
     container_name: secagent-qualif-child
+    pull_policy: ${SECAGENT_PULL_POLICY:-missing}
     restart: unless-stopped
     user: "10001:10001"
     stop_grace_period: 30s
@@ -69,6 +71,7 @@ services:
   minion-root:
     image: ${SECAGENT_MINION_IMAGE:?SECAGENT_MINION_IMAGE est obligatoire (image minion sha-<commit>@sha256:<digest>)}
     hostname: minion-root
+    pull_policy: ${SECAGENT_PULL_POLICY:-missing}
     restart: unless-stopped
     env_file:
       - path: ./chain/minion-root.env
@@ -88,6 +91,7 @@ services:
   minion-child:
     image: ${SECAGENT_MINION_IMAGE:?SECAGENT_MINION_IMAGE est obligatoire (image minion sha-<commit>@sha256:<digest>)}
     hostname: minion-child
+    pull_policy: ${SECAGENT_PULL_POLICY:-missing}
     restart: unless-stopped
     env_file:
       - path: ./chain/minion-child.env

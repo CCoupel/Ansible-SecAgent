@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Controles de securite sur le RENDU d'un Compose (`docker compose config --format json`).
 
-Usage : check_compose.py [--allow-build] [--require-memory-limit] rendu.json [rendu2.json ...]
+Usage : check_compose.py [--allow-build] [--require-memory-limit] [--require-digest] rendu.json [rendu2.json ...]
         docker compose -f X config --format json | check_compose.py -
 
 Echec (exit 1) si, pour un service :
@@ -14,6 +14,7 @@ Echec (exit 1) si, pour un service :
   - la configuration mentionne NATS / JetStream / Caddy.
 """
 import json
+import re
 import sys
 
 ACK = "i-understand-the-risk"
@@ -50,7 +51,7 @@ def env_of(svc: dict) -> dict:
     return {k: ("" if v is None else str(v)) for k, v in env.items()}
 
 
-def check(doc: dict, allow_build: bool, require_mem: bool = False) -> list:
+def check(doc: dict, allow_build: bool, require_mem: bool = False, require_digest: bool = False) -> list:
     errs = []
     for name, svc in (doc.get("services") or {}).items():
         where = f"service '{name}'"
@@ -85,6 +86,10 @@ def check(doc: dict, allow_build: bool, require_mem: bool = False) -> list:
             tag = ref.rsplit(":", 1)[1] if ":" in ref.rsplit("/", 1)[-1] else ""
             if tag in ("", "latest"):
                 errs.append(f"{where}: image {image!r} sans tag fixe ou 'latest'")
+            # Prod (archive de release) : `tag@sha256:<64 hex>` obligatoire. Qualif : un tag local `secagent-*:ci-<sha12>`
+            # (image chargee par docker load) est accepte, car --require-digest n'y est pas demande.
+            if require_digest and not re.search(r"@sha256:[0-9a-f]{64}$", image):
+                errs.append(f"{where}: image {image!r} sans digest @sha256:<64 hex> (exige en production)")
         elif "build" not in svc:
             errs.append(f"{where}: ni image ni build")
         if require_mem:
@@ -105,6 +110,7 @@ def check(doc: dict, allow_build: bool, require_mem: bool = False) -> list:
 def main(argv):
     allow = "--allow-build" in argv
     req = "--require-memory-limit" in argv
+    reqd = "--require-digest" in argv
     files = [a for a in argv if not a.startswith("--")]
     if not files:
         print(__doc__)
@@ -112,7 +118,7 @@ def main(argv):
     rc = 0
     for f in files:
         doc = json.load(sys.stdin if f == "-" else open(f, encoding="utf-8"))
-        errs = check(doc, allow, req)
+        errs = check(doc, allow, req, reqd)
         for e in errs:
             print(f"::error::{f}: {e}")
         print(f"{'FAIL' if errs else 'OK'} {f}")
