@@ -129,6 +129,23 @@ func tcpCounter(t *testing.T) (port string, accepts *atomic.Int32) {
 	return port, accepts
 }
 
+// settle waits until the listener has accepted `want` connections, then proves that nothing else is
+// on its way: a raw connection (outside the guard) is accepted AFTER every earlier one, so once it is
+// counted, any connection the guarded dialer had made before is counted too. No fixed sleep.
+func settle(t *testing.T, port string, accepts *atomic.Int32, want int32) {
+	t.Helper()
+	waitHits(t, "the listener accepted the expected connections", accepts, want)
+	c, err := net.Dial("tcp", "127.0.0.1:"+port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	waitHits(t, "the barrier connection", accepts, want+1)
+	if got := accepts.Load(); got != want+1 {
+		t.Errorf("accepts = %d, want %d: a refused dial reached the network", got-1, want)
+	}
+}
+
 func dialCtx(t *testing.T, addr string) (net.Conn, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -162,9 +179,7 @@ func TestSpecDialPolicy_RebindingOutsideAllowIsRefusedAtDialTime(t *testing.T) {
 	if _, err := dialCtx(t, "relay.example.test:"+port); !errors.Is(err, ErrForbiddenTarget) {
 		t.Fatalf("a name that now resolves outside ALLOW must be refused at dial time, got %v", err)
 	}
-	if n := accepts.Load(); n != 1 {
-		t.Errorf("accepts = %d: the refused dial must never reach the network", n)
-	}
+	settle(t, port, accepts, 1) // exactly the first connection: the refused dial never reached the network
 }
 
 // A name that resolves to a mix of allowed and refused addresses only ever reaches the allowed one.
@@ -178,9 +193,7 @@ func TestSpecDialPolicy_MixedResolutionOnlyReachesTheAllowedAddress(t *testing.T
 		t.Fatalf("the allowed address must be reached: %v", err)
 	}
 	_ = conn.Close()
-	if accepts.Load() != 1 {
-		t.Errorf("accepts = %d", accepts.Load())
-	}
+	settle(t, port, accepts, 1) // only the allowed address was reached, once
 }
 
 func TestSpecDialPolicy_DenyAndLoopbackRefusalsNeverReachTheNetwork(t *testing.T) {
@@ -208,9 +221,7 @@ func TestSpecDialPolicy_DenyAndLoopbackRefusalsNeverReachTheNetwork(t *testing.T
 			if _, err := dialCtx(t, tc.addr); !errors.Is(err, ErrForbiddenTarget) {
 				t.Fatalf("want ErrForbiddenTarget, got %v", err)
 			}
-			if accepts.Load() != before {
-				t.Error("the connection reached the listener: the refusal came too late")
-			}
+			settle(t, port, accepts, before) // nothing reached the listener: the refusal came before the network
 		})
 	}
 }
