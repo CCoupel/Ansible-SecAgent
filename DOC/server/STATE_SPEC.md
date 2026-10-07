@@ -64,6 +64,7 @@ Crée l'état initial (clé RSA-4096 et secret JWT, chiffrés par `RSA_MASTER_KE
 - **Jeton de lien révoqué (`revoked_at` posé) et non expiré ⇒ son `jti` est dans la `blacklist`**, dans **la même mutation** (une mutation qui révoque sans blacklister est annulée, `ErrInvalid`). Un jeton expiré n'exige pas d'entrée (elle peut avoir été purgée).
 - Un registre `link_tokens` non vide exige `link_signing_key_current` ; `link_signing_key_previous` exige `link_signing_key_current`.
 - `link_trust` cohérent : une clé publique et son `kid` vont ensemble ; une clé publique est du base64 de 32 octets ; `previous_*` et `seq` exigent un `current_*` ; les deux `kid` diffèrent. Le contrôle ne recalcule pas le `kid` (défini par `auth/linkjwt.go`).
+- Relay révoqué sans `jti` (R6) : valide seulement si un `link_tokens` le nomme (`sub` ou `aud`) ; la JTI d'un lien vit dans `link_tokens`, la blacklist est liée par l'invariant ci-dessus.
 - Un fichier `schema_version` 1 ne peut porter aucune donnée de lien (corruption sinon).
 
 ### Migration v1 → v2
@@ -78,7 +79,7 @@ Si l'état v1 a été repris depuis `relay.state.prev` (écriture interrompue), 
 
 ### `state verify`
 
-Lit les schémas 1 et 2. Sortie : `schema_version`, nombre d'entités (dont `link_tokens`), `link_signing_key_current/previous` : **`present (value hidden)` ou `absent`** (jamais la valeur, ni le chiffré), `link_trust_current_kid` / `_previous_kid` / `_seq` (publics), et pour un v1 la ligne `migration: schema_version 1 -> 2 at the first write of the master (backup relay.state.v1.bak)`. `state restore --from` accepte un v1 vérifié (c'est le chemin du retour arrière).
+Lit les schémas 1 et 2. Sortie : `schema_version`, nombre d'entités (dont `link_tokens`), `link_signing_key_current/previous` : **`[SEALED]` ou `[ABSENT]`** (jamais la valeur, ni le chiffré), `link_trust_current_kid` / `_previous_kid` / `_seq` (publics), et pour un v1 la ligne `migration: schema_version 1 -> 2 at the first write of the master (backup relay.state.v1.bak)`. `state restore --from` accepte un v1 vérifié (c'est le chemin du retour arrière).
 
 ## Invariants
 

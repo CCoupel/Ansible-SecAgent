@@ -140,9 +140,9 @@ func printReport(cmd *cobra.Command, r *state.Report) {
 
 func presence(b bool) string {
 	if b {
-		return "present (value hidden)"
+		return "[SEALED]"
 	}
-	return "absent"
+	return "[ABSENT]"
 }
 
 func orNone(s string) string {

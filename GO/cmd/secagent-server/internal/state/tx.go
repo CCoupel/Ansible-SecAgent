@@ -345,6 +345,9 @@ func (t *Tx) PutRelayNode(v RelayNode) error {
 	if err := checkRelayNode(v.RelayID, v); err != nil {
 		return err
 	}
+	if err := t.m.checkRelayJTI(v.RelayID, v); err != nil {
+		return err
+	}
 	if owner, dup := t.m.relayByID[v.ID]; dup && owner != v.RelayID {
 		return fmt.Errorf("%w: relay node id already used by %q", ErrDuplicate, owner)
 	}

@@ -520,10 +520,23 @@ func checkRelayNode(k string, n RelayNode) error {
 	default:
 		return fmt.Errorf("%w: relay %q has mode %q (pull|push)", ErrInvalid, k, n.Mode)
 	}
-	if n.Revoked && n.JTI == "" {
-		return fmt.Errorf("%w: revoked relay %q has no jti to blacklist", ErrInvalid, k)
-	}
 	return nil
+}
+
+// checkRelayJTI: a revoked relay needs a jti to blacklist (R6, schema 2). Since v3.0.4 the jti of a
+// relay link lives in link_tokens (the relay node carries none): a revoked relay without jti is valid
+// when a link token names it (sub or aud); the revocation of that token is what checkLinks ties to
+// the blacklist.
+func (m *model) checkRelayJTI(k string, n RelayNode) error {
+	if !n.Revoked || n.JTI != "" {
+		return nil
+	}
+	for _, t := range m.LinkTokens {
+		if t.Sub == k || t.Aud == k {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: revoked relay %q has no jti to blacklist", ErrInvalid, k)
 }
 
 // checkRevokedBlacklisted: a revoked relay whose token is still valid must have its jti in the
@@ -532,6 +545,9 @@ func (m *model) checkRevokedBlacklisted(relayID string, now time.Time) error {
 	n, ok := m.RelayNodes[relayID]
 	if !ok || !n.Revoked {
 		return nil
+	}
+	if n.JTI == "" {
+		return nil // the jti of its link is in link_tokens (checkRelayJTI), whose revocation checkLinks ties to the blacklist
 	}
 	if n.TokenExp > 0 && n.TokenExp <= now.Unix() {
 		return nil
@@ -561,7 +577,10 @@ func (m *model) validateAll(now time.Time) error {
 	if err := m.checkLinks(now); err != nil {
 		return err
 	}
-	for k := range m.RelayNodes {
+	for k, n := range m.RelayNodes {
+		if err := m.checkRelayJTI(k, n); err != nil {
+			return err
+		}
 		if err := m.checkRevokedBlacklisted(k, now); err != nil {
 			return err
 		}

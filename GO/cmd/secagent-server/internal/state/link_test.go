@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -434,5 +435,50 @@ func TestLinkTrust_Coherence_RoundTrip(t *testing.T) {
 	}
 	if err := e2.Mutate(func(tx *Tx) error { return tx.SetLinkTrust(LinkTrust{}) }); err != nil || !e2.Snapshot().LinkTrust().IsZero() {
 		t.Fatalf("clearing: %v", err)
+	}
+}
+
+// R6: a revoked relay without jti is valid when a link token names it, invalid otherwise.
+func TestRevokedRelayWithoutJTI_NeedsALinkToken(t *testing.T) {
+	e, _ := sealedEngine(t)
+	node := RelayNode{ID: "uuid-1", RelayID: "child-1", Mode: ModePull, Revoked: true, CreatedAt: time.Now().UTC()}
+	if err := e.Mutate(func(tx *Tx) error { return tx.PutRelayNode(node) }); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("revoked relay without jti and without link token: %v", err)
+	}
+	if err := e.Mutate(func(tx *Tx) error {
+		if err := tx.SetConfig(ConfigLinkSigningKeyCurrent, sealedKey(t, ConfigLinkSigningKeyCurrent, "k")); err != nil {
+			return err
+		}
+		lt := linkTok("c1")
+		lt.Sub = "child-1"
+		if err := tx.PutLinkToken(lt); err != nil {
+			return err
+		}
+		return tx.PutRelayNode(node)
+	}); err != nil {
+		t.Fatalf("revoked relay named by a link token: %v", err)
+	}
+}
+
+// S15: nothing of a private key in the verify report nor in the logs.
+func TestLinkSigningKey_NeverInVerifyOutputOrLogs(t *testing.T) {
+	buf := captureSlog(t)
+	e, dir := sealedEngine(t)
+	const secret = "SECRETPRIVATEKEYFRAGMENT-0123456789"
+	if err := e.Mutate(func(tx *Tx) error {
+		return tx.SetConfig(ConfigLinkSigningKeyCurrent, sealedKey(t, ConfigLinkSigningKeyCurrent, secret))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := VerifyFile(filepath.Join(dir, StateFile), VerifyOptions{MasterKey: linkMaster})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := fmt.Sprintf("%+v", rep); strings.Contains(out, secret) || strings.Contains(out, EncPrefix) {
+		t.Fatalf("report leaks: %s", out)
+	}
+	_ = openEngine(t, dir, func(o *Options) { o.MasterKey = linkMaster })
+	if strings.Contains(buf.String(), secret) || strings.Contains(string(mustFile(t, filepath.Join(dir, StateFile))), secret) {
+		t.Fatal("the private key appears in clear in logs or in the file")
 	}
 }
