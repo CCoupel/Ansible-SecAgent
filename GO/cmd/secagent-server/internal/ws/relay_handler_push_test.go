@@ -138,7 +138,7 @@ func TestPush_UnknownRoleRefused(t *testing.T) {
 	setTreeHooks(t, "dmz1", nil, nil, nil)
 	srv := setupRelayTestServer(t)
 	defer srv.Close()
-	for _, role := range []string{"agent", "admin", "relay-child", ""} {
+	for _, role := range []string{"agent", "admin", "relay-admin", ""} {
 		if code := dialRelayExpectFail(t, srv, makeRelayJWT("central", role)); code != http.StatusUnauthorized {
 			t.Errorf("role %q: status %d, want 401", role, code)
 		}

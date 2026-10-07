@@ -1,6 +1,8 @@
 package ws
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,24 +14,50 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+
+	"secagent-server/cmd/secagent-server/internal/auth"
 )
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
-const relayTestSecret = "relay-test-jwt-secret"
+// Link tokens (v3.0.4): /ws/relay verifies Ed25519 tokens signed by a test root key.
+const (
+	relayTestRootID = "test-root"
+	relayRoleChild  = auth.RoleRelayChild
+	relayRoleParent = auth.RoleRelayParent
+)
 
-// makeRelayJWT creates a signed JWT with the given relay_id and role.
+var relayTestPub, relayTestPriv = func() (ed25519.PublicKey, ed25519.PrivateKey) {
+	p, k, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	return p, k
+}()
+
+// makeRelayJWT creates a link token signed by the test root for the given relay_id and role
+// ("relay" is accepted as an alias of relay-child for the older tests). aud is the local relay id.
 func makeRelayJWT(relayID, role string) string {
+	if role == "relay" {
+		role = relayRoleChild
+	}
 	claims := jwt.MapClaims{
+		"iss":  relayTestRootID,
 		"sub":  relayID,
+		"aud":  localRelayID(),
 		"role": role,
 		"jti":  "test-jti-" + relayID,
 		"iat":  time.Now().Unix(),
 		"exp":  time.Now().Add(time.Hour).Unix(),
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	raw, _ := token.SignedString([]byte(relayTestSecret))
+	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
+	token.Header["kid"] = auth.LinkKID(relayTestPub)
+	raw, _ := token.SignedString(relayTestPriv)
 	return raw
+}
+
+func testLinkTrust() (auth.LinkTrust, string, error) {
+	return auth.LinkTrust{Current: relayTestPub}, relayTestRootID, nil
 }
 
 // routingHook is the per-test replacement for RelayRoutingBulkUpsertFunc.
@@ -61,6 +89,7 @@ func TestMain(m *testing.M) {
 	// /ws/relay fails closed without a JTI blacklist check: install the permissive default once.
 	SetRelayJTIBlacklistFunc(defaultNoBlacklist)
 	SetRelayRevokedFunc(func(string) (bool, error) { return false, nil })
+	SetLinkTrustFunc(testLinkTrust)
 	os.Exit(m.Run())
 }
 
@@ -107,16 +136,16 @@ func awaitRelayConnected(t *testing.T, relayID string, timeout time.Duration) bo
 func setupRelayTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 
-	// Configure JWT validation
-	origFn := JWTSecretsFunc
-	JWTSecretsFunc = func() (string, string, time.Time) {
-		return relayTestSecret, "", time.Time{}
-	}
+	// Link verification trust (restored by the cleanup: a test may remove it to check the fail-closed)
+	linkMu.RLock()
+	origTrust := linkTrustFn
+	linkMu.RUnlock()
+	SetLinkTrustFunc(testLinkTrust)
 	var handlers sync.WaitGroup
 	t.Cleanup(func() {
 		// Runs after the client connections are closed (registered later => run earlier).
 		awaitHandlersDone(t, &handlers)
-		JWTSecretsFunc = origFn
+		SetLinkTrustFunc(origTrust)
 		resetRelayState()
 	})
 
