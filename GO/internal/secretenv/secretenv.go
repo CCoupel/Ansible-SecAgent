@@ -36,8 +36,13 @@ var (
 // that one is set. found is false (with a nil error) when neither is set.
 // An empty variable counts as unset.
 func Lookup(name string) (value string, found bool, err error) {
-	direct := os.Getenv(name)
-	path := os.Getenv(name + "_FILE")
+	return LookupFrom(os.Getenv, name)
+}
+
+// LookupFrom is Lookup over an arbitrary environment accessor (tests, injected getenv).
+func LookupFrom(getenv func(string) string, name string) (value string, found bool, err error) {
+	direct := getenv(name)
+	path := getenv(name + "_FILE")
 	switch {
 	case direct != "" && path != "":
 		return "", false, fmt.Errorf("%s: %w", name, ErrBothSet)
@@ -52,6 +57,12 @@ func Lookup(name string) (value string, found bool, err error) {
 		return direct, true, nil
 	}
 	return "", false, nil
+}
+
+// GetFrom is LookupFrom returning "" when the secret is not set.
+func GetFrom(getenv func(string) string, name string) (string, error) {
+	v, _, err := LookupFrom(getenv, name)
+	return v, err
 }
 
 // Get is Lookup returning "" when the secret is not set.

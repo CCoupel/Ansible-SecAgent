@@ -19,6 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"secagent-server/cmd/secagent-server/internal/tlsca"
+	"secagent-server/internal/secretenv"
 )
 
 // apiURLs returns the admin API base URLs: RELAY_API_URL is a comma-separated list (one per relay
@@ -77,9 +78,15 @@ func checkHTTPS(u string) error {
 	return nil
 }
 
-// adminToken returns the ADMIN_TOKEN env var.
-func adminToken() string {
-	return os.Getenv("ADMIN_TOKEN")
+// adminToken returns ADMIN_TOKEN, or the content of ADMIN_TOKEN_FILE (#196). Both set, or an unsafe
+// file, is an error: the request is never sent without a deliberate credential.
+func adminToken() (string, error) {
+	return secretenv.Get("ADMIN_TOKEN")
+}
+
+// masterKeyFromEnv returns RSA_MASTER_KEY or the content of RSA_MASTER_KEY_FILE (#196).
+func masterKeyFromEnv() (string, error) {
+	return secretenv.Get("RSA_MASTER_KEY")
 }
 
 // httpClient is the shared HTTP client with a reasonable timeout.
@@ -152,7 +159,11 @@ func apiRequestOnce(base, method, path string, payload []byte) (data []byte, sta
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
 		WroteHeaders: func() { sent = true },
 	}))
-	req.Header.Set("Authorization", "Bearer "+adminToken())
+	tok, terr := adminToken()
+	if terr != nil {
+		return nil, 0, false, terr
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

@@ -20,6 +20,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/state"
 	"secagent-server/cmd/secagent-server/internal/tlsca"
+	"secagent-server/internal/secretenv"
 )
 
 // Default listen addresses (unchanged since v1).
@@ -40,7 +41,10 @@ const (
 type Config struct {
 	JWTSecret  string
 	AdminToken string
-	LogLevel   string
+	// MasterKey is RSA_MASTER_KEY (or RSA_MASTER_KEY_FILE), resolved by ConfigFromEnv. Empty = Build
+	// falls back to the RSA_MASTER_KEY environment variable (tests, direct callers).
+	MasterKey string
+	LogLevel  string
 
 	// StateDir is STATE_DIR (default /data): the directory of relay.state (#160). The state must
 	// have been created by `secagent-server state init`; the server never creates it.
@@ -138,8 +142,6 @@ var (
 // PROXY_MODE and PROXY_RELAYS are silently ignored (removed in v3.0, #123).
 func ConfigFromEnv() (Config, error) {
 	cfg := Config{
-		JWTSecret:         os.Getenv("JWT_SECRET_KEY"),
-		AdminToken:        os.Getenv("ADMIN_TOKEN"),
 		StateDir:          state.DirFromEnv(),
 		LogLevel:          envOr("LOG_LEVEL", "INFO"),
 		TrustedProxyCIDRs: os.Getenv(handlers.EnvTrustedProxyCIDRs),
@@ -150,6 +152,16 @@ func ConfigFromEnv() (Config, error) {
 		TLSKey:            os.Getenv(EnvTLSKey),
 	}
 	var terr error
+	// Secrets: X or X_FILE (#196). Both set, or an unsafe file, refuses to start.
+	if cfg.JWTSecret, terr = secretenv.Get("JWT_SECRET_KEY"); terr != nil {
+		return Config{}, terr
+	}
+	if cfg.AdminToken, terr = secretenv.Get("ADMIN_TOKEN"); terr != nil {
+		return Config{}, terr
+	}
+	if cfg.MasterKey, terr = secretenv.Get("RSA_MASTER_KEY"); terr != nil {
+		return Config{}, terr
+	}
 	if cfg.TLSDisable, terr = envStrictBool(EnvTLSDisable); terr != nil {
 		return Config{}, terr
 	}

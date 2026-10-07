@@ -102,3 +102,36 @@ func mustDER(t *testing.T, pub ed25519.PublicKey) []byte {
 	}
 	return d
 }
+
+func TestLoadRepeaterConfig_TokenFromFile(t *testing.T) {
+	dir := t.TempDir()
+	tokPath := filepath.Join(dir, "tok")
+	if err := os.WriteFile(tokPath, []byte("eyJ-token-from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chmod(tokPath, 0o600)
+	env := map[string]string{EnvRepeaterID: "dmz1", EnvRepeaterUpstreamURL: "wss://parent:7772", "REPEATER_UPSTREAM_TOKEN_FILE": tokPath}
+	c, err := loadRepeaterConfig(envOf(env))
+	if err != nil || c.UpstreamToken != "eyJ-token-from-file" {
+		t.Fatalf("%+v %v", c, err)
+	}
+	// both defined: refused, the error carries no value
+	env[EnvRepeaterUpstreamToken] = "direct-tok"
+	if _, err := loadRepeaterConfig(envOf(env)); !errors.Is(err, ErrInvalidRepeaterConfig) || strings.Contains(err.Error(), "direct-tok") {
+		t.Fatalf("both set: %v", err)
+	}
+	// unsafe file
+	delete(env, EnvRepeaterUpstreamToken)
+	if err := os.Chmod(tokPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadRepeaterConfig(envOf(env)); !errors.Is(err, ErrInvalidRepeaterConfig) {
+		t.Fatalf("unsafe file: %v", err)
+	}
+	// the direct variable still works, and the String()/LogValue stay redacted
+	env = map[string]string{EnvRepeaterID: "dmz1", EnvRepeaterUpstreamURL: "wss://parent:7772", EnvRepeaterUpstreamToken: "direct-tok"}
+	c, err = loadRepeaterConfig(envOf(env))
+	if err != nil || c.UpstreamToken != "direct-tok" || strings.Contains(c.String(), "direct-tok") {
+		t.Fatalf("%v %v", c, err)
+	}
+}

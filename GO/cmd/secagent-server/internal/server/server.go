@@ -125,7 +125,12 @@ func Build(cfg Config) (node *Node, err error) {
 	if stateDir == "" {
 		stateDir = state.DefaultStateDir
 	}
-	masterKey := os.Getenv("RSA_MASTER_KEY")
+	masterKey := cfg.MasterKey // RSA_MASTER_KEY or RSA_MASTER_KEY_FILE, resolved by ConfigFromEnv (#196)
+	if masterKey == "" {
+		masterKey = os.Getenv("RSA_MASTER_KEY")
+	}
+	// only a key resolved by ConfigFromEnv (file or env); otherwise the environment is read lazily
+	handlers.ConfigureMasterKey(cfg.MasterKey)
 	writeGuard := cfg.WriteGuard // the lock identity check (RunInstance); nil = read-only
 	store, err := storage.Open(state.Options{
 		Dir:       stateDir,
@@ -274,7 +279,7 @@ func Build(cfg Config) (node *Node, err error) {
 	nonRoot := repeaterCfg != nil || anchorCfg != nil || !store.LinkTrust().IsZero()
 	linkMgr := &link.Manager{
 		Store:      store,
-		MasterKey:  func() (string, bool) { v := os.Getenv("RSA_MASTER_KEY"); return v, v != "" },
+		MasterKey:  func() (string, bool) { return masterKey, masterKey != "" },
 		LocalID:    func() string { id, _ := ws.RelayIdentity(); return id },
 		IsRoot:     func() bool { return !nonRoot },
 		Broadcast:  ws.BroadcastLinkFrame,
@@ -498,6 +503,7 @@ func (n *Node) ReloadHooks() {
 // store). It is idempotent and also called by Run on exit.
 func (n *Node) Close() {
 	n.closeOnce.Do(func() {
+		handlers.ConfigureMasterKey("")
 		if n.cancel != nil {
 			n.cancel()
 		}

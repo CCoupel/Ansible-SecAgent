@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"secagent-server/internal/endpoints"
+	"secagent-server/internal/secretenv"
 )
 
 // Environment variables describing the (single) parent of a child relay.
@@ -68,7 +69,12 @@ func LoadRepeaterConfig() (*RepeaterConfig, error) {
 func loadRepeaterConfig(getenv func(string) string) (*RepeaterConfig, error) {
 	id := strings.TrimSpace(getenv(EnvRepeaterID))
 	upstream := strings.TrimSpace(getenv(EnvRepeaterUpstreamURL))
-	token := strings.TrimSpace(getenv(EnvRepeaterUpstreamToken))
+	// REPEATER_UPSTREAM_TOKEN or REPEATER_UPSTREAM_TOKEN_FILE (#196): both set, or an unsafe file, refuses.
+	rawToken, terr := secretenv.GetFrom(getenv, EnvRepeaterUpstreamToken)
+	if terr != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidRepeaterConfig, terr)
+	}
+	token := strings.TrimSpace(rawToken)
 
 	if upstream == "" {
 		if token != "" {

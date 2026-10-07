@@ -104,7 +104,12 @@ var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // neverInheritedEnv are the secrets of the server itself: they are never handed to a hook, and a
 // configuration that declares one of them in env is refused (an env value must be a secret OWN to
 // the hook, never a copy of one of these).
-var neverInheritedEnv = []string{"ADMIN_TOKEN", "JWT_SECRET_KEY", "RSA_MASTER_KEY", "REPEATER_UPSTREAM_TOKEN", "RELAY_ENROLLMENT_TOKEN"}
+// The *_FILE variants (#196) are listed too: neither a secret nor the path of a secret file may be
+// declared in, or leak to, a hook.
+var neverInheritedEnv = []string{
+	"ADMIN_TOKEN", "JWT_SECRET_KEY", "RSA_MASTER_KEY", "REPEATER_UPSTREAM_TOKEN", "RELAY_ENROLLMENT_TOKEN",
+	"ADMIN_TOKEN_FILE", "JWT_SECRET_KEY_FILE", "RSA_MASTER_KEY_FILE", "REPEATER_UPSTREAM_TOKEN_FILE", "RELAY_ENROLLMENT_TOKEN_FILE",
+}
 
 func (a ActionDef) validateEnv() error {
 	if len(a.Env) == 0 {

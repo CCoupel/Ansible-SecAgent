@@ -100,7 +100,11 @@ Exit codes:
   7  write_seq below --min-write-seq`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		rep, err := state.VerifyFile(args[0], state.VerifyOptions{MasterKey: os.Getenv("RSA_MASTER_KEY")})
+		verifyKey, mkErr := masterKeyFromEnv()
+		if mkErr != nil {
+			return mkErr
+		}
+		rep, err := state.VerifyFile(args[0], state.VerifyOptions{MasterKey: verifyKey})
 		if err == nil && stateVerifyMinSeq > 0 && rep.WriteSeq < stateVerifyMinSeq {
 			printReport(cmd, rep)
 			return &ExitError{Code: ExitSeqTooLow, Msg: fmt.Sprintf("verdict: REFUSED: write_seq %d is below --min-write-seq %d (copy too old)", rep.WriteSeq, stateVerifyMinSeq)}
@@ -181,7 +185,10 @@ Exit codes: those of 'state verify', plus 8 when an instance is alive.`,
 		if dir == "" {
 			dir = state.DirFromEnv()
 		}
-		masterKey := os.Getenv("RSA_MASTER_KEY")
+		masterKey, mkErr := masterKeyFromEnv()
+		if mkErr != nil {
+			return mkErr
+		}
 		// 1. verify first: nothing else happens for an inauthentic source
 		if _, err := state.VerifyFile(stateRestoreFrom, state.VerifyOptions{MasterKey: masterKey}); err != nil {
 			code, why := verifyExit(err)
