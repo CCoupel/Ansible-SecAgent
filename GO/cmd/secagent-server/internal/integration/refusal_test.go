@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 )
 
 // permanent refusals: the child must stop (refused_permanent in /health) and the refusing node
@@ -36,26 +35,27 @@ func TestRefusal_ImpersonationIsPermanent(t *testing.T) {
 	assertNoSecrets(t, allLogs(root, imposter, good), tokForRelay1)
 }
 
-// (c) loops: a child announcing the id of its parent, or of an ancestor, is refused for good.
+// (c) loops: a child announcing an ancestor's id is refused for good. A child named like its own parent
+// cannot even be signed: the root never mints a token whose sub equals its aud (v3.0.4).
 func TestRefusal_LoopIsPermanent(t *testing.T) {
 	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
 	relay1 := startNode(t, nodeSpec{ID: "relay1", ParentURL: root.wssURL(), ParentToken: root.registerChild("relay1")})
 	waitFor(t, "relay1 linked", func() bool { return relay1.upstreamState() == "connected" })
 
-	for _, tc := range []struct{ name, id string }{
-		{"child announces its parent's id", "relay1"},
-		{"child announces an ancestor's id", "root"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			looping := startNode(t, nodeSpec{ID: tc.id, ParentURL: relay1.wssURL(), ParentToken: relay1.registerChild(tc.id)})
-			waitRefusedPermanent(t, looping)
-			if relay1.upstreamState() != "connected" {
-				t.Error("a refused looping child must not disturb the rest of the tree")
-			}
-			relay1.logs.expectLog(t, "loop", "the parent must log the loop refusal")
-		})
-	}
+	t.Run("a child named like its parent cannot be signed", func(t *testing.T) {
+		if code, m := root.admin("POST", "/api/admin/tokens", map[string]any{"role": "relay-child", "sub": "relay1", "aud": "relay1"}); code != http.StatusBadRequest || m["error"] != "sub_equals_aud" {
+			t.Errorf("mint sub=aud = %d %v, want 400 sub_equals_aud", code, m)
+		}
+	})
+	t.Run("child announces an ancestor's id", func(t *testing.T) {
+		looping := startNode(t, nodeSpec{ID: "root", ParentURL: relay1.wssURL(), ParentToken: relay1.registerChild("root")})
+		waitRefusedPermanent(t, looping)
+		if relay1.upstreamState() != "connected" {
+			t.Error("a refused looping child must not disturb the rest of the tree")
+		}
+		relay1.logs.expectLog(t, "loop", "the parent must log the loop refusal")
+	})
 }
 
 // (c) push side: the parent never dials itself nor one of its ancestors.
@@ -84,16 +84,18 @@ func TestRefusal_PushDialOutLoopIsRejected(t *testing.T) {
 	}
 }
 
-// A node refuses to mint a relay-parent token for itself or for one of its own ancestors.
-func TestRefusal_MintingParentTokenForAnAncestorIsRejected(t *testing.T) {
+// Only the root mints link tokens, and it never signs a token whose presenter is its own verifier.
+func TestRefusal_LinkTokenMintingRules(t *testing.T) {
 	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
 	relay1 := startNode(t, nodeSpec{ID: "relay1", ParentURL: root.wssURL(), ParentToken: root.registerChild("relay1")})
 	waitFor(t, "relay1 linked", func() bool { return relay1.upstreamState() == "connected" })
-	for _, sub := range []string{"root", "relay1"} {
-		code, m := relay1.admin("POST", "/api/admin/tokens", map[string]any{"role": "relay-parent", "sub": sub, "expires_at": time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)})
-		if code != http.StatusBadRequest || m["error"] != "sub_would_create_loop" {
-			t.Errorf("minting for %q = %d %v, want 400 sub_would_create_loop", sub, code, m)
+	for _, role := range []string{"relay-parent", "relay-child"} {
+		if code, m := root.admin("POST", "/api/admin/tokens", map[string]any{"role": role, "sub": "relay1", "aud": "relay1"}); code != http.StatusBadRequest || m["error"] != "sub_equals_aud" {
+			t.Errorf("%s with sub == aud on the root = %d %v, want 400 sub_equals_aud", role, code, m)
+		}
+		if code, m := relay1.admin("POST", "/api/admin/tokens", map[string]any{"role": role, "sub": "x", "aud": "relay1"}); code != http.StatusConflict || m["error"] != "not_root" {
+			t.Errorf("%s on a relay that has a parent = %d %v, want 409 not_root", role, code, m)
 		}
 	}
 }

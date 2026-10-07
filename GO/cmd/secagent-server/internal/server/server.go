@@ -299,8 +299,25 @@ func Build(cfg Config) (node *Node, err error) {
 			return nil, fmt.Errorf("link trust anchor: %w", err) // e.g. the pinned key disagrees with link_trust: no start
 		}
 		// verified frames: relayed unchanged to the children; a revoked token closes the links it authenticates
-		linkTrust.OnForward(ws.BroadcastLinkFrame)
-		linkTrust.OnRevoked(func(jti string) { ws.CloseLinksByJTI(jti) })
+		// The links of the revoked tokens are closed AFTER the frame went down: the child whose link is
+		// cut (and everything below it) still learns the revocation before the close frame.
+		var pendMu sync.Mutex
+		var pending []string
+		linkTrust.OnRevoked(func(jti string) {
+			pendMu.Lock()
+			pending = append(pending, jti)
+			pendMu.Unlock()
+		})
+		linkTrust.OnForward(func(raw []byte) {
+			ws.BroadcastLinkFrame(raw)
+			pendMu.Lock()
+			todo := pending
+			pending = nil
+			pendMu.Unlock()
+			for _, jti := range todo {
+				ws.CloseLinksByJTI(jti)
+			}
+		})
 		ws.SetLinkTrustFunc(func() (auth.LinkTrust, string, error) {
 			if !linkTrust.Anchored() {
 				return auth.LinkTrust{}, "", ws.ErrLinkNoTrust // S21: no anchor, every incoming link is refused

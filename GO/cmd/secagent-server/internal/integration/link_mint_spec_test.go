@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/gorilla/websocket"
 
 	"secagent-server/cmd/secagent-server/internal/state"
 )
@@ -215,17 +216,120 @@ func TestLinkMint_SwitchoverKeepsTheSameKey(t *testing.T) {
 
 // ── pending L1d / L1e: they need both ends of the link ───────────────────────
 
+// linkTokenIDBySub returns the registry id and JTI of the link token minted for sub on the root.
+func linkTokenIDBySub(t *testing.T, root *node, sub string) (id, jti string) {
+	t.Helper()
+	_, raw := root.callOn(root.adminURL(), "GET", "/api/admin/tokens?role=relay-child", root.adminTok, nil)
+	var list []map[string]any
+	if err := json.Unmarshal(raw, &list); err != nil {
+		t.Fatalf("token list: %v %s", err, raw)
+	}
+	for _, e := range list {
+		if e["sub"] == sub {
+			return e["id"].(string), e["jti"].(string)
+		}
+	}
+	t.Fatalf("no link token for %s in %s", sub, raw)
+	return
+}
+
+func blacklisted(n *node, jti string) bool {
+	_, ok := n.stateSection("blacklist")[jti]
+	return ok
+}
+
 func TestLinkRevocation_ClosesTheTargetedLinkTwoLevelsDeepWith4010(t *testing.T) {
-	t.Skip("PENDING L1d+L1e: needs link_revocations on both ends (root → relay1 → relay2). Spec (rev2 §3 test 6; 4010, not the stale 4001): chain root→relay1→relay2 up; " +
-		"`tokens revoke <id of relay2's link token>` on the ROOT; relay2's link is closed with code 4010 (WSRelayCloseRevoked, permanent: SERVER_SPEC §9.2.1) and relay2 reports refused_permanent; " +
-		"relay1's link is untouched; the JTI is in the blacklist of relay1 and relay2; a relay2 reconnecting after a cut gets the full list. " +
-		"Write the body with the harness ParentToken/ROOT_LINK_KEY_FILE wiring chosen by L1e.")
+	parallel(t)
+	root, relay1, relay2 := threeLevels(t)
+	id, jti := linkTokenIDBySub(t, root, "relay2")
+
+	if code, m := root.admin("POST", "/api/admin/tokens/"+id+"/revoke", map[string]any{}); code != http.StatusOK || m["seq"] != float64(1) {
+		t.Fatalf("revoke on the root: %d %v", code, m)
+	}
+	// relay2 (two levels below the root) is cut with the permanent code and stops for good
+	waitFor(t, "relay2 refused_permanent", func() bool { return relay2.upstreamState() == "refused_permanent" })
+	if got := relay1.upstreamState(); got != "connected" {
+		t.Errorf("relay1's own link must be untouched, got %q", got)
+	}
+	// the JTI is in the blacklist of every level
+	waitFor(t, "the JTI is blacklisted on the root, relay1 and relay2", func() bool {
+		ok := blacklisted(root, jti) && blacklisted(relay1, jti) && blacklisted(relay2, jti)
+		if !ok {
+			t.Logf("blacklisted root=%v relay1=%v relay2=%v", blacklisted(root, jti), blacklisted(relay1, jti), blacklisted(relay2, jti))
+		}
+		return ok
+	})
+	if !relay2.logs.has("revoked") {
+		t.Errorf("relay2 must log why it stopped:\n%s", relay2.logs.String())
+	}
+	// a relay that joins relay1 AFTER the revocation learns it (full list when its link is established)
+	relay3 := startNode(t, nodeSpec{ID: "relay3", ParentURL: relay1.wssURL(), ParentToken: relay1.registerChild("relay3")})
+	waitFor(t, "relay3 linked", func() bool { return relay3.upstreamState() == "connected" })
+	waitFor(t, "relay3 received the revocation list", func() bool { return blacklisted(relay3, jti) })
+}
+
+// dialRelayLink opens /ws/relay on parent with a bearer token (the upgrade may succeed, then the node
+// closes with a code).
+func dialRelayLink(parent *node, token string) (*websocket.Conn, *http.Response, error) {
+	h := http.Header{}
+	h.Set("Authorization", "Bearer "+token)
+	d := websocket.Dialer{TLSClientConfig: tlsClientConfig(), HandshakeTimeout: 5 * time.Second}
+	return d.Dial(parent.wssURL()+"/ws/relay", h)
+}
+
+func closeCodeOf(t *testing.T, c *websocket.Conn) int {
+	t.Helper()
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		var m map[string]any
+		if err := c.ReadJSON(&m); err != nil {
+			if ce, ok := err.(*websocket.CloseError); ok {
+				return ce.Code
+			}
+			t.Fatalf("expected a close frame, got %v", err)
+		}
+	}
 }
 
 func TestLinkFailClosed_ANonRootRelayWithoutAnchorRefusesEveryIncomingLink(t *testing.T) {
-	t.Skip("PENDING L1e: needs REPEATER_ROOT_LINK_KEY_FILE (rev2 §1.5). Spec (test 10): relay1 (has a parent) started WITHOUT the anchor " +
-		"refuses every /ws/relay link with a [SECURITY WARNING]; started with a key file that disagrees with its stored link_trust " +
-		"(outside a valid rotation chain) it refuses to START; started with the right file it accepts a link whose token is signed by that root key.")
+	parallel(t)
+	root := startNode(t, nodeSpec{ID: "root"})
+
+	t.Run("no anchor: every incoming link is closed 4010", func(t *testing.T) {
+		relay1 := startNode(t, nodeSpec{ID: "relay1", ParentURL: root.wssURL(), ParentToken: "not-a-link-token"}) // has a parent, no anchor
+		_, tk := root.admin("POST", "/api/admin/tokens", map[string]any{"role": "relay-child", "sub": "hostile", "aud": "relay1"})
+		c, _, err := dialRelayLink(relay1, tk["token"].(string))
+		if err != nil {
+			t.Fatalf("the upgrade then the permanent close is expected: %v", err)
+		}
+		defer func() { _ = c.Close() }()
+		if got := closeCodeOf(t, c); got != 4010 {
+			t.Errorf("close code = %d, want 4010 (link_trust_missing)", got)
+		}
+		waitFor(t, "a [SECURITY WARNING] names the missing anchor", func() bool {
+			return relay1.logs.has("SECURITY WARNING") && relay1.logs.has("trust anchor")
+		})
+	})
+
+	t.Run("the right anchor: a link signed by that root is accepted", func(t *testing.T) {
+		relay1 := startNode(t, nodeSpec{ID: "relay1b", Root: root})
+		_ = newFakeChild(t, relay1, "child-ok") // registerChild mints on the root, aud = relay1b: handshake must succeed
+	})
+
+	t.Run("a pinned key that disagrees with the persisted link_trust: the node refuses to start", func(t *testing.T) {
+		otherRoot := startNode(t, nodeSpec{ID: "other-root"})
+		relay1 := startNode(t, nodeSpec{ID: "relay1c", Root: root})
+		relay1.stop()
+		relay1.anchorTo(otherRoot) // another key and another root id, outside any rotation chain
+		_, _ = relay1.startProcess(nil)
+		code, exited := relay1.waitExit(20 * time.Second)
+		if !exited || code == 0 {
+			t.Fatalf("the node must refuse to start (exited=%v code=%d); logs:\n%s", exited, code, relay1.logs.String())
+		}
+		if !relay1.logs.has("trust") {
+			t.Errorf("the refusal must name the trust anchor:\n%s", relay1.logs.String())
+		}
+	})
 }
 
 func TestLinkFailClosed_MintWithoutMasterKeyIs503(t *testing.T) {

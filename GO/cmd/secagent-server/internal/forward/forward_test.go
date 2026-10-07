@@ -2,6 +2,8 @@ package forward
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -15,16 +17,45 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 
+	"secagent-server/cmd/secagent-server/internal/auth"
 	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/storage"
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
-const fwdSecret = "forward-test-secret"
 const wait = 5 * time.Second
 
+// Link tokens (v3.0.4): /ws/relay verifies Ed25519 tokens signed by this test root.
+var testRootPub, testRootPriv = func() (ed25519.PublicKey, ed25519.PrivateKey) {
+	p, k, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	return p, k
+}()
+
+func signTestLink(sub, jti string) string {
+	id, _ := ws.RelayIdentity()
+	tok := jwt.NewWithClaims(jwt.SigningMethodEdDSA, jwt.MapClaims{
+		"iss": "test-root", "sub": sub, "aud": id, "role": "relay-child", "jti": jti,
+		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
+	})
+	tok.Header["kid"] = auth.LinkKID(testRootPub)
+	raw, err := tok.SignedString(testRootPriv)
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
+func installTestLinkTrust() {
+	ws.SetLinkTrustFunc(func() (auth.LinkTrust, string, error) {
+		return auth.LinkTrust{Current: testRootPub}, "test-root", nil
+	})
+}
+
 func TestMain(m *testing.M) {
-	ws.SetJWTSecretsFunc(func() (string, string, time.Time) { return fwdSecret, "", time.Time{} })
+	installTestLinkTrust()
 	ws.SetRelayJTIBlacklistFunc(func(string) (bool, error) { return false, nil })
 	ws.SetRelayRevokedFunc(func(string) (bool, error) { return false, nil })
 	os.Exit(m.Run())
@@ -32,14 +63,7 @@ func TestMain(m *testing.M) {
 
 func relayJWT(t *testing.T, id string) string {
 	t.Helper()
-	raw, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": id, "role": "relay", "jti": "fwd-" + id,
-		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
-	}).SignedString([]byte(fwdSecret))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return raw
+	return signTestLink(id, "fwd-"+id)
 }
 
 // childRelay connects a mock child relay (id) to a /ws/relay handler: a "relay" in the ws

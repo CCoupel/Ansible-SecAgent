@@ -106,7 +106,11 @@ type nodeSpec struct {
 	ID          string
 	ParentURL   string // pull: this node dials its parent (wss://…)
 	ParentToken string
-	Env         []string
+	// Root is the root relay that signs the link tokens of the tree (v3.0.4, #141): a node that has a
+	// parent is anchored on its public key (REPEATER_ROOT_LINK_KEY_FILE). Implied by a ParentToken
+	// minted through registerChild; give it explicitly for a push child (its parent dials in).
+	Root *node
+	Env  []string
 	// Hooks builds the node's hooks configuration (JSON) from the file its file-actions append to;
 	// nil = no hooks file (the node starts with 0 hooks).
 	Hooks func(out string) string
@@ -126,6 +130,7 @@ type node struct {
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
 	plugin    string
+	root      *node // the root relay of the tree this node belongs to (nil for the root itself)
 
 	statusPath   string         // RELAY_STATUS_FILE of this instance (local, outside STATE_DIR)
 	pendingReady chan nodeReady // of a secondary: receives the addresses once it is promoted
@@ -285,6 +290,12 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 	if err := func() error { sharedOnce.Do(func() { sharedErr = initShared() }); return sharedErr }(); err != nil {
 		t.Fatalf("shared test material: %v", err)
 	}
+	root := spec.Root
+	if root == nil && spec.ParentToken != "" {
+		if r, ok := tokenRoots.Load(spec.ParentToken); ok {
+			root = r.(*node)
+		}
+	}
 	n := &node{t: t, id: spec.ID, adminTok: "admin-" + spec.ID + "-secret-token", jwtSecret: "jwt-signing-secret-of-" + spec.ID + "-0123456789", logs: &syncBuf{}}
 	masterKey := "integration-master-key-" + spec.ID
 	stateDir := filepath.Join(t.TempDir(), "state")
@@ -316,6 +327,39 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 		"REPEATER_UPSTREAM_URL="+spec.ParentURL,
 		"REPEATER_UPSTREAM_TOKEN="+spec.ParentToken,
 	), spec.Env...)
+	if root != nil {
+		n.anchorTo(root)
+	}
+	return n
+}
+
+// tokenRoots remembers which root signed a link token handed out by registerChild: a node started
+// with that token is anchored on that root.
+var tokenRoots sync.Map
+
+// anchorTo pins the root's public key (REPEATER_ROOT_LINK_KEY_FILE) and identity (REPEATER_ROOT_ID) in
+// the environment of the node: it then verifies the link tokens signed by that root.
+func (n *node) anchorTo(root *node) {
+	n.t.Helper()
+	code, m := root.admin("GET", "/api/admin/link/pubkey", nil)
+	pem, _ := m["current_pub_pem"].(string)
+	if code != http.StatusOK || pem == "" {
+		n.t.Fatalf("root %s link public key: %d %v", root.id, code, m)
+	}
+	path := filepath.Join(n.t.TempDir(), "root_link.pub")
+	if err := os.WriteFile(path, []byte(pem), 0o600); err != nil {
+		n.t.Fatal(err)
+	}
+	n.root = root
+	n.setEnv("REPEATER_ROOT_ID", root.id)
+	n.setEnv("REPEATER_ROOT_LINK_KEY_FILE", path)
+}
+
+// treeRoot is the node that signs the link tokens of the tree n belongs to.
+func (n *node) treeRoot() *node {
+	if n.root != nil {
+		return n.root
+	}
 	return n
 }
 
@@ -809,23 +853,34 @@ func (n *node) registerChild(childID string) string {
 	return tok
 }
 
-// registerChildWithID also returns the relay's internal id (used by the revoke endpoint).
+// registerChildWithID declares a pull child on this node and returns the relay-child link token the
+// ROOT of the tree minted for it (aud = this node, the verifier), plus the relay's internal id (used by
+// the revoke endpoint). v3.0.4: the declaration itself mints nothing.
 func (n *node) registerChildWithID(childID string) (token, id string) {
 	n.t.Helper()
 	code, m := n.admin("POST", "/api/admin/relays", map[string]any{"relay_id": childID, "mode": "pull"})
 	if code != http.StatusCreated {
 		n.t.Fatalf("register child %s on %s: %d %v", childID, n.id, code, m)
 	}
-	return m["jwt_token"].(string), m["id"].(string)
+	root := n.treeRoot()
+	code, tk := root.admin("POST", "/api/admin/tokens", map[string]any{"role": "relay-child", "sub": childID, "aud": n.id})
+	if code != http.StatusCreated {
+		n.t.Fatalf("mint relay-child %s -> %s on root %s: %d %v", childID, n.id, root.id, code, tk)
+	}
+	token, _ = tk["token"].(string)
+	tokenRoots.Store(token, root)
+	return token, m["id"].(string)
 }
 
-// mintParentToken mints on THIS (child) node a relay-parent token for the parent parentID.
+// mintParentToken returns a relay-parent link token for the parent parentID to present to THIS
+// node (sub = the parent, aud = this node), signed by the root of the tree.
 func (n *node) mintParentToken(parentID string) (token, id string) {
 	n.t.Helper()
 	exp := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
-	code, m := n.admin("POST", "/api/admin/tokens", map[string]any{"role": "relay-parent", "sub": parentID, "expires_at": exp})
+	root := n.treeRoot()
+	code, m := root.admin("POST", "/api/admin/tokens", map[string]any{"role": "relay-parent", "sub": parentID, "aud": n.id, "expires_at": exp})
 	if code != http.StatusCreated {
-		n.t.Fatalf("mint relay-parent token on %s: %d %v", n.id, code, m)
+		n.t.Fatalf("mint relay-parent token for %s on root %s: %d %v", n.id, root.id, code, m)
 	}
 	return m["token"].(string), m["id"].(string)
 }
@@ -1058,5 +1113,6 @@ func (n *node) linkTo(parent *node) {
 	n.t.Helper()
 	n.setEnv("REPEATER_UPSTREAM_URL", parent.wssURL())
 	n.setEnv("REPEATER_UPSTREAM_TOKEN", parent.registerChild(n.id))
+	n.anchorTo(parent.treeRoot())
 	n.restart()
 }

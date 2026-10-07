@@ -242,13 +242,14 @@ func (m *Manager) Revoke(ctx context.Context, id string) (rec storage.LinkToken,
 	if err != nil || !found {
 		return rec, seq, 0, found, err
 	}
-	if m.CloseByJTI != nil {
-		closed = m.CloseByJTI(rec.JTI)
-	}
+	// the frame goes down first: the revoked child (and the relays below it) learn the revocation, then its link is cut
 	if frame, ferr := m.revocationFrame(seq, []storage.LinkRevocation{{JTI: rec.JTI, Exp: rec.ExpiresAt.Unix()}}); ferr != nil {
 		log.Printf("link_revocations not sent: %v", ferr)
 	} else if m.Broadcast != nil {
 		m.Broadcast(frame)
+	}
+	if m.CloseByJTI != nil {
+		closed = m.CloseByJTI(rec.JTI)
 	}
 	return rec, seq, closed, true, nil
 }
