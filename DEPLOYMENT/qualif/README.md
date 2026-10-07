@@ -45,6 +45,21 @@ bash chain-test.sh bootstrap && bash chain-test.sh smoke
 ```
 `qualif.env` et `chain/*.env` sont lus côté client (`env_file`) ; seul `/certs` est un montage résolu sur l'hôte, d'où le volume. La clé de test (0644) est jetable et ne quitte jamais le poste que par ce flux.
 
+### Images sans registre : artefact de run CI + `docker load`
+
+Aucun pull GHCR n'est nécessaire : chaque push construit les images du commit et les publie comme **artefact du run** (7 jours : `secagent-server-ci-<sha12>.tar.gz`, `secagent-minion-ci-<sha12>.tar.gz`, binaire `secagent-inventory` linux/amd64 pour le poste de contrôle, `images.env`, `SHA256SUMS`).
+
+```bash
+gh run download <id-du-run> -n secagent-images-<sha-complet> -D images
+export DOCKER_HOST=tcp://192.168.1.218:2375
+bash chain-test.sh load-images images           # sha256sum -c, puis docker load des 2 archives
+set -a; . images/images.env; set +a              # SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (tags locaux ci-<sha12>), SECAGENT_PULL_POLICY=never
+export INVENTORY_BIN="$PWD/images/secagent-inventory"
+```
+`SECAGENT_PULL_POLICY=never` empêche Compose de chercher ces tags locaux dans un registre. La production, elle, exige `tag@sha256` (archive de release, `check_compose.py --require-digest`).
+
+**Un seul projet `secagent-qualif`** pour la chaîne ET les tests de basculement (mêmes noms de conteneurs `secagent-qualif-a/-b`) : lancer `chain-test.sh` et `failover-test.sh` **l'un après l'autre**, jamais en parallèle. `backup-restore` passe par des volumes nommés (`<projet>_backup`), donc fonctionne avec un démon distant ; `CONTROL_HOST` (alias de `SECAGENT_ENDPOINT_HOST`) désigne l'hôte joint par le poste de contrôle.
+
 ## Prérequis
 
 - Docker remote access actif sur `192.168.1.218:2375`

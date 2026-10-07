@@ -6,6 +6,7 @@
 #   chain-test.sh smoke        # relais connectes, minions connectes, inventaire hierarchique, ansible -m ping
 #   chain-test.sh failover     # arret propre du maitre de la racine (failover-test.sh) puis smoke
 #   chain-test.sh backup-restore  # sauvegarde de l etat + de RSA_MASTER_KEY (a part), perte du volume, restauration
+#   chain-test.sh load-images <dir>  # docker load des images d'un artefact CI (sans registre), SECAGENT_PULL_POLICY=never
 #   chain-test.sh push-tls     # TLS_MODE=volume : copie les certificats dans le volume Docker (hote distant)
 #   chain-test.sh logs | down
 #
@@ -28,7 +29,7 @@ if [ "${TLS_MODE:-bind}" = volume ]; then
 fi
 # Hote sur lequel le poste de controle joint la racine (ports d'hote 7770 et 8770) ; defaut : poste local / runner.
 # Hote distant : SECAGENT_ENDPOINT_HOST=192.168.1.218 (doit figurer dans les SAN : PKI_EXTRA_SAN=IP:192.168.1.218).
-ENDPOINT_HOST="${SECAGENT_ENDPOINT_HOST:-127.0.0.1}"
+ENDPOINT_HOST="${CONTROL_HOST:-${SECAGENT_ENDPOINT_HOST:-127.0.0.1}}"   # CONTROL_HOST = alias
 export QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$HERE/pki/out}"
 C_A="secagent-qualif-a"; C_B="secagent-qualif-b"; C_CHILD="secagent-qualif-child"
 export C_A C_B
@@ -59,6 +60,21 @@ push_tls() {
     alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
     sh -c 'tar -xf - -C /certs && chmod 755 /certs && chmod 644 /certs/tls.crt /certs/tls.key /certs/ca.crt'
   echo "certificats de test pousses dans le volume $SECAGENT_TLS_VOLUME"
+}
+
+# Charge sur l'hote Docker (distant ou non) les images d'un ARTEFACT de run CI (docker save), sans registre :
+#   gh run download <id> -n secagent-images-<sha> -D images && chain-test.sh load-images images
+# Verifie SHA256SUMS, `docker load` des deux archives, puis affiche les variables a exporter (images.env).
+load_images() {
+  local d="${1:?repertoire de l'artefact (images.env, SHA256SUMS, *.tar.gz)}"
+  [ -f "$d/images.env" ] && [ -f "$d/SHA256SUMS" ] || fail "$d : images.env ou SHA256SUMS absent"
+  ( cd "$d" && sha256sum -c SHA256SUMS ) || fail "empreintes de l'artefact invalides"
+  local a; for a in "$d"/secagent-server-ci-*.tar.gz "$d"/secagent-minion-ci-*.tar.gz; do
+    [ -f "$a" ] || fail "archive d'image absente ($a)"
+    gunzip -c "$a" | docker load
+  done
+  echo "images chargees. A exporter :"; cat "$d/images.env"
+  echo "(binaire du poste de controle : $d/secagent-inventory -> INVENTORY_BIN)"
 }
 
 ci_prepare() {
@@ -154,11 +170,17 @@ backup_restore() {
   guard_project
   local m bk key; m="$(master)" || fail "pas de maitre sur la racine"
   bk="$CHAIN_DIR/backup-state"; key="$CHAIN_DIR/backup-key"
+  local bkvol="${PROJECT}_backup"   # volume NOMME (pas de bind mount local : le demon peut etre distant)
   rm -rf "$bk" "$key"; mkdir -p "$bk" "$key"; chmod 700 "$key"
   connected "$m" minions minion-root 2    # le minion doit etre enrole et connecte avant la sauvegarde
   echo "== sauvegarde (etat) et sauvegarde distincte de RSA_MASTER_KEY"
   docker exec "$m" /app/secagent-server state verify /data/relay.state >/dev/null || fail "etat source invalide"
   docker cp "$m:/data/relay.state" "$bk/relay.state"; chmod 755 "$bk"; chmod 644 "$bk/relay.state"
+  docker volume create "$bkvol" >/dev/null
+  tar -C "$bk" -cf - relay.state | docker run --rm -i -v "$bkvol:/backup" \
+    alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
+    sh -c 'tar -xf - -C /backup && chmod 755 /backup && chmod 644 /backup/relay.state'
+
   grep '^RSA_MASTER_KEY=' "$HERE/qualif.env" | write_secret "backup-key/rsa_master_key"
   echo "== sinistre : arret de la racine, perte du volume d'etat, perte de la cle sur l'hote"
   "${DC[@]}" rm -sf secagent-server-a secagent-server-b >/dev/null
@@ -166,23 +188,24 @@ backup_restore() {
   cp "$HERE/qualif.env" "$CHAIN_DIR/qualif.env.lost"; chmod 600 "$CHAIN_DIR/qualif.env.lost"
   sed -i '/^RSA_MASTER_KEY=/d' "$HERE/qualif.env"
   local rc=0
-  "${DC[@]}" run --rm --no-deps -v "$bk:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
+  "${DC[@]}" run --rm --no-deps -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
   [ "$rc" = 6 ] || fail "sans RSA_MASTER_KEY : code 6 attendu, obtenu $rc"
   echo "sans la cle : refus (code 6) comme attendu"
   rc=0
-  "${DC[@]}" run --rm --no-deps -e RSA_MASTER_KEY=mauvaise-cle -v "$bk:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
+  "${DC[@]}" run --rm --no-deps -e RSA_MASTER_KEY=mauvaise-cle -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
   [ "$rc" = 2 ] || fail "avec une mauvaise cle : code 2 attendu, obtenu $rc"
   echo "mauvaise cle : refus (code 2) comme attendu"
   echo "== restauration de la cle (depuis la sauvegarde distincte) puis de l'etat sur un volume vierge"
   { cat "$key/rsa_master_key"; echo; } >> "$HERE/qualif.env"
-  "${DC[@]}" run --rm --no-deps -v "$bk:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null || fail "etat sauvegarde refuse avec la cle restauree"
-  "${DC[@]}" run --rm --no-deps -v "$bk:/backup:ro" secagent-server-a state restore --from /backup/relay.state
+  "${DC[@]}" run --rm --no-deps -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null || fail "etat sauvegarde refuse avec la cle restauree"
+  "${DC[@]}" run --rm --no-deps -v "$bkvol:/backup:ro" secagent-server-a state restore --from /backup/relay.state
   "${DC[@]}" up -d secagent-server-a secagent-server-b
   wait_for "racine healthy apres restauration" 120 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_A)\" = healthy ] && [ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_B)\" = healthy ]" >/dev/null
   sleep 3
   m="$(master)" || fail "pas de maitre apres restauration"
   echo "== le minion DEJA enrole se reconnecte sans re-enrolement (aucun nouveau jeton cree)"
   connected "$m" minions minion-root 2
+  docker volume rm "$bkvol" >/dev/null || true
   echo "backup-restore OK (meme identite : le minion, authentifie par l'etat restaure, est reconnecte)"
 }
 
@@ -201,6 +224,7 @@ case "${1:-}" in
   failover) failover ;;
   backup-restore) backup_restore ;;
   logs) "${DC[@]}" logs --tail=100 ;;
+  load-images) load_images "${2:-}" ;;
   push-tls) push_tls ;;
   down) guard_project; "${DC[@]}" down -v ;;
   *) sed -n '2,16p' "$0"; exit 2 ;;

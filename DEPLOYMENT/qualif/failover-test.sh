@@ -8,7 +8,7 @@
 #   failover-test.sh run freeze          # SIGSTOP du maitre : doit passer `unhealthy`, puis SIGCONT : un seul maitre
 #   failover-test.sh teardown            # docker compose down -v
 #
-# Variables : COMPOSE_FILE (defaut docker-compose.server.yml de ce repertoire), PROJECT (secagent-failover),
+# Variables : COMPOSE_FILE (defaut docker-compose.server.yml de ce repertoire), PROJECT (secagent-qualif),
 #   C_A / C_B (noms de conteneurs, defaut secagent-qualif-a / -b), STOP_MAX_S (defaut 10), KILL_MAX_S (defaut 600),
 #   INSPECT_MINION_CMD / INVENTORY_CMD : commandes optionnelles (code 0 = OK) lancees apres chaque bascule
 #   (minion reconnecte sans re-enrolement ; secagent-inventory avec la liste des 2 adresses).
@@ -16,7 +16,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-$HERE/docker-compose.server.yml}"
-PROJECT="${PROJECT:-secagent-failover}"
+PROJECT="${PROJECT:-${COMPOSE_PROJECT_NAME:-secagent-qualif}}"   # un SEUL projet (qualif reelle) : memes noms de conteneurs que la chaine, scripts lances SEQUENTIELLEMENT
 C_A="${C_A:-secagent-qualif-a}"; C_B="${C_B:-secagent-qualif-b}"
 STOP_MAX_S="${STOP_MAX_S:-10}"; KILL_MAX_S="${KILL_MAX_S:-600}"
 DC=(docker compose -p "$PROJECT" -f "$COMPOSE_FILE")

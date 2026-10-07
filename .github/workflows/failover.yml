@@ -40,5 +40,5 @@ jobs:
           SECAGENT_IMAGE: secagent-server:ci
           QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
         run: |
-          docker compose -p secagent-failover -f DEPLOYMENT/qualif/docker-compose.server.yml logs --tail=80 || true
+          docker compose -p secagent-qualif -f DEPLOYMENT/qualif/docker-compose.server.yml logs --tail=80 || true
           bash DEPLOYMENT/qualif/failover-test.sh teardown || true
