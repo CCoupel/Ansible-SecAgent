@@ -552,9 +552,10 @@ func AdminStatus(w http.ResponseWriter, r *http.Request) {
 	uptimeSec := int(time.Since(serverStartTime).Seconds())
 
 	body := map[string]interface{}{
-		"db":             dbStatus,
-		"ws_connections": ws.GetConnectedCount(),
-		"uptime":         fmt.Sprintf("%ds", uptimeSec),
+		"db":              dbStatus,
+		"ws_connections":  ws.GetConnectedCount(),
+		"tasks_in_flight": ws.TasksInFlight(), // #179: tasks admitted on this node (local and relayed)
+		"uptime":          fmt.Sprintf("%ds", uptimeSec),
 	}
 	if d := hooks.GlobalDispatcher; d != nil { // hooks queue (#183): a loss is never silent
 		st := d.Stats()

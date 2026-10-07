@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -126,6 +127,33 @@ type Config struct {
 
 	// Repeater is the validated child-relay configuration (REPEATER_UPSTREAM_*); nil = no pull parent.
 	Repeater *config.RepeaterConfig
+
+	// Limits of concurrency and stdout budget (#179); zero = the default (10 / 1000 / 1 GiB).
+	// MAX_TASKS_PER_AGENT, MAX_TASKS_INFLIGHT, MAX_STDOUT_BUFFER_TOTAL (bytes). An invalid value
+	// (not a positive integer) refuses to start.
+	MaxTasksPerAgent     int
+	MaxTasksInflight     int
+	MaxStdoutBufferTotal int64
+}
+
+// Environment variables of the task admission limits (#179).
+const (
+	EnvMaxTasksPerAgent     = "MAX_TASKS_PER_AGENT"
+	EnvMaxTasksInflight     = "MAX_TASKS_INFLIGHT"
+	EnvMaxStdoutBufferTotal = "MAX_STDOUT_BUFFER_TOTAL"
+)
+
+// envPositiveInt reads a positive integer variable (0 = unset).
+func envPositiveInt(name string) (int64, error) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s: %q is not a positive integer", name, v)
+	}
+	return n, nil
 }
 
 // ErrDatabaseURLRemoved is returned when DATABASE_URL is still set: since v3.0.3 the relay state is
@@ -212,6 +240,21 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	cfg.StateMaxBytes = max
+	for name, dst := range map[string]*int64{EnvMaxStdoutBufferTotal: &cfg.MaxStdoutBufferTotal} {
+		if *dst, err = envPositiveInt(name); err != nil {
+			return Config{}, err
+		}
+	}
+	if n, err := envPositiveInt(EnvMaxTasksPerAgent); err != nil {
+		return Config{}, err
+	} else {
+		cfg.MaxTasksPerAgent = int(n)
+	}
+	if n, err := envPositiveInt(EnvMaxTasksInflight); err != nil {
+		return Config{}, err
+	} else {
+		cfg.MaxTasksInflight = int(n)
+	}
 	if cfg.JWTSecret == "" {
 		return Config{}, ErrMissingJWTSecret
 	}

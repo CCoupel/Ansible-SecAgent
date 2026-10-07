@@ -109,6 +109,9 @@ func (f *Forwarder) run(ctx context.Context, m ws.RelayMessage) ws.RelayMessage 
 	log.Printf("[FORWARD] task_id=%q host=%q next_hop=%q type=%q", m.TaskID, m.Hostname, hop, m.Type)
 	ch, err := ws.DispatchToRelay(hop, m)
 	if err != nil {
+		if ws.IsAdmissionError(err) {
+			return ws.RelayMessage{Error: err.Error()} // this hop is saturated: the refusal travels back up
+		}
 		return ws.RelayMessage{Error: ErrDispatch}
 	}
 	select {
@@ -144,7 +147,10 @@ func runLocal(ctx context.Context, m ws.RelayMessage) ws.RelayMessage {
 	if err != nil {
 		return ws.RelayMessage{Error: ErrInvalidTask}
 	}
-	ch := ws.RegisterFuture(m.TaskID, m.Hostname)
+	ch, admitErr := ws.RegisterFuture(m.TaskID, m.Hostname)
+	if admitErr != nil {
+		return ws.RelayMessage{Error: admitErr.Error()} // agent_busy / too_many_tasks / memory_budget_exhausted: nothing was sent
+	}
 	if err := ws.SendToAgent(m.Hostname, msg); err != nil {
 		ws.UnregisterFuture(m.TaskID)
 		return ws.RelayMessage{Error: "send_failed"}

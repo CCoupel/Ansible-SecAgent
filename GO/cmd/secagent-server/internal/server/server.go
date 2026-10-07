@@ -186,6 +186,10 @@ func Build(cfg Config) (node *Node, err error) {
 	}
 	log.Println("[OK] Server keys loaded")
 
+	// Admission limits of the tasks (#179): per agent, in flight on this node, stdout buffer budget
+	ws.SetTaskLimits(cfg.MaxTasksPerAgent, cfg.MaxTasksInflight, cfg.MaxStdoutBufferTotal)
+	log.Printf("[OK] Task limits: per_agent=%d in_flight=%d stdout_budget=%d bytes", orInt(cfg.MaxTasksPerAgent, ws.DefaultMaxTasksPerAgent), orInt(cfg.MaxTasksInflight, ws.DefaultMaxTasksInflight), orInt64(cfg.MaxStdoutBufferTotal, ws.DefaultMaxStdoutBufferTot))
+
 	// Inject JWT secrets getter into WS handler for dual-key validation
 	ws.SetJWTSecretsFunc(handlers.GetServerJWTSecrets)
 
@@ -751,4 +755,18 @@ func (n *Node) startPurge(every time.Duration) {
 			}
 		}
 	}()
+}
+
+func orInt(v, def int) int {
+	if v > 0 {
+		return v
+	}
+	return def
+}
+
+func orInt64(v, def int64) int64 {
+	if v > 0 {
+		return v
+	}
+	return def
 }

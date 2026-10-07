@@ -160,8 +160,13 @@ func GetConnection(hostname string) (*AgentConnection, error) {
 	return conn, nil
 }
 
-// RegisterFuture creates and registers a channel for a task result
-func RegisterFuture(taskID string, hostname string) chan Message {
+// RegisterFuture is the admission point of a task executed by an agent of this node (#179): it
+// refuses (ErrAgentBusy, ErrTooManyTasks, ErrMemoryBudget) before anything is sent, otherwise it
+// creates and registers the channel of the result. Every path that ends the task releases the slot.
+func RegisterFuture(taskID string, hostname string) (chan Message, error) {
+	if err := admitTask(taskID, hostname); err != nil {
+		return nil, err
+	}
 	tasksMu.Lock()
 	defer tasksMu.Unlock()
 
@@ -172,7 +177,7 @@ func RegisterFuture(taskID string, hostname string) chan Message {
 	taskHostnames[taskID] = hostname
 	taskHostMu.Unlock()
 
-	return resultChan
+	return resultChan, nil
 }
 
 // UnregisterFuture removes a pending future without resolving it (used for cleanup on send failure or timeout).
@@ -188,6 +193,7 @@ func UnregisterFuture(taskID string) {
 	buffersMu.Lock()
 	delete(stdoutBuffers, taskID)
 	buffersMu.Unlock()
+	releaseTask(taskID)
 }
 
 // ResolveFuturesForHostname resolves all pending futures for a hostname with an error
@@ -228,6 +234,7 @@ func ResolveFuturesForHostname(hostname string, errorMsg string) {
 		taskHostMu.Lock()
 		delete(taskHostnames, taskID)
 		taskHostMu.Unlock()
+		releaseTask(taskID)
 	}
 }
 
@@ -267,20 +274,20 @@ func HandleMessage(msg Message, hostname string) {
 		log.Printf("Task ack received: task_id=%q hostname=%q", taskID, hostname)
 
 	case "stdout":
-		// Accumulate stdout, enforce 5 MB cap
+		// Accumulate stdout: 5 MiB per task and the global budget (#179). A chunk that does not fit is
+		// truncated (the existing "truncated" flag): the last resort, admission normally prevents it.
 		buffersMu.Lock()
 		buf := stdoutBuffers[taskID]
-		combined := buf + msg.Chunk
-		if len([]byte(combined)) > stdoutMaxBytes {
-			// Truncate to max size
-			runes := []rune(combined)
-			for len(string(runes)) > stdoutMaxBytes {
-				runes = runes[:len(runes)-1]
-			}
-			combined = string(runes)
+		allow := reserveStdout(taskID, int64(len(msg.Chunk)))
+		chunk := cutUTF8(msg.Chunk, allow)
+		if given := int64(len(chunk)); given < allow {
+			// cutUTF8 kept less than reserved (rune boundary): give the difference back
+			refundStdout(taskID, allow-given)
+		}
+		if int64(len(chunk)) < int64(len(msg.Chunk)) {
 			log.Printf("Stdout buffer truncated: task_id=%q hostname=%q", taskID, hostname)
 		}
-		stdoutBuffers[taskID] = combined
+		stdoutBuffers[taskID] = buf + chunk
 		buffersMu.Unlock()
 
 	case "result":
@@ -320,6 +327,7 @@ func HandleMessage(msg Message, hostname string) {
 		taskHostMu.Lock()
 		delete(taskHostnames, taskID)
 		taskHostMu.Unlock()
+		releaseTask(taskID)
 
 	default:
 		log.Printf("Unknown WS message type: type=%q task_id=%q hostname=%q", msgType, taskID, hostname)

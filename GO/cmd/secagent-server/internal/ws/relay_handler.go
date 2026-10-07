@@ -184,7 +184,10 @@ var (
 
 	// task_id → channel receiving task result (for task_forward flow)
 	relayPendingTasks = make(map[string]chan RelayTaskResult)
-	relayTasksMu      sync.RWMutex
+	// task_id → relay the task was dispatched to (#179): only that relay resolves it, and only its
+	// disconnection fails it
+	relayTaskOwner = make(map[string]string)
+	relayTasksMu   sync.RWMutex
 )
 
 // ── Injected functions (avoid ws→storage import cycle) ───────────────────────
@@ -724,20 +727,27 @@ func IsRelayConnected(relayID string) bool {
 	return ok
 }
 
-// RegisterRelayTaskFuture registers a result channel for a task dispatched to a relay.
-func RegisterRelayTaskFuture(taskID string) chan RelayTaskResult {
+// RegisterRelayTaskFuture is the admission point of a task dispatched to a child relay (#179): counted
+// in the global limit of this node (each hop counts it), refused with a typed error before anything is
+// sent. The slot is released by every path that ends the task.
+func RegisterRelayTaskFuture(taskID string) (chan RelayTaskResult, error) {
+	if err := admitTask(taskID, ""); err != nil {
+		return nil, err
+	}
 	ch := make(chan RelayTaskResult, 1)
 	relayTasksMu.Lock()
 	relayPendingTasks[taskID] = ch
 	relayTasksMu.Unlock()
-	return ch
+	return ch, nil
 }
 
 // UnregisterRelayTaskFuture removes a pending relay task future.
 func UnregisterRelayTaskFuture(taskID string) {
 	relayTasksMu.Lock()
 	delete(relayPendingTasks, taskID)
+	delete(relayTaskOwner, taskID)
 	relayTasksMu.Unlock()
+	releaseTask(taskID)
 }
 
 // DispatchToRelay sends a task_forward message to a connected relay and returns
@@ -748,7 +758,13 @@ func DispatchToRelay(relayID string, msg RelayMessage) (chan RelayTaskResult, er
 		return nil, err
 	}
 
-	ch := RegisterRelayTaskFuture(msg.TaskID)
+	ch, regErr := RegisterRelayTaskFuture(msg.TaskID)
+	if regErr != nil {
+		return nil, regErr
+	}
+	relayTasksMu.Lock()
+	relayTaskOwner[msg.TaskID] = relayID
+	relayTasksMu.Unlock()
 
 	conn.mu.Lock()
 	writeErr := conn.Conn.WriteJSON(msg)
@@ -801,11 +817,14 @@ func unregisterRelayConnection(relayID string) {
 		}
 	}
 
-	// Resolve all pending task futures with disconnect error
+	// Resolve the pending task futures of THIS relay with a disconnect error (a task not owned by any
+	// relay, registered by a test or a legacy caller, is resolved too)
 	relayTasksMu.Lock()
 	var taskIDs []string
 	for id := range relayPendingTasks {
-		taskIDs = append(taskIDs, id)
+		if owner := relayTaskOwner[id]; owner == "" || owner == relayID {
+			taskIDs = append(taskIDs, id)
+		}
 	}
 	relayTasksMu.Unlock()
 
@@ -814,9 +833,11 @@ func unregisterRelayConnection(relayID string) {
 		ch, ok := relayPendingTasks[tid]
 		if ok {
 			delete(relayPendingTasks, tid)
+			delete(relayTaskOwner, tid)
 		}
 		relayTasksMu.Unlock()
 		if ok {
+			releaseTask(tid)
 			select {
 			case ch <- RelayTaskResult{TaskID: tid, Error: "relay_disconnected"}:
 			default:
@@ -1017,9 +1038,19 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		relayTasksMu.Lock()
 		ch, ok := relayPendingTasks[msg.TaskID]
 		if ok {
+			if owner := relayTaskOwner[msg.TaskID]; owner != "" && owner != conn.RelayID {
+				// a relay can only answer the tasks dispatched to it
+				relayTasksMu.Unlock()
+				log.Printf("[SECURITY WARNING] task_result ignored: task_id=%q was not dispatched to relay_id=%q", msg.TaskID, conn.RelayID)
+				return
+			}
 			delete(relayPendingTasks, msg.TaskID)
+			delete(relayTaskOwner, msg.TaskID)
 		}
 		relayTasksMu.Unlock()
+		if ok {
+			releaseTask(msg.TaskID)
+		}
 
 		if ok {
 			res := RelayTaskResult{
@@ -1413,10 +1444,16 @@ func resetRelayState() {
 	relayConnsMu.Unlock()
 
 	relayTasksMu.Lock()
+	ids := make([]string, 0, len(relayPendingTasks))
 	for k := range relayPendingTasks {
+		ids = append(ids, k)
 		delete(relayPendingTasks, k)
 	}
+	relayTaskOwner = make(map[string]string)
 	relayTasksMu.Unlock()
+	for _, k := range ids {
+		releaseTask(k)
+	}
 }
 
 // validateSnapshot checks a topology_snapshot sent by the child conn.RelayID and

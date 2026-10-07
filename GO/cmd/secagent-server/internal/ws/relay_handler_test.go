@@ -455,7 +455,7 @@ func TestRelayHandler_TaskResult(t *testing.T) {
 	conn := dialRelay(t, srv, makeRelayJWT("dmz-task", "relay"))
 
 	// Register a pending future for task-999
-	ch := RegisterRelayTaskFuture("task-999")
+	ch := mustRelayFuture(RegisterRelayTaskFuture("task-999"))
 	defer UnregisterRelayTaskFuture("task-999")
 
 	// Simulate relay returning task result
@@ -537,7 +537,7 @@ func TestRelayHandler_DisconnectResolvesPendingTasks(t *testing.T) {
 	conn := dialRelay(t, srv, makeRelayJWT("dmz-pending", "relay"))
 
 	// Register a pending future
-	ch := RegisterRelayTaskFuture("task-abandoned")
+	ch := mustRelayFuture(RegisterRelayTaskFuture("task-abandoned"))
 
 	// Close connection — should resolve future with error
 	if err := conn.Close(); err != nil {

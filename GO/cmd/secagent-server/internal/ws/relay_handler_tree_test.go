@@ -125,6 +125,13 @@ func TestTree_LoopRefused(t *testing.T) {
 			setTreeHooks(t, tt.local, tt.ancestors, nil, nil)
 			srv := setupRelayTestServer(t)
 			defer srv.Close()
+			if tt.child == tt.local {
+				// sub == aud: refused by the link verifier itself, before any loop check (#141 audit)
+				if code := dialRelayExpectFail(t, srv, makeRelayJWT(tt.child, "relay")); code != http.StatusUnauthorized {
+					t.Errorf("status %d, want 401", code)
+				}
+				return
+			}
 			c := dialRelay(t, srv, makeRelayJWT(tt.child, "relay"))
 			if tt.refused {
 				// refused at upgrade time, without waiting for any hello

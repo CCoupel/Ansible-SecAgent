@@ -24,7 +24,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const specTaskLimits179 = false // dev-relay: true when #179 lands
+const specTaskLimits179 = true // dev-relay: true when #179 lands
 
 func requireTaskLimits(t *testing.T) {
 	t.Helper()

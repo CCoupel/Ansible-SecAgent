@@ -211,7 +211,10 @@ func pointerString(s string) *string {
 // Returns the result Message or an error.
 func sendTaskAndWait(hostname, taskID string, message map[string]interface{}, timeout int) (ws.Message, error) {
 	// Register channel before send to avoid race where result arrives before we listen
-	resultChan := ws.RegisterFuture(taskID, hostname)
+	resultChan, admitErr := ws.RegisterFuture(taskID, hostname)
+	if admitErr != nil {
+		return ws.Message{}, admitErr // typed: ErrAgentBusy / ErrTooManyTasks / ErrMemoryBudget (nothing was sent)
+	}
 
 	if err := ws.SendToAgent(hostname, message); err != nil {
 		// Cleanup the orphaned future
@@ -234,9 +237,10 @@ func writeAgentError(w http.ResponseWriter, errStr string, hostname, taskID stri
 	case "agent_disconnected":
 		log.Printf("Agent disconnected during task: hostname=%q task_id=%q", hostname, taskID)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent_disconnected"})
-	case "agent_busy":
-		log.Printf("Agent busy: hostname=%q task_id=%q", hostname, taskID)
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "agent_busy"})
+	case "agent_busy", "too_many_tasks", "memory_budget_exhausted":
+		// the agent, or a relay below, refused the task (#179): same answer as an admission refusal here
+		log.Printf("Task refused downstream: hostname=%q task_id=%q reason=%s", hostname, taskID, errStr)
+		writeAdmissionCode(w, errStr)
 	default:
 		log.Printf("Agent error: hostname=%q task_id=%q error=%q", hostname, taskID, errStr)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": errStr})
@@ -349,6 +353,9 @@ func ExecCommand(w http.ResponseWriter, r *http.Request) {
 	// Send to agent and wait for result
 	result, err := sendTaskAndWait(hostname, *taskID, message, req.Timeout)
 	if err != nil {
+		if writeAdmissionError(w, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "timeout") {
 			writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "task_timeout"})
 		} else {
@@ -471,6 +478,9 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 	fileTimeout := 60
 	result, err := sendTaskAndWait(hostname, *taskID, message, fileTimeout)
 	if err != nil {
+		if writeAdmissionError(w, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "timeout") {
 			writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "task_timeout"})
 		} else {
@@ -571,6 +581,9 @@ func FetchFile(w http.ResponseWriter, r *http.Request) {
 	fileTimeout := 60
 	result, err := sendTaskAndWait(hostname, *taskID, message, fileTimeout)
 	if err != nil {
+		if writeAdmissionError(w, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "timeout") {
 			writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "task_timeout"})
 		} else {
@@ -597,6 +610,12 @@ func writeProxyExecError(w http.ResponseWriter, err error, hostname, taskID stri
 	e := err.Error()
 	log.Printf("Proxy exec error: hostname=%q task_id=%q err=%q", hostname, taskID, e)
 	switch {
+	case strings.Contains(e, "too_many_tasks"):
+		writeAdmissionCode(w, "too_many_tasks")
+	case strings.Contains(e, "memory_budget_exhausted"):
+		writeAdmissionCode(w, "memory_budget_exhausted")
+	case strings.Contains(e, "agent_busy"):
+		writeAdmissionCode(w, "agent_busy")
 	case strings.Contains(e, "timeout"):
 		writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "task_timeout"})
 	case strings.Contains(e, ErrAgentSuspended):
@@ -609,4 +628,27 @@ func writeProxyExecError(w http.ResponseWriter, err error, hostname, taskID stri
 	default:
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": e})
 	}
+}
+
+// writeAdmissionCode answers a task refused for load (#179): 429 agent_busy / too_many_tasks, 503
+// memory_budget_exhausted, each with a Retry-After in seconds. Nothing was sent to the agent.
+func writeAdmissionCode(w http.ResponseWriter, code string) {
+	status, retry := http.StatusTooManyRequests, ws.RetryAfterSeconds(ws.ErrAgentBusy)
+	switch code {
+	case "too_many_tasks":
+		retry = ws.RetryAfterSeconds(ws.ErrTooManyTasks)
+	case "memory_budget_exhausted":
+		status, retry = http.StatusServiceUnavailable, ws.RetryAfterSeconds(ws.ErrMemoryBudget)
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(retry))
+	writeJSON(w, status, map[string]string{"error": code})
+}
+
+// writeAdmissionError writes the answer of an admission refusal; false when err is not one.
+func writeAdmissionError(w http.ResponseWriter, err error) bool {
+	if !ws.IsAdmissionError(err) {
+		return false
+	}
+	writeAdmissionCode(w, err.Error())
+	return true
 }

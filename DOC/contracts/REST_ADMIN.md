@@ -424,7 +424,7 @@ Lu dans le journal append-only `actions.log` (#161). `limit` : 1–200 (défaut 
 
 ### `GET /api/admin/status`
 
-**Réponse 200 :** `db`, `ws_connections`, `uptime`, `links` (relay hiérarchique, si câblé) et, depuis #183, la file des hooks :
+**Réponse 200 :** `db`, `ws_connections`, `tasks_in_flight` (tâches admises sur ce relay, locales et relayées, #179), `uptime`, `links` (relay hiérarchique, si câblé) et, depuis #183, la file des hooks :
 
 ```json
 { "db": "ok", "ws_connections": 3, "uptime": "7200s",
