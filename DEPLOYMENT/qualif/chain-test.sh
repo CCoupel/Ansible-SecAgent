@@ -62,17 +62,41 @@ push_tls() {
   echo "certificats de test pousses dans le volume $SECAGENT_TLS_VOLUME"
 }
 
+# Garde (BAS-3) : avec SECAGENT_PULL_POLICY=never, Docker reutiliserait SILENCIEUSEMENT un tag local preexistant. Avant
+# tout demarrage, l'ID reel des images du demon doit etre celui enregistre par `load-images` (non secret).
+verify_images() {
+  [ "${SECAGENT_PULL_POLICY:-missing}" = never ] || return 0
+  local f="$CHAIN_DIR/image-ids" var ref want id
+  [ -f "$f" ] || fail "SECAGENT_PULL_POLICY=never mais $f est absent : lancer d'abord 'chain-test.sh load-images <repertoire-de-l-artefact>'"
+  for var in SECAGENT_IMAGE SECAGENT_MINION_IMAGE; do
+    ref="${!var:-}"; [ -n "$ref" ] || fail "$var non defini"
+    want="$(awk -v r="$ref" '$1==r {print $2}' "$f")"
+    [ -n "$want" ] || fail "$ref ne figure pas dans $f (images non chargees par load-images)"
+    id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null)" || fail "image $ref absente du demon Docker"
+    [ "$id" = "$want" ] || fail "ID de $ref different de l'artefact charge (demon: $id, attendu: $want) : un tag local preexistant ? relancer load-images"
+  done
+}
+
 # Charge sur l'hote Docker (distant ou non) les images d'un ARTEFACT de run CI (docker save), sans registre :
 #   gh run download <id> -n secagent-images-<sha> -D images && chain-test.sh load-images images
 # Verifie SHA256SUMS, `docker load` des deux archives, puis affiche les variables a exporter (images.env).
 load_images() {
-  local d="${1:?repertoire de l'artefact (images.env, SHA256SUMS, *.tar.gz)}"
+  local d="${1:?repertoire de l artefact (images.env SHA256SUMS archives)}"
   [ -f "$d/images.env" ] && [ -f "$d/SHA256SUMS" ] || fail "$d : images.env ou SHA256SUMS absent"
   ( cd "$d" && sha256sum -c SHA256SUMS ) || fail "empreintes de l'artefact invalides"
+  [ -f "$d/images.ids" ] || fail "$d/images.ids absent (artefact trop ancien)"
   local a; for a in "$d"/secagent-server-ci-*.tar.gz "$d"/secagent-minion-ci-*.tar.gz; do
     [ -f "$a" ] || fail "archive d'image absente ($a)"
     gunzip -c "$a" | docker load
   done
+  # ID reels apres chargement == ID de l'artefact ; ils sont enregistres dans l'etat local (verify_images).
+  local ref want id; mkdir -p "$CHAIN_DIR"; chmod 700 "$CHAIN_DIR"
+  while read -r ref want; do
+    [ -n "$ref" ] || continue
+    id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null)" || fail "image $ref absente apres docker load"
+    [ "$id" = "$want" ] || fail "ID de $ref apres chargement ($id) != artefact ($want)"
+  done < "$d/images.ids"
+  cp "$d/images.ids" "$CHAIN_DIR/image-ids"; chmod 600 "$CHAIN_DIR/image-ids"
   echo "images chargees. A exporter :"; cat "$d/images.env"
   echo "(binaire du poste de controle : $d/secagent-inventory -> INVENTORY_BIN)"
 }
@@ -86,6 +110,7 @@ ci_prepare() {
 
 bootstrap() {
   need SECAGENT_IMAGE; need SECAGENT_MINION_IMAGE
+  verify_images
   mkdir -p "$CHAIN_DIR"; chmod 700 "$CHAIN_DIR"
   echo "== etat initial (racine, enfant)"
   "${DC[@]}" run --rm --no-deps secagent-server-a state init
@@ -168,6 +193,7 @@ smoke() {
 # est restaure, la racine redemarre et le minion DEJA enrole se reconnecte SANS re-enrolement (meme identite).
 backup_restore() {
   guard_project
+  verify_images
   local m bk key; m="$(master)" || fail "pas de maitre sur la racine"
   bk="$CHAIN_DIR/backup-state"; key="$CHAIN_DIR/backup-key"
   local bkvol="${PROJECT}_backup"   # volume NOMME (pas de bind mount local : le demon peut etre distant)
@@ -210,6 +236,7 @@ backup_restore() {
 }
 
 failover() {
+  verify_images
   need INVENTORY_BIN
   control_env
   # Arret propre du maitre : l'enfant et les minions doivent se reconnecter par leurs listes, ping OK ensuite.
@@ -217,15 +244,17 @@ failover() {
   smoke
 }
 
-case "${1:-}" in
-  ci-prepare) ci_prepare ;;
-  bootstrap) bootstrap ;;
-  smoke) smoke ;;
-  failover) failover ;;
-  backup-restore) backup_restore ;;
-  logs) "${DC[@]}" logs --tail=100 ;;
-  load-images) load_images "${2:-}" ;;
-  push-tls) push_tls ;;
-  down) guard_project; "${DC[@]}" down -v ;;
-  *) sed -n '2,16p' "$0"; exit 2 ;;
-esac
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  case "${1:-}" in
+    ci-prepare) ci_prepare ;;
+    bootstrap) bootstrap ;;
+    smoke) smoke ;;
+    failover) failover ;;
+    backup-restore) backup_restore ;;
+    logs) "${DC[@]}" logs --tail=100 ;;
+    load-images) load_images "${2:-}" ;;
+    push-tls) push_tls ;;
+    down) guard_project; "${DC[@]}" down -v ;;
+    *) sed -n '2,16p' "$0"; exit 2 ;;
+  esac
+fi

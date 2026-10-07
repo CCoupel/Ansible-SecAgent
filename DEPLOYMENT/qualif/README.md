@@ -56,6 +56,7 @@ bash chain-test.sh load-images images           # sha256sum -c, puis docker load
 set -a; . images/images.env; set +a              # SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (tags locaux ci-<sha12>), SECAGENT_PULL_POLICY=never
 export INVENTORY_BIN="$PWD/images/secagent-inventory"
 ```
+`load-images` enregistre les ID des images (`chain/image-ids`, non secrets) et `bootstrap`/`failover`/`backup-restore` **refusent** de démarrer si l'ID réel d'une image du démon diffère (tag local préexistant) ou si `load-images` n'a pas été lancé.
 `SECAGENT_PULL_POLICY=never` empêche Compose de chercher ces tags locaux dans un registre. La production, elle, exige `tag@sha256` (archive de release, `check_compose.py --require-digest`).
 
 **Procédure « qualification sans registre »** (le job `images-artifact` ne tourne que sur un **push**, après `docker-compose-checks`) :
@@ -109,3 +110,7 @@ Un push ne fait que des tests : **aucune image n'est publiée par `ci.yml`**. La
 *Run workflow* (`ref` = branche ou commit, `publish` = `true`) ; (2) au tag `vX.Y.Z` (`release.yml`, PROD).
 Le résumé du run donne `ghcr.io/ccoupel/<image>:sha-<commit>@sha256:<digest>` : c'est la valeur de `SECAGENT_IMAGE`
 de `docker-compose.server.yml`.
+
+## Note de confiance : `ansible_secagent_server`
+
+Le plugin de connexion lit l'adresse du serveur (`ansible_secagent_server`) et le fichier de jeton dans l'environnement **et** dans les variables d'hôte de l'inventaire ; une variable d'hôte **prime** sur l'environnement. L'inventaire est donc un élément **de confiance** : ne jamais utiliser un inventaire non maîtrisé avec un jeton plugin valide (il pourrait rediriger le jeton vers un autre serveur).

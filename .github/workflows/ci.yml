@@ -182,6 +182,7 @@ jobs:
           python3 scripts/ci/test_shared_storage_hosts.py
           python3 scripts/ci/check_no_publish_selftest.py
           python3 scripts/ci/check_scripts_selftest.py
+          bash scripts/ci/chain_verify_images_selftest.sh
           python3 scripts/ci/check_scripts.py .github/workflows/*.yml
 
       # Variables d'exemple NON secretes : uniquement pour que `docker compose config` puisse interpoler.
@@ -445,6 +446,11 @@ jobs:
             echo "SECAGENT_MINION_IMAGE=secagent-minion:ci-${SHA12}"
             echo "SECAGENT_PULL_POLICY=never"
           } > out/images.env
+          # ID reels des images (non secrets) : verifies par `chain-test.sh load-images` puis avant chaque demarrage.
+          {
+            echo "secagent-server:ci-${SHA12} $(docker image inspect --format '{{.Id}}' "secagent-server:ci-${SHA12}")"
+            echo "secagent-minion:ci-${SHA12} $(docker image inspect --format '{{.Id}}' "secagent-minion:ci-${SHA12}")"
+          } > out/images.ids
           (cd out && sha256sum ./* > SHA256SUMS && cat SHA256SUMS)
           {
             echo "image id serveur : $(docker image inspect --format '{{.Id}}' "secagent-server:ci-${SHA12}")"
