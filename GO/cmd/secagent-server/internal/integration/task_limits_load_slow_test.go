@@ -18,21 +18,70 @@ import (
 
 // ── load: 3 000 simulated agents (perf scope) ────────────────────────────────
 
-// vmHWM returns the peak resident set of the node process, in bytes.
-func vmHWM(t *testing.T, pid int) int64 {
+// rssSampler records the peak resident set of the node process (a child of the test binary: the
+// harness runs every node as its own OS process, so /proc/<pid>/status is the node and nothing else).
+// It samples VmRSS every 50 ms AND keeps the last VmHWM it could read: when the process dies under
+// load its last values are still there, and the test says so instead of skipping.
+type rssSampler struct {
+	pid      int
+	peak     atomic.Int64 // bytes
+	samples  atomic.Int64
+	stop     chan struct{}
+	done     chan struct{}
+	vanished atomic.Bool
+}
+
+func startRSSSampler(t *testing.T, pid int) *rssSampler {
 	t.Helper()
-	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	r := &rssSampler{pid: pid, stop: make(chan struct{}), done: make(chan struct{})}
+	if _, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err != nil {
+		t.Fatalf("cannot read /proc/%d/status (not Linux, or the node is not running): %v", pid, err)
+	}
+	go func() {
+		defer close(r.done)
+		tick := time.NewTicker(50 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			if !r.sample() {
+				r.vanished.Store(true)
+				return
+			}
+			select {
+			case <-r.stop:
+				return
+			case <-tick.C:
+			}
+		}
+	}()
+	return r
+}
+
+func (r *rssSampler) sample() bool {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", r.pid))
 	if err != nil {
-		t.Skipf("cannot read /proc/%d/status: %v", pid, err)
+		return false
 	}
 	for _, l := range strings.Split(string(b), "\n") {
-		if strings.HasPrefix(l, "VmHWM:") {
-			f := strings.Fields(l)
-			kb, _ := strconv.ParseInt(f[1], 10, 64)
-			return kb * 1024
+		if strings.HasPrefix(l, "VmRSS:") || strings.HasPrefix(l, "VmHWM:") {
+			if f := strings.Fields(l); len(f) >= 2 {
+				if kb, err := strconv.ParseInt(f[1], 10, 64); err == nil && kb*1024 > r.peak.Load() {
+					r.peak.Store(kb * 1024)
+				}
+			}
 		}
 	}
-	return 0
+	r.samples.Add(1)
+	return true
+}
+
+func (r *rssSampler) finish() (peak int64, vanished bool) {
+	select {
+	case <-r.done:
+	default:
+		close(r.stop)
+		<-r.done
+	}
+	return r.peak.Load(), r.vanished.Load()
 }
 
 // A nominal playbook (forks 200) over 3 000 agents is never rejected with the DEFAULT limits; a
@@ -45,6 +94,8 @@ func TestTaskLimits_Load3000AgentsNominalThenSaturation(t *testing.T) {
 	parallel(t)
 	const agents, forks, saturating = 3000, 200, 1000
 	n := startNode(t, nodeSpec{ID: "load"}) // DEFAULT limits: that is the point
+	rss := startRSSSampler(t, n.cmd.Process.Pid)
+	n.pluginToken() // created once, before the concurrent execs (the lazy creation is not goroutine-safe)
 
 	tokens := make([]string, agents)
 	forEach(t, agents, 64, func(i int) error {
@@ -131,8 +182,18 @@ func TestTaskLimits_Load3000AgentsNominalThenSaturation(t *testing.T) {
 	close(release)
 	wg.Wait()
 
-	hwm := vmHWM(t, n.cmd.Process.Pid)
-	t.Logf("saturation: %d ok, %d 429, %d 503 memory, %d other; node VmHWM = %.0f MiB (limit 2048)", ok.Load(), busy.Load(), memory.Load(), other.Load(), float64(hwm)/(1<<20))
+	hwm, vanished := rss.finish()
+	t.Logf("saturation: %d ok, %d 429, %d 503 memory, %d other; node peak RSS = %.0f MiB over %d samples (limit 2048)", ok.Load(), busy.Load(), memory.Load(), other.Load(), float64(hwm)/(1<<20), rss.samples.Load())
+	if vanished {
+		select {
+		case <-n.exited:
+		case <-time.After(5 * time.Second):
+		}
+		t.Errorf("the node process DISAPPEARED during the load (exit code %d): killed by the kernel (OOM) or crashed — the last RSS seen was %.0f MiB", n.exitCode, float64(hwm)/(1<<20))
+	}
+	if hwm == 0 {
+		t.Fatal("no RSS sample: the memory criterion cannot be checked")
+	}
 	if other.Load() != 0 {
 		t.Errorf("%d request(s) ended in anything but 200 / 429 / 503 memory_budget_exhausted: refusals must be clean", other.Load())
 	}
