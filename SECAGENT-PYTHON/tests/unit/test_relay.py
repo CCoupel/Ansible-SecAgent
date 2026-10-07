@@ -78,6 +78,15 @@ def _make_handler(counter, behaviour):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            elif isinstance(behaviour, tuple):
+                # (status, body bytes, headers dict) — scripted response.
+                status, body, headers = behaviour
+                self.send_response(status)
+                for k, v in headers.items():
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             elif behaviour == "5xx":
                 self.send_response(503)
                 self.send_header("Content-Length", "0")
@@ -550,3 +559,65 @@ def test_ansible_playbook_reads_hostvars(servers, tmp_path, monkeypatch):
                          capture_output=True, text=True, timeout=120)
     assert res.returncode == 0, res.stdout + res.stderr
     assert c.n == 1
+
+
+def _refusal(status, body, headers=None):
+    """Scripted refusal response for the test server."""
+    return (status, body, headers or {})
+
+
+@pytest.mark.parametrize(
+    "status,code",
+    [
+        (429, "agent_busy"),
+        (429, "too_many_tasks"),
+        (503, "memory_budget_exhausted"),
+    ],
+)
+def test_admission_refusal_explicit(servers, make_conn, status, code):
+    """429/503 admission refusals expose the error code and Retry-After, one call."""
+    body = json.dumps({"error": code}).encode()
+    first, c1 = servers(_refusal(status, body, {"Retry-After": "7"}))
+    second, c2 = servers("ok")
+    with pytest.raises(AnsibleConnectionFailure) as exc:
+        _exec(make_conn(f"{_url(first)},{_url(second)}"))
+    msg = str(exc.value)
+    assert f"HTTP {status}" in msg and f"error={code}" in msg
+    assert "Retry-After=7s" in msg
+    assert (c1.n, c2.n) == (1, 0)  # no replay, no failover
+
+
+@pytest.mark.parametrize("retry_after", [None, "abc", "0", "-3", "Wed, 21 Oct 2026 07:28:00 GMT", "1.5"])
+def test_admission_retry_after_absent_or_invalid(servers, make_conn, retry_after):
+    """Missing/invalid Retry-After degrades the message without a stray exception."""
+    headers = {} if retry_after is None else {"Retry-After": retry_after}
+    body = json.dumps({"error": "agent_busy"}).encode()
+    srv, counter = servers(_refusal(429, body, headers))
+    with pytest.raises(AnsibleConnectionFailure) as exc:
+        _exec(make_conn(_url(srv)))
+    msg = str(exc.value)
+    assert "error=agent_busy" in msg
+    assert "Retry-After" not in msg
+    assert counter.n == 1
+
+
+def test_admission_non_json_body(servers, make_conn):
+    """A non-JSON 429 body (proxy page) is never echoed; the message still works."""
+    body = b"<html>proxy token=" + TOKEN.encode() + b"</html>"
+    srv, counter = servers(_refusal(429, body, {"Retry-After": "3"}))
+    with pytest.raises(AnsibleConnectionFailure) as exc:
+        _exec(make_conn(_url(srv)))
+    msg = str(exc.value)
+    assert "HTTP 429" in msg and "Retry-After=3s" in msg and "error=" not in msg
+    assert TOKEN not in msg and "proxy" not in msg
+    assert counter.n == 1
+
+
+def test_admission_refusal_does_not_leak_payload(servers, make_conn):
+    """The error message never contains the command or become_pass."""
+    body = json.dumps({"error": "too_many_tasks"}).encode()
+    srv, _ = servers(_refusal(429, body, {"Retry-After": "2"}))
+    conn = make_conn(_url(srv))
+    with pytest.raises(AnsibleConnectionFailure) as exc:
+        conn.exec_command("echo SECRET-CMD-xyz")
+    assert "SECRET-CMD-xyz" not in str(exc.value)

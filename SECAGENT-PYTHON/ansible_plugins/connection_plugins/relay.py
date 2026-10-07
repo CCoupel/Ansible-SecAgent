@@ -216,6 +216,38 @@ def _error_detail(resp):
     return ""
 
 
+def _retry_after(resp):
+    """Return the Retry-After header as an integer number of seconds, or None.
+
+    Only a plain integer >= 1 is accepted (REST_PLUGIN.md, Admission); anything
+    else (absent, HTTP-date, negative, garbage) is ignored.
+    """
+    raw = resp.headers.get("Retry-After")
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if not (raw.isascii() and raw.isdigit()) or len(raw) > 9:
+        return None
+    value = int(raw)
+    return value if value >= 1 else None
+
+
+def _admission_refusal(resp, addr):
+    """Build the explicit error message for a 429/503 server admission refusal.
+
+    Never includes the request payload (command, become_pass): only the HTTP
+    status, the sanitized ``error`` code, and the Retry-After value.
+    """
+    detail = _error_detail(resp)
+    retry = _retry_after(resp)
+    return (
+        f"Relay server {addr} refused the task (HTTP {resp.status_code}"
+        + (f", error={detail}" if detail else "")
+        + (f", Retry-After={retry}s" if retry is not None else "")
+        + "); request not sent to the agent and not retried automatically"
+    )
+
+
 def _order_urls(urls):
     """Return urls with the last good one first (if it is in the list)."""
     last = _LAST_GOOD_URL
@@ -426,6 +458,11 @@ class Connection(ConnectionBase):
             raise AnsibleConnectionFailure(
                 "Cannot reach any relay server address: " + ", ".join(failed)
             )
+
+        if resp.status_code in (429, 503):
+            # Admission refusal (agent_busy, too_many_tasks, memory_budget_exhausted):
+            # explicit error, no automatic retry; address not remembered as good.
+            raise AnsibleConnectionFailure(_admission_refusal(resp, _host_port(used)))
 
         if resp.status_code >= 500:
             raise AnsibleConnectionFailure(
