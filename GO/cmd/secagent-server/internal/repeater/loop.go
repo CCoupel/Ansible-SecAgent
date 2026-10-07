@@ -74,6 +74,7 @@ func runLoopAfter(ctx context.Context, peer string, minBackoff, maxBackoff time.
 		case <-after(wait):
 		}
 	}
+	tr.set(LinkRetrying, "stopped") // the context ended between two attempts: same observable
 	return nil
 }
 
