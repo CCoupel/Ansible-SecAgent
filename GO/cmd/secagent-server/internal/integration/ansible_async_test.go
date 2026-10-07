@@ -14,7 +14,7 @@ import (
 // rigWithMinion starts one node, one minion for host and the Ansible rig pointing at the node.
 func asyncSetup(t *testing.T, host string) (n *node, m *minionProc, r *ansibleRig) {
 	t.Helper()
-	ansiblePlaybookBin(t) // skip (or fail under ANSIBLE_E2E=1) before starting anything heavy
+	ansiblePlaybookBin(t) // skip without ANSIBLE_E2E=1, fail if its tools are missing: before starting anything heavy
 	n = startNode(t, nodeSpec{ID: "root"})
 	addr := nodeAddrs{api: strings.TrimPrefix(n.apiURL(), "https://"), ws: strings.TrimPrefix(n.wssURL(), "wss://")}
 	m = startMinionProc(t, host, enrollmentToken(t, n, host), addr)

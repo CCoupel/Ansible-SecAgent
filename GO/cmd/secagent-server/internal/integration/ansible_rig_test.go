@@ -17,16 +17,68 @@ import (
 // 0600 token file, real nodes (TLS, test CA) and a real minion binary on the same machine (no Docker).
 // Nothing is installed or written outside the test's temporary directories (ANSIBLE_HOME, HOME, tmp).
 
+// requireAnsibleE2E gates EVERY test that needs Ansible: they run only when ANSIBLE_E2E=1 is set (the
+// mandatory "Inventaire Ansible" job sets it, in a throw-away venv holding ansible-core AND httpx).
+// The presence of ansible on the PATH never decides: a runner that happens to have ansible-playbook
+// but not httpx (the "Build + tests Go" job) must SKIP, not fail halfway.
+func requireAnsibleE2E(t *testing.T) {
+	t.Helper()
+	if os.Getenv("ANSIBLE_E2E") != "1" {
+		t.Skip("Ansible E2E tests are opt-in: set ANSIBLE_E2E=1 (with ansible-core and httpx from .github/ci/requirements-ansible.txt installed in a venv on the PATH)")
+	}
+}
+
+// ansiblePlaybookBin returns ansible-playbook for the rig. Under ANSIBLE_E2E=1 a missing tool, or a
+// missing httpx in the Python of ansible-playbook (the relay.py connection plugin imports it), is a
+// FAILURE with an actionable message: never a skip, never a half-run.
 func ansiblePlaybookBin(t *testing.T) string {
 	t.Helper()
+	requireAnsibleE2E(t)
 	path, err := exec.LookPath("ansible-playbook")
 	if err != nil {
-		if os.Getenv("ANSIBLE_E2E") == "1" {
-			t.Fatalf("ANSIBLE_E2E=1 but ansible-playbook is not on PATH: %v", err)
-		}
-		t.Skip("ansible-playbook not found: install ansible-core (set ANSIBLE_E2E=1 to make this a failure)")
+		t.Fatalf("ANSIBLE_E2E=1 but ansible-playbook is not on PATH: %v (install .github/ci/requirements-ansible.txt in a venv and put its bin first on the PATH)", err)
+	}
+	python := playbookPython(path)
+	if out, err := exec.Command(python, "-c", "import httpx").CombinedOutput(); err != nil {
+		t.Fatalf("ANSIBLE_E2E=1 but httpx cannot be imported by the Python of ansible-playbook (%s): %v\n%s\nthe relay.py connection plugin requires it: install .github/ci/requirements-ansible.txt in that environment", python, err, out)
 	}
 	return path
+}
+
+// playbookPython is the interpreter ansible-playbook runs with: the python next to the script (a venv's
+// bin/ holds both; pip's console scripts start with "#!/bin/sh" and re-exec it), else the one named by
+// a plain shebang, else python3 from the PATH.
+func playbookPython(playbook string) string {
+	if real, err := filepath.EvalSymlinks(playbook); err == nil {
+		playbook = real
+	}
+	for _, name := range []string{"python3", "python"} {
+		if p := filepath.Join(filepath.Dir(playbook), name); fileExists(p) {
+			return p
+		}
+	}
+	if b, err := os.ReadFile(playbook); err == nil {
+		if first, _, _ := strings.Cut(string(b), "\n"); strings.HasPrefix(first, "#!") {
+			if f := strings.Fields(strings.TrimPrefix(first, "#!")); len(f) > 0 && filepath.Base(f[0]) != "sh" {
+				if filepath.Base(f[0]) == "env" && len(f) > 1 {
+					if p, err := exec.LookPath(f[1]); err == nil {
+						return p
+					}
+				} else {
+					return f[0]
+				}
+			}
+		}
+	}
+	if p, err := exec.LookPath("python3"); err == nil {
+		return p
+	}
+	return "python3"
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
 }
 
 // pluginDir is SECAGENT-PYTHON/ansible_plugins/connection_plugins of the repository.
