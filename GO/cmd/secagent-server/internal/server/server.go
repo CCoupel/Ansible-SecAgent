@@ -546,14 +546,9 @@ func (n *Node) Run(ctx context.Context) error {
 	n.apiAddr, n.adminAddr, n.wsAddr = specs[0].ln.Addr().String(), specs[1].ln.Addr().String(), specs[2].ln.Addr().String()
 	n.addrMu.Unlock()
 
-	// Verify servers are listening (effective addresses)
-	time.Sleep(100 * time.Millisecond)
-	for _, s := range specs {
-		if !isListening(s.ln.Addr()) {
-			n.shutdownServers()
-			return errors.New("failed to start all servers")
-		}
-	}
+	// The listeners are already bound (net.Listen succeeded in Build/openListeners): the kernel
+	// queues connections from now on, so the node is ready. Dialing our own listeners after a
+	// fixed sleep made the start fail under load (#194); a Serve error comes back through errCh.
 	log.Println("[OK] All servers running")
 	log.Println("[OK] Ansible-SecAgent GO Server ready")
 	close(n.ready)

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"time"
 
@@ -40,24 +39,6 @@ func (n *Node) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		log.Printf("handleHealth write: %v", err)
 	}
-}
-
-// isListening reports whether something accepts connections on the listener's EFFECTIVE address
-// (an unspecified host such as ":7770" or "[::]:7770" is dialed through the loopback).
-func isListening(a net.Addr) bool {
-	host, port, err := net.SplitHostPort(a.String())
-	if err != nil {
-		return false
-	}
-	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
-		host = "127.0.0.1"
-	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 1*time.Second)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
 }
 
 // directAgents lists the agents connected directly to this node (1 level).
