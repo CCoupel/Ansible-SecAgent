@@ -15,3 +15,5 @@
 | GO/cmd/secagent-server/internal/integration/link_mint_spec_test.go | integration | secagent-server | #141 mint racine, 409 not_root, clé chiffrée, bascule même kid (révocation 2 niveaux / fail closed : en attente L1e) | feature | critical |
 | GO/cmd/secagent-server/internal/repeater/dialpolicy_spec_*_test.go | unit-spec | secagent-server | #151 politique de dial deny/allow/loopback (matrice, CIDR invalides, rebinding+ALLOW, mutants) + non-suivi des 3xx (dialer push, client pull) | feature | critical |
 | GO/cmd/secagent-server/internal/server/dialpolicy_spec_test.go | unit-spec | secagent-server | #151 ligne push stockée interdite par la politique jamais dialée au démarrage | feature | critical |
+| GO/cmd/secagent-server/internal/ws/snapshot_quota_spec_test.go | unit-spec | secagent-server | #156 quota des topology_snapshot par relay_id (6 critères) — armé par specSnapshotQuotaByIdentity | feature | critical |
+| GO/cmd/secagent-server/internal/ws/task_purge_spec_test.go | unit-spec | secagent-server | #179 un chemin de purge = un test (résultat, timeout, déconnexion, révocation, perte de verrou), purge une seule fois | feature | critical |
