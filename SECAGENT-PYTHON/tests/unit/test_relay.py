@@ -4,9 +4,11 @@ import base64
 import datetime
 import io
 import json
+import shutil
 import socket
 import os
 import ssl
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -492,3 +494,59 @@ def test_token_file_device_refused(make_conn, monkeypatch):
 def test_token_file_regular_ok_with_nonblock(make_conn):
     box = _load_with_timeout(make_conn("http://127.0.0.1:1"))
     assert box.get("value") == TOKEN
+
+
+# --- host variables / cfg / env are honoured by Ansible's option resolution ------
+
+def test_plugin_type_is_connection():
+    """Ansible derives the plugin type from the class name; it must be 'connection'."""
+    assert relay.Connection(PlayContext(), io.StringIO()).plugin_type == "connection"
+    assert relay.ConnectionPlugin is relay.Connection
+
+
+def _loaded_conn():
+    from ansible.plugins.loader import connection_loader
+    connection_loader.add_directory(str(Path(relay.__file__).parent))
+    return connection_loader.get("relay", PlayContext(), None)
+
+
+def test_hostvars_override_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("RELAY_SERVER_URL", "http://127.0.0.1:18003")
+    conn = _loaded_conn()
+    conn.set_options(var_options={"ansible_secagent_server": "http://127.0.0.1:18001"})
+    assert conn._secagent_servers() == ["http://127.0.0.1:18001"]
+    conn.set_options(var_options={})
+    assert conn._secagent_servers() == ["http://127.0.0.1:18003"]  # env when no hostvar
+
+
+def test_hostvar_token_file_and_timeouts(tmp_path):
+    conn = _loaded_conn()
+    conn.set_options(var_options={
+        "ansible_secagent_token_file": "/x/tok", "ansible_secagent_timeout": 7,
+        "ansible_secagent_connect_timeout": 3,
+    })
+    assert conn._secagent_token_file() == "/x/tok"
+    assert (conn._timeout(), conn._connect_timeout()) == (7, 3)
+
+
+@pytest.mark.skipif(not shutil.which("ansible-playbook"), reason="ansible-playbook not installed")
+def test_ansible_playbook_reads_hostvars(servers, tmp_path, monkeypatch):
+    """Real ansible-playbook: inventory variables select the server and the token."""
+    srv, c = servers("ok")
+    tok = tmp_path / "tok"
+    tok.write_text(TOKEN)
+    tok.chmod(0o600)
+    (tmp_path / "inv.ini").write_text(
+        f"[g]\nh1 ansible_connection=relay ansible_secagent_server={_url(srv)} "
+        f"ansible_secagent_token_file={tok}\n")
+    (tmp_path / "pb.yml").write_text(
+        "- hosts: h1\n  gather_facts: false\n  tasks:\n    - raw: echo hi\n")
+    (tmp_path / "ansible.cfg").write_text("[defaults]\ninventory = inv.ini\n")
+    for var in ("RELAY_SERVER_URL", "RELAY_TOKEN_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    env = dict(os.environ, ANSIBLE_CONFIG=str(tmp_path / "ansible.cfg"), HOME=str(tmp_path),
+               ANSIBLE_CONNECTION_PLUGINS=str(Path(relay.__file__).parent))
+    res = subprocess.run(["ansible-playbook", "pb.yml"], cwd=tmp_path, env=env,
+                         capture_output=True, text=True, timeout=120)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert c.n == 1

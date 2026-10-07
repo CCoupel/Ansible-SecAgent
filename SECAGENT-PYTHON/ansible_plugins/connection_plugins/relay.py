@@ -234,7 +234,7 @@ def _host_port(url):
         return "<invalid-address>"
 
 
-class ConnectionPlugin(ConnectionBase):
+class Connection(ConnectionBase):
     """Ansible-SecAgent connection plugin — routes commands through the relay server via HTTP/REST."""
 
     transport = "relay"
@@ -248,9 +248,11 @@ class ConnectionPlugin(ConnectionBase):
     def _get_opt(self, name, env_var, default=""):
         """Get option via get_option() with fallback to env var and default.
 
-        Ansible 2.19 may not register plugin config definitions for custom
-        plugins loaded via ansible.cfg paths, causing get_option() to raise
-        AnsibleUndefinedConfigEntry. This fallback ensures the plugin works.
+        get_option() resolves, in Ansible's own order, host variables
+        (ansible_secagent_*), environment (RELAY_*), ansible.cfg
+        ([secagent_connection]) then the default. The fallback only covers
+        a plugin instantiated outside Ansible (unit tests) and options whose
+        value is None.
         """
         try:
             val = self.get_option(name)
@@ -570,5 +572,7 @@ class ConnectionPlugin(ConnectionBase):
         self._connected = False
 
 
-# Ansible expects a class named "Connection", not "ConnectionPlugin"
-Connection = ConnectionPlugin
+# Backward-compatible alias. The class MUST be named "Connection": Ansible derives the
+# plugin type from the class name (AnsiblePlugin.plugin_type = name.lower()), so any other
+# name ("connectionplugin") makes option lookups (hostvars, ansible.cfg, env) fail.
+ConnectionPlugin = Connection
