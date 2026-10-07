@@ -189,8 +189,16 @@ func ReadRootLinkKeyFile(path string) (ed25519.PublicKey, error) {
 		return nil, errors.New("cannot read the file")
 	}
 	defer f.Close()
-	if fi, err := f.Stat(); err != nil || !os.SameFile(li, fi) {
+	fi, err := f.Stat()
+	if err != nil || !os.SameFile(li, fi) || !fi.Mode().IsRegular() {
 		return nil, errors.New("file changed while reading")
+	}
+	// the checks that matter are made on the OPEN descriptor, not on the earlier Lstat (no TOCTOU)
+	if fi.Mode().Perm()&0o022 != 0 {
+		return nil, fmt.Errorf("file is writable by group or others (mode %04o)", fi.Mode().Perm())
+	}
+	if fi.Size() > maxRootLinkKeyFileSize {
+		return nil, errors.New("file is too large")
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxRootLinkKeyFileSize+1))
 	if err != nil || len(data) > maxRootLinkKeyFileSize {
