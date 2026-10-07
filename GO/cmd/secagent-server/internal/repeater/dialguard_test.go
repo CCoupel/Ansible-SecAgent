@@ -90,6 +90,22 @@ func (r *rebinder) lookup(context.Context, string) ([]net.IP, error) {
 	return r.then, nil
 }
 
+// waitLinkStopped waits until the reconnect loop of a link has ended after its context was cancelled
+// (runLoop sets the reason "stopped" as its LAST act, after the last session returned, through the
+// tracker's mutex: everything the loop did, the dial-time resolutions included, happens-before the
+// read below). installResolver restores the global resolver in a t.Cleanup: it must only run once
+// nothing can resolve any more, or the restore races with a resolution still in flight.
+func waitLinkStopped(t *testing.T, tr *linkTracker) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for tr.get().Reason != "stopped" {
+		if time.Now().After(deadline) {
+			t.Fatalf("the reconnect loop did not stop after the cancellation (status %+v)", tr.get())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func installResolver(t *testing.T, r *rebinder) {
 	t.Helper()
 	old := lookupIP
@@ -222,6 +238,7 @@ func TestRebinding_PushDialerNeverContactsAnInternalAddress_EvenOnReconnection(t
 				t.Fatalf("only %d resolutions: the dialer does not reconnect", got)
 			}
 			cancel()
+			waitLinkStopped(t, d.tr)
 			if n := child.accepts.Load(); n != 0 {
 				t.Fatalf("the internal child was contacted %d time(s)", n)
 			}
@@ -259,6 +276,7 @@ func TestRebinding_PullClientNeverContactsAnInternalAddress_EvenOnReconnection(t
 		t.Fatalf("only %d resolutions: the client does not reconnect", rb.lookups.Load())
 	}
 	cancel()
+	waitLinkStopped(t, c.tr)
 	if n := parent.accepted.Load(); n != 0 {
 		t.Fatalf("the internal parent was contacted %d time(s)", n)
 	}

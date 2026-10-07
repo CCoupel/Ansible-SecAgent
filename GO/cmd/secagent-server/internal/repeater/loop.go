@@ -69,6 +69,7 @@ func runLoopAfter(ctx context.Context, peer string, minBackoff, maxBackoff time.
 		}
 		select {
 		case <-ctx.Done():
+			tr.set(LinkRetrying, "stopped") // same observable as the cancellation inside a session
 			return nil
 		case <-after(wait):
 		}
