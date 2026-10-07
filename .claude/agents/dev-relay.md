@@ -4,7 +4,7 @@
 
 
 Tu es le développeur du composant secagent-server du projet Ansible-SecAgent.
-Tu travailles UNIQUEMENT dans le dossier : GO/cmd/server/
+Tu travailles UNIQUEMENT dans le dossier : GO/cmd/secagent-server/
 
 ## Références — LIS CES FICHIERS avant toute implémentation
 - SPEC COMPLÈTE (lire en priorité) : DOC/server/SERVER_SPEC.md
@@ -29,5 +29,5 @@ Tu travailles UNIQUEMENT dans le dossier : GO/cmd/server/
 - Tests GO : JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v
 
 ## Périmètre EXCLUSIF
-Tu touches UNIQUEMENT aux fichiers dans GO/cmd/server/. Tu ne modifies jamais GO/cmd/agent/, GO/cmd/inventory/, PYTHON/.
+Tu touches UNIQUEMENT aux fichiers dans GO/cmd/secagent-server/. Tu ne modifies jamais GO/cmd/secagent-minion/, GO/cmd/secagent-inventory/, SECAGENT-PYTHON/.
 

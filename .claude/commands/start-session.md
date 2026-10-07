@@ -27,7 +27,7 @@ LATEST_COMMIT=$(gh api repos/$TEMPLATE_REPO/commits/$TEMPLATE_BRANCH --jq '.sha'
 |----------|--------|
 | `LATEST_COMMIT` vide (pas de reseau / gh non auth) | Continuer silencieusement |
 | `LATEST_COMMIT` = `KNOWN_COMMIT` | Template a jour — continuer |
-| `LATEST_COMMIT` ≠ `KNOWN_COMMIT` | **Avertir et demander confirmation** |
+| `LATEST_COMMIT` ≠ `KNOWN_COMMIT` | **Avertir et demander confirmation** (via `AskUserQuestion`) |
 
 Si mise a jour disponible, afficher **avant de continuer** :
 
@@ -41,11 +41,14 @@ Si mise a jour disponible, afficher **avant de continuer** :
    Il est recommande de synchroniser avant de demarrer la session.
    Lancez /init-project (option d) pour mettre a jour commandes et agents.
 
-   Continuer quand meme ? [O/n]
 ```
 
-- Si **non** → stopper ici, l'utilisateur lance `/init-project`
-- Si **oui** → continuer avec les etapes suivantes
+Puis poser la question via `AskUserQuestion` (jamais en texte) :
+`"Mise a jour du template disponible — comment proceder ?"` — options : **Continuer quand meme** /
+**Stopper et lancer /init-project** (Recommande).
+
+- Si **stopper** → stopper ici, l'utilisateur lance `/init-project`
+- Si **continuer** → continuer avec les etapes suivantes
 
 ### Etape 2 — Purge et réinitialisation
 
@@ -81,6 +84,18 @@ Task({
   prompt: "Lis .claude/agents/context/TEAMMATES_PROTOCOL.md puis .claude/agents/<nom>.template.md
            (et .claude/agents/<nom>.md s'il existe — adaptations projet).
            Tu fais partie de ansible-secagent-team sur Ansible-SecAgent.
+           Mets-toi en IDLE après avoir envoyé ACTIF — le teamleader t'enverra ta tâche."
+})
+```
+
+Pour une **instance générique** (fichier = `generic.template.md` + `generic.<nom>.md`) :
+
+```
+Task({
+  name: "<nom>",
+  prompt: "Lis .claude/agents/context/TEAMMATES_PROTOCOL.md, puis .claude/agents/generic.template.md
+           puis ta spécification .claude/agents/generic.<nom>.md (obligatoire).
+           Tu es l'instance `<nom>` et fais partie de ansible-secagent-team sur Ansible-SecAgent.
            Mets-toi en IDLE après avoir envoyé ACTIF — le teamleader t'enverra ta tâche."
 })
 ```

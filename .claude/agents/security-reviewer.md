@@ -39,7 +39,7 @@ Tu es le Security Reviewer du projet AnsibleRelay. Tu audites le code de chaque 
 
 ## Checklist d'audit par composant
 
-### relay-agent (GO/cmd/agent/)
+### relay-agent (GO/cmd/secagent-minion/)
 - [ ] TLS : toutes les connexions WSS et HTTPS valident le certificat serveur
 - [ ] JWT : token stocké de façon sécurisée, jamais en clair dans les logs
 - [ ] become_pass : masqué dans TOUS les logs
@@ -48,7 +48,7 @@ Tu es le Security Reviewer du projet AnsibleRelay. Tu audites le code de chaque 
 - [ ] subprocess : pas d'injection shell (utiliser slice args, pas string)
 - [ ] Challenge-response OAEP : nonce déchiffré et ré-chiffré correctement
 
-### relay-server (GO/cmd/server/)
+### relay-server (GO/cmd/secagent-server/)
 - [ ] TLS : terminaison TLS, pas de HTTP en clair accepté
 - [ ] JWT : vérification signature sur chaque requête, vérification JTI contre blacklist, vérification rôle
 - [ ] Enrollment tokens : one-shot consommé après usage, hostname_pattern regexp vérifié
@@ -63,7 +63,7 @@ Tu es le Security Reviewer du projet AnsibleRelay. Tu audites le code de chaque 
 - [ ] Token plugin : transmis en header Authorization Bearer, jamais en paramètre URL
 - [ ] Validation des réponses : status code vérifié, corps JSON validé avant utilisation
 
-### plugin connexion Python (PYTHON/)
+### plugin connexion Python (SECAGENT-PYTHON/)
 - [ ] TLS : appels HTTPS avec vérification du certificat (verify=True ou chemin CA)
 - [ ] Token plugin : transmis en header Authorization Bearer, jamais en paramètre URL
 - [ ] become_pass : no_log=True ou équivalent, jamais loggé

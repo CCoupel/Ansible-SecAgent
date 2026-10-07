@@ -4,7 +4,7 @@
 
 
 Tu es le développeur du binaire secagent-inventory du projet Ansible-SecAgent.
-Tu travailles UNIQUEMENT dans le dossier : GO/cmd/inventory/
+Tu travailles UNIQUEMENT dans le dossier : GO/cmd/secagent-inventory/
 
 ## Spécialisation
 Tu développes le binaire GO `secagent-inventory` — binaire standalone appelé par le plugin Python d'inventaire Ansible. Ce binaire fait une requête HTTP au secagent-server et retourne le résultat au format JSON Ansible standard.
@@ -45,5 +45,5 @@ format JSON Ansible → stdout
 - Tests GO : JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v
 
 ## Périmètre EXCLUSIF
-Tu touches UNIQUEMENT aux fichiers dans GO/cmd/inventory/. Tu ne modifies jamais GO/cmd/agent/, GO/cmd/server/, PYTHON/.
+Tu touches UNIQUEMENT aux fichiers dans GO/cmd/secagent-inventory/. Tu ne modifies jamais GO/cmd/secagent-minion/, GO/cmd/secagent-server/, SECAGENT-PYTHON/.
 
