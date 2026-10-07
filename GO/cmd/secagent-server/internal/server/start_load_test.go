@@ -5,6 +5,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"secagent-server/internal/testnet"
 )
 
 // unreachableAddrListener delegates to a real listener but advertises an address nobody listens
@@ -32,13 +34,12 @@ func TestRun_ReadinessDoesNotDialItsOwnListeners(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// a port that was free a moment ago and is now closed: connection refused
-		dead, err := net.Listen("tcp", "127.0.0.1:0")
+		// a closed port: connection refused. Taken from below the ephemeral range (testnet.ClosedAddr): a
+		// port released from a ":0" listener could be handed to another process or test in the meantime
+		deadAddr, err := net.ResolveTCPAddr("tcp", testnet.ClosedAddr(t))
 		if err != nil {
 			t.Fatal(err)
 		}
-		deadAddr := dead.Addr()
-		_ = dead.Close()
 		*p = unreachableAddrListener{Listener: real, addr: deadAddr}
 	}
 	node, err := Build(cfg)
