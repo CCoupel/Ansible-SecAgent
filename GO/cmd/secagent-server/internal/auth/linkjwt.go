@@ -42,11 +42,14 @@ const (
 const (
 	LinkErrMalformed     = "link_token_malformed"
 	LinkErrAlg           = "link_alg_not_allowed"
-	LinkErrKID           = "link_kid_unknown"
+	LinkErrKID           = "jwt_unknown_kid"
+	LinkErrMissingKID    = "jwt_missing_kid"
+	LinkErrMissingAud    = "jwt_missing_aud"
+	LinkErrIssuer        = "jwt_wrong_issuer"
 	LinkErrSignature     = "link_signature_invalid"
 	LinkErrExpired       = "link_token_expired"
 	LinkErrClaims        = "link_claims_invalid"
-	LinkErrAudience      = "link_audience_mismatch"
+	LinkErrAudience      = "jwt_wrong_aud"
 	LinkErrRole          = "link_role_mismatch"
 	LinkErrLegacyRole    = "link_role_legacy"
 	LinkErrRevoked       = "link_token_revoked"
@@ -97,6 +100,7 @@ type LinkTrust struct {
 // LinkWant is what the local relay expects from the presenter.
 type LinkWant struct {
 	LocalID string // "aud" must equal this
+	RootID  string // "iss" must equal this: the root relay_id configured locally
 	Role    string // RoleRelayChild (we are the parent) or RoleRelayParent (we are the child)
 }
 
@@ -159,7 +163,7 @@ func VerifyLinkToken(trust LinkTrust, tokenStr string, want LinkWant, now time.T
 	if len(trust.Current) != ed25519.PublicKeySize {
 		return nil, linkErr(LinkErrNoTrust, false, nil) // fail closed, retryable once anchored
 	}
-	if !validLinkRole(want.Role) || want.LocalID == "" {
+	if !validLinkRole(want.Role) || want.LocalID == "" || want.RootID == "" {
 		return nil, linkErr(LinkErrClaims, true, errors.New("local expectation is not set"))
 	}
 
@@ -178,7 +182,7 @@ func VerifyLinkToken(trust LinkTrust, tokenStr string, want LinkWant, now time.T
 		}
 		kid, _ := t.Header["kid"].(string)
 		if kid == "" {
-			return nil, linkErr(LinkErrKID, true, nil)
+			return nil, linkErr(LinkErrMissingKID, true, nil)
 		}
 		if kid == LinkKID(trust.Current) {
 			return trust.Current, nil
@@ -213,12 +217,18 @@ func VerifyLinkToken(trust LinkTrust, tokenStr string, want LinkWant, now time.T
 	str := func(k string) string { s, _ := mc[k].(string); return s }
 	c := &LinkClaims{Issuer: str("iss"), Subject: str("sub"), Role: str("role"), JTI: str("jti")}
 	c.KID, _ = tok.Header["kid"].(string)
-	if c.Issuer == "" || c.Subject == "" || c.JTI == "" || c.Role == "" {
+	if c.Subject == "" || c.JTI == "" || c.Role == "" {
 		return nil, linkErr(LinkErrClaims, true, nil)
 	}
+	if c.Issuer != want.RootID { // absent or different
+		return nil, linkErr(LinkErrIssuer, true, nil)
+	}
 	aud, err := mc.GetAudience()
-	if err != nil || len(aud) != 1 || aud[0] == "" {
-		return nil, linkErr(LinkErrAudience, true, nil) // missing, empty or multiple
+	if err != nil || len(aud) == 0 || aud[0] == "" {
+		return nil, linkErr(LinkErrMissingAud, true, nil)
+	}
+	if len(aud) != 1 {
+		return nil, linkErr(LinkErrAudience, true, nil)
 	}
 	c.Audience = aud[0]
 	if c.Audience != want.LocalID {

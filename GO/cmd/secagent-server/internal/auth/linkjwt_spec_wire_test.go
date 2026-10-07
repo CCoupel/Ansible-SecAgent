@@ -19,7 +19,7 @@ func init() {
 	specLinkImplUnderTest = &specLinkImpl{
 		KidOf: LinkKID,
 		VerifyToken: func(trust specLinkTrust, token string, want specLinkWant, now time.Time) (bool, error) {
-			_, err := VerifyLinkToken(toTrust(trust), token, LinkWant{LocalID: want.LocalID, Role: want.Role}, now)
+			_, err := VerifyLinkToken(toTrust(trust), token, LinkWant{LocalID: want.LocalID, RootID: specRootID, Role: want.Role}, now)
 			if err == nil {
 				return false, nil
 			}

@@ -74,7 +74,7 @@ func wantCode(t *testing.T, err error, code string, permanent bool) {
 func TestLinkJWT_RoundTrip(t *testing.T) {
 	f := newLinkFixture(t)
 	tok := f.mint(t, "child", "parent", RoleRelayChild)
-	c, err := VerifyLinkToken(f.trust(), tok, LinkWant{LocalID: "parent", Role: RoleRelayChild}, f.now)
+	c, err := VerifyLinkToken(f.trust(), tok, LinkWant{LocalID: "parent", RootID: "root", Role: RoleRelayChild}, f.now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestLinkJWT_RoundTrip(t *testing.T) {
 	}
 	// the push direction
 	tok = f.mint(t, "parent", "child", RoleRelayParent)
-	if _, err = VerifyLinkToken(f.trust(), tok, LinkWant{LocalID: "child", Role: RoleRelayParent}, f.now); err != nil {
+	if _, err = VerifyLinkToken(f.trust(), tok, LinkWant{LocalID: "child", RootID: "root", Role: RoleRelayParent}, f.now); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -93,7 +93,7 @@ func TestLinkJWT_Refusals(t *testing.T) {
 	f := newLinkFixture(t)
 	other, otherPriv, _ := GenerateLinkKey()
 	_ = other
-	want := LinkWant{LocalID: "parent", Role: RoleRelayChild}
+	want := LinkWant{LocalID: "parent", RootID: "root", Role: RoleRelayChild}
 	kid := LinkKID(f.pub)
 
 	tests := []struct {
@@ -105,8 +105,10 @@ func TestLinkJWT_Refusals(t *testing.T) {
 	}{
 		{"wrong signer, right kid", forge(t, jwt.SigningMethodEdDSA, otherPriv, kid, goodClaims(f.now)), f.trust(), LinkErrSignature, true},
 		{"unknown kid", forge(t, jwt.SigningMethodEdDSA, f.priv, "nope", goodClaims(f.now)), f.trust(), LinkErrKID, true},
-		{"kid absent", forge(t, jwt.SigningMethodEdDSA, f.priv, "", goodClaims(f.now)), f.trust(), LinkErrKID, true},
-		{"aud absent", forge(t, jwt.SigningMethodEdDSA, f.priv, kid, func() jwt.MapClaims { c := goodClaims(f.now); delete(c, "aud"); return c }()), f.trust(), LinkErrAudience, true},
+		{"kid absent", forge(t, jwt.SigningMethodEdDSA, f.priv, "", goodClaims(f.now)), f.trust(), LinkErrMissingKID, true},
+		{"iss absent", forge(t, jwt.SigningMethodEdDSA, f.priv, kid, func() jwt.MapClaims { c := goodClaims(f.now); delete(c, "iss"); return c }()), f.trust(), LinkErrIssuer, true},
+		{"iss other relay", forge(t, jwt.SigningMethodEdDSA, f.priv, kid, func() jwt.MapClaims { c := goodClaims(f.now); c["iss"] = "evil"; return c }()), f.trust(), LinkErrIssuer, true},
+		{"aud absent", forge(t, jwt.SigningMethodEdDSA, f.priv, kid, func() jwt.MapClaims { c := goodClaims(f.now); delete(c, "aud"); return c }()), f.trust(), LinkErrMissingAud, true},
 		{"aud other relay", forge(t, jwt.SigningMethodEdDSA, f.priv, kid, func() jwt.MapClaims { c := goodClaims(f.now); c["aud"] = "Q"; return c }()), f.trust(), LinkErrAudience, true},
 		{"aud multiple", forge(t, jwt.SigningMethodEdDSA, f.priv, kid, func() jwt.MapClaims { c := goodClaims(f.now); c["aud"] = []string{"parent", "Q"}; return c }()), f.trust(), LinkErrAudience, true},
 		{"role push presented on pull", forge(t, jwt.SigningMethodEdDSA, f.priv, kid, func() jwt.MapClaims { c := goodClaims(f.now); c["role"] = RoleRelayParent; return c }()), f.trust(), LinkErrRole, true},
@@ -137,7 +139,7 @@ func TestLinkJWT_Refusals(t *testing.T) {
 // Algorithm confusion: none of these has a verification path.
 func TestLinkJWT_AlgorithmConfusion(t *testing.T) {
 	f := newLinkFixture(t)
-	want := LinkWant{LocalID: "parent", Role: RoleRelayChild}
+	want := LinkWant{LocalID: "parent", RootID: "root", Role: RoleRelayChild}
 	kid := LinkKID(f.pub)
 	c := goodClaims(f.now)
 
@@ -173,7 +175,7 @@ func TestLinkJWT_AlgorithmConfusion(t *testing.T) {
 func TestLinkJWT_Rotation(t *testing.T) {
 	f := newLinkFixture(t)
 	newPub, newPriv, _ := GenerateLinkKey()
-	want := LinkWant{LocalID: "parent", Role: RoleRelayChild}
+	want := LinkWant{LocalID: "parent", RootID: "root", Role: RoleRelayChild}
 	oldTok := f.mint(t, "child", "parent", RoleRelayChild)
 	newTok, _, _ := SignLinkToken(newPriv, "root", "child", "parent", RoleRelayChild, time.Hour)
 
@@ -300,7 +302,7 @@ func TestLinkJWT_LinkKeys(t *testing.T) {
 	}
 	// a token of the old key no longer verifies after the retire
 	old := f.mint(t, "c", "p", RoleRelayChild)
-	_, err = VerifyLinkToken(rt, old, LinkWant{LocalID: "p", Role: RoleRelayChild}, f.now)
+	_, err = VerifyLinkToken(rt, old, LinkWant{LocalID: "p", RootID: "root", Role: RoleRelayChild}, f.now)
 	wantCode(t, err, LinkErrKID, true)
 	// failure leaves the trust unchanged (zero value returned, caller keeps its own)
 	got, err := ApplyLinkKeys(anchor, forged)
