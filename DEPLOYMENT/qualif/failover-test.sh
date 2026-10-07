@@ -15,6 +15,25 @@
 # Ne demarre rien a l'import ; exige docker et docker compose. Exit 0 = OK, 1 = echec.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fail() { echo "ECHEC: $*" >&2; exit 1; }
+# Mode HOTE DISTANT : DOCKER_HOST non local, ou point d'acces (SECAGENT_ENDPOINT_HOST / CONTROL_HOST) non local.
+is_remote() {
+  case "${DOCKER_HOST:-}" in ""|unix://*|npipe://*) ;; *) return 0 ;; esac
+  case "${CONTROL_HOST:-${SECAGENT_ENDPOINT_HOST:-}}" in ""|127.0.0.1|localhost|::1) ;; *) return 0 ;; esac
+  return 1
+}
+# Garde (incident E2) : lance ISOLEMENT contre un demon distant, sans les variables que chain-test.sh exporte, ce script
+# recreait les conteneurs avec un BIND MOUNT d'un chemin du POSTE (repertoires vides crees sur l'hote distant) au lieu du
+# volume TLS. En mode distant : TLS_MODE=volume est OBLIGATOIRE (sinon refus) et le script reprend lui-meme le mode volume
+# (Compose de chaine + surcharge remote-tls + volume) ; le point d'entree normal est `chain-test.sh failover`.
+if is_remote; then
+  [ "${TLS_MODE:-}" = volume ] || fail "hote Docker distant (DOCKER_HOST=${DOCKER_HOST:-} / point d'acces=${CONTROL_HOST:-${SECAGENT_ENDPOINT_HOST:-}}) : TLS_MODE=volume est obligatoire. Lancer 'chain-test.sh failover' (point d'entree, il prepare le mode volume) ; jamais ce script isole sans le mode volume."
+  case "${COMPOSE_FILE:-}" in ""|*/docker-compose.chain.yml) ;; *) fail "hote distant : COMPOSE_FILE=${COMPOSE_FILE} incompatible avec le mode volume (attendu docker-compose.chain.yml) : lancer 'chain-test.sh failover'" ;; esac
+  COMPOSE_FILE="${COMPOSE_FILE:-$HERE/docker-compose.chain.yml}"
+  COMPOSE_OVERRIDES="${COMPOSE_OVERRIDES:-$HERE/docker-compose.remote-tls.yml}"
+  SECAGENT_TLS_VOLUME="${SECAGENT_TLS_VOLUME:-${PROJECT:-${COMPOSE_PROJECT_NAME:-secagent-qualif}}_tls}"
+  export COMPOSE_FILE COMPOSE_OVERRIDES SECAGENT_TLS_VOLUME
+fi
 COMPOSE_FILE="${COMPOSE_FILE:-$HERE/docker-compose.server.yml}"
 PROJECT="${PROJECT:-${COMPOSE_PROJECT_NAME:-secagent-qualif}}"   # un SEUL projet (qualif reelle) : memes noms de conteneurs que la chaine, scripts lances SEQUENTIELLEMENT
 C_A="${C_A:-secagent-qualif-a}"; C_B="${C_B:-secagent-qualif-b}"
@@ -22,7 +41,6 @@ STOP_MAX_S="${STOP_MAX_S:-10}"; KILL_MAX_S="${KILL_MAX_S:-600}"
 DC=(docker compose -p "$PROJECT" -f "$COMPOSE_FILE")
 # Fichiers de surcharge optionnels (ex. docker-compose.remote-tls.yml pour un hote Docker distant) : liste separee par des espaces.
 for f in ${COMPOSE_OVERRIDES:-}; do DC+=(-f "$f"); done
-fail() { echo "ECHEC: $*" >&2; exit 1; }
 now() { date +%s.%N; }
 
 listening() { # $1 conteneur, $2 port : 0 si le conteneur ecoute sur le port (lecture de /proc/net/tcp{,6} :
@@ -55,6 +73,14 @@ guard_project() {
   fi
 }
 
+# Mode distant : AUCUN bind mount (resolu sur l'hote distant, pas sur le poste) dans le rendu Compose ; refuse sinon.
+guard_remote_binds() {
+  is_remote || return 0
+  local json; json="$("${DC[@]}" config --format json 2>/dev/null)" || fail "rendu Compose impossible (variables obligatoires ?) : verification des bind mounts refusee"
+  printf '%s' "$json" | python3 "$HERE/../../scripts/ci/check_no_binds.py" \
+    || fail "mode distant : bind mount d'un chemin du poste vers le demon distant refuse (utiliser TLS_MODE=volume + chain-test.sh push-tls)"
+}
+
 wait_for() { # $1 description, $2 delai max, $3... commande
   local what="$1" max="$2"; shift 2; local t0; t0=$(now)
   while ! "$@" 2>/dev/null; do
@@ -80,6 +106,7 @@ setup_ci() {
 }
 
 up_and_identify() {
+  guard_remote_binds
   QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$HERE/.ci-tls}" "${DC[@]}" up -d
   wait_for "les deux conteneurs healthy" 120 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_A)\" = healthy ] && [ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_B)\" = healthy ]" >/dev/null
   sleep 3
