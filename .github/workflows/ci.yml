@@ -85,9 +85,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Bloquant. Valide la sortie reelle du binaire secagent-inventory avec le vrai
-    # `ansible-inventory --list` (plugin `script`). ANSIBLE_E2E=1 rend le test OBLIGATOIRE :
-    # ansible-inventory introuvable => echec (jamais de skip silencieux). Le job « Build + tests Go »
-    # n'installe pas Ansible : les tests TestAnsible* s'y skippent (ANSIBLE_E2E absent).
+    # `ansible-inventory --list` (plugin `script`). Les tests Ansible sont OPT-IN : ils ne s'executent que si
+    # ANSIBLE_E2E=1 (jamais selon la presence d'ansible sur le PATH : le runner « Build + tests Go » a
+    # ansible-playbook mais pas httpx et les SKIPPE, ANSIBLE_E2E absent). ANSIBLE_E2E=1 les rend OBLIGATOIRES :
+    # outil ou httpx introuvable => echec explicite (jamais de skip silencieux).
     # ansible-core est epingle strictement dans .github/ci/requirements-ansible.txt
     # (cle de cache pip) ; Python 3.12 est supporte par ansible-core 2.21 (controleur).
     steps:
