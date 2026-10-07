@@ -127,6 +127,29 @@ func printReport(cmd *cobra.Command, r *state.Report) {
 	for _, k := range names {
 		_, _ = fmt.Fprintf(out, "%s: %d\n", k, r.Counts[k])
 	}
+	// Link data (schema v2): presence and public identifiers only, never a key value.
+	_, _ = fmt.Fprintf(out, "link_signing_key_current: %s\nlink_signing_key_previous: %s\n",
+		presence(r.LinkSigningKeyCurrent), presence(r.LinkSigningKeyPrevious))
+	_, _ = fmt.Fprintf(out, "link_trust_current_kid: %s\nlink_trust_previous_kid: %s\nlink_trust_seq: %d\n",
+		orNone(r.LinkTrustCurrentKID), orNone(r.LinkTrustPreviousKID), r.LinkTrustSeq)
+	if r.NeedsMigration {
+		_, _ = fmt.Fprintf(out, "migration: schema_version %d -> %d at the first write of the master (backup %s)\n",
+			r.SchemaVersion, state.SchemaVersion, state.V1BackupFile)
+	}
+}
+
+func presence(b bool) string {
+	if b {
+		return "present (value hidden)"
+	}
+	return "absent"
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
 }
 
 var stateRestoreCmd = &cobra.Command{

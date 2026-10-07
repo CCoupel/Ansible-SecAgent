@@ -23,8 +23,19 @@ const (
 	DefaultMaxBytes = 64 << 20 // hard ceiling of the state file: 64 MiB
 )
 
-// SchemaVersion is the only format version this build reads and writes.
-const SchemaVersion = 1
+// SchemaVersion is the format version this build WRITES (always). Version 2 (v3.0.4, #141/#146) adds
+// the link_tokens and link_trust sections and the link_signing_key_* secrets of server_config.
+// There is no backward compatibility: a v3.0.3 binary refuses a v2 state with ErrSchemaVersion.
+const SchemaVersion = 2
+
+// MinSchemaVersion is the oldest format this build still READS: a v1 state is loaded as is and
+// migrated to v2 by the first write of the master (see Engine.commit and V1BackupFile).
+const MinSchemaVersion = 1
+
+// V1BackupFile is the copy of the v1 state taken, next to relay.state, right before the first v2
+// write (rollback = restore this file + v3.0.3 binaries). Same content as the v1 file, 0600, never
+// reloaded by the server.
+const V1BackupFile = "relay.state.v1.bak"
 
 var (
 	// ErrNoWriteGuard: the engine refuses every write until a guard (the lock identity check of

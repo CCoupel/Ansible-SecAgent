@@ -131,3 +131,37 @@ func (s Snapshot) RelayNodes() []RelayNode {
 }
 
 func (s Snapshot) Config(key string) (string, bool) { v, ok := s.m.ServerConfig[key]; return v, ok }
+
+// LinkToken returns a link token of the registry (schema v2, root only).
+func (s Snapshot) LinkToken(id string) (LinkToken, bool) {
+	v, ok := s.m.LinkTokens[id]
+	return v.clone(), ok
+}
+
+func (s Snapshot) LinkTokenByJTI(jti string) (LinkToken, bool) {
+	id, ok := s.m.linkByJTI[jti]
+	if !ok {
+		return LinkToken{}, false
+	}
+	return s.LinkToken(id)
+}
+
+func (s Snapshot) LinkTokens() []LinkToken {
+	out := make([]LinkToken, 0, len(s.m.LinkTokens))
+	for _, v := range s.m.LinkTokens {
+		out = append(out, v.clone())
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// LinkTrust returns the trust anchor of a non-root relay (zero when none).
+func (s Snapshot) LinkTrust() LinkTrust { return s.m.LinkTrust }
+
+// SchemaVersion is the schema_version of the file the snapshot was loaded from or last written as.
+func (s Snapshot) SchemaVersion() int {
+	if s.m.schema == 0 {
+		return SchemaVersion
+	}
+	return s.m.schema
+}

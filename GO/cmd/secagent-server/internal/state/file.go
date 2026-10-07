@@ -115,8 +115,8 @@ func (c codec) decode(data []byte, now time.Time) (*model, envelope, error) {
 	if err := json.Unmarshal(data, &env); err != nil {
 		return nil, env, fmt.Errorf("%w: %v", ErrCorrupt, err)
 	}
-	if env.SchemaVersion != SchemaVersion {
-		return nil, env, fmt.Errorf("%w: file has %d, this build supports %d", ErrSchemaVersion, env.SchemaVersion, SchemaVersion)
+	if env.SchemaVersion < MinSchemaVersion || env.SchemaVersion > SchemaVersion {
+		return nil, env, fmt.Errorf("%w: file has %d, this build reads %d to %d", ErrSchemaVersion, env.SchemaVersion, MinSchemaVersion, SchemaVersion)
 	}
 	if c.macKey != nil {
 		// A master key is configured: the file must carry a valid HMAC. A forgery cannot be told
@@ -136,7 +136,10 @@ func (c codec) decode(data []byte, now time.Time) (*model, envelope, error) {
 	if err := dec.Decode(&p); err != nil {
 		return nil, env, fmt.Errorf("%w: payload: %v", ErrCorrupt, err)
 	}
-	m := &model{Payload: p, seq: env.WriteSeq}
+	m := &model{Payload: p, seq: env.WriteSeq, schema: env.SchemaVersion}
+	if m.LinkTokens == nil {
+		m.LinkTokens = map[string]LinkToken{}
+	}
 	if m.Agents == nil || m.AuthorizedKeys == nil || m.EnrollmentTokens == nil || m.PluginTokens == nil ||
 		m.RelayParentTokens == nil || m.Blacklist == nil || m.RelayNodes == nil || m.ServerConfig == nil {
 		// "null" sections are tolerated as empty
@@ -253,6 +256,56 @@ type loaded struct {
 	m        *model
 	env      envelope
 	fromPrev bool // relay.state was missing or invalid: the model comes from relay.state.prev
+}
+
+// srcName is the file the model was read from.
+func (l *loaded) srcName() string {
+	if l.fromPrev {
+		return PrevFile
+	}
+	return StateFile
+}
+
+// writeV1Backup copies the v1 file src (STATE_DIR) to relay.state.v1.bak: temporary file (0600) +
+// fsync, then rename over the backup (a previous backup of the same migration is replaced by the
+// identical content), then fsync of the directory. Nothing of relay.state is touched: a failure
+// leaves the v1 state intact.
+func writeV1Backup(fs FS, dir, src string, maxBytes int64) (err error) {
+	data, err := fs.ReadFileMax(filepath.Join(dir, src), maxBytes)
+	if err != nil {
+		return fmt.Errorf("state: v1 backup: read %s: %w", src, err)
+	}
+	bak, tmp := filepath.Join(dir, V1BackupFile), filepath.Join(dir, V1BackupFile+".tmp")
+	if rerr := fs.Remove(tmp); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+		return fmt.Errorf("state: v1 backup: remove stale temporary file: %w", rerr)
+	}
+	f, err := fs.CreateExclusive(tmp, 0o600)
+	if err != nil {
+		return fmt.Errorf("state: v1 backup: create: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = fs.Remove(tmp)
+		}
+	}()
+	if _, werr := f.Write(data); werr != nil {
+		_ = f.Close()
+		return fmt.Errorf("state: v1 backup: write: %w", werr)
+	}
+	if serr := f.Sync(); serr != nil {
+		_ = f.Close()
+		return fmt.Errorf("state: v1 backup: fsync: %w", serr)
+	}
+	if cerr := f.Close(); cerr != nil {
+		return fmt.Errorf("state: v1 backup: close: %w", cerr)
+	}
+	if rerr := fs.Rename(tmp, bak); rerr != nil {
+		return fmt.Errorf("state: v1 backup: rename: %w", rerr)
+	}
+	if serr := fs.SyncDir(dir); serr != nil {
+		return fmt.Errorf("state: v1 backup: fsync directory: %w", serr)
+	}
+	return nil
 }
 
 // load reads relay.state (falling back on relay.state.prev with a SECURITY WARNING when it is

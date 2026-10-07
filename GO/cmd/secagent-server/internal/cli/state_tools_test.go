@@ -99,7 +99,7 @@ func TestStateVerify_AuthenticStateExitsZeroWithoutAnySecret(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
-	for _, want := range []string{"schema_version: 1", "write_seq: 3", "writer_instance: tools", "agents: 2", "verdict: OK"} {
+	for _, want := range []string{"schema_version: 2", "write_seq: 3", "writer_instance: tools", "agents: 2", "verdict: OK"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -175,7 +175,7 @@ func TestStateVerify_ExitCodes(t *testing.T) {
 		}
 	})
 	t.Run("unknown schema", func(t *testing.T) {
-		if _, code := execVerify(t, 0, write(strings.Replace(raw, `"schema_version":1`, `"schema_version":9`, 1))); code != ExitSchema {
+		if _, code := execVerify(t, 0, write(strings.Replace(raw, `"schema_version":2`, `"schema_version":9`, 1))); code != ExitSchema {
 			t.Errorf("exit %d", code)
 		}
 	})

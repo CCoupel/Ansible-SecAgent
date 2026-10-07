@@ -20,6 +20,15 @@ type Report struct {
 	WrittenAt      time.Time
 	WriterInstance string
 	Counts         map[string]int // entity type -> number of entries
+	// NeedsMigration: a schema_version 1 file, migrated to 2 by the first write of the master.
+	NeedsMigration bool
+	// Link data (schema v2). The signing private keys are NEVER reported, only whether they exist; the
+	// kid and the sequence number of the trust anchor are public.
+	LinkSigningKeyCurrent  bool
+	LinkSigningKeyPrevious bool
+	LinkTrustCurrentKID    string
+	LinkTrustPreviousKID   string
+	LinkTrustSeq           uint64
 }
 
 // VerifyOptions configures VerifyFile.
@@ -69,11 +78,16 @@ func verifyData(data []byte, o VerifyOptions) (*Report, error) {
 		return nil, err
 	}
 	return &Report{
+		NeedsMigration:         env.SchemaVersion < SchemaVersion,
+		LinkSigningKeyCurrent:  m.ServerConfig[ConfigLinkSigningKeyCurrent] != "",
+		LinkSigningKeyPrevious: m.ServerConfig[ConfigLinkSigningKeyPrevious] != "",
+		LinkTrustCurrentKID:    m.LinkTrust.CurrentKID, LinkTrustPreviousKID: m.LinkTrust.PreviousKID, LinkTrustSeq: m.LinkTrust.Seq,
 		SchemaVersion: env.SchemaVersion, WriteSeq: env.WriteSeq, WrittenAt: env.WrittenAt, WriterInstance: env.WriterInstance,
 		Counts: map[string]int{
 			"agents": len(m.Agents), "authorized_keys": len(m.AuthorizedKeys), "enrollment_tokens": len(m.EnrollmentTokens),
 			"plugin_tokens": len(m.PluginTokens), "relay_parent_tokens": len(m.RelayParentTokens),
 			"blacklist": len(m.Blacklist), "relay_nodes": len(m.RelayNodes), "server_config": len(m.ServerConfig),
+			"link_tokens": len(m.LinkTokens),
 		},
 	}, nil
 }
