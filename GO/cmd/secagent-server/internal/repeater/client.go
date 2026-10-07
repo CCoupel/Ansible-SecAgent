@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 
 	"secagent-server/cmd/secagent-server/internal/config"
@@ -150,6 +151,12 @@ type Options struct {
 	// GroupVars are this relay's Ansible group variables (RELAY_GROUP_VARS, already validated):
 	// sent in relay_hello (pull) and in every topology_snapshot (pull and push).
 	GroupVars map[string]any
+	// LinkTrust verifies and applies the link_keys / link_revocations frames of the parent
+	// (non-root relays; nil = such frames are ignored with a warning).
+	LinkTrust *LinkTrust
+	// OwnLinkJTI is the JTI of the link token this node presents (pull): if the root revokes it
+	// the link is closed and the client stops (permanent refusal). Set by New from the config.
+	OwnLinkJTI string
 	// OnTask handles task_forward (optional; tasks are dropped with a log if nil).
 	OnTask TaskHandler
 
@@ -184,6 +191,9 @@ type Client struct {
 
 // New builds a Client from the validated repeater config.
 func New(cfg config.RepeaterConfig, opts Options) *Client {
+	if opts.OwnLinkJTI == "" {
+		opts.OwnLinkJTI = unverifiedJTI(cfg.UpstreamToken)
+	}
 	up := NewUplink(cfg.ID, opts)
 	return &Client{cfg: cfg, opts: up.opts, up: up, tr: newLinkTracker(), done: make(chan struct{})}
 }
@@ -389,4 +399,14 @@ func (c *Client) checkParentIdentity(got string) error {
 		return fmt.Errorf("parent identity changed: expected %q, got %q", c.parentID, got)
 	}
 	return nil
+}
+
+// unverifiedJTI reads the jti of OUR OWN token (never of a peer's) to recognise its revocation.
+func unverifiedJTI(token string) string {
+	t, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{})
+	if err != nil {
+		return ""
+	}
+	j, _ := t.Claims.(jwt.MapClaims)["jti"].(string)
+	return j
 }

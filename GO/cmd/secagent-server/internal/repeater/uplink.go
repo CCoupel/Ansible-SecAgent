@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -25,6 +26,8 @@ type Uplink struct {
 	serving   bool
 	ancestors []string   // ancestors of this node, parent first
 	wmu       sync.Mutex // serialises writes on the current conn
+	cur       *websocket.Conn
+	revoked   atomic.Bool // the token of THIS link was revoked by the root (link_revocations)
 }
 
 // ErrUplinkBusy is returned by Serve when a parent link is already active (single parent).
@@ -113,6 +116,20 @@ func (u *Uplink) serve(ctx context.Context, conn *websocket.Conn) (established b
 func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established bool, err error) {
 	sessCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	u.revoked.Store(false)
+	u.mu.Lock()
+	u.cur = conn
+	u.mu.Unlock()
+	defer func() {
+		u.mu.Lock()
+		if u.cur == conn {
+			u.cur = nil
+		}
+		u.mu.Unlock()
+	}()
+	if u.opts.LinkTrust != nil {
+		u.opts.LinkTrust.ResetFrames() // the parent re-sends its full state on this link
+	}
 	go func() { <-sessCtx.Done(); _ = conn.Close() }()
 	if err := u.sendSnapshot(conn); err != nil {
 		return false, err
@@ -165,6 +182,9 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 		case <-ctx.Done():
 			return true, ctx.Err()
 		case err := <-readErr:
+			if u.revoked.Load() { // the root revoked our own link token: never reconnect with it
+				return true, &refusedError{reason: "link token revoked by the root (operator action required)", permanent: true}
+			}
 			return true, wrapRead("read", err)
 		case <-ping.C:
 			u.wmu.Lock()
@@ -307,6 +327,10 @@ func (u *Uplink) handleIncoming(ctx context.Context, conn *websocket.Conn, raw [
 		}
 		reply := func(v any) error { return u.write(conn, v) }
 		go u.opts.OnTask(ctx, json.RawMessage(raw), reply)
+	case "link_keys", "link_revocations":
+		u.handleLinkFrame(conn, raw)
+	case "link_state":
+		// informative ack, only meaningful child -> parent: never used as a decision
 	case "event_forward":
 		log.Printf("[REPEATER] event_forward from parent ignored (never re-forwarded upstream)")
 	case "agent_list_ack", "heartbeat_ack", "topology_ack":
@@ -325,4 +349,46 @@ func (u *Uplink) write(conn *websocket.Conn, v any) error {
 		return err
 	}
 	return conn.WriteJSON(v)
+}
+
+// handleLinkFrame applies a link_keys / link_revocations frame from the parent (the format and the
+// signatures are checked by auth, through LinkTrust). The link stays open on an invalid frame.
+func (u *Uplink) handleLinkFrame(conn *websocket.Conn, raw []byte) {
+	lt := u.opts.LinkTrust
+	if lt == nil {
+		log.Printf("[SECURITY WARNING] link frame from parent ignored: no link trust configured")
+		return
+	}
+	res, err := lt.HandleFrame(raw)
+	if err != nil || !res.Applied {
+		return
+	}
+	for _, jti := range res.Revoked {
+		if u.opts.OwnLinkJTI != "" && jti == u.opts.OwnLinkJTI {
+			log.Printf("[SECURITY WARNING] the token of the link to the parent was revoked by the root: closing the link")
+			u.revoked.Store(true)
+			u.closeWithCode(conn, CloseCodePermanent, "link token revoked")
+			_ = conn.Close()
+			return
+		}
+	}
+	// informative acknowledgement towards the parent (unsigned, never a decision)
+	_ = u.write(conn, struct {
+		Type       string `json:"type"`
+		RelayID    string `json:"relay_id"`
+		Seq        uint64 `json:"seq"`
+		CurrentKID string `json:"current_kid"`
+	}{"link_state", u.id, res.Seq, res.KID})
+}
+
+// SendUpstream writes a message on the current parent link (used to retransmit a child's
+// link_state towards the root). It fails when no parent link is active.
+func (u *Uplink) SendUpstream(v any) error {
+	u.mu.Lock()
+	conn := u.cur
+	u.mu.Unlock()
+	if conn == nil {
+		return errors.New("no parent link")
+	}
+	return u.write(conn, v)
 }
