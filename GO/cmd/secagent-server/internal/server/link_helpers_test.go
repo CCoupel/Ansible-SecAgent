@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -37,7 +38,7 @@ func (r *testRoot) anchored(inner func(*Config)) func(*Config) {
 		if err != nil {
 			panic(err)
 		}
-		err = st.SetLinkTrust(nil, state.LinkTrust{RootID: r.id, CurrentPub: base64.RawURLEncoding.EncodeToString(r.pub), CurrentKID: auth.LinkKID(r.pub)})
+		err = st.SetLinkTrust(context.TODO(), state.LinkTrust{RootID: r.id, CurrentPub: base64.RawURLEncoding.EncodeToString(r.pub), CurrentKID: auth.LinkKID(r.pub)})
 		_ = st.Close()
 		if err != nil {
 			panic(err)

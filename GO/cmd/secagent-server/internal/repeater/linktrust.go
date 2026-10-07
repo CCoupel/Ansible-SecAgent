@@ -115,7 +115,7 @@ func NewLinkTrust(cfg LinkTrustConfig) (*LinkTrust, error) {
 		if cfg.RootID != "" && rec.RootID != "" && cfg.RootID != rec.RootID {
 			return nil, fmt.Errorf("%w: root id differs", ErrAnchorMismatch)
 		}
-		if cfg.Anchor != nil && !cfg.Anchor.Equal(cur) && !(prev != nil && cfg.Anchor.Equal(prev)) {
+		if cfg.Anchor != nil && !cfg.Anchor.Equal(cur) && (prev == nil || !cfg.Anchor.Equal(prev)) {
 			return nil, ErrAnchorMismatch
 		}
 		if m.rootID == "" {

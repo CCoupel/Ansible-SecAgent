@@ -87,7 +87,7 @@ func specOraclePolicy(m specPolicyMutant) *specDialPolicy {
 		if ip.Equal(net.IPv4bcast) {
 			builtin = true
 		}
-		if builtin && !(m == specPolAllowLiftsBuilt && len(allow) > 0 && in(allow, ip)) {
+		if builtin && (m != specPolAllowLiftsBuilt || len(allow) == 0 || !in(allow, ip)) {
 			return "builtin"
 		}
 		if ip.IsLoopback() && !loop {

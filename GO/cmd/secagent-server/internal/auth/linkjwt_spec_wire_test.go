@@ -11,10 +11,10 @@ import (
 
 func init() {
 	toTrust := func(t specLinkTrust) LinkTrust {
-		return LinkTrust{Current: t.Current, Previous: t.Previous, Blacklisted: t.Blacklisted, LastSeq: t.LastSeq}
+		return LinkTrust(t)
 	}
 	fromTrust := func(t LinkTrust) specLinkTrust {
-		return specLinkTrust{Current: t.Current, Previous: t.Previous, Blacklisted: t.Blacklisted, LastSeq: t.LastSeq}
+		return specLinkTrust(t)
 	}
 	specLinkImplUnderTest = &specLinkImpl{
 		KidOf: LinkKID,
@@ -26,7 +26,7 @@ func init() {
 			return err.Error()
 		},
 		VerifyToken: func(trust specLinkTrust, token string, want specLinkWant, now time.Time) (bool, error) {
-			_, err := VerifyLinkToken(toTrust(trust), token, LinkWant{LocalID: want.LocalID, RootID: want.RootID, Role: want.Role}, now)
+			_, err := VerifyLinkToken(toTrust(trust), token, LinkWant(want), now)
 			if err == nil {
 				return false, nil
 			}
@@ -42,7 +42,7 @@ func init() {
 		SignRevocations: func(priv ed25519.PrivateKey, seq uint64, entries []specRevEntry) ([]byte, error) {
 			es := make([]LinkRevocation, len(entries))
 			for i, e := range entries {
-				es[i] = LinkRevocation{JTI: e.JTI, Exp: e.Exp}
+				es[i] = LinkRevocation(e)
 			}
 			return SignLinkRevocations(priv, seq, es)
 		},
@@ -53,7 +53,7 @@ func init() {
 			}
 			out := make([]specRevEntry, len(es))
 			for i, e := range es {
-				out[i] = specRevEntry{JTI: e.JTI, Exp: e.Exp}
+				out[i] = specRevEntry(e)
 			}
 			return seq, out, nil
 		},

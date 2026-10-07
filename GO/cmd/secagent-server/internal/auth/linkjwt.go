@@ -250,11 +250,11 @@ func VerifyLinkToken(trust LinkTrust, tokenStr string, want LinkWant, now time.T
 		return nil, linkErr(LinkErrRole, true, nil)
 	}
 	iat, err := mc.GetIssuedAt()
-	if err != nil || iat == nil || iat.Time.After(now.Add(linkIATLeeway)) {
+	if err != nil || iat == nil || iat.After(now.Add(linkIATLeeway)) {
 		return nil, linkErr(LinkErrClaims, true, nil)
 	}
 	exp, err := mc.GetExpirationTime()
-	if err != nil || exp == nil || !exp.Time.After(iat.Time) {
+	if err != nil || exp == nil || !exp.After(iat.Time) {
 		return nil, linkErr(LinkErrClaims, true, nil)
 	}
 	c.IssuedAt, c.ExpiresAt = iat.Time, exp.Time

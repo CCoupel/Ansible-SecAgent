@@ -188,7 +188,7 @@ func ReadRootLinkKeyFile(path string) (ed25519.PublicKey, error) {
 	if err != nil {
 		return nil, errors.New("cannot read the file")
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	fi, err := f.Stat()
 	if err != nil || !os.SameFile(li, fi) || !fi.Mode().IsRegular() {
 		return nil, errors.New("file changed while reading")

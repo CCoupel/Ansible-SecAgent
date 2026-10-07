@@ -23,8 +23,6 @@ import (
 // A relay that declares such a host (even an online one) must never receive the task, the
 // file content, the fetch request nor the stdin / become_pass of an exec.
 
-const precSecret = "precedence-test-secret"
-
 // precAgent is a locally connected minion that records what it receives and answers rc=0.
 type precAgent struct {
 	mu   sync.Mutex
