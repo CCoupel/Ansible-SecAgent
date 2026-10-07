@@ -2,10 +2,21 @@ name: Failover (docker kill)
 
 # Scenario `docker kill` avec les VRAIES peremptions du verrou (~5-6 min). Aucune publication :
 # l'image est construite localement depuis le commit. Planifie, manuel, et appelable avant une release.
+#
+# ATTENTION : le declencheur `schedule` est NEUTRALISE tant que main ne contient pas le code v3.0.3
+# (DEPLOYMENT/qualif/failover-test.sh, GO/Dockerfile actif/passif) : ce workflow est present sur main
+# uniquement pour que GitHub expose `workflow_dispatch`, et un cron sur main echouerait chaque nuit.
+# A reactiver (decommenter) apres la fusion de milestone/v3.0.3 dans main.
 on:
-  schedule:
-    - cron: '17 3 * * *'
+  # schedule:
+  #   - cron: '17 3 * * *'
   workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branche, tag ou commit a tester (le code construit et le script sont ceux de ce ref)'
+        required: false
+        type: string
+        default: 'milestone/v3.0.3'
 
 permissions:
   contents: read
@@ -17,6 +28,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref || 'milestone/v3.0.3' }}
       - name: Build de l'image du commit
         run: docker build -t secagent-server:ci -f GO/Dockerfile GO
       - name: Preparation
@@ -40,5 +53,5 @@ jobs:
           SECAGENT_IMAGE: secagent-server:ci
           QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
         run: |
-          docker compose -p secagent-qualif -f DEPLOYMENT/qualif/docker-compose.server.yml logs --tail=80 || true
+          docker compose -p secagent-failover -f DEPLOYMENT/qualif/docker-compose.server.yml logs --tail=80 || true
           bash DEPLOYMENT/qualif/failover-test.sh teardown || true
