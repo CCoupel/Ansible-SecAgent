@@ -739,16 +739,16 @@ Un hôte connecté directement au relay GAGNE TOUJOURS sur la table `relay_routi
 Plus de tables SQL : ces données sont dans `relay.state` (`relay_nodes`, `relay_parent_tokens`, `blacklist`, voir §5 et `internal/state/model.go`) ;
 le routage (`relay_routing` : clé simple `hostname`, `relay_id`, `hop_type` agent|relay, `relay_chain`) et le statut/`last_seen` sont **en mémoire**
 (reconstruits par `topology_snapshot`). Champs de `relay_nodes` : `relay_id`, `urls`, `mode`, `jti`, `token_exp`, `revoked`, `group_vars`,
-`token_hash` (pull : hachage du JTI) ou `token_secret` (push : token chiffré AES-256-GCM, préfixe `enc:`).
+`token_hash` (pull : SHA-256 du JWT complet, pas du JTI) ou `token_secret` (push : token chiffré AES-256-GCM, préfixe `enc:`).
 
 **Changement clé** : clé de routage simple `hostname` (pas de composite). Topologie arbre = un seul chemin par hôte.
 
 **Sémantique mode** (v3.0.1) :
-- `pull` = connexion WSS entrante (enfant se connecte, auto-registration relay_hello); token persisté en tant que JTI
+- `pull` = connexion WSS entrante (enfant se connecte, auto-registration relay_hello); le `jti` est relevé et persisté ; `token_hash` = SHA-256 du JWT complet
 - `push` = connexion WSS sortante (parent ouvre vers enfant, déclaré via API); token persisté chiffré (enc:AES-GCM)
 
 **Notes** :
-- Le champ `token_hash` d'un relay pull stocke un hachage ; le token d'un relay push est dans `token_secret` (chiffré).
+- Le champ `token_hash` d'un relay pull stocke le SHA-256 du JWT complet (pas du JTI) ; le token d'un relay push est dans `token_secret` (chiffré).
 - Relais antérieurs à #153 (sans `jti`) : `revoked` = true suffit pour refuser ; un `DELETE` d'un tel relais ne peut pas blacklister de JTI inexistant (contrainte : révoquer avant de supprimer)
 - `relay_parent_tokens` : jamais le token en clair persisté ; métadonnées uniquement pour audit et gestion du cycle de vie
 
