@@ -145,16 +145,6 @@ func (a *ansibleRun) Wait(t *testing.T) (int, string) {
 	return a.rc, a.out.String()
 }
 
-// finished is true once ansible-playbook ended.
-func (a *ansibleRun) finished() bool {
-	select {
-	case <-a.done:
-		return true
-	default:
-		return false
-	}
-}
-
 // markerRuns is the number of executions recorded in a marker file ("run\n" per execution).
 func markerRuns(path string) int {
 	b, _ := os.ReadFile(path)
