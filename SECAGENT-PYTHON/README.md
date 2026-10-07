@@ -30,6 +30,17 @@ Options (ini `[secagent_connection]`, variable d'environnement, variable d'hôte
 | Délai d'une tâche (s) | `timeout` | `RELAY_TIMEOUT` | `ansible_secagent_timeout` | `30` |
 | Délai de connexion par adresse (s) | `connect_timeout` | `RELAY_CONNECT_TIMEOUT` | `ansible_secagent_connect_timeout` | `5` |
 
+**Ordre de priorité** (identique pour `server`, `token_file`, `ca_bundle`, `timeout` et `connect_timeout`) :
+
+1. variable d'hôte `ansible_secagent_*` (inventaire, `group_vars`, `host_vars`, variables de play) ;
+2. variable d'environnement `RELAY_*` ;
+3. `[secagent_connection]` d'`ansible.cfg` ;
+4. valeur par défaut du tableau.
+
+Cet ordre vaut pour les deux modes de chargement du plugin (`connection_plugins = …` d'`ansible.cfg` ou `ANSIBLE_CONNECTION_PLUGINS`).
+
+> **Changement de comportement (v3.0.3)** : une variable d'hôte passe désormais **avant** l'environnement. Jusqu'ici, la classe du plugin s'appelait `ConnectionPlugin` au lieu de `Connection` : Ansible déduit le type du plugin du nom de la classe, `get_option()` échouait et le plugin retombait silencieusement sur `RELAY_*` seul, ignorant variables d'hôte et `[secagent_connection]`. La classe s'appelle maintenant `Connection` (`ConnectionPlugin` reste un alias). Une variable `ansible_secagent_server` ou `ansible_secagent_token_file` déjà présente dans un inventaire, jusque-là sans effet, **s'applique maintenant** et prend le pas sur l'environnement : la vérifier avant de mettre à jour.
+
 ```ini
 # ansible.cfg
 [defaults]
