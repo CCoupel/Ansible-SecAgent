@@ -247,7 +247,7 @@ connect_timeout = 5
 
 Les modes `async` + `poll > 0`, fire-and-forget puis `async_status` fonctionnent de bout en bout avec le plugin : le job s'exécute **une seule fois** sur le minion (jamais rejoué), y compris si le maître du relay s'arrête proprement ou est tué (`kill -9`) pendant le job ; le résultat lu après la reprise est celui du job. Scénarios D1-D4 de `GO/cmd/secagent-server/internal/integration/ansible_async_test.go` (`ansible-playbook` réel, plugin réel, minion réel), exécutés par le job CI « Inventaire Ansible » qui exige leur `PASS`.
 
-**Constat (D3, poll en vol)** : lors d'un arrêt propre du maître, un `poll` **en vol** à cet instant peut échouer, car le plugin ne rejoue pas une requête déjà envoyée (voir « Multi-adresses »). Les `poll` suivants atteignent le nouveau maître grâce à la liste d'adresses du plugin (`server` en liste). Dans le scénario testé, le playbook en `poll: 1` s'est terminé en `rc=0` ; le test tolère les deux issues. Si un `poll` échoue pendant une bascule, relancer la lecture (`async_status`) plutôt que le job.
+**Constat (D3, poll en vol)** : lors d'un arrêt propre du maître, un `poll` **en vol** à cet instant peut échouer, car le plugin ne rejoue pas une requête déjà envoyée (voir « Plusieurs adresses »). Les `poll` suivants atteignent le nouveau maître grâce à la liste d'adresses du plugin (`server` en liste). Dans le scénario testé, le playbook en `poll: 1` s'est terminé en `rc=0` ; le test tolère les deux issues. Si un `poll` échoue pendant une bascule, relancer la lecture (`async_status`) plutôt que le job.
 
 Variables hôte (`host_vars/my-host.yml`) :
 ```yaml
