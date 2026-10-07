@@ -26,7 +26,7 @@ Le système d'**event hooks** permet d'exécuter des actions automatiques lorsqu
   webhook │ shell │ file │ api
         │
         ▼
-  action_log (SQLite)
+  actions.log (JSON Lines, STATE_DIR/actions.log)
 ```
 
 ---
