@@ -184,6 +184,7 @@ jobs:
           python3 scripts/ci/check_no_publish_selftest.py
           python3 scripts/ci/check_scripts_selftest.py
           bash scripts/ci/chain_verify_images_selftest.sh
+          bash scripts/ci/failover_guard_selftest.sh
           python3 scripts/ci/check_scripts.py .github/workflows/*.yml
 
       # Variables d'exemple NON secretes : uniquement pour que `docker compose config` puisse interpoler.
