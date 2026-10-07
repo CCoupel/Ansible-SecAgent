@@ -242,6 +242,10 @@ func handleLinkState(conn *RelayConnection, msg RelayMessage) {
 			return
 		}
 	}
+	if !auth.ValidLinkKID(msg.CurrentKID) { // bounded and sanitised before being stored or relayed
+		log.Printf("[SECURITY WARNING] link_state ignored: malformed current_kid from %q", conn.RelayID)
+		return
+	}
 	RecordLinkState(id, msg.Seq, msg.CurrentKID)
 	frame, err := json.Marshal(RelayMessage{Type: MsgLinkState, RelayID: id, Seq: msg.Seq, CurrentKID: msg.CurrentKID})
 	if err != nil {

@@ -238,12 +238,21 @@ func (m *LinkTrust) Replay() [][]byte {
 	return out
 }
 
-const maxReplayFrames = 256
+const (
+	maxReplayFrames = 256
+	// maxLinkFrameLen bounds a link_keys / link_revocations frame (a full list of 10000 entries is
+	// under 1 MiB); the check is made on the raw bytes, before any decoding.
+	maxLinkFrameLen = 1 << 20
+)
 
 // HandleFrame verifies and applies a link_keys / link_revocations frame received from the parent.
 // An invalid frame is ignored with a [SECURITY WARNING] and the trust is left unchanged (the link
 // stays open); link_message_seq_replay is benign. The error is non-nil only for a refused frame.
 func (m *LinkTrust) HandleFrame(raw []byte) (FrameResult, error) {
+	if len(raw) > maxLinkFrameLen { // before any decode or allocation
+		log.Printf("[SECURITY WARNING] link frame refused: %d bytes exceed the limit", len(raw))
+		return FrameResult{}, errors.New("link frame: too large")
+	}
 	var env struct {
 		Type string `json:"type"`
 	}

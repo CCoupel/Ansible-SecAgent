@@ -338,3 +338,19 @@ func TestLinkJWT_SignRefusesATTLAboveTheMaximum(t *testing.T) {
 		t.Fatal("100 years accepted")
 	}
 }
+
+func TestLinkJWT_ValidLinkKIDIsStrict(t *testing.T) {
+	f := newLinkFixture(t)
+	if !ValidLinkKID(LinkKID(f.pub)) {
+		t.Fatal("a real kid must be valid")
+	}
+	for name, s := range map[string]string{
+		"empty": "", "too short": "AAAA", "too long": strings.Repeat("A", 23), "huge": strings.Repeat("A", 1<<20),
+		"bad alphabet": "AAAAAAAAAAAAAAAAAAAA+/", "padding": "AAAAAAAAAAAAAAAAAAAAA=", "non canonical last char": "AAAAAAAAAAAAAAAAAAAAAB",
+		"space": "AAAAAAAAAAAAAAAAAAAA A", "newline": "AAAAAAAAAAAAAAAAAAAAA\n", "unicode": "AAAAAAAAAAAAAAAAAAAAé",
+	} {
+		if ValidLinkKID(s) {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}

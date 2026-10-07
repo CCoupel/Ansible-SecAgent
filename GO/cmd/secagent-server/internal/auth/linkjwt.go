@@ -130,6 +130,17 @@ func LinkKID(pub ed25519.PublicKey) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:16])
 }
 
+// ValidLinkKID reports whether s has exactly the shape of a LinkKID: the base64url (no padding,
+// canonical) encoding of 16 bytes, i.e. 22 characters of [A-Za-z0-9_-]. Used to bound and sanitise a
+// kid read from a peer before it is stored or relayed.
+func ValidLinkKID(s string) bool {
+	if len(s) != 22 {
+		return false
+	}
+	b, err := base64.RawURLEncoding.Strict().DecodeString(s)
+	return err == nil && len(b) == 16
+}
+
 func validLinkRole(r string) bool { return r == RoleRelayChild || r == RoleRelayParent }
 
 // SignLinkToken mints a link token signed by the root private key. ttl must be positive.

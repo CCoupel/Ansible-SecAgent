@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,7 +142,7 @@ func TestUplink_LinkStatesAreResentAfterEachSnapshot(t *testing.T) {
 	}
 	_ = p.conn(t)
 	_ = p.next(t, "topology_snapshot")
-	if err := c.Uplink().SendUpstream(json.RawMessage(`{"type":"link_state","relay_id":"relay2","seq":4,"current_kid":"k"}`)); err != nil {
+	if err := c.Uplink().SendUpstream(json.RawMessage(`{"type":"link_state","relay_id":"relay2","seq":4,"current_kid":"AAAAAAAAAAAAAAAAAAAAAA"}`)); err != nil {
 		t.Fatal(err)
 	}
 	if st := p.next(t, "link_state"); st["relay_id"] != "relay2" {
@@ -151,4 +153,58 @@ func TestUplink_LinkStatesAreResentAfterEachSnapshot(t *testing.T) {
 	if st := p.next(t, "link_state"); st["relay_id"] != "relay2" || st["seq"] != float64(4) {
 		t.Fatalf("link_state after the snapshot = %v", st)
 	}
+}
+
+// What the uplink keeps is bounded: only well formed, small link_state frames, one entry per relay_id,
+// at most 1024 entries of at most 512 bytes.
+func TestUplink_RememberedLinkStatesAreBounded(t *testing.T) {
+	u := NewUplink("dmz1", Options{})
+	kid := auth.LinkKID(make([]byte, 32))
+	frame := func(id, k string) json.RawMessage {
+		return json.RawMessage(`{"type":"link_state","relay_id":"` + id + `","seq":1,"current_kid":"` + k + `"}`)
+	}
+	send := func(id, k string) { _ = u.SendUpstream(frame(id, k)) }
+
+	send("relay2", strings.Repeat("A", 1<<20)) // 1 MiB kid: never kept
+	send("relay2", "short")
+	send("bad id!", kid)
+	send("relay3", kid+"\n")
+	if len(u.states) != 0 {
+		t.Fatalf("malformed frames were kept: %d", len(u.states))
+	}
+	for i := 0; i < 5; i++ { // same relay again and again: one entry
+		send("relay2", kid)
+	}
+	if len(u.states) != 1 {
+		t.Fatalf("entries = %d, want 1", len(u.states))
+	}
+	for i := 0; i < 3000; i++ { // many relays: capped
+		send("r"+strconv.Itoa(i), kid)
+	}
+	if len(u.states) > maxRememberedLinkStates {
+		t.Fatalf("entries = %d, cap %d", len(u.states), maxRememberedLinkStates)
+	}
+	total := 0
+	for _, f := range u.states {
+		total += len(f)
+	}
+	if total > maxRememberedLinkStates*maxLinkStateFrameLen {
+		t.Fatalf("memory kept = %d bytes", total)
+	}
+}
+
+// An oversized link frame is refused on the raw bytes, before any decoding.
+func TestLinkTrust_OversizedFrameIsRefusedBeforeDecoding(t *testing.T) {
+	f := newLT(t)
+	big := []byte(`{"type":"link_revocations","pad":"` + strings.Repeat("x", maxLinkFrameLen) + `"}`)
+	res, err := f.m.HandleFrame(big)
+	if err == nil || res.Applied || res.Confirm {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if seq, _ := f.m.State(); seq != 0 || len(f.fwd) != 0 {
+		t.Fatal("an oversized frame had effects")
+	}
+	// and on the uplink path (nothing sent, no panic)
+	u := NewUplink("dmz1", Options{LinkTrust: f.m})
+	u.handleLinkFrame(nil, big)
 }

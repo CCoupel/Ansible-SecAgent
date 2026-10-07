@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"secagent-server/cmd/secagent-server/internal/auth"
 )
 
 // Uplink publishes this node's state to its single parent over an ESTABLISHED
@@ -357,6 +359,10 @@ func (u *Uplink) write(conn *websocket.Conn, v any) error {
 // handleLinkFrame applies a link_keys / link_revocations frame from the parent (the format and the
 // signatures are checked by auth, through LinkTrust). The link stays open on an invalid frame.
 func (u *Uplink) handleLinkFrame(conn *websocket.Conn, raw []byte) {
+	if len(raw) > maxLinkFrameLen {
+		log.Printf("[SECURITY WARNING] link frame from parent refused: %d bytes exceed the limit", len(raw))
+		return
+	}
 	lt := u.opts.LinkTrust
 	if lt == nil {
 		log.Printf("[SECURITY WARNING] link frame from parent ignored: no link trust configured")
@@ -389,11 +395,33 @@ func (u *Uplink) handleLinkFrame(conn *websocket.Conn, raw []byte) {
 	_ = u.write(conn, json.RawMessage(frame))
 }
 
-const maxRememberedLinkStates = 1024
+const (
+	maxRememberedLinkStates = 1024
+	maxLinkStateFrameLen    = 512 // a link_state is ~120 bytes: total memory kept <= 1024 x 512 B
+)
+
+// validLinkStateFrame accepts only a well formed, small link_state (relay_id and kid shapes checked).
+func validLinkStateFrame(frame []byte) (relayID string, ok bool) {
+	if len(frame) > maxLinkStateFrameLen {
+		return "", false
+	}
+	var m struct {
+		Type       string `json:"type"`
+		RelayID    string `json:"relay_id"`
+		CurrentKID string `json:"current_kid"`
+	}
+	if json.Unmarshal(frame, &m) != nil || m.Type != "link_state" || !relayIDPattern.MatchString(m.RelayID) || !auth.ValidLinkKID(m.CurrentKID) {
+		return "", false
+	}
+	return m.RelayID, true
+}
 
 // rememberLinkState keeps the last link_state of a relay so that it can be re-sent once the parent
 // knows the topology (the parent ignores a link_state of a relay it has not seen declared yet).
 func (u *Uplink) rememberLinkState(relayID string, frame []byte) {
+	if id, ok := validLinkStateFrame(frame); !ok || id != relayID {
+		return // never kept: bounded size, strict shape, one entry per relay_id
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.states == nil {
@@ -428,12 +456,8 @@ func (u *Uplink) SendUpstream(v any) error {
 	conn := u.cur
 	u.mu.Unlock()
 	if raw, ok := v.(json.RawMessage); ok {
-		var m struct {
-			Type    string `json:"type"`
-			RelayID string `json:"relay_id"`
-		}
-		if json.Unmarshal(raw, &m) == nil && m.Type == "link_state" && m.RelayID != "" {
-			u.rememberLinkState(m.RelayID, raw)
+		if id, ok := validLinkStateFrame(raw); ok {
+			u.rememberLinkState(id, raw)
 		}
 	}
 	if conn == nil {
