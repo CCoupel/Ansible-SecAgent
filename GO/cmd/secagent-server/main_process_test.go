@@ -2,11 +2,7 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"math/big"
 	"net"
@@ -20,8 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"secagent-server/cmd/secagent-server/internal/crypto"
-	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/state"
 )
 
 // ── main() exercised as a real process (#155, qa): the test binary re-executes itself ──
@@ -33,6 +28,9 @@ const runMainEnv = "SECAGENT_TEST_RUN_MAIN"
 func TestMain(m *testing.M) {
 	if os.Getenv(runMainEnv) == "1" {
 		os.Args = []string{"secagent-server"}
+		if extra := os.Getenv("SECAGENT_TEST_ARGS"); extra != "" {
+			os.Args = append(os.Args, strings.Fields(extra)...)
+		}
 		main()
 		os.Exit(0) // main returned normally (graceful shutdown)
 	}
@@ -116,46 +114,38 @@ func freePort(t *testing.T) int {
 	return 0
 }
 
-// ── pre-seeded database: no RSA-4096 generation (minutes under -race and load) ──
+// ── pre-initialized state: no RSA-4096 generation (minutes under -race and load) ──
 
 var (
-	rsaOnce sync.Once
-	rsaPEM  string
-	rsaErr  error
+	stateOnce sync.Once
+	stateTpl  string
+	stateErr  error
 )
 
-// seedDatabase gives the process a database that already holds its RSA key (encrypted with
-// RSA_MASTER_KEY like in production): InitServerState loads it instead of generating a 4096-bit one.
-func seedDatabase(t *testing.T, dbPath, masterKey string) {
+// seedState gives the process a state created like `secagent-server state init` does (RSA key and
+// JWT secret encrypted with RSA_MASTER_KEY), with a small RSA key. The template is made once.
+func seedState(t *testing.T, dir, masterKey string) {
 	t.Helper()
-	rsaOnce.Do(func() {
-		k, err := rsa.GenerateKey(rand.Reader, 2048)
+	stateOnce.Do(func() {
+		d, err := os.MkdirTemp("", "secagent-main-state-*")
 		if err != nil {
-			rsaErr = err
+			stateErr = err
 			return
 		}
-		der, err := x509.MarshalPKCS8PrivateKey(k)
-		if err != nil {
-			rsaErr = err
+		if err := state.Init(state.InitOptions{Dir: d, MasterKey: masterKey, RSABits: 2048}); err != nil {
+			stateErr = err
 			return
 		}
-		rsaPEM = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+		stateTpl = filepath.Join(d, state.StateFile)
 	})
-	if rsaErr != nil {
-		t.Fatal(rsaErr)
+	if stateErr != nil {
+		t.Fatal(stateErr)
 	}
-	st, err := storage.NewStore(dbPath)
+	data, err := os.ReadFile(stateTpl)
 	if err != nil {
 		t.Fatal(err)
 	}
-	enc, err := crypto.EncryptAESGCM(rsaPEM, masterKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.ConfigSet(context.Background(), "rsa_key_current", "enc:"+enc); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Close(); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, state.StateFile), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -164,18 +154,23 @@ func seedDatabase(t *testing.T, dbPath, masterKey string) {
 func startMain(t *testing.T, env map[string]string) *serverProc {
 	t.Helper()
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "relay.db")
-	seedDatabase(t, dbPath, "proc-test-master-key")
+	stateDir := filepath.Join(dir, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	seedState(t, stateDir, "proc-test-master-key")
 	base := map[string]string{
-		runMainEnv:           "1",
-		"JWT_SECRET_KEY":     "proc-test-secret",
-		"ADMIN_TOKEN":        "proc-test-admin",
-		"RSA_MASTER_KEY":     "proc-test-master-key",
-		"DATABASE_URL":       dbPath,
-		"NATS_URL":           "nats://127.0.0.1:1",
-		"RELAY_HOOKS_CONFIG": filepath.Join(dir, "absent-hooks.json"),
-		"PATH":               os.Getenv("PATH"),
-		"HOME":               dir,
+		runMainEnv:                "1",
+		"TLS_DISABLE":             "true",
+		"ADMIN_INSECURE_HTTP":     "true", // these tests are not about the admin exposure (#175b)
+		"ADMIN_INSECURE_HTTP_ACK": "i-understand-the-risk",
+		"JWT_SECRET_KEY":          "proc-test-secret",
+		"ADMIN_TOKEN":             "proc-test-admin",
+		"RSA_MASTER_KEY":          "proc-test-master-key",
+		"STATE_DIR":               stateDir,
+		"RELAY_HOOKS_CONFIG":      filepath.Join(dir, "absent-hooks.json"),
+		"PATH":                    os.Getenv("PATH"),
+		"HOME":                    dir,
 	}
 	for k, v := range env {
 		base[k] = v
@@ -284,6 +279,44 @@ func TestMainProcess_RefusesInvalidConfiguration(t *testing.T) {
 			}
 		})
 	}
+}
+
+// #160: the relay state is relay.state in STATE_DIR. DATABASE_URL (SQLite) is refused loudly, a missing
+// state refuses to start with the exact FATAL message (never created implicitly), a tampered state too.
+func TestMainProcess_StateStartupRefusals(t *testing.T) {
+	t.Run("DATABASE_URL is an error", func(t *testing.T) {
+		p := startMain(t, map[string]string{"DATABASE_URL": "sqlite:////data/relay.db"})
+		if code := p.wait(t, 20*time.Second); code == 0 || !strings.Contains(p.out.String(), "DATABASE_URL is no longer supported") {
+			t.Errorf("exit %d, output:\n%s", code, p.out.String())
+		}
+	})
+	t.Run("missing state", func(t *testing.T) {
+		empty := t.TempDir()
+		p := startMain(t, map[string]string{"STATE_DIR": empty})
+		if code := p.wait(t, 20*time.Second); code == 0 {
+			t.Errorf("exit code 0 without a state; output:\n%s", p.out.String())
+		}
+		want := "FATAL: relay.state not found in STATE_DIR=" + empty + " — run 'secagent-server state init' to initialize"
+		if !strings.Contains(p.out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, p.out.String())
+		}
+		if names, _ := os.ReadDir(empty); len(names) != 0 {
+			t.Errorf("the server must never create the state: %v", names)
+		}
+	})
+	t.Run("tampered state", func(t *testing.T) {
+		dir := t.TempDir()
+		seedState(t, dir, "proc-test-master-key")
+		path := filepath.Join(dir, state.StateFile)
+		b, _ := os.ReadFile(path)
+		if err := os.WriteFile(path, bytes.Replace(b, []byte(`"write_seq":1`), []byte(`"write_seq":9`), 1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		p := startMain(t, map[string]string{"STATE_DIR": dir})
+		if code := p.wait(t, 20*time.Second); code == 0 {
+			t.Errorf("exit code 0 with a tampered state; output:\n%s", p.out.String())
+		}
+	})
 }
 
 func TestMainProcess_PortAlreadyInUseExitsNonZero(t *testing.T) {
@@ -397,5 +430,84 @@ func TestMainProcess_SIGINTAlsoStopsCleanly(t *testing.T) {
 	}
 	if code := p.wait(t, 60*time.Second); code != 0 {
 		t.Errorf("exit code = %d after SIGINT, want 0; output:\n%s", code, p.out.String())
+	}
+}
+
+// `state init` is a LOCAL command: it must run without ADMIN_TOKEN nor JWT_SECRET_KEY in the
+// environment (#159b R2), creates the state, and refuses to run a second time.
+func TestStateInitNeedsNoServerSecretsInTheEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	run := func() (string, error) {
+		cmd := exec.Command(os.Args[0])
+		cmd.Env = []string{
+			"PATH=" + os.Getenv("PATH"),
+			runMainEnv + "=1",
+			"SECAGENT_TEST_ARGS=state init --state-dir " + dir,
+			"RSA_MASTER_KEY=process-test-master-key",
+		}
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	if out, err := run(); err != nil || !strings.Contains(out, "state initialized in "+dir) {
+		t.Fatalf("state init without ADMIN_TOKEN/JWT_SECRET_KEY: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "relay.state")); err != nil {
+		t.Fatalf("relay.state missing: %v", err)
+	}
+	if out, err := run(); err == nil || !strings.Contains(out, "refusing to initialize") {
+		t.Fatalf("a second init must be refused: %v\n%s", err, out)
+	}
+}
+
+// #175: without a certificate pair and without the explicit TLS_DISABLE=true, the process refuses
+// to start (non-zero exit, explicit message, nothing listening): never a silent plain-HTTP server.
+func TestMainProcess_RefusesToStartWithoutTLS(t *testing.T) {
+	api := fmt.Sprintf("127.0.0.1:%d", freePort(t))
+	env := map[string]string{
+		"TLS_DISABLE": "", // overrides the test default
+		"API_ADDR":    api,
+		"ADMIN_ADDR":  fmt.Sprintf("127.0.0.1:%d", freePort(t)),
+		"WS_ADDR":     fmt.Sprintf("127.0.0.1:%d", freePort(t)),
+	}
+	p := startMain(t, env)
+	if code := p.wait(t, 20*time.Second); code == 0 {
+		t.Errorf("exit code 0 without TLS configuration; output:\n%s", p.out.String())
+	}
+	if !strings.Contains(p.out.String(), "TLS is required") {
+		t.Errorf("the refusal must explain TLS_CERT/TLS_KEY/TLS_DISABLE:\n%s", p.out.String())
+	}
+	if portOpen(api) {
+		t.Error("nothing may listen when the start-up is refused")
+	}
+}
+
+// #187: the real process exits with the documented status of `state verify` / `state restore`.
+func TestStateVerifyProcessExitCodes(t *testing.T) {
+	dir := t.TempDir()
+	run := func(masterKey string, args ...string) (int, string) {
+		cmd := exec.Command(os.Args[0])
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), runMainEnv + "=1", "SECAGENT_TEST_ARGS=" + strings.Join(args, " "), "RSA_MASTER_KEY=" + masterKey}
+		out, err := cmd.CombinedOutput()
+		return exitCode(err), string(out)
+	}
+	if code, out := run("process-key", "state", "init", "--state-dir", dir); code != 0 {
+		t.Fatalf("init: %d\n%s", code, out)
+	}
+	state := filepath.Join(dir, "relay.state")
+	if code, out := run("process-key", "state", "verify", state); code != 0 || !strings.Contains(out, "verdict: OK") {
+		t.Fatalf("verify: %d\n%s", code, out)
+	}
+	if code, out := run("wrong-key", "state", "verify", state); code != 2 || !strings.Contains(out, "REFUSED") {
+		t.Fatalf("wrong key: %d (want 2)\n%s", code, out)
+	}
+	if code, _ := run("", "state", "verify", state); code != 6 {
+		t.Fatalf("no key: %d (want 6)", code)
+	}
+	if code, _ := run("process-key", "state", "verify", filepath.Join(dir, "absent")); code != 5 {
+		t.Fatalf("absent: %d (want 5)", code)
+	}
+	// restore from itself into the same directory: no lock, authentic source
+	if code, out := run("process-key", "state", "restore", "--from", state, "--state-dir", dir); code != 0 || !strings.Contains(out, "state restored") {
+		t.Fatalf("restore: %d\n%s", code, out)
 	}
 }

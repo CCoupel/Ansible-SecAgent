@@ -28,7 +28,9 @@ type HostVars struct {
 	AnsibleHost       string `json:"ansible_host"`
 	RelayStatus       string `json:"secagent_status"`
 	RelayLastSeen     string `json:"secagent_last_seen"`
-	RelayID           string `json:"secagent_relay_id,omitempty"` // relay the host is attached to (declaring relay)
+	// Suspended is true for a suspended agent (listed, but every exec/upload/fetch is refused, #173).
+	Suspended bool   `json:"secagent_suspended,omitempty"`
+	RelayID   string `json:"secagent_relay_id,omitempty"` // relay the host is attached to (declaring relay)
 	// RelayChain is the path from the host up to this node, ORIGIN FIRST: [relay closest to the
 	// host, ..., direct child of this node]. [] for a host connected to this node itself (#128).
 	RelayChain []string `json:"secagent_relay_chain"`
@@ -222,6 +224,7 @@ func buildInventory(opts inventoryOptions) InventoryResponse {
 			AnsibleHost:       agent.Hostname,
 			RelayStatus:       status,
 			RelayLastSeen:     now,
+			Suspended:         agent.Suspended,
 			RelayChain:        []string{},
 		}
 	}

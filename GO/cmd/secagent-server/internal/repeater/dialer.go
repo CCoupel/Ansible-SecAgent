@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"secagent-server/internal/endpoints"
 )
 
 // ModePush is relay_hello.mode when the PARENT opened the link (#140).
@@ -24,9 +26,10 @@ var relayIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
 
 // DialTarget is a child relay registered with mode=push.
 type DialTarget struct {
-	RelayID string // expected identity of the child (relay_nodes.relay_id)
-	URL     string // wss://host:port of the child (the /ws/relay path is appended)
-	Token   string // relay-parent JWT signed by the child; secret, never logged
+	RelayID string   // expected identity of the child (relay_nodes.relay_id)
+	URLs    []string // wss://host:port of the child's instances (the /ws/relay path is appended); tried in order
+	URL     string   // single address (kept for callers of the pre-v3.0.3 shape): used when URLs is empty
+	Token   string   // relay-parent JWT signed by the child; secret, never logged
 }
 
 // DialerOptions configures a Dialer / DialerManager.
@@ -54,6 +57,7 @@ type Dialer struct {
 	started  bool
 	terminal error // permanent refusal that stopped this dialer
 	tr       *linkTracker
+	rotor    *endpoints.Rotor
 }
 
 // setTerminal records the permanent refusal; runLoop calls it before the status flips.
@@ -73,21 +77,35 @@ func (d *Dialer) Terminal() error {
 	return d.terminal
 }
 
-// ValidateDialTarget checks a push target: valid id, wss:// URL with a host and no userinfo, token set.
-// Errors never contain the token or URL userinfo.
-func ValidateDialTarget(t DialTarget) error {
+// addresses returns the target's address list (URLs, or the single URL).
+func (t DialTarget) addresses() []string {
+	if len(t.URLs) > 0 {
+		return t.URLs
+	}
+	if t.URL != "" {
+		return []string{t.URL}
+	}
+	return nil
+}
+
+// ValidateDialTarget checks a push target: valid id, a list of wss:// addresses, each with a host,
+// no userinfo and NOT an internal destination (loopback, link-local, cloud metadata, non routable;
+// RFC 1918 stays allowed), token set. One forbidden address refuses the whole list.
+// Errors never contain the token or a URL.
+func ValidateDialTarget(t DialTarget) error { return validateDialTarget(t, false) }
+
+// ValidateNewDialTarget is ValidateDialTarget for the REGISTRATION of a target by an operator: a
+// host name that cannot be resolved is refused ("cannot resolve the target host") so that no
+// unverifiable name enters the table. Booting with stored targets uses the lenient form (a DNS
+// outage must not disable the dialers); the dial-time guard covers both.
+func ValidateNewDialTarget(t DialTarget) error { return validateDialTarget(t, true) }
+
+func validateDialTarget(t DialTarget, strict bool) error {
 	if !relayIDPattern.MatchString(t.RelayID) {
 		return fmt.Errorf("invalid relay_id %q", t.RelayID)
 	}
-	u, err := url.Parse(t.URL)
-	if err != nil || u.Host == "" {
-		return errors.New("invalid url")
-	}
-	if u.User != nil {
-		return errors.New("url must not contain userinfo")
-	}
-	if u.Scheme != "wss" {
-		return errors.New("url must use the wss:// scheme (TLS required)")
+	if _, err := parseTargetURLs(t.addresses(), strict); err != nil {
+		return err
 	}
 	if strings.TrimSpace(t.Token) == "" {
 		return errors.New("token is required")
@@ -126,15 +144,22 @@ func (d *Dialer) Start(ctx context.Context) error {
 		return errors.New("dialer already started")
 	}
 	d.started = true
+	urls, err := ParseTargetURLs(d.target.addresses())
+	if err != nil {
+		d.started = false
+		return err
+	}
+	rotor, err := endpoints.NewRotor(urls, endpoints.Backoff{Min: d.opts.MinBackoff, Max: d.opts.MaxBackoff})
+	if err != nil {
+		d.started = false
+		return err
+	}
+	d.rotor = rotor
 	go func() {
 		// terminal is assigned (by the callback) BEFORE the status becomes refused_permanent
 		_ = runLoop(ctx, "child "+d.target.RelayID, d.opts.MinBackoff, d.opts.MaxBackoff, d.tr, d.setTerminal, d.session)
 	}()
 	return nil
-}
-
-func (d *Dialer) endpoint() string {
-	return strings.TrimRight(d.target.URL, "/") + "/ws/relay"
 }
 
 func (d *Dialer) session(ctx context.Context) (established bool, err error) {
@@ -144,13 +169,19 @@ func (d *Dialer) session(ctx context.Context) (established bool, err error) {
 		return false, &refusedError{reason: "loop: child is this node or one of its ancestors", permanent: true}
 	}
 
-	dialer := websocket.Dialer{TLSClientConfig: tlsOrDefault(d.opts.TLSConfig), HandshakeTimeout: d.opts.HandshakeTimeout}
 	hdr := http.Header{}
 	hdr.Set("Authorization", "Bearer "+d.target.Token)
-	conn, _, derr := dialer.DialContext(ctx, d.endpoint(), hdr)
+	conn, used, derr := endpoints.DialFirst(ctx, d.rotor, d.opts.HandshakeTimeout,
+		func(actx context.Context, u *url.URL) (*websocket.Conn, error) {
+			return dialWS(actx, u, "/ws/relay", d.opts.TLSConfig, hdr, d.opts.HandshakeTimeout)
+		})
 	if derr != nil {
+		if i, after := endpoints.AfterSendIndex(derr); after {
+			d.rotor.Rotate(i) // it accepted the connection and then froze: start elsewhere next time
+		}
 		return false, fmt.Errorf("dial child: %w", derr)
 	}
+	log.Printf("[REPEATER] child %q: connected through %s", d.target.RelayID, used.Host)
 	closeConn := func() { _ = conn.Close() }
 
 	// Unblock the handshake reads if the dialer is stopped meanwhile.
@@ -208,7 +239,7 @@ func (d *Dialer) session(ctx context.Context) (established bool, err error) {
 		return false, err
 	}
 	d.tr.set(LinkConnected, "")
-	log.Printf("[REPEATER] linked to child relay_id=%s (push)", d.target.RelayID)
+	log.Printf("[REPEATER] linked to child relay_id=%q (push)", d.target.RelayID)
 	if err := d.opts.Serve(ctx, conn, d.target.RelayID); err != nil {
 		// A close frame received on the served link carries the peer's decision: 4010 is a
 		// permanent refusal (revoked token, identity...), 4012 a correctable one (#148, #153).

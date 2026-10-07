@@ -2,14 +2,15 @@ package storage
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
+	"sort"
 	"time"
+
+	"secagent-server/cmd/secagent-server/internal/state"
 )
 
-// EnrollmentToken represents a token authorizing agent enrollment.
-// Matches SECURITY.md §3 table schema exactly.
+// EnrollmentToken represents a stored enrollment token (SECURITY.md §3).
 type EnrollmentToken struct {
 	ID              string
 	TokenHash       string     // SHA-256(token) — never the token in clear
@@ -22,263 +23,140 @@ type EnrollmentToken struct {
 	CreatedBy       string
 }
 
-// CreateEnrollmentToken inserts a new enrollment token.
-// id and tokenHash must be pre-computed by the caller (UUID + SHA-256).
+func enrollmentFromState(t state.EnrollmentToken) *EnrollmentToken {
+	return &EnrollmentToken{ID: t.ID, TokenHash: t.TokenHash, HostnamePattern: t.HostnamePattern, Reusable: t.Reusable,
+		UseCount: t.UseCount, LastUsedAt: t.LastUsedAt, CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt, CreatedBy: t.CreatedBy}
+}
+
+func secondsUTC(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	v := t.UTC().Truncate(time.Second)
+	return &v
+}
+
+// CreateEnrollmentToken inserts a new enrollment token (use_count 0, never used).
 func (s *Store) CreateEnrollmentToken(ctx context.Context, t EnrollmentToken) error {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
-
-	createdAt := t.CreatedAt.UTC().Unix()
-
-	var expiresAt interface{}
-	if t.ExpiresAt != nil {
-		expiresAt = t.ExpiresAt.UTC().Unix()
-	}
-
-	reusable := 0
-	if t.Reusable {
-		reusable = 1
-	}
-
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO enrollment_tokens
-			(id, token_hash, hostname_pattern, reusable, use_count, last_used_at, created_at, expires_at, created_by)
-		VALUES (?, ?, ?, ?, 0, NULL, ?, ?, ?)
-	`, t.ID, t.TokenHash, t.HostnamePattern, reusable, createdAt, expiresAt, t.CreatedBy)
+	err := s.mutate(func(tx *state.Tx) error {
+		if _, exists := tx.EnrollmentToken(t.ID); exists {
+			return fmt.Errorf("%w: enrollment token id %q", state.ErrDuplicate, t.ID)
+		}
+		return tx.PutEnrollmentToken(state.EnrollmentToken{ID: t.ID, TokenHash: t.TokenHash, HostnamePattern: t.HostnamePattern,
+			Reusable: t.Reusable, CreatedAt: t.CreatedAt.UTC().Truncate(time.Second), ExpiresAt: secondsUTC(t.ExpiresAt), CreatedBy: t.CreatedBy})
+	})
 	if err != nil {
 		return fmt.Errorf("CreateEnrollmentToken: %w", err)
 	}
-
-	log.Printf("Enrollment token created: id=%s pattern=%s reusable=%v", t.ID, t.HostnamePattern, t.Reusable)
+	log.Printf("Enrollment token created: id=%q pattern=%q reusable=%v", t.ID, t.HostnamePattern, t.Reusable)
 	return nil
 }
 
-// GetEnrollmentTokenByHash returns the token matching the given SHA-256 hash,
-// or nil if not found.
+// GetEnrollmentTokenByHash returns the token with this hash, or (nil, nil).
 func (s *Store) GetEnrollmentTokenByHash(ctx context.Context, tokenHash string) (*EnrollmentToken, error) {
-	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
-
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, token_hash, hostname_pattern, reusable, use_count,
-		       last_used_at, created_at, expires_at, created_by
-		FROM enrollment_tokens
-		WHERE token_hash = ?
-	`, tokenHash)
-
-	return scanEnrollmentToken(row)
+	t, ok := s.snap().EnrollmentTokenByHash(tokenHash)
+	if !ok {
+		return nil, nil
+	}
+	return enrollmentFromState(t), nil
 }
 
-// GetEnrollmentTokenByID returns the token matching the given UUID.
+// GetEnrollmentTokenByID returns the token with this id, or (nil, nil).
 func (s *Store) GetEnrollmentTokenByID(ctx context.Context, id string) (*EnrollmentToken, error) {
-	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
-
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, token_hash, hostname_pattern, reusable, use_count,
-		       last_used_at, created_at, expires_at, created_by
-		FROM enrollment_tokens
-		WHERE id = ?
-	`, id)
-
-	return scanEnrollmentToken(row)
+	t, ok := s.snap().EnrollmentToken(id)
+	if !ok {
+		return nil, nil
+	}
+	return enrollmentFromState(t), nil
 }
 
-// ListEnrollmentTokens returns all enrollment tokens ordered by created_at desc.
+// ListEnrollmentTokens returns all tokens, newest first.
 func (s *Store) ListEnrollmentTokens(ctx context.Context) ([]EnrollmentToken, error) {
-	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
-
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, token_hash, hostname_pattern, reusable, use_count,
-		       last_used_at, created_at, expires_at, created_by
-		FROM enrollment_tokens
-		ORDER BY created_at DESC
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("ListEnrollmentTokens: %w", err)
+	var out []EnrollmentToken
+	for _, t := range s.snap().EnrollmentTokens() {
+		out = append(out, *enrollmentFromState(t))
 	}
-	defer func() { _ = rows.Close() }()
-
-	var tokens []EnrollmentToken
-	for rows.Next() {
-		t, err := scanEnrollmentTokenRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("ListEnrollmentTokens scan: %w", err)
-		}
-		tokens = append(tokens, *t)
-	}
-	return tokens, rows.Err()
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
 }
 
-// ConsumeEnrollmentToken increments use_count and updates last_used_at.
-// Must be called within the enrollment transaction after all validations pass.
+// ConsumeEnrollmentToken counts one use (use_count + last_used_at). Enrollment itself goes through
+// EnrollAgent, which does it in the same mutation as the key and the agent.
 func (s *Store) ConsumeEnrollmentToken(ctx context.Context, id string) error {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
-
-	now := time.Now().UTC().Unix()
-	result, err := s.db.ExecContext(ctx, `
-		UPDATE enrollment_tokens
-		SET use_count = use_count + 1, last_used_at = ?
-		WHERE id = ?
-	`, now, id)
+	now := nowUTC()
+	err := s.mutate(func(tx *state.Tx) error {
+		t, ok := tx.EnrollmentToken(id)
+		if !ok {
+			return fmt.Errorf("token not found id=%s", id)
+		}
+		t.UseCount++
+		t.LastUsedAt = &now
+		return tx.PutEnrollmentToken(t)
+	})
 	if err != nil {
 		return fmt.Errorf("ConsumeEnrollmentToken: %w", err)
 	}
-
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("ConsumeEnrollmentToken rows: %w", err)
-	}
-	if affected == 0 {
-		return fmt.Errorf("ConsumeEnrollmentToken: token not found id=%s", id)
-	}
-
-	log.Printf("Enrollment token consumed: id=%s", id)
+	log.Printf("Enrollment token consumed: id=%q", id)
 	return nil
 }
 
-// DeleteEnrollmentToken removes a token permanently.
-// Returns (true, nil) if deleted, (false, nil) if not found.
+// DeleteEnrollmentToken removes a token; reports whether it existed.
 func (s *Store) DeleteEnrollmentToken(ctx context.Context, id string) (bool, error) {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
-
-	result, err := s.db.ExecContext(ctx,
-		"DELETE FROM enrollment_tokens WHERE id = ?", id)
-	if err != nil {
+	deleted := false
+	if err := s.mutate(func(tx *state.Tx) error { deleted = tx.DeleteEnrollmentToken(id); return nil }); err != nil {
 		return false, fmt.Errorf("DeleteEnrollmentToken: %w", err)
 	}
-
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("DeleteEnrollmentToken rows: %w", err)
-	}
-
-	deleted := affected > 0
 	if deleted {
-		log.Printf("Enrollment token deleted: id=%s", id)
+		log.Printf("Enrollment token deleted: id=%q", id)
 	}
 	return deleted, nil
 }
 
-// PurgeExpiredEnrollmentTokens removes tokens whose expires_at is in the past.
-func (s *Store) PurgeExpiredEnrollmentTokens(ctx context.Context) (int64, error) {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
+func (s *Store) purgeEnrollmentTokens(match func(state.EnrollmentToken) bool) (int64, error) {
+	any := false
+	for _, t := range s.snap().EnrollmentTokens() {
+		if match(t) {
+			any = true
+			break
+		}
+	}
+	if !any {
+		return 0, nil
+	}
+	n := 0
+	err := s.mutate(func(tx *state.Tx) error {
+		n = 0
+		for _, t := range s.snap().EnrollmentTokens() {
+			if match(t) && tx.DeleteEnrollmentToken(t.ID) {
+				n++
+			}
+		}
+		return nil
+	})
+	return int64(n), err
+}
 
-	now := time.Now().UTC().Unix()
-	result, err := s.db.ExecContext(ctx,
-		"DELETE FROM enrollment_tokens WHERE expires_at IS NOT NULL AND expires_at <= ?", now)
+// PurgeExpiredEnrollmentTokens removes the tokens whose expiry has passed.
+func (s *Store) PurgeExpiredEnrollmentTokens(ctx context.Context) (int64, error) {
+	now := time.Now().UTC()
+	n, err := s.purgeEnrollmentTokens(func(t state.EnrollmentToken) bool { return t.ExpiresAt != nil && !t.ExpiresAt.After(now) })
 	if err != nil {
 		return 0, fmt.Errorf("PurgeExpiredEnrollmentTokens: %w", err)
 	}
-
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("PurgeExpiredEnrollmentTokens rows: %w", err)
+	if n > 0 {
+		log.Printf("Expired enrollment tokens purged: count=%d", n)
 	}
-
-	if affected > 0 {
-		log.Printf("Expired enrollment tokens purged: count=%d", affected)
-	}
-	return affected, nil
+	return n, nil
 }
 
-// PurgeUsedOneShotEnrollmentTokens removes one-shot tokens that have been consumed.
+// PurgeUsedOneShotEnrollmentTokens removes the one-shot tokens that were used.
 func (s *Store) PurgeUsedOneShotEnrollmentTokens(ctx context.Context) (int64, error) {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
-
-	result, err := s.db.ExecContext(ctx,
-		"DELETE FROM enrollment_tokens WHERE reusable = 0 AND use_count > 0")
+	n, err := s.purgeEnrollmentTokens(func(t state.EnrollmentToken) bool { return !t.Reusable && t.UseCount > 0 })
 	if err != nil {
 		return 0, fmt.Errorf("PurgeUsedOneShotEnrollmentTokens: %w", err)
 	}
-
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("PurgeUsedOneShotEnrollmentTokens rows: %w", err)
+	if n > 0 {
+		log.Printf("Used one-shot enrollment tokens purged: count=%d", n)
 	}
-
-	if affected > 0 {
-		log.Printf("Used one-shot enrollment tokens purged: count=%d", affected)
-	}
-	return affected, nil
-}
-
-// ========================================================================
-// internal scan helpers
-// ========================================================================
-
-func scanEnrollmentToken(row *sql.Row) (*EnrollmentToken, error) {
-	var t EnrollmentToken
-	var reusable int
-	var lastUsedAtUnix sql.NullInt64
-	var createdAtUnix int64
-	var expiresAtUnix sql.NullInt64
-	var createdBy sql.NullString
-
-	err := row.Scan(
-		&t.ID, &t.TokenHash, &t.HostnamePattern,
-		&reusable, &t.UseCount,
-		&lastUsedAtUnix, &createdAtUnix, &expiresAtUnix, &createdBy,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("scan enrollment token: %w", err)
-	}
-
-	t.Reusable = reusable != 0
-	t.CreatedAt = time.Unix(createdAtUnix, 0).UTC()
-	if lastUsedAtUnix.Valid {
-		ts := time.Unix(lastUsedAtUnix.Int64, 0).UTC()
-		t.LastUsedAt = &ts
-	}
-	if expiresAtUnix.Valid {
-		ts := time.Unix(expiresAtUnix.Int64, 0).UTC()
-		t.ExpiresAt = &ts
-	}
-	if createdBy.Valid {
-		t.CreatedBy = createdBy.String
-	}
-
-	return &t, nil
-}
-
-func scanEnrollmentTokenRow(rows *sql.Rows) (*EnrollmentToken, error) {
-	var t EnrollmentToken
-	var reusable int
-	var lastUsedAtUnix sql.NullInt64
-	var createdAtUnix int64
-	var expiresAtUnix sql.NullInt64
-	var createdBy sql.NullString
-
-	err := rows.Scan(
-		&t.ID, &t.TokenHash, &t.HostnamePattern,
-		&reusable, &t.UseCount,
-		&lastUsedAtUnix, &createdAtUnix, &expiresAtUnix, &createdBy,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("scan enrollment token row: %w", err)
-	}
-
-	t.Reusable = reusable != 0
-	t.CreatedAt = time.Unix(createdAtUnix, 0).UTC()
-	if lastUsedAtUnix.Valid {
-		ts := time.Unix(lastUsedAtUnix.Int64, 0).UTC()
-		t.LastUsedAt = &ts
-	}
-	if expiresAtUnix.Valid {
-		ts := time.Unix(expiresAtUnix.Int64, 0).UTC()
-		t.ExpiresAt = &ts
-	}
-	if createdBy.Valid {
-		t.CreatedBy = createdBy.String
-	}
-
-	return &t, nil
+	return n, nil
 }

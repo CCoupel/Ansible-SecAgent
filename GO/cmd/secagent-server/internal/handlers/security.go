@@ -112,10 +112,10 @@ func AdminRotateKeys(w http.ResponseWriter, r *http.Request) {
 	// === Step 8: Persist all values to DB ===
 	deadlineStr := deadline.UTC().Format(time.RFC3339)
 
-	if err := adminStore.ConfigSet(ctx, "jwt_secret_previous", oldJWTSecret); err != nil {
+	if err := persistConfigSecret(ctx, adminStore, "jwt_secret_previous", oldJWTSecret); err != nil {
 		log.Printf("AdminRotateKeys: persist jwt_secret_previous: %v", err)
 	}
-	if err := adminStore.ConfigSet(ctx, "jwt_secret_current", newJWTSecret); err != nil {
+	if err := persistConfigSecret(ctx, adminStore, "jwt_secret_current", newJWTSecret); err != nil {
 		log.Printf("AdminRotateKeys: persist jwt_secret_current: %v", err)
 	}
 	if err := adminStore.ConfigSet(ctx, "key_rotation_deadline", deadlineStr); err != nil {
@@ -158,6 +158,9 @@ func AdminRotateKeys(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// sendToAgentFn delivers a control message to a connected agent (replaced in tests).
+var sendToAgentFn = ws.SendToAgent
+
 // sendRekeyToAgent issues a new JWT for hostname, encrypts it with the agent's
 // RSA public key, and sends a WS "rekey" message. Returns true on success.
 func sendRekeyToAgent(ctx context.Context, hostname, jwtSecret string, jwtTTL time.Duration) bool {
@@ -168,28 +171,35 @@ func sendRekeyToAgent(ctx context.Context, hostname, jwtSecret string, jwtTTL ti
 	// Fetch agent's public key from DB
 	agent, err := adminStore.GetAgent(ctx, hostname)
 	if err != nil || agent == nil {
-		log.Printf("sendRekeyToAgent: GetAgent %s: err=%v found=%v", hostname, err, agent != nil)
+		log.Printf("sendRekeyToAgent: GetAgent %q: err=%v found=%v", hostname, err, agent != nil)
+		return false
+	}
+
+	if agent.Revoked { // a revoked host never gets a new token (#193)
+		log.Printf("[SECURITY WARNING] sendRekeyToAgent: %q is revoked, no token issued", hostname)
 		return false
 	}
 
 	// Sign new JWT with the new current secret
 	rawJWT, newJTI, err := signAgentJWT(hostname, jwtSecret, jwtTTL)
 	if err != nil {
-		log.Printf("sendRekeyToAgent: signAgentJWT %s: %v", hostname, err)
+		log.Printf("sendRekeyToAgent: signAgentJWT %q: %v", hostname, err)
 		return false
 	}
 
 	// Encrypt JWT with agent's RSA public key (RSAES-OAEP SHA-256)
 	tokenEncrypted, err := encryptWithPublicKey(rawJWT, agent.PublicKeyPEM)
 	if err != nil {
-		log.Printf("sendRekeyToAgent: encryptWithPublicKey %s: %v", hostname, err)
+		log.Printf("sendRekeyToAgent: encryptWithPublicKey %q: %v", hostname, err)
 		return false
 	}
 
-	// Persist new JTI in DB
+	// Persist the new JTI BEFORE sending the token: a token whose JTI is not stored would be refused
+	// at the next handshake (token_replaced), and the old one would stay valid. A refused write
+	// (read-only state, lost lock) therefore sends nothing (#192 audit).
 	if _, err := adminStore.UpdateTokenJTI(ctx, hostname, newJTI); err != nil {
-		log.Printf("sendRekeyToAgent: UpdateTokenJTI %s: %v", hostname, err)
-		// Non-fatal — still send the message
+		log.Printf("sendRekeyToAgent: UpdateTokenJTI %q: %v — rekey not sent", hostname, err)
+		return false
 	}
 
 	// Send rekey message over WebSocket (no task_id — control message)
@@ -197,12 +207,12 @@ func sendRekeyToAgent(ctx context.Context, hostname, jwtSecret string, jwtTTL ti
 		"type":            "rekey",
 		"token_encrypted": tokenEncrypted,
 	}
-	if err := ws.SendToAgent(hostname, rekeyMsg); err != nil {
-		log.Printf("sendRekeyToAgent: SendToAgent %s: %v", hostname, err)
+	if err := sendToAgentFn(hostname, rekeyMsg); err != nil {
+		log.Printf("sendRekeyToAgent: SendToAgent %q: %v", hostname, err)
 		return false
 	}
 
-	log.Printf("Rekey sent to agent: hostname=%s jti=%s", hostname, newJTI)
+	log.Printf("Rekey sent to agent: hostname=%q jti=%q", hostname, newJTI)
 	return true
 }
 

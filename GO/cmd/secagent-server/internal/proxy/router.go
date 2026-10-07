@@ -83,7 +83,7 @@ func (r *ProxyRouter) RouteExec(ctx context.Context, hostname, taskID string, re
 	if !r.isRelayConnected(relayID) {
 		return nil, fmt.Errorf("relay_offline: %s", relayID)
 	}
-	log.Printf("[PROXY] RouteExec: hostname=%s relay_id=%s task_id=%s", hostname, relayID, taskID)
+	log.Printf("[PROXY] RouteExec: hostname=%q relay_id=%q task_id=%q", hostname, relayID, taskID)
 	return r.pullExec(ctx, relayID, hostname, taskID, req)
 }
 
@@ -96,7 +96,7 @@ func (r *ProxyRouter) RouteUpload(ctx context.Context, hostname, taskID string, 
 	if !r.isRelayConnected(relayID) {
 		return fmt.Errorf("relay_offline: %s", relayID)
 	}
-	log.Printf("[PROXY] RouteUpload: hostname=%s relay_id=%s", hostname, relayID)
+	log.Printf("[PROXY] RouteUpload: hostname=%q relay_id=%q", hostname, relayID)
 	return r.pullUpload(ctx, relayID, hostname, taskID, req)
 }
 
@@ -109,7 +109,7 @@ func (r *ProxyRouter) RouteFetch(ctx context.Context, hostname, taskID string, r
 	if !r.isRelayConnected(relayID) {
 		return nil, fmt.Errorf("relay_offline: %s", relayID)
 	}
-	log.Printf("[PROXY] RouteFetch: hostname=%s relay_id=%s", hostname, relayID)
+	log.Printf("[PROXY] RouteFetch: hostname=%q relay_id=%q", hostname, relayID)
 	return r.pullFetch(ctx, relayID, hostname, taskID, req)
 }
 
@@ -140,7 +140,7 @@ func (r *ProxyRouter) AggregateRelayInventory() ([]RelayAgentEntry, error) {
 	for _, n := range nodes {
 		hostnames, hErr := r.store.ListRelayRouting(n.RelayID)
 		if hErr != nil {
-			log.Printf("[PROXY] AggregateRelayInventory: list routing for %s: %v", n.RelayID, hErr)
+			log.Printf("[PROXY] AggregateRelayInventory: list routing for %q: %v", n.RelayID, hErr)
 			continue
 		}
 		relayStatus := nodeStatus[n.RelayID]

@@ -1,7 +1,7 @@
 package integration
 
 // The relays' group vars through the REAL ansible-inventory / ansible (same CI convention as the
-// other Ansible tests: ANSIBLE_E2E, skipped when the tools are absent).
+// other Ansible tests: opt-in through ANSIBLE_E2E=1).
 
 import (
 	"encoding/json"
@@ -15,12 +15,10 @@ import (
 
 func ansibleAdHocTool(t *testing.T, inventoryTool string) string {
 	t.Helper()
+	requireAnsibleE2E(t)
 	p := filepath.Join(filepath.Dir(inventoryTool), "ansible")
 	if _, err := os.Stat(p); err != nil {
-		if os.Getenv("ANSIBLE_E2E") == "1" {
-			t.Fatalf("ANSIBLE_E2E=1 but the ansible command is missing next to ansible-inventory: %v", err)
-		}
-		t.Skip("ansible command not found")
+		t.Fatalf("ANSIBLE_E2E=1 but the ansible command is missing next to ansible-inventory: %v", err)
 	}
 	return p
 }

@@ -22,7 +22,7 @@ func init() {
 
 var serverStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show server health (NATS, DB, WS connections, uptime)",
+	Short: "Show server health (DB, WS connections, uptime)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		data, status, err := apiRequest("GET", "/api/admin/status", nil)
 		if err != nil {
@@ -41,10 +41,26 @@ var serverStatusCmd = &cobra.Command{
 			m := v.(map[string]interface{})
 			tp := newTabPrinter()
 			tp.println("COMPONENT\tSTATUS")
-			tp.printf("nats\t%v\n", m["nats"])
 			tp.printf("db\t%v\n", m["db"])
 			tp.printf("ws_connections\t%v\n", m["ws_connections"])
 			tp.printf("uptime\t%v\n", m["uptime"])
+			if mode, ok := m["state_mode"]; ok {
+				tp.printf("state_mode\t%v\n", mode)
+				if r, ok := m["state_mode_reason"]; ok {
+					tp.printf("state_mode_reason\t%v\n", r)
+				}
+				for _, k := range []string{"role", "instance_id", "write_seq", "beat", "last_beat_at"} {
+					if v, ok := m[k]; ok {
+						tp.printf("%s\t%v\n", k, v)
+					}
+				}
+			}
+			if _, ok := m["hooks_queue_depth"]; ok {
+				tp.printf("hooks_queue_depth\t%v / %v\n", m["hooks_queue_depth"], m["hooks_queue_capacity"])
+				tp.printf("hooks_inflight\t%v\n", m["hooks_inflight"])
+				tp.printf("hooks_dropped_events\t%v\n", m["hooks_dropped_events"])
+				tp.printf("hooks_dropped_actions\t%v\n", m["hooks_dropped_actions"])
+			}
 			if err := tp.flush(); err != nil {
 				return err
 			}

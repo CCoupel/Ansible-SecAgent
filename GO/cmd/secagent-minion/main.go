@@ -21,6 +21,9 @@
 //
 //	RELAY_SERVER_URL         URL HTTPS du relay server    (défaut: https://localhost:7770)
 //	RELAY_WS_URL             URL WSS du relay server      (défaut: wss://localhost:7772/ws/agent)
+//	                         Les deux acceptent une LISTE séparée par des virgules (relay actif/passif) :
+//	                         mêmes longueurs, appariées par position (https://h1:7770 ↔ wss://h1:7772/ws/agent).
+//	                         Longueurs différentes : refus de démarrer.
 //	RELAY_AGENT_HOSTNAME     Hostname de l'agent          (défaut: os.Hostname())
 //	RELAY_PRIVATE_KEY        Chemin clef privée RSA       (défaut: /etc/secagent-minion/id_rsa)
 //	RELAY_JWT_PATH           Chemin JWT persisté          (défaut: /etc/secagent-minion/token.jwt)
@@ -35,6 +38,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -48,6 +52,7 @@ import (
 	"secagent-server/cmd/secagent-minion/internal/files"
 	"secagent-server/cmd/secagent-minion/internal/registry"
 	"secagent-server/cmd/secagent-minion/internal/ws"
+	"secagent-server/internal/endpoints"
 )
 
 func main() {
@@ -73,8 +78,20 @@ func main() {
 	}
 
 	// --- Étape 3 : JWT — reload ou enrollment ---
-	jwt, err := loadOrEnroll(cfg, hostname, privKey)
+	// SIGTERM/SIGINT stop the enrollment retries as well as the dispatcher.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+	jwt, err := loadOrEnroll(ctx, cfg, hostname, privKey)
 	if err != nil {
+		if ctx.Err() != nil {
+			log.Printf("[SHUTDOWN] Stopped while enrolling")
+			return
+		}
+		if enrollment.IsForbidden(err) || errors.Is(err, errNoEnrollmentToken) {
+			// token invalid, expired or consumed: restarting cannot fix it
+			log.Printf("[FATAL] Enrollment cannot succeed (permanent: token refused by the server, or not set): %v", err)
+			os.Exit(ws.ExitEnrollmentRefused)
+		}
 		log.Fatalf("[FATAL] Enrollment failed: %v", err)
 	}
 	log.Printf("[OK] JWT obtained (len=%d)", len(jwt))
@@ -95,27 +112,30 @@ func main() {
 	}
 
 	dispatcher := ws.NewDispatcher(ws.ConnConfig{
-		ServerURL: cfg.wsURL,
+		Endpoints: cfg.wsRotor,
 		JWT:       jwt,
 		CABundle:  cfg.caBundle,
 		Insecure:  cfg.insecure,
 	}, handler, cfg.maxConcurrentTasks).WithEnrollConfig(ws.EnrollConfig{
-		RegisterURL:     cfg.serverURL + "/api/register",
+		Rotor:           cfg.serverRotor,
 		Hostname:        hostname,
 		PrivateKey:      privKey,
 		JWTPath:         cfg.jwtPath,
 		EnrollmentToken: cfg.enrollmentToken,
+		CABundle:        cfg.caBundle,
 		Insecure:        cfg.insecure,
-		MaxRetries:      3,
 	})
 
-	// --- Étape 6 : Signal handling + run loop ---
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer cancel()
-
+	// --- Étape 6 : run loop (ctx : signal handling, créé à l'étape 3) ---
 	log.Printf("[INIT] Connecting to %s", cfg.wsURL)
 	if err := dispatcher.Run(ctx); err != nil {
 		log.Printf("[SHUTDOWN] Dispatcher stopped: %v", err)
+		// Permanent stops (revocation 77, enrollment refused 78) exit with a distinct status:
+		// systemd RestartPreventExitStatus=77 78 must not restart-loop a revoked/refused minion.
+		if code := ws.ExitCode(err); code != 1 {
+			log.Printf("[SHUTDOWN] permanent stop, exit status %d (do not restart)", code)
+			os.Exit(code)
+		}
 	}
 
 	log.Printf("[OK] Agent shutdown complete")
@@ -159,7 +179,10 @@ func loadOrGenerateKey(cfg agentConfig) (*rsa.PrivateKey, error) {
 
 // loadOrEnroll retourne le JWT existant si présent, sinon effectue l'enrollment.
 // L'enrollment Phase 10 appelle POST /api/register en 2 étapes (challenge-response OAEP).
-func loadOrEnroll(cfg agentConfig, hostname string, privKey *rsa.PrivateKey) (string, error) {
+// errNoEnrollmentToken is a permanent configuration error (exit status 78): no retry can fix it.
+var errNoEnrollmentToken = errors.New("RELAY_ENROLLMENT_TOKEN is not set: cannot enroll")
+
+func loadOrEnroll(ctx context.Context, cfg agentConfig, hostname string, privKey *rsa.PrivateKey) (string, error) {
 	// Tente de recharger le JWT existant
 	if data, err := os.ReadFile(cfg.jwtPath); err == nil && len(data) > 0 {
 		token := string(data)
@@ -168,25 +191,73 @@ func loadOrEnroll(cfg agentConfig, hostname string, privKey *rsa.PrivateKey) (st
 	}
 
 	log.Printf("[INIT] No JWT found — enrolling with %s", cfg.serverURL)
+	if cfg.enrollmentToken == "" {
+		// permanent configuration error: retrying cannot fix it
+		return "", errNoEnrollmentToken
+	}
 
 	pubPEM, err := enrollment.PublicKeyPEM(privKey)
 	if err != nil {
 		return "", err
 	}
+	attempt := func(actx context.Context) (string, error) {
+		return enrollment.Enroll(actx, enrollment.Config{
+			Rotor:           cfg.serverRotor,
+			Hostname:        hostname,
+			PublicKeyPEM:    pubPEM,
+			PrivateKey:      privKey,
+			EnrollmentToken: cfg.enrollmentToken,
+			CABundle:        cfg.caBundle,
+			JWTPath:         cfg.jwtPath,
+			Insecure:        cfg.insecure,
+		})
+	}
+	return enrollWithRetry(ctx, attempt, sleepCtx, time.Second, time.Minute)
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+// enrollWithRetry runs the enrollment until it succeeds. Each call of attempt is ONE round over
+// the address list (see enrollment.Config.Rotor): the one-shot token is presented to at most one
+// server per round and never replayed on another address once the request left. Whatever fails
+// except an explicit refusal is CORRECTABLE: a first address that read the request and then cut or
+// froze (a half-dead master before a switch-over) ends the round (ErrAfterSend) and the rotation of
+// the address makes the NEXT round start on the next one; rounds are spaced by an exponential
+// backoff (base .. max). An HTTP 403 (token invalid, expired or already consumed, possibly by the
+// first address) is permanent: it is returned and the process exits 78. Nothing secret is logged.
+func enrollWithRetry(ctx context.Context, attempt func(context.Context) (string, error),
+	wait func(context.Context, time.Duration) error, base, max time.Duration) (string, error) {
+	delay := base
+	for round := 1; ; round++ {
+		actx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		jwt, err := attempt(actx)
+		cancel()
+		if err == nil {
+			return jwt, nil
+		}
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		if enrollment.IsForbidden(err) {
+			return "", err
+		}
+		log.Printf("[WARN] Enrollment round %d failed: %v — next round (next address) in %s", round, err, delay)
+		if werr := wait(ctx, delay); werr != nil {
+			return "", werr
+		}
+		if delay *= 2; delay > max {
+			delay = max
+		}
+	}
+}
 
-	return enrollment.Enroll(ctx, enrollment.Config{
-		RegisterURL:     cfg.serverURL + "/api/register",
-		Hostname:        hostname,
-		PublicKeyPEM:    pubPEM,
-		PrivateKey:      privKey,
-		EnrollmentToken: cfg.enrollmentToken,
-		CABundle:        cfg.caBundle,
-		JWTPath:         cfg.jwtPath,
-		Insecure:        cfg.insecure,
-	})
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +363,36 @@ type agentConfig struct {
 	asyncDir           string
 	insecure           bool // TESTS UNIQUEMENT — désactive TLS verification
 	maxConcurrentTasks int
+
+	// Listes d'adresses appariées par position (valeur unique = liste d'une adresse).
+	serverRotor *endpoints.Rotor // enrôlement (URL de base HTTPS)
+	wsRotor     *endpoints.Rotor // WebSocket (wss://…/ws/agent)
+}
+
+// buildEndpoints parse RELAY_SERVER_URL et RELAY_WS_URL (listes séparées par des virgules) et
+// impose des longueurs égales : l'adresse i d'une liste et l'adresse i de l'autre désignent la
+// même instance du relay. Aucune erreur ne reproduit une URL.
+func buildEndpoints(serverList, wsList string) (srv, wsr *endpoints.Rotor, err error) {
+	srvURLs, err := endpoints.ParseSchemes(serverList, "https", "http")
+	if err != nil {
+		return nil, nil, fmt.Errorf("RELAY_SERVER_URL: %w", err)
+	}
+	wsURLs, err := endpoints.ParseSchemes(wsList, "wss", "ws")
+	if err != nil {
+		return nil, nil, fmt.Errorf("RELAY_WS_URL: %w", err)
+	}
+	if len(srvURLs) != len(wsURLs) {
+		return nil, nil, fmt.Errorf("RELAY_SERVER_URL has %d address(es) but RELAY_WS_URL has %d: the two lists are paired by position (the same relay instance at the same index) and must have the same length",
+			len(srvURLs), len(wsURLs))
+	}
+	bo := endpoints.Backoff{Min: time.Second, Max: time.Minute}
+	if srv, err = endpoints.NewRotor(srvURLs, bo); err != nil {
+		return nil, nil, err
+	}
+	if wsr, err = endpoints.NewRotor(wsURLs, bo); err != nil {
+		return nil, nil, err
+	}
+	return srv, wsr, nil
 }
 
 func loadConfig() agentConfig {
@@ -312,6 +413,10 @@ func loadConfig() agentConfig {
 		asyncDir:           getenv("RELAY_ASYNC_DIR", "/var/lib/secagent-minion/async"),
 		insecure:           getenv("RELAY_INSECURE_TLS", "") == "true",
 		maxConcurrentTasks: maxTasks,
+	}
+	var err error
+	if cfg.serverRotor, cfg.wsRotor, err = buildEndpoints(cfg.serverURL, cfg.wsURL); err != nil {
+		log.Fatalf("[FATAL] %v", err)
 	}
 	if cfg.insecure {
 		log.Printf("[WARN] RELAY_INSECURE_TLS=true — TLS verification disabled (tests only)")

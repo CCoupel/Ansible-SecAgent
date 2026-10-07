@@ -11,6 +11,88 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [v3.0.3] — 2026-10-06 — Relay Actif/Passif et État sans SQLite
+
+**⚠️ BREAKING CHANGES — Migration Required**
+
+### Migration et Avis de Sécurité
+
+**Migration (obligatoire)** : 
+- **Tokens agent sans `role: "agent"`** sont refusés en 401 après la mise à jour. Les agents doivent **se ré-enrôler** (nouveau jeton d'enrôlement, redémarrage du minion).
+- **État vierge, aucune migration de `relay.db`** — v3 repart de zéro. Anciens tokens, hôtes et configurations sont perdus ; tous les agents se ré-enrôlent.
+- **`DATABASE_URL` définie = erreur au démarrage** — utiliser `STATE_DIR` (défaut `/data`).
+- Exécutez `secagent-server state init` pour initialiser le nouvel état avant le 1er démarrage.
+
+**Avis de sécurité** (#181, #192, #193) :
+- **Toutes les versions antérieures, dont v1.0.0 et v2.0.0 (défaut présent depuis v1.0.0)** : `POST /api/token/refresh` n'authentifiait pas l'appelant et `POST /api/register` sans jeton d'enrôlement émettait un JWT sans preuve de possession de la clef privée ni contrôle de la blacklist. Conséquences : **contournement de la révocation** (un agent révoqué qui garde sa clef obtenait un nouveau JTI) et **remplacement du JTI** d'un agent par un tiers (déni de service). **Corrigé en v3.0.3** : route supprimée, enrôlement sans jeton refusé. L'environnement de qualification resté en v2.0.0 est exposé jusqu'à sa migration ; mitigation réseau : bloquer `/api/token/refresh` et restreindre `/api/register` (voir `DOC/security/SECURITY.md` §11, avis 3).
+- **v1.0.0 et v2.0.0 affectées** : endpoints `/ws/agent` et `/ws/relay` (mode proxy) acceptaient connexions sans token. Exploitation : usurpation d'agent/relay, interception de tâches et `become_pass`. **Corrigé en v3.0.3**, fail-closed. Mitigations pour déploiements v2.0.0 : restriction réseau des ports 7770/7772 + **rotation des `become_pass`**.
+- **v1.0.0 et v2.0.0 affectées** : secrets de webhooks (HMAC, jetons) enregistrés en clair dans `action_log`. Exposition via `GET /api/admin/hooks/log` et via accès au fichier `relay.db`. **Corrigé en v3.0.3** avec journal append-only masqué. Actions : **évaluer et faire tourner les secrets de webhooks** et **purger les anciennes copies de `relay.db`**.
+
+### Changed (breaking)
+- **Le Store passe sur le fichier d'état, SQLite et CGO sont retirés (#160)** : `STATE_DIR` (défaut `/data`, créé par `secagent-server state init`) remplace `DATABASE_URL` ; `DATABASE_URL` définie = **erreur au démarrage** (aucune migration d'un ancien `relay.db`). Enrôlement et révocation d'un relay en une seule mutation ; statut, `last_seen`, routage et `relay_chain` en mémoire ; purge horaire de la blacklist ; `last_used_*` des tokens plugin approximatifs (champ `last_used_approximate`). Tokens relay : `token_hash` (pull) et `token_secret` scellé (push) distincts. Sans garde d'écriture le serveur est en lecture seule. Binaire et image serveur en `CGO_ENABLED=0`.
+
+### Added
+- **Fichier d'état avec HMAC et anti-rejeu (#159, #160, #162, #163)** : `relay.state` (JSON, authentifié HMAC-SHA-256, crypté champ par champ, écriture atomique) remplace SQLite ; créé par `secagent-server state init` (sans aucune source de données externes, état vierge obligatoire). Verrou d'exclusivité du maître (`relay.lock`, variante A : inode + `instance_id` + battement) avec garde `write_seq` anti-rejeu en mémoire.
+- **Actif/passif dans `secagent-server` (#163)** : une instance démarre secondaire (aucun port, aucun état chargé, rien d'écrit hors `relay.lock`), devient maître par le verrou, charge l'état puis ouvre ses ports ; `BeforeWrite` branché sur le verrou. Perte du verrou : listeners et WebSockets fermés (`1001`, jamais `4001`), hooks non vidés, sortie code 75. SIGTERM : verrou supprimé, reprise < 10 s (mesurée 3-6 s : cycle de contrôle ≤ 5 s + pause du candidat 1-2 s). Garde de `write_seq` (rejeu d'une copie plus ancienne refusé). `secagent-server status --local` et fichier `RELAY_STATUS_FILE` (healthcheck sans port). `/health` : `role`, `instance_id`. **`RELAY_SINGLE_INSTANCE` supprimée** (ignorée avec un avertissement : le verrou est toujours actif).
+- **TLS natif dans secagent-server (#175)** : `TLS_CERT` et `TLS_KEY` chargés depuis fichiers PEM, appliqués aux ports 7770 (API) et 7772 (WebSocket). Rechargement à chaud via `GetCertificate` sans redémarrage. Port 7771 (admin) : HTTP en clair si loopback, TLS obligatoire si non-loopback (`ADMIN_TLS=true`), ou dérogation explicite `ADMIN_INSECURE_HTTP=true` + `ADMIN_INSECURE_HTTP_ACK=i-understand-the-risk` (warning à chaque démarrage).
+- **Journal des actions de hooks masqué (#161)** : `action_log` (SQLite) remplacé par un journal JSON Lines append-only `actions.log` (`RELAY_ACTION_LOG`, défaut `STATE_DIR/actions.log`), sans fsync par ligne, rotation par taille (10 Mio × 5). Le `config_snapshot` ne contient plus aucun secret (masquage systématique des HMAC, tokens et en-têtes d'authentification).
+- **Commandes de diagnostic et reprise d'état (#187)** : `secagent-server state verify` (vérifie intégrité HMAC, schema, invariants sans écrire), `secagent-server state restore --from` (restauration atomique d'une copie préalablement vérifiée, avec garde verrou vivant et min-write-seq).
+- **Listes d'adresses multi-instances (#164-168)** : agents, plugins et inventaire supportent listes d'adresses ; relay aussi en mode pull/push. Client try-first, roundrobin, distinction « avant envoi » / « après envoi ». Variante DNS supportée nativement.
+
+### Changed
+- **TLS_DISABLE=true (tests seul)** — option pour les tests, sinon TLS obligatoire
+- **Ports 7770/7771/7772 clarifiés** : 7770 = API publique + `/ws/agent` + `/ws/relay` (compat), 7771 = admin jamais exposé, 7772 = WebSocket (option historique, redondance 7770)
+
+### Added (CI/CD, qualification et déploiement — #170, #171, #174, #188)
+- **Chaîne de qualification en conteneurs (#188)** : `DEPLOYMENT/qualif/docker-compose.chain.yml` (racine actif/passif incluse depuis `docker-compose.server.yml`, un relay enfant pull `secagent-child`, deux minions `minion-root` et `minion-child`, listes d'adresses, `REPEATER_CA_FILE` / `RELAY_CA_BUNDLE`, aucun `build:`, aucun `latest`, aucune désactivation de la vérification TLS). Pilotée par `DEPLOYMENT/qualif/chain-test.sh` (`ci-prepare`, `bootstrap`, `smoke`, `failover`, `backup-restore`, `logs`, `down`) et `pki/gen.sh` (CA privée de test, un certificat à SAN multiples, clés non versionnées). Le jeton plugin est écrit dans un fichier 0600 et n'est jamais affiché. Limites assumées : poste de contrôle Ansible = le poste ou le runner qui lance le script (aucune image Ansible n'est publiée) ; enfant push non déployé ; enfant pull en une seule instance ; un seul certificat pour toutes les instances.
+- **Jobs CI (`ci.yml`, à chaque push, sans aucune publication)** : « Chaîne en conteneurs » (amorçage, smoke, bascule de la racine), « Sauvegarde et restauration » (`relay.state` et `RSA_MASTER_KEY` sauvegardés séparément, perte du volume ; `state verify` sans clé code 6, mauvaise clé code 2 ; restauration sur volume vierge, minion déjà enrôlé reconnecté sans nouveau jeton), « Répétition à vide de l'archive Compose » (digest factice, archive reproductible vérifiée par comparaison, `SHA256SUMS`, rendu Compose et `check_compose.py` sur l'archive extraite, cas négatifs `latest` / NATS / digest invalide) et « Reproductibilité » (deux builds OCI locaux par image, comparaison des digests, avertissement et couches en cas d'écart). Garde `grep` anti-obsolètes sur `DEPLOYMENT/`.
+- **Workflows manuels (#174)** : `candidate-images.yml` (`workflow_dispatch`, entrées `ref` et `publish=true`) publie les images serveur et minion candidates `sha-<commit>@sha256:<digest>` pour la qualif ; `failover.yml` rejoue la bascule en conteneurs avec les vraies péremptions (`docker kill`, processus figé), planifié et manuel. `check_no_publish.py` ne s'applique qu'à `ci.yml`. **Limite connue** : GitHub n'expose `workflow_dispatch` et `schedule` que pour les workflows présents sur la branche par défaut (`main`) ; tant que ces deux fichiers n'y sont pas, ils ne sont pas lançables (la branche `ci/enable-failover-candidate-workflows` prépare cette activation, `schedule` commenté jusqu'à la fusion de v3.0.3).
+- **Images `linux/amd64` uniquement (#174 M9)** : `candidate-images.yml` et `release.yml` ne publient que cette plate-forme ; aucune image arm64 en v3.0.3.
+- **Archive Compose de release (#174)** : `scripts/ci/build_compose_archive.sh`, script partagé par `release.yml` et la répétition à vide ; archive `secagent-compose-<version>.tar.gz` reproductible, `image:` réécrite en `tag@sha256`, incluse dans `SHA256SUMS`.
+- **Tests Ansible async D1-D4 en CI (#171 D)** : `ansible-playbook` réel + plugin réel + minion réel (`internal/integration/ansible_async_test.go`) — D1 `async`+`poll`, D2 fire-and-forget puis `async_status`, D3 arrêt propre du maître (job conservé ; variante `poll: 1` en vol), D4 `kill -9` (2 jobs lus après la reprise, un seul exécuté chacun). Le job « Inventaire Ansible » a un `timeout-minutes: 20`, un venv `ansible-core` + `httpx` épinglés, exige le `PASS` de D1-D4 et interdit tout skip Ansible. **Constat D3** : un `poll` en vol pendant l'arrêt propre peut échouer sans rejeu ; les `poll` suivants atteignent le nouveau maître grâce à la liste d'adresses du plugin.
+- **Job d'artefact d'images (`images-artifact`, push uniquement)** : images serveur et minion exportées (`docker save | gzip -n`), binaire `secagent-inventory` linux/amd64, `images.env`, `SHA256SUMS`, en artefact de run `secagent-images-<sha>` conservé 7 jours ; aucun login, push ni `packages: write`.
+- **Qualification sans registre** : `chain-test.sh load-images <dir>` (vérifie `SHA256SUMS` puis `docker load`) ; les Compose lisent `pull_policy: ${SECAGENT_PULL_POLICY:-missing}` (`never` pour les images chargées localement) ; `check_compose.py` accepte un tag local en qualif et exige `tag@sha256:<64 hex>` avec `--require-digest` (appliqué à l'archive de release).
+- **Mode hôte Docker distant et garde-fous de projet** : projet unique `secagent-qualif` pour la chaîne et les tests de basculement ; `TLS_MODE=volume` + `chain-test.sh push-tls` (certificats dans le volume nommé `secagent-qualif_tls`, sans bind mount) ; `SECAGENT_ENDPOINT_HOST` / `CONTROL_HOST` pour joindre l'hôte distant ; `guard_project` refuse `down`, `teardown` et `backup-restore` sur un hôte distant hors projet `secagent-qualif`, ou si `COMPOSE_PROJECT_NAME` diffère du projet.
+- **`PKI_EXTRA_SAN`** (`pki/gen.sh`) : SAN supplémentaires validés (ex. `IP:192.168.1.218,DNS:qualif.lan`) dans le certificat de test ; défaut vide, CI inchangée. `pki/gen.sh` refuse en outre d'écrire des clés dans un dépôt git qui ne les ignore pas.
+- **Sauvegarde/restauration par volume nommé** : `backup-restore` passe par un volume `<projet>_backup` alimenté par un flux tar (plus de bind mount local), donc compatible avec un démon Docker distant ; volume supprimé en fin d'opération.
+
+### Fixed (CI/CD)
+- **Contrôle NATS de la release** : il scannait aussi `tools/check_compose.py` (qui contient le mot « nats ») et aurait fait échouer la première vraie release ; le contrôle exclut désormais `tools` (corrigé dans `build_compose_archive.sh`).
+
+### Removed (déploiement — #188)
+- Compose `qualif/docker-compose.{proxy,minion,ansible}.yml`, `smoke-proxy.sh`, `smoke_test.py`, `Dockerfile.mock`, `Dockerfile.smoke`, `mock_server.py`, `test_plugins.sh`, `.env.proxy`, `DEPLOYMENT/deploy.sh` et `deploy.bat`, `scripts/bootstrap-qualif.sh`, `GO/Dockerfile.ansible` et `DEPLOYMENT/ANSIBLE_DEPLOYMENT.md`. Remplacés par la chaîne ci-dessus.
+
+### Removed
+- **NATS JetStream retiré du serveur et du déploiement (#178)** : aucun usage fonctionnel (l'exec passe par WebSocket direct), aucune perte. Suppression de `internal/broker`, de `GO/nats.conf`, des services/volumes `nats*` des Compose hors prod, des dépendances `nats-io` du `go.mod`. `NATS_URL` encore définie : un seul `[WARN] NATS_URL is obsolete and ignored`, démarrage normal.
+- **[BREAKING]** `GET /api/admin/status` et `secagent-server server status` ne renvoient plus le champ `nats`.
+- **Kubernetes et Helm retirés (#170, #157)** : déploiement cible = Docker Compose multi-hôtes actif/passif (prod). Helm et K8s ne sont plus cibles supportées.
+- **Caddy et scripts deploy.sh / deploy.bat retirés (#174, #188)** : TLS natif dans le serveur ; Compose sans reverse proxy ; déploiement par Compose direct.
+
+### Security
+- **#192** : `POST /api/token/refresh` supprimée (404 pour tout appelant) — aucun client, et elle contournait la révocation / remplaçait le JTI d'un agent sans l'authentifier (v1.0.0 à v2.0.0). Le JWT se renouvelle par ré-enrôlement (401) ou message `rekey`.
+- **#193** : seconde porte de contournement fermée — un agent révoqué ne peut plus se ré-enrôler avec un jeton réutilisable ou à pattern large (drapeau persistant, voir Breaking changes).
+- **#192c** : `POST /api/register` sans `enrollment_token` refusé (`403 enrollment_token_required`, identique quels que soient hostname et clef). Le flux « clef pré-autorisée » est supprimé ; `authorized_keys` n'est plus consultée à l'enrôlement.
+- **#191** : le plugin Ansible n'accepte plus qu'un fichier de jeton **régulier, appartenant à l'utilisateur effectif et en mode 0600/0400** ; lien symbolique (`O_NOFOLLOW`), FIFO, socket et périphérique sont refusés (aucune requête envoyée, jamais le jeton dans le message). `O_NOFOLLOW` ne protège que le dernier composant du chemin : protéger le répertoire parent.
+- **#169** : `/ws/agent` refuse (401, avant l'upgrade) un JTI blacklisté, remplacé ou un agent inconnu ; fail closed. Bearer obligatoire, pas de repli `?hostname=`.
+- **#177** : `X-Forwarded-For` n'est pris en compte que derrière `TRUSTED_PROXY_CIDRS` (vide par défaut = ignoré).
+- **#173** : `agents.suspended` appliqué à exec/upload/fetch (503 `agent_suspended`, relayé par les parents).
+- **#176** : suppression de `completedResults` et de `GET /api/async_status/{task_id}` (map sans mutex, non bornée, sans appelant en production).
+- **#175b** : port 7771 (admin) refuse HTTP en clair si non-loopback, sauf dérogation explicite.
+
+### Breaking changes (v3.0.3, en plus de la migration d'état)
+- **Révocation persistante d'un agent (#193)** : la révocation pose un drapeau `revoked` dans l'état (même écriture que la blacklist, `schema_version` inchangé, champ optionnel). Un hôte révoqué est refusé à l'enrôlement (`403 agent_revoked`, jeton non consommé, même réutilisable), au `rekey` et au handshake WS, sans limite de durée. Levée explicite : `DELETE /api/admin/minions/{hostname}` (pas de `unrevoke`). **⚠ Retour arrière** : un binaire antérieur refuse un état contenant `"revoked": true` (décodeur strict). Révocations antérieures : réparées au démarrage du maître tant que la blacklist (25 h) les contient, les plus anciennes doivent être refaites.
+- `POST /api/token/refresh` n'existe plus (404). Aucun client du dépôt ne l'utilisait.
+- `POST /api/register` sans `enrollment_token` répond 403 `enrollment_token_required` : tout enrôlement exige un jeton `secagent_enr_…` (`secagent-server tokens create --role enrollment`). `POST /api/admin/authorize` et `minions authorize` subsistent mais ne donnent plus aucun droit d'enrôlement.
+- Plugin de connexion : le **fichier de jeton par défaut est `/etc/ansible/secagent_plugin.jwt`** (plus de repli sur `/tmp`) et doit être en `0600` (ou `0400`), appartenir à l'utilisateur d'Ansible et ne pas être un lien symbolique ni un fichier spécial : **un fichier de jeton existant en 0644 est désormais refusé** (`chmod 600`).
+
+### Fixed
+- **Plugin de connexion : variables d'hôte et `[secagent_connection]` ignorées** : la classe s'appelait `ConnectionPlugin` ; Ansible déduit le type du plugin du nom de la classe, `get_option()` échouait et seul `RELAY_*` était lu. Classe renommée `Connection` (`ConnectionPlugin` reste un alias). Ordre de priorité désormais effectif, pour `server`, `token_file`, `ca_bundle`, `timeout`, `connect_timeout`, avec les deux modes de chargement : variable d'hôte `ansible_secagent_*` > `RELAY_*` > `[secagent_connection]` > défaut. **Changement de comportement : une variable d'hôte passe désormais avant l'environnement** (un `ansible_secagent_server` ou `ansible_secagent_token_file` d'inventaire, jusque-là sans effet, s'applique maintenant).
+- **#190** : plugin de connexion — le `stdin` de `exec_command` est envoyé en **base64** des octets bruts (champ omis s'il n'y a pas de données), comme le serveur et le minion l'attendent ; auparavant le stdin n'arrivait pas à la commande (0 octet reçu : `python3 -` ne produisait rien).
+- **#192 (audit)** : un message WS `rekey` n'est plus envoyé si le nouveau JTI n'a pas pu être persisté (l'agent aurait reçu un jeton refusé au handshake suivant).
+- Les binaires précompilés `*.exe` ne sont plus suivis par git (`.gitignore`).
+
+---
+
 ## [v3.0.2] — 2026-10-05 — Events et Inventaire Hiérarchique
 
 ### Added

@@ -1,0 +1,11 @@
+services:
+  secagent-server:
+    image: ghcr.io/ccoupel/secagent-server:v0.0.0
+    environment:
+      ADMIN_ADDR: "0.0.0.0:7771"
+      ADMIN_TLS: "true"
+      TLS_CERT: /certs/tls.crt
+      TLS_KEY: /certs/tls.key
+    ports:
+      - "7770:7770"
+      - "127.0.0.1:7771:7771"

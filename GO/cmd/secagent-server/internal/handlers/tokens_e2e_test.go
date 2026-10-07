@@ -693,6 +693,7 @@ func TestE2EPluginTokenExecCommandAudit(t *testing.T) {
 // TestE2EPluginTokenXForwardedForAudit verifies that when X-Forwarded-For is set,
 // the forwarded IP is used for both CIDR check and audit.
 func TestE2EPluginTokenXForwardedForAudit(t *testing.T) {
+	trustProxies(t, "10.0.0.0/8")
 	s := newTestStore(t)
 	SetAdminStore(s)
 

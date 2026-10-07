@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -74,9 +75,6 @@ const (
 	timeoutMarginSec = 5          // Extra seconds on top of task timeout
 )
 
-// In-memory storage for completed task results (task_id -> result)
-var completedResults = make(map[string]map[string]interface{})
-
 // newTaskID generates a new UUID-based task ID
 func newTaskID() string {
 	return uuid.New().String()
@@ -131,6 +129,43 @@ func isLocalAgent(hostname string) bool {
 	return err == nil
 }
 
+// ErrAgentSuspended / ErrAgentStateUnavailable are the 503 error codes of a refused task (#173).
+const (
+	ErrAgentSuspended        = "agent_suspended"
+	ErrAgentStateUnavailable = "agent_state_unavailable"
+)
+
+// refuseIfSuspended answers 503 and returns true when the agent must not receive a task: it is
+// suspended (admin action, #173) or its state cannot be read (fail closed: an unreadable flag is
+// never treated as "not suspended"). It runs BEFORE anything is sent to the agent. The WebSocket of
+// a suspended agent stays open (only execution is refused, lifting the suspension is immediate).
+func refuseIfSuspended(w http.ResponseWriter, hostname, taskID, op string) bool {
+	suspended, err := AgentSuspended(hostname)
+	switch {
+	case err != nil:
+		log.Printf("[SECURITY WARNING] %s refused: suspension state of %q unavailable: %v task_id=%q", op, hostname, err, taskID)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": ErrAgentStateUnavailable})
+		return true
+	case suspended:
+		log.Printf("[SECURITY WARNING] %s refused: agent %q is suspended task_id=%q", op, hostname, taskID)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": ErrAgentSuspended})
+		return true
+	}
+	return false
+}
+
+// AgentSuspended reports whether hostname is suspended on THIS node (the relay that holds the
+// agent decides; a parent relays the refusal). Without a store the answer is an error: refusing
+// is the only safe reading.
+func AgentSuspended(hostname string) (bool, error) {
+	if adminStore == nil {
+		return false, fmt.Errorf("store_not_initialized")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return adminStore.IsAgentSuspended(ctx, hostname)
+}
+
 // checkAgentOnline verifies that an agent has an active WebSocket connection.
 // Returns error with "hostname must not be empty" or "agent_offline".
 func checkAgentOnline(hostname string) error {
@@ -162,7 +197,7 @@ func logExecSafe(hostname string, taskID string, req *ExecRequest) {
 	default:
 		stdinMarker = "<set>"
 	}
-	log.Printf("Exec request: hostname=%s task_id=%s cmd=%s become=%v stdin=%s timeout=%d",
+	log.Printf("Exec request: hostname=%q task_id=%q cmd=%s become=%v stdin=%s timeout=%d",
 		hostname, taskID, req.Cmd, req.Become, stdinMarker, req.Timeout)
 }
 
@@ -197,13 +232,13 @@ func sendTaskAndWait(hostname, taskID string, message map[string]interface{}, ti
 func writeAgentError(w http.ResponseWriter, errStr string, hostname, taskID string) {
 	switch errStr {
 	case "agent_disconnected":
-		log.Printf("Agent disconnected during task: hostname=%s task_id=%s", hostname, taskID)
+		log.Printf("Agent disconnected during task: hostname=%q task_id=%q", hostname, taskID)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent_disconnected"})
 	case "agent_busy":
-		log.Printf("Agent busy: hostname=%s task_id=%s", hostname, taskID)
+		log.Printf("Agent busy: hostname=%q task_id=%q", hostname, taskID)
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "agent_busy"})
 	default:
-		log.Printf("Agent error: hostname=%s task_id=%s error=%s", hostname, taskID, errStr)
+		log.Printf("Agent error: hostname=%q task_id=%q error=%q", hostname, taskID, errStr)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": errStr})
 	}
 }
@@ -242,7 +277,7 @@ func ExecCommand(w http.ResponseWriter, r *http.Request) {
 		if hopStr := r.Header.Get(proxy.RelayHopsHeader); hopStr != "" {
 			if n, convErr := strconv.Atoi(hopStr); convErr == nil {
 				if n <= 0 {
-					log.Printf("[PROXY] relay_loop_detected: hostname=%s hops=%d", hostname, n)
+					log.Printf("[PROXY] relay_loop_detected: hostname=%q hops=%d", hostname, n)
 					writeJSON(w, http.StatusLoopDetected, map[string]string{"error": "relay_loop_detected"})
 					return
 				}
@@ -270,7 +305,7 @@ func ExecCommand(w http.ResponseWriter, r *http.Request) {
 				writeProxyExecError(w, pErr, hostname, *taskID)
 				return
 			}
-			log.Printf("Proxy exec complete: hostname=%s relay_id=%s task_id=%s rc=%d",
+			log.Printf("Proxy exec complete: hostname=%q relay_id=%q task_id=%q rc=%d",
 				hostname, relayID, *taskID, resp.RC)
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"rc":        resp.RC,
@@ -281,12 +316,15 @@ func ExecCommand(w http.ResponseWriter, r *http.Request) {
 			return
 		} else if !errors.Is(relayErr, proxy.ErrHostNotFound) {
 			// Real DB error — log but fall through to local agent
-			log.Printf("[PROXY] relay routing lookup error: hostname=%s err=%v", hostname, relayErr)
+			log.Printf("[PROXY] relay routing lookup error: hostname=%q err=%v", hostname, relayErr)
 		}
 		// ErrHostNotFound → fall through to local agent lookup below
 	}
 
 	// Verify agent is connected via live WS registry
+	if refuseIfSuspended(w, hostname, *taskID, "exec") {
+		return
+	}
 	if err := checkAgentOnline(hostname); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent_offline"})
 		return
@@ -325,7 +363,7 @@ func ExecCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Exec complete: hostname=%s task_id=%s rc=%d", hostname, *taskID, result.RC)
+	log.Printf("Exec complete: hostname=%q task_id=%q rc=%d", hostname, *taskID, result.RC)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"rc":        result.RC,
 		"stdout":    result.Stdout,
@@ -383,7 +421,7 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 		if hopStr := r.Header.Get(proxy.RelayHopsHeader); hopStr != "" {
 			if n, convErr := strconv.Atoi(hopStr); convErr == nil {
 				if n <= 0 {
-					log.Printf("[PROXY] relay_loop_detected: hostname=%s hops=%d", hostname, n)
+					log.Printf("[PROXY] relay_loop_detected: hostname=%q hops=%d", hostname, n)
 					writeJSON(w, http.StatusLoopDetected, map[string]string{"error": "relay_loop_detected"})
 					return
 				}
@@ -394,7 +432,7 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 
 		relayID, relayErr := proxyRouter.GetRelayForHostname(hostname)
 		if relayErr == nil {
-			log.Printf("Upload request (proxy): hostname=%s relay_id=%s task_id=%s dest=%s size=%d",
+			log.Printf("Upload request (proxy): hostname=%q relay_id=%q task_id=%q dest=%q size=%d",
 				hostname, relayID, *taskID, req.Dest, len(decoded))
 			proxyReq := proxy.UploadRequest{Dest: req.Dest, Data: req.Data, Mode: req.Mode}
 			if pErr := proxyRouter.RouteUpload(proxyCtx, hostname, *taskID, proxyReq); pErr != nil {
@@ -404,17 +442,20 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]interface{}{"rc": 0})
 			return
 		} else if !errors.Is(relayErr, proxy.ErrHostNotFound) {
-			log.Printf("[PROXY] relay routing lookup error: hostname=%s err=%v", hostname, relayErr)
+			log.Printf("[PROXY] relay routing lookup error: hostname=%q err=%v", hostname, relayErr)
 		}
 	}
 
 	// Verify agent is connected (after validation)
+	if refuseIfSuspended(w, hostname, *taskID, "upload") {
+		return
+	}
 	if err := checkAgentOnline(hostname); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent_offline"})
 		return
 	}
 
-	log.Printf("Upload request: hostname=%s task_id=%s dest=%s size=%d",
+	log.Printf("Upload request: hostname=%q task_id=%q dest=%q size=%d",
 		hostname, *taskID, req.Dest, len(decoded))
 
 	// Build WebSocket message
@@ -443,7 +484,7 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Upload complete: hostname=%s task_id=%s rc=%d", hostname, *taskID, result.RC)
+	log.Printf("Upload complete: hostname=%q task_id=%q rc=%d", hostname, *taskID, result.RC)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"rc": result.RC})
 }
 
@@ -481,7 +522,7 @@ func FetchFile(w http.ResponseWriter, r *http.Request) {
 		if hopStr := r.Header.Get(proxy.RelayHopsHeader); hopStr != "" {
 			if n, convErr := strconv.Atoi(hopStr); convErr == nil {
 				if n <= 0 {
-					log.Printf("[PROXY] relay_loop_detected: hostname=%s hops=%d", hostname, n)
+					log.Printf("[PROXY] relay_loop_detected: hostname=%q hops=%d", hostname, n)
 					writeJSON(w, http.StatusLoopDetected, map[string]string{"error": "relay_loop_detected"})
 					return
 				}
@@ -492,7 +533,7 @@ func FetchFile(w http.ResponseWriter, r *http.Request) {
 
 		relayID, relayErr := proxyRouter.GetRelayForHostname(hostname)
 		if relayErr == nil {
-			log.Printf("Fetch request (proxy): hostname=%s relay_id=%s task_id=%s src=%s",
+			log.Printf("Fetch request (proxy): hostname=%q relay_id=%q task_id=%q src=%q",
 				hostname, relayID, *taskID, req.Src)
 			proxyReq := proxy.FetchRequest{Src: req.Src}
 			resp, pErr := proxyRouter.RouteFetch(proxyCtx, hostname, *taskID, proxyReq)
@@ -503,17 +544,20 @@ func FetchFile(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]interface{}{"rc": resp.RC, "data": resp.Data})
 			return
 		} else if !errors.Is(relayErr, proxy.ErrHostNotFound) {
-			log.Printf("[PROXY] relay routing lookup error: hostname=%s err=%v", hostname, relayErr)
+			log.Printf("[PROXY] relay routing lookup error: hostname=%q err=%v", hostname, relayErr)
 		}
 	}
 
 	// Verify agent is connected (after validation)
+	if refuseIfSuspended(w, hostname, *taskID, "fetch") {
+		return
+	}
 	if err := checkAgentOnline(hostname); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent_offline"})
 		return
 	}
 
-	log.Printf("Fetch request: hostname=%s task_id=%s src=%s",
+	log.Printf("Fetch request: hostname=%q task_id=%q src=%q",
 		hostname, *taskID, req.Src)
 
 	// Build WebSocket message
@@ -540,7 +584,7 @@ func FetchFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Fetch complete: hostname=%s task_id=%s rc=%d data_len=%d",
+	log.Printf("Fetch complete: hostname=%q task_id=%q rc=%d data_len=%d",
 		hostname, *taskID, result.RC, len(result.Data))
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"rc":   result.RC,
@@ -551,45 +595,18 @@ func FetchFile(w http.ResponseWriter, r *http.Request) {
 // writeProxyExecError writes the appropriate HTTP error for a proxy routing failure.
 func writeProxyExecError(w http.ResponseWriter, err error, hostname, taskID string) {
 	e := err.Error()
-	log.Printf("Proxy exec error: hostname=%s task_id=%s err=%s", hostname, taskID, e)
+	log.Printf("Proxy exec error: hostname=%q task_id=%q err=%q", hostname, taskID, e)
 	switch {
 	case strings.Contains(e, "timeout"):
 		writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "task_timeout"})
+	case strings.Contains(e, ErrAgentSuspended):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": ErrAgentSuspended})
+	case strings.Contains(e, ErrAgentStateUnavailable):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": ErrAgentStateUnavailable})
 	case strings.Contains(e, "relay_offline"), strings.Contains(e, "relay_disconnected"),
 		strings.Contains(e, "dispatch_failed"):
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "relay_offline"})
 	default:
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": e})
-	}
-}
-
-// GET /api/async_status/{task_id} — Poll the status of an async task
-func AsyncStatus(w http.ResponseWriter, r *http.Request) {
-	taskID := r.PathValue("task_id")
-
-	// Check completed cache first
-	if result, exists := completedResults[taskID]; exists {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"task_id":   taskID,
-			"status":    "finished",
-			"rc":        result["rc"],
-			"stdout":    result["stdout"],
-			"stderr":    result["stderr"],
-			"truncated": result["truncated"],
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusNotFound, map[string]string{"error": "task_not_found"})
-}
-
-// StoreResult stores a completed task result for later retrieval via async_status
-func StoreResult(taskID string, result map[string]interface{}) {
-	completedResults[taskID] = map[string]interface{}{
-		"rc":        result["rc"],
-		"stdout":    result["stdout"],
-		"stderr":    result["stderr"],
-		"truncated": result["truncated"],
-		"status":    "finished",
 	}
 }

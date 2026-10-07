@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"secagent-server/cmd/secagent-server/internal/actionlog"
 	"secagent-server/cmd/secagent-server/internal/hooks"
 	"secagent-server/cmd/secagent-server/internal/storage"
 	"secagent-server/cmd/secagent-server/internal/ws"
@@ -38,7 +39,7 @@ func requireAdminAuth(w http.ResponseWriter, r *http.Request) bool {
 	}
 
 	token := authHeader[7:]
-	if token != server.AdminToken {
+	if !adminTokenMatches(token) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_admin_token"})
 		return false
 	}
@@ -222,7 +223,7 @@ func AdminSuspendMinion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Minion suspended: hostname=%s", hostname)
+	log.Printf("Minion suspended: hostname=%q", hostname)
 	writeJSON(w, http.StatusOK, map[string]string{"hostname": hostname, "status": "suspended"})
 }
 
@@ -255,7 +256,7 @@ func AdminResumeMinion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Minion resumed: hostname=%s", hostname)
+	log.Printf("Minion resumed: hostname=%q", hostname)
 	writeJSON(w, http.StatusOK, map[string]string{"hostname": hostname, "status": "active"})
 }
 
@@ -303,7 +304,7 @@ func AdminSetMinionState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Minion state forced: hostname=%s status=%s", hostname, req.Status)
+	log.Printf("Minion state forced: hostname=%q status=%q", hostname, req.Status)
 	writeJSON(w, http.StatusOK, map[string]string{"hostname": hostname, "status": req.Status})
 }
 
@@ -387,7 +388,7 @@ func AdminSetMinionVars(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("Minion vars updated: hostname=%s keys=%d", hostname, len(kvPairs))
+	log.Printf("Minion vars updated: hostname=%q keys=%d", hostname, len(kvPairs))
 	writeJSON(w, http.StatusOK, map[string]string{"hostname": hostname, "status": "updated"})
 }
 
@@ -465,14 +466,19 @@ func AdminRevokeMinion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Blacklist current JTI (expires in 25 hours — beyond any normal JWT TTL)
-	if agent.TokenJTI != "" {
-		expiresAt := time.Now().Add(25 * time.Hour).UTC().Format(time.RFC3339)
-		reason := "admin_revoke"
-		if err := adminStore.AddToBlacklist(ctx, agent.TokenJTI, hostname, expiresAt, &reason); err != nil {
-			log.Printf("AdminRevokeMinion blacklist: %v", err)
-			// Continue anyway — close WS regardless
+	// Revoke in ONE state write (#193): the persistent Revoked flag and the blacklist of the current JTI
+	// (kept 25 hours, beyond any JWT TTL; the flag outlives it). If the write is refused (state
+	// read-only after a lost lock, disk error) do NOT close the link with 4001 ("must not
+	// reconnect"): the new master would not know the revocation and the agent would be cut for
+	// nothing. The caller retries the revoke.
+	if found, err := adminStore.RevokeAgent(ctx, hostname, agent.TokenJTI, "admin_revoke", time.Now().Add(25*time.Hour)); err != nil || !found {
+		if err == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent_not_found"})
+			return
 		}
+		log.Printf("AdminRevokeMinion: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		return
 	}
 
 	// Close WS with 4001
@@ -486,7 +492,7 @@ func AdminRevokeMinion(w http.ResponseWriter, r *http.Request) {
 		hooks.GlobalDispatcher.Dispatch("host.revoked", hostname, "revoked", "")
 	}
 
-	log.Printf("Minion revoked: hostname=%s ws_disconnected=%v", hostname, wsDisconnected)
+	log.Printf("Minion revoked: hostname=%q ws_disconnected=%v", hostname, wsDisconnected)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"hostname":        hostname,
 		"status":          "revoked",
@@ -499,12 +505,22 @@ func AdminRevokeMinion(w http.ResponseWriter, r *http.Request) {
 // GET /api/admin/stats
 // ========================================================================
 
-// NATSStatus is used internally to check broker health (injected from main).
-var NATSHealthCheck func() bool
-
 var (
 	linkStatusMu sync.RWMutex
 	linkStatusFn func() interface{}
+)
+
+// SetInstanceStatusFunc wires the instance fields of GET /api/admin/status: write mode, role,
+// instance_id, write_seq, last heartbeat (#163).
+func SetInstanceStatusFunc(fn func() map[string]interface{}) {
+	instanceStatusMu.Lock()
+	instanceStatusFn = fn
+	instanceStatusMu.Unlock()
+}
+
+var (
+	instanceStatusMu sync.RWMutex
+	instanceStatusFn func() map[string]interface{}
 )
 
 // SetLinkStatusFunc wires the parent / push-child link status exposed by GET /api/admin/status (#154).
@@ -514,16 +530,12 @@ func SetLinkStatusFunc(fn func() interface{}) {
 	linkStatusMu.Unlock()
 }
 
-// AdminStatus returns server health: nats, db, ws_connections, uptime.
+// AdminStatus returns server health: db, ws_connections, uptime, links and the hooks queue counters
+// (hooks_queue_depth, hooks_queue_capacity, hooks_inflight, hooks_dropped_events, hooks_dropped_actions).
 // GET /api/admin/status
 func AdminStatus(w http.ResponseWriter, r *http.Request) {
 	if !requireAdminAuth(w, r) {
 		return
-	}
-
-	natsStatus := "unreachable"
-	if NATSHealthCheck != nil && NATSHealthCheck() {
-		natsStatus = "ok"
 	}
 
 	dbStatus := "ok"
@@ -540,10 +552,25 @@ func AdminStatus(w http.ResponseWriter, r *http.Request) {
 	uptimeSec := int(time.Since(serverStartTime).Seconds())
 
 	body := map[string]interface{}{
-		"nats":           natsStatus,
 		"db":             dbStatus,
 		"ws_connections": ws.GetConnectedCount(),
 		"uptime":         fmt.Sprintf("%ds", uptimeSec),
+	}
+	if d := hooks.GlobalDispatcher; d != nil { // hooks queue (#183): a loss is never silent
+		st := d.Stats()
+		body["hooks_queue_depth"] = st.QueueDepth
+		body["hooks_queue_capacity"] = st.QueueCapacity
+		body["hooks_inflight"] = st.Inflight
+		body["hooks_dropped_events"] = st.DroppedEvents
+		body["hooks_dropped_actions"] = st.DroppedActions
+	}
+	instanceStatusMu.RLock()
+	instFn := instanceStatusFn
+	instanceStatusMu.RUnlock()
+	if instFn != nil { // write mode, role, instance, write_seq, last beat (#163)
+		for k, v := range instFn() {
+			body[k] = v
+		}
 	}
 	linkStatusMu.RLock()
 	links := linkStatusFn
@@ -635,7 +662,7 @@ func AdminDeleteMinion(w http.ResponseWriter, r *http.Request) {
 		hooks.GlobalDispatcher.Dispatch("host.deleted", hostname, "deleted", "")
 	}
 
-	log.Printf("Minion deleted: hostname=%s ws_disconnected=%v", hostname, wsDisconnected)
+	log.Printf("Minion deleted: hostname=%q ws_disconnected=%v", hostname, wsDisconnected)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"hostname":        hostname,
 		"status":          "deleted",
@@ -647,14 +674,35 @@ func AdminDeleteMinion(w http.ResponseWriter, r *http.Request) {
 // GET /api/admin/hooks/log
 // ========================================================================
 
-// AdminHooksLog returns action_log entries with optional filters.
-// Query params: limit (1–200, default 50), event, hostname.
+var (
+	actionJournalMu sync.RWMutex
+	actionJournalV  *actionlog.Journal
+)
+
+// SetActionJournal injects the hook action journal read by GET /api/admin/hooks/log.
+func SetActionJournal(j *actionlog.Journal) {
+	actionJournalMu.Lock()
+	actionJournalV = j
+	actionJournalMu.Unlock()
+}
+
+func actionJournal() *actionlog.Journal {
+	actionJournalMu.RLock()
+	defer actionJournalMu.RUnlock()
+	return actionJournalV
+}
+
+// AdminHooksLog returns the hook action journal entries (actions.log, #161) with optional filters.
+// Query params: limit (1–200, default 50), event, hostname. config_snapshot is masked: it never
+// carries a webhook secret, a header value, a body or a shell argument. A journal that does not
+// exist yet (or is empty) gives []; one that exists but cannot be read gives 503 journal_unavailable.
 func AdminHooksLog(w http.ResponseWriter, r *http.Request) {
 	if !requireAdminAuth(w, r) {
 		return
 	}
-	if adminStore == nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "store_not_initialized"})
+	journal := actionJournal()
+	if journal == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "action_log_not_initialized"})
 		return
 	}
 
@@ -671,16 +719,15 @@ func AdminHooksLog(w http.ResponseWriter, r *http.Request) {
 		limit = n
 	}
 
-	filter := storage.ActionLogFilter{
+	entries, err := journal.List(actionlog.Filter{
 		Event:    r.URL.Query().Get("event"),
 		Hostname: r.URL.Query().Get("hostname"),
 		Limit:    limit,
-	}
-
-	entries, err := adminStore.ListActionLogs(r.Context(), filter)
+	})
 	if err != nil {
+		// the journal exists but cannot be read: not an empty history
 		log.Printf("AdminHooksLog: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "journal_unavailable"})
 		return
 	}
 

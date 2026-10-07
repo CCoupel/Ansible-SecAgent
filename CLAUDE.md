@@ -45,32 +45,36 @@ ansible-secagent/
 │       └── DEPLOYMENT.md
 ├── RELEASE/                  # Historique d'implémentation (phases, rapports, migrations)
 ├── GO/                       # Code source GO
-│   ├── cmd/server/           # secagent-server (API + WS + CLI cobra)
-│   ├── cmd/agent/            # secagent-minion
-│   └── cmd/inventory/        # secagent-inventory binary
-├── DEPLOYMENT/               # Scripts et configs de déploiement
-│   ├── deploy.sh / deploy.bat
-│   └── qualif/               # Docker Compose qualif (192.168.1.218)
-└── PYTHON/                   # Connection plugin Ansible (Python — contrainte Ansible)
+│   ├── cmd/secagent-server/  # secagent-server (API + WS + CLI cobra)
+│   ├── cmd/secagent-minion/  # secagent-minion
+│   └── cmd/secagent-inventory/ # secagent-inventory binary
+├── DEPLOYMENT/               # Compose et scripts de déploiement (aucun deploy.sh/.bat : supprimés, #188)
+│   ├── qualif/               # Qualif (192.168.1.218) : docker-compose.server.yml (racine actif/passif a/b),
+│   │                         #   docker-compose.chain.yml (chaîne racine + enfant pull + 2 minions),
+│   │                         #   chain-test.sh, failover-test.sh, pki/gen.sh (CA de test)
+│   └── prod/                 # Prod : docker-compose.server.yml (identique sur N hôtes), docker-compose.child.yml
+├── .github/workflows/        # ci.yml, release.yml (tag), candidate-images.yml et failover.yml (manuels/planifiés)
+├── scripts/ci/               # check_compose.py, check_no_publish.py, build_compose_archive.sh…
+└── SECAGENT-PYTHON/          # Connection plugin Ansible (Python — contrainte Ansible)
 ```
 
 ## Stack technique
 
 - **Agent** : GO, gorilla/websocket, subprocess, RSA-4096, JWT
-- **Serveur** : GO, net/http, gorilla/websocket, NATS JetStream, SQLite (modernc)
+- **Serveur** : GO, net/http, gorilla/websocket, TLS natif, état fichier (v3.0.3+)
 - **Inventory** : GO binary standalone (`secagent-inventory`)
 - **Plugins Ansible** : Python (contrainte Ansible — ConnectionBase / InventoryModule)
 - **Tests** : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v`
-- **Déploiement** : systemd (agent), Docker Compose (qualif), Kubernetes (prod)
+- **Déploiement** : systemd (agent), Docker Compose multi-hôtes actif/passif (qualif + prod) ; images `linux/amd64` uniquement ; images candidates par `workflow_dispatch` (`candidate-images.yml`), release par tag (`release.yml`)
 
 ## Décisions techniques majeures (non négociables)
 
 - Transport : **WSS** obligatoire (TLS sur toutes les connexions)
 - Canal agent : **1 WebSocket persistante** par agent, multiplexée par `task_id`
-- Bus de messages : **NATS JetStream** (streams `RELAY_TASKS` + `RELAY_RESULTS`)
+- Dispatch des tâches : **WebSocket direct** (NATS retiré v3.0.3+), relay actif unique (actif/passif)
 - Plugin Ansible → serveur : **REST HTTP bloquant**
 - Auth : **JWT signé** (rôles `agent` / `plugin` / `admin`), blacklist JTI — voir `DOC/security/SECURITY.md`
-- `authorized_keys` : **table DB** (pas de fichiers), alimentée par API admin
+- `authorized_keys` : persistées dans le fichier d'état du relay (plus de table DB, plus de fichiers par clé), alimentées par l'enrôlement et par l'API admin ; **elles ne donnent aucun droit d'enrôlement** : `POST /api/register` sans jeton d'enrôlement est refusé (403 `enrollment_token_required`, #192c), tout enrôlement exige un jeton `secagent_enr_…` (`tokens create --role enrollment`) + challenge
 - Concurrence agent : **subprocess par tâche** (pas de threads)
 - Stdout MVP : **buffer 5MB max**, truncation + flag
 - Fichiers MVP : **< 500KB**, base64 inline
@@ -116,10 +120,10 @@ Séquence correcte :
 | Nom | Rôle | Fichier | Spawn |
 |-----|------|---------|-------|
 | `planner` | Backlog GitHub Issues + structuration des phases (type `implementation-planner`) | `.claude/agents/implementation-planner.template.md` + compagnon `implementation-planner.md` | permanent |
-| `dev-agent` | Développeur secagent-minion (GO, `GO/cmd/agent/`) | `.claude/agents/dev-agent.template.md` + compagnon `dev-agent.md` | permanent |
-| `dev-relay` | Développeur secagent-server (GO, `GO/cmd/server/`) | `.claude/agents/dev-relay.template.md` + compagnon `dev-relay.md` | permanent |
-| `dev-inventory` | Développeur secagent-inventory (GO, `GO/cmd/inventory/`) | `.claude/agents/dev-inventory.template.md` + compagnon `dev-inventory.md` | permanent |
-| `dev-connexion` | Développeur plugin connexion Ansible (Python, `PYTHON/`) | `.claude/agents/dev-connexion.template.md` (dev-plugin) + compagnon `dev-connexion.md` | permanent |
+| `dev-agent` | Développeur secagent-minion (GO, `GO/cmd/secagent-minion/`) | `.claude/agents/dev-agent.template.md` + compagnon `dev-agent.md` | permanent |
+| `dev-relay` | Développeur secagent-server (GO, `GO/cmd/secagent-server/`) | `.claude/agents/dev-relay.template.md` + compagnon `dev-relay.md` | permanent |
+| `dev-inventory` | Développeur secagent-inventory (GO, `GO/cmd/secagent-inventory/`) | `.claude/agents/dev-inventory.template.md` + compagnon `dev-inventory.md` | permanent |
+| `dev-connexion` | Développeur plugin connexion Ansible (Python, `SECAGENT-PYTHON/`) | `.claude/agents/dev-connexion.template.md` (dev-plugin) + compagnon `dev-connexion.md` | permanent |
 | `test-writer` | Rédaction des tests (unitaires, intégration, E2E) | `.claude/agents/test-writer.template.md` | permanent |
 | `qa` | Exécution des tests, verdict GO/NOGO | `.claude/agents/qa.template.md` | permanent |
 | `security-reviewer` | Audit sécurité (TLS, JWT, become_pass, enrollment) | `.claude/agents/security-reviewer.md` | permanent |

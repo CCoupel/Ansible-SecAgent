@@ -211,32 +211,17 @@ func (e *ShellExecutor) Execute(ctx context.Context, action ActionDef, vars map[
 	defer cancel()
 
 	cmd := exec.CommandContext(cmdCtx, action.Cmd, args...)
-	cmd.Env = append(os.Environ(),
-		"SECAGENT_EVENT="+vars["event"],
-		"SECAGENT_HOSTNAME="+vars["hostname"],
-		"SECAGENT_TIMESTAMP="+vars["timestamp"],
-		"SECAGENT_STATUS="+vars["status"],
-	)
-	if ea := vars["enrolled_at"]; ea != "" {
-		cmd.Env = append(cmd.Env, "SECAGENT_ENROLLED_AT="+ea)
-	}
-	if rc := vars["relay_chain"]; rc != "" {
-		cmd.Env = append(cmd.Env, "SECAGENT_RELAY_CHAIN="+rc, "SECAGENT_RELAY_ORIGIN="+vars["relay_origin"])
-	}
+	cmd.Env = shellEnvironment(os.Environ(), action.Env, vars)
 
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-
+	// stderr is deliberately discarded (cmd.Stderr nil → /dev/null): a script may print anything,
+	// rendered arguments, environment values, tokens, and no sanitising is reliable. The journal
+	// and the server log get the exit status only.
 	t0 := time.Now()
 	runErr := cmd.Run()
 	dur := time.Since(t0).Milliseconds()
 
 	if runErr != nil {
-		msg := runErr.Error()
-		if s := strings.TrimSpace(stderr.String()); s != "" {
-			msg = s
-		}
-		return false, msg, dur
+		return false, "shell: " + runErr.Error(), dur // "exit status N", "signal: killed"…
 	}
 	return true, "", dur
 }

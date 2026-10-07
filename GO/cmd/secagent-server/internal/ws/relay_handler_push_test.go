@@ -46,9 +46,10 @@ func TestPush_ParentLinkHandshake(t *testing.T) {
 	calls := make(chan parentLinkCall, 1)
 	release := make(chan struct{})
 	setParentLink(t, func(conn *websocket.Conn, _ []string) error { <-release; return nil }, calls)
-	t.Cleanup(func() { close(release) })
 	srv := setupRelayTestServer(t)
 	defer srv.Close()
+	// registered after the server: runs BEFORE the handler drain, which waits for this hook to return
+	t.Cleanup(func() { close(release) })
 
 	c := dialRelay(t, srv, makeRelayJWT("central", "relay-parent"))
 	parentHello(t, c, "central", []string{"root"})
@@ -151,7 +152,8 @@ func TestPush_UnknownRoleRefused(t *testing.T) {
 func dialedPeer(t *testing.T, peerID string, result chan<- error) *httptest.Server {
 	t.Helper()
 	up := websocket.Upgrader{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var handlers sync.WaitGroup
+	srv := httptest.NewServer(trackHandlers(&handlers, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := up.Upgrade(w, r, nil)
 		if err != nil {
 			return
@@ -160,8 +162,11 @@ func dialedPeer(t *testing.T, peerID string, result chan<- error) *httptest.Serv
 		if result != nil {
 			result <- err
 		}
-	}))
-	t.Cleanup(srv.Close)
+	})))
+	t.Cleanup(func() { // runs after the client connections are closed; no handler may outlive the test
+		srv.Close()
+		awaitHandlersDone(t, &handlers)
+	})
 	return srv
 }
 

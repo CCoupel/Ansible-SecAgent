@@ -14,7 +14,7 @@ import (
 // newTestStore creates an in-memory SQLite store for testing.
 func newTestStore(t *testing.T) *storage.Store {
 	t.Helper()
-	s, err := storage.NewStore(":memory:")
+	s, err := storage.OpenTemp()
 	if err != nil {
 		t.Fatalf("newTestStore: %v", err)
 	}
@@ -374,7 +374,6 @@ func TestAdminSetMinionVars_AgentNotFound(t *testing.T) {
 func TestAdminStatus(t *testing.T) {
 	s := newTestStore(t)
 	SetAdminStore(s)
-	NATSHealthCheck = func() bool { return false }
 
 	req := adminReq("GET", "/api/admin/status", nil)
 	w := httptest.NewRecorder()
@@ -387,8 +386,9 @@ func TestAdminStatus(t *testing.T) {
 	var body map[string]interface{}
 	mustUnmarshal(t, w.Body.Bytes(), &body)
 
-	if body["nats"] != "unreachable" {
-		t.Errorf("expected nats=unreachable, got %v", body["nats"])
+	// #178: NATS was removed, the field is gone from the contract.
+	if _, present := body["nats"]; present {
+		t.Errorf("the nats field must not be reported any more: %v", body["nats"])
 	}
 	if body["db"] != "ok" {
 		t.Errorf("expected db=ok, got %v", body["db"])
@@ -398,23 +398,6 @@ func TestAdminStatus(t *testing.T) {
 	}
 	if _, ok := body["uptime"]; !ok {
 		t.Error("expected uptime field")
-	}
-}
-
-func TestAdminStatusNATSOK(t *testing.T) {
-	s := newTestStore(t)
-	SetAdminStore(s)
-	NATSHealthCheck = func() bool { return true }
-	defer func() { NATSHealthCheck = nil }()
-
-	req := adminReq("GET", "/api/admin/status", nil)
-	w := httptest.NewRecorder()
-	AdminStatus(w, req)
-
-	var body map[string]interface{}
-	mustUnmarshal(t, w.Body.Bytes(), &body)
-	if body["nats"] != "ok" {
-		t.Errorf("expected nats=ok, got %v", body["nats"])
 	}
 }
 

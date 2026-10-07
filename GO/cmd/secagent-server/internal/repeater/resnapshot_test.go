@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,39 +57,51 @@ func nextSnap(t *testing.T, snaps chan time.Time, within time.Duration) (time.Ti
 
 // A topology change makes the uplink send ANOTHER full snapshot; a burst of changes is coalesced
 // into one, and two snapshots are never closer than TopologyMinGap (the parent rate limits them).
+//
+// No measurement depends on how fast this test goroutine or its reader run: the burst is sent
+// without any pause (microseconds, against a coalescing window of about TopologyMinGap), and the
+// gap between the two snapshots is taken from the instants Snapshot() was CALLED inside the uplink
+// (the second call is scheduled at lastSnap+TopologyMinGap, and lastSnap is set after the first
+// call), not from the instants the reader happened to receive them.
 func TestUplink_TopologyChangeResendsOneCoalescedSnapshot(t *testing.T) {
+	const minGap = time.Second
 	changed := make(chan struct{}, 1)
-	var calls atomic.Int32
+	var mu sync.Mutex
+	var calledAt []time.Time
 	snaps := serveUplink(t, Options{
 		TopologyChanged:  changed,
 		TopologyDebounce: 30 * time.Millisecond,
-		TopologyMinGap:   400 * time.Millisecond,
-		Snapshot:         func() Snapshot { calls.Add(1); return Snapshot{} },
+		TopologyMinGap:   minGap,
+		Snapshot: func() Snapshot {
+			mu.Lock()
+			calledAt = append(calledAt, time.Now())
+			mu.Unlock()
+			return Snapshot{}
+		},
 	})
-	first, ok := nextSnap(t, snaps, 3*time.Second)
-	if !ok {
+	if _, ok := nextSnap(t, snaps, 5*time.Second); !ok {
 		t.Fatal("no initial snapshot")
 	}
-	// a burst of 20 signals right after the first snapshot
+	// a burst of 20 signals right after the first snapshot (the channel holds one: the others are dropped)
 	for i := 0; i < 20; i++ {
 		select {
 		case changed <- struct{}{}:
 		default:
 		}
-		time.Sleep(2 * time.Millisecond)
 	}
-	second, ok := nextSnap(t, snaps, 3*time.Second)
-	if !ok {
+	if _, ok := nextSnap(t, snaps, 5*time.Second); !ok {
 		t.Fatal("a topology change must produce a new snapshot")
 	}
-	if gap := second.Sub(first); gap < 350*time.Millisecond {
-		t.Errorf("two snapshots %v apart, want >= the min gap", gap)
-	}
-	if _, extra := nextSnap(t, snaps, 800*time.Millisecond); extra {
+	if _, extra := nextSnap(t, snaps, 2*minGap); extra {
 		t.Error("a burst of changes must be coalesced into ONE snapshot")
 	}
-	if calls.Load() != 2 {
-		t.Errorf("Snapshot() called %d times, want 2", calls.Load())
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calledAt) != 2 {
+		t.Fatalf("Snapshot() called %d times, want 2", len(calledAt))
+	}
+	if gap := calledAt[1].Sub(calledAt[0]); gap < minGap {
+		t.Errorf("two snapshots %v apart, want >= the min gap %v", gap, minGap)
 	}
 }
 

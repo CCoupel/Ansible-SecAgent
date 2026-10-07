@@ -5,15 +5,15 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+	"time"
 )
 
 // genRSAPubPEM generates a fresh RSA key of bitSize and returns the PEM-encoded public key.
@@ -39,34 +39,21 @@ func preAuthorize(t *testing.T, hostname, pubKeyPEM string) {
 	}
 }
 
-// TestRegisterAgentSuccess tests successful agent registration
+// TestRegisterAgentSuccess tests a successful registration (enrollment token + nonce challenge, #192c)
 func TestRegisterAgentSuccess(t *testing.T) {
 	// Must use 4096-bit key: RSA-OAEP/SHA-256 with 2048-bit key can only
 	// encrypt ~190 bytes, but a JWT is ~300 bytes.
 	privKey, pubKeyPEM := genRSAPubPEM(t, 4096)
-	_ = privKey
+	// unique per execution: the store of the handler tests is process-wide, a test must be replayable (-count=N)
+	run := uniqueRun()
+	hostname := "test-agent-01-" + run
+	token := "secagent_enr_register_success_" + run
+	insertEnrollmentToken(t, "tok-register-success-"+run, token, hostname, false, nil)
 
-	hostname := "test-agent-01"
-	preAuthorize(t, hostname, pubKeyPEM)
-
-	req := RegisterRequest{
-		Hostname:     hostname,
-		PublicKeyPEM: pubKeyPEM,
+	code, resp := fullEnrollment(t, hostname, token, privKey, pubKeyPEM)
+	if code != http.StatusOK || resp == nil {
+		t.Fatalf("RegisterAgent: expected 200, got %d", code)
 	}
-
-	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest("POST", "/api/register", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-
-	RegisterAgent(w, httpReq)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("RegisterAgent: expected 200, got %d — body: %s", w.Code, w.Body.String())
-	}
-
-	var resp RegisterResponse
-	mustUnmarshal(t, w.Body.Bytes(), &resp)
-
 	if resp.TokenEncrypted == "" {
 		t.Error("expected token_encrypted, got empty string")
 	}
@@ -95,33 +82,20 @@ func TestRegisterAgentUnauthorizedHostname(t *testing.T) {
 	}
 }
 
-// TestRegisterAgentKeyMismatch tests that a key different from the authorized one is rejected
-func TestRegisterAgentKeyMismatch(t *testing.T) {
+// TestRegisterAgentNoTokenWhateverTheKey: without an enrollment token the answer is the same 403
+// whether the key is pre-authorized, different or unknown (#192c: no oracle, no tokenless flow).
+func TestRegisterAgentNoTokenWhateverTheKey(t *testing.T) {
 	_, authorizedPEM := genRSAPubPEM(t, 4096)
 	_, differentPEM := genRSAPubPEM(t, 4096)
-
 	hostname := "test-agent-mismatch"
 	preAuthorize(t, hostname, authorizedPEM)
-
-	req := RegisterRequest{
-		Hostname:     hostname,
-		PublicKeyPEM: differentPEM, // different from what was authorized
-	}
-
-	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest("POST", "/api/register", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-
-	RegisterAgent(w, httpReq)
-
-	if w.Code != http.StatusForbidden {
-		t.Errorf("expected 403, got %d", w.Code)
-	}
-
-	var resp map[string]string
-	mustUnmarshal(t, w.Body.Bytes(), &resp)
-	if resp["error"] != "public_key_mismatch" {
-		t.Errorf("expected public_key_mismatch, got: %v", resp["error"])
+	for name, key := range map[string]string{"the authorized key": authorizedPEM, "a different key": differentPEM} {
+		w := tokenlessRegister(hostname, key)
+		var resp map[string]string
+		mustUnmarshal(t, w.Body.Bytes(), &resp)
+		if w.Code != http.StatusForbidden || resp["error"] != "enrollment_token_required" {
+			t.Errorf("%s: %d %v, want 403 enrollment_token_required", name, w.Code, resp)
+		}
 	}
 }
 
@@ -316,131 +290,6 @@ func TestAdminAuthorizeMethodNotAllowed(t *testing.T) {
 	}
 }
 
-// TestTokenRefreshSuccess tests successful token refresh with encrypted response
-func TestTokenRefreshSuccess(t *testing.T) {
-	if server == nil || server.PrivateKey == nil {
-		t.Skip("server state not initialized")
-	}
-
-	// Pre-enroll an agent so TokenRefresh can look up the public key
-	_, agentPubPEM := genRSAPubPEM(t, 4096)
-	hostname := "test-agent-05"
-	preAuthorize(t, hostname, agentPubPEM)
-	if _, err := registerStore.RegisterAgent(context.Background(), hostname, agentPubPEM, "initial-jti"); err != nil {
-		t.Fatalf("RegisterAgent (setup): %v", err)
-	}
-
-	// Create a challenge encrypted with server's public key using SHA-256
-	challenge := "test-challenge"
-	ciphertext, err := rsa.EncryptOAEP(
-		sha256.New(),
-		rand.Reader,
-		&server.PrivateKey.PublicKey,
-		[]byte(challenge),
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("failed to encrypt challenge: %v", err)
-	}
-
-	req := TokenRefreshRequest{
-		Hostname:           hostname,
-		ChallengeEncrypted: base64.StdEncoding.EncodeToString(ciphertext),
-	}
-
-	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest("POST", "/api/token/refresh", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-
-	TokenRefresh(w, httpReq)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("TokenRefresh: expected 200, got %d — body: %s", w.Code, w.Body.String())
-		return
-	}
-
-	var resp map[string]string
-	mustUnmarshal(t, w.Body.Bytes(), &resp)
-
-	if resp["token_encrypted"] == "" {
-		t.Error("expected token_encrypted in response, got empty")
-	}
-	if resp["server_public_key_pem"] == "" {
-		t.Error("expected server_public_key_pem in response, got empty")
-	}
-	// Ensure plain token is NOT returned
-	if resp["token"] != "" {
-		t.Error("response must not contain plaintext 'token' field")
-	}
-}
-
-// TestTokenRefreshAgentNotFound tests token refresh for unknown agent
-func TestTokenRefreshAgentNotFound(t *testing.T) {
-	if server == nil || server.PrivateKey == nil {
-		t.Skip("server state not initialized")
-	}
-
-	challenge := "test"
-	ciphertext, _ := rsa.EncryptOAEP(sha256.New(), rand.Reader, &server.PrivateKey.PublicKey, []byte(challenge), nil)
-
-	req := TokenRefreshRequest{
-		Hostname:           "nonexistent-host-xyz",
-		ChallengeEncrypted: base64.StdEncoding.EncodeToString(ciphertext),
-	}
-
-	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest("POST", "/api/token/refresh", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-
-	TokenRefresh(w, httpReq)
-
-	if w.Code != http.StatusForbidden {
-		t.Errorf("expected 403, got %d", w.Code)
-	}
-}
-
-// TestTokenRefreshInvalidChallenge tests invalid challenge encoding
-func TestTokenRefreshInvalidChallenge(t *testing.T) {
-	req := TokenRefreshRequest{
-		Hostname:           "test-agent-06",
-		ChallengeEncrypted: "not-base64!!!",
-	}
-
-	body, _ := json.Marshal(req)
-	httpReq := httptest.NewRequest("POST", "/api/token/refresh", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-
-	TokenRefresh(w, httpReq)
-
-	if w.Code != http.StatusForbidden {
-		t.Errorf("expected 403, got %d", w.Code)
-	}
-}
-
-// TestTokenRefreshInvalidJSON tests invalid JSON body
-func TestTokenRefreshInvalidJSON(t *testing.T) {
-	httpReq := httptest.NewRequest("POST", "/api/token/refresh", bytes.NewBufferString("invalid"))
-	w := httptest.NewRecorder()
-
-	TokenRefresh(w, httpReq)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", w.Code)
-	}
-}
-
-// TestTokenRefreshMethodNotAllowed tests non-POST method
-func TestTokenRefreshMethodNotAllowed(t *testing.T) {
-	httpReq := httptest.NewRequest("GET", "/api/token/refresh", nil)
-	w := httptest.NewRecorder()
-
-	TokenRefresh(w, httpReq)
-
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("expected 405, got %d", w.Code)
-	}
-}
-
 // ── writeJSON content-type regression tests ───────────────────────────────────
 // These tests guard against accidental removal of Content-Type: application/json
 // on error paths after the errcheck fix (all fmt.Fprintf → writeJSON migration).
@@ -482,18 +331,6 @@ func TestAdminAuthorize_ContentTypeOnError(t *testing.T) {
 	}
 }
 
-// TestTokenRefresh_ContentTypeOnError verifies Content-Type on TokenRefresh errors.
-func TestTokenRefresh_ContentTypeOnError(t *testing.T) {
-	httpReq := httptest.NewRequest("POST", "/api/token/refresh", bytes.NewBufferString("not-json"))
-	w := httptest.NewRecorder()
-	TokenRefresh(w, httpReq)
-
-	ct := w.Header().Get("Content-Type")
-	if ct != "application/json" {
-		t.Errorf("TokenRefresh error response: expected Content-Type application/json, got %q", ct)
-	}
-}
-
 // spyReadCloser wraps an io.Reader and records how many times Close() was called.
 // Used to verify that handlers always close the request body.
 type spyReadCloser struct {
@@ -525,14 +362,16 @@ func TestRegisterAgent_BodyClosedOnDecodeError(t *testing.T) {
 	})
 
 	t.Run("success_path", func(t *testing.T) {
-		privKey, pubKeyPEM := genRSAPubPEM(t, 4096)
-		_ = privKey
-		hostname := "spy-test-agent-01"
-		preAuthorize(t, hostname, pubKeyPEM)
+		_, pubKeyPEM := genRSAPubPEM(t, 4096)
+		run := uniqueRun()
+		hostname := "spy-test-agent-01-" + run
+		token := "secagent_enr_spy_body_closed_" + run
+		insertEnrollmentToken(t, "tok-spy-"+run, token, hostname, false, nil)
 
 		req := RegisterRequest{
-			Hostname:     hostname,
-			PublicKeyPEM: pubKeyPEM,
+			Hostname:        hostname,
+			PublicKeyPEM:    pubKeyPEM,
+			EnrollmentToken: token, // step 1: a valid token gets the nonce challenge (200)
 		}
 		body, _ := json.Marshal(req)
 		spy := &spyReadCloser{Reader: bytes.NewReader(body)}
@@ -541,10 +380,14 @@ func TestRegisterAgent_BodyClosedOnDecodeError(t *testing.T) {
 		w := httptest.NewRecorder()
 		RegisterAgent(w, httpReq)
 		if w.Code != http.StatusOK {
-			t.Errorf("expected 200 on valid enroll, got %d — body: %s", w.Code, w.Body.String())
+			t.Errorf("expected 200 on a valid step 1, got %d — body: %s", w.Code, w.Body.String())
 		}
 		if spy.closeCalled == 0 {
 			t.Error("Body.Close() was NOT called on success path — defer may be misplaced")
 		}
 	})
 }
+
+// uniqueRun is a short identifier unique per call (not per process): ids, tokens and hostnames built
+// from it can be created again by a replayed test (-count=N) in the process-wide store.
+func uniqueRun() string { return strconv.FormatInt(time.Now().UnixNano(), 36) }

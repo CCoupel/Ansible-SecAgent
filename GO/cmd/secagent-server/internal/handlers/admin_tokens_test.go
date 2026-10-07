@@ -1,12 +1,15 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -825,4 +828,27 @@ func contains(s, sub string) bool {
 			}
 			return false
 		}()
+}
+
+// The hostname pattern typed by an admin is logged with %q: it can not forge a log line.
+func TestAdminCreateEnrollmentToken_LogQuotesThePattern(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+	w := httptest.NewRecorder()
+	AdminCreateToken(w, adminReq("POST", "/api/admin/tokens", TokenCreateRequest{Role: "enrollment", HostnamePattern: "vp.*\nFAKE [SECURITY WARNING] forged"}))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if strings.HasPrefix(l, "FAKE") {
+			t.Errorf("forged log line: %q", l)
+		}
+	}
+	if !strings.Contains(buf.String(), `pattern="vp.*\nFAKE`) {
+		t.Errorf("the pattern must be quoted: %q", buf.String())
+	}
 }

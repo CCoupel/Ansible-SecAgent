@@ -37,8 +37,8 @@ secagent-inventory --host my-host
 ## 3. Configuration
 
 ```bash
-RELAY_SERVER_URL=https://relay.example.com    # défaut: https://localhost:7770
-RELAY_TOKEN=secagent_plugin_xxxxx              # Bearer token (PLUGIN_TOKEN)
+RELAY_SERVER_URL=https://relay.example.com    # défaut: https://localhost:7770 ; liste possible : https://a:7770,https://b:7770 (#167)
+RELAY_TOKEN=secagent_plg_xxxxx                 # Bearer token (jeton plugin, opaque)
 RELAY_CA_BUNDLE=/path/to/ca.pem               # CA custom (optionnel)
 RELAY_INSECURE_TLS=false                      # true = désactiver vérif TLS (TESTS UNIQUEMENT, voir ci-dessous)
 RELAY_INSECURE_TLS_ACK=                       # i-understand-the-risk = confirmation pour un serveur non-bouclage
@@ -67,11 +67,35 @@ secagent-inventory --list
 
 - À chaque exécution avec `RELAY_INSECURE_TLS=true`, le binaire écrit sur **stderr**
   `[SECURITY WARNING] TLS verification disabled …` ; stdout reste du JSON pur.
-- Si `RELAY_SERVER_URL` n'est pas une adresse de bouclage (`localhost`, `127.0.0.0/8`, `::1`), le binaire
+- Si une adresse de `RELAY_SERVER_URL` n'est pas une adresse de bouclage (`localhost`, `127.0.0.0/8`, `::1`), le binaire
   **refuse** (message explicite sur stderr, code de sortie 1) sauf si
   `RELAY_INSECURE_TLS_ACK=i-understand-the-risk`. Un seul oubli de variable ne désactive donc jamais la
   vérification vers un serveur distant.
 - Le token n'apparaît jamais dans ces messages.
+
+### 3b. Plusieurs adresses — `RELAY_SERVER_URL` en liste (v3.0.3, #167)
+
+Relay actif/passif : seule l'instance maître répond. `RELAY_SERVER_URL` accepte une liste d'URL séparées
+par des virgules (`internal/endpoints`, max 16, userinfo interdit, doublons refusés) ; une valeur unique
+reste valide. Le process est éphémère : ordre de la liste, rien n'est mémorisé.
+
+- La requête est un **GET idempotent** : on passe à l'adresse suivante sur un échec de connexion, de
+  TLS, un timeout, une coupure en cours de réponse ou un **503** (instance passive ou en arrêt).
+- Tout autre statut (401, 403, 404, 500…) est **renvoyé tel quel**, sans essai sur une autre adresse
+  (réponse du serveur, pas un problème de disponibilité).
+- Timeout : 10 s **par adresse**, plafond global de 30 s pour l'ensemble des essais.
+- TLS vérifié **par adresse** (`RELAY_CA_BUNDLE`) ; la garde `RELAY_INSECURE_TLS` / `_ACK` vaut pour
+  chaque adresse.
+- Toutes injoignables : code de sortie 1, message `relay unreachable, N address(es) tried: #1 hôte: cause; …`
+  (hôtes et causes seulement : ni token, ni chemin, ni query string).
+- **Redirections : jamais suivies** (`CheckRedirect` → `http.ErrUseLastResponse`) : le jeton n'est envoyé qu'aux adresses configurées, jamais à un hôte désigné par un en-tête `Location`. Une réponse 3xx est une erreur claire (`server returned 302: redirection refused …`), sans écho de l'URL cible ; elle est définitive (aucune autre adresse n'est essayée).
+- **`http://` hors bouclage** : avertissement `[SECURITY WARNING] address #N (hôte) uses http://: the token is sent in clear, https is required outside localhost` sur **stderr** (stdout reste du JSON pur), jamais le jeton ; pas de refus pour l'instant.
+- **Sortie d'erreur** : les tentatives d'adresses qui échouent avant qu'une autre réussisse ne produisent **aucune** ligne sur stderr (Ansible les afficherait comme des erreurs alors que l'inventaire réussit) ; `RELAY_INVENTORY_VERBOSE=1` affiche le détail. Si toutes échouent, le message final liste les adresses essayées et, le cas échéant, `M not tried (time budget)` pour celles que le plafond global de 30 s n'a pas laissé essayer.
+- **Réponse 200 non JSON** (ex. page HTML d'un proxy intermédiaire sur le secondaire) : erreur `decode response`, **sans bascule** — par conception : le serveur a répondu, ce n'est pas un problème de disponibilité ; seuls échec de connexion, timeout, coupure et 503 basculent.
+- **Contrat `endpoints.MarkSent`** : `DialFirst` classe un échec « avant envoi » tant qu'aucun octet de
+  requête n'est parti ; `net/http` est suivi automatiquement (`httptrace`), l'inventaire n'a donc rien à
+  marquer. **Tout futur dial brut (connexion TCP, upgrade WebSocket) devra appeler `endpoints.MarkSent(ctx)`
+  juste avant sa première écriture**, sinon un timeout après envoi serait rejoué sur l'adresse suivante.
 
 ---
 

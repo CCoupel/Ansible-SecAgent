@@ -103,8 +103,12 @@ type PluginTokenSummary struct {
 	ExpiresAt              string `json:"expires_at,omitempty"`
 	LastUsedAt             string `json:"last_used_at,omitempty"`
 	LastUsedIP             string `json:"last_used_ip,omitempty"`
-	Revoked                bool   `json:"revoked"`
-	CreatedAt              string `json:"created_at"`
+	// LastUsedApproximate is true whenever last_used_at / last_used_ip are reported: they are kept
+	// in memory and persisted only with the next write of the state, so they may lag by minutes and
+	// a token used just before a crash can read "never used" (audits must not rely on them).
+	LastUsedApproximate bool   `json:"last_used_approximate,omitempty"`
+	Revoked             bool   `json:"revoked"`
+	CreatedAt           string `json:"created_at"`
 }
 
 // PurgeResponse is returned from POST /api/admin/tokens/purge.
@@ -206,7 +210,7 @@ func AdminCreateToken(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 			return
 		}
-		log.Printf("Enrollment token created by admin: id=%s pattern=%s reusable=%v", id, req.HostnamePattern, tok.Reusable)
+		log.Printf("Enrollment token created by admin: id=%q pattern=%q reusable=%v", id, req.HostnamePattern, tok.Reusable)
 
 	case "plugin":
 		if req.AllowedHostnamePattern != "" {
@@ -230,7 +234,7 @@ func AdminCreateToken(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 			return
 		}
-		log.Printf("Plugin token created by admin: id=%s description=%q", id, req.Description)
+		log.Printf("Plugin token created by admin: id=%q description=%q", id, req.Description)
 	}
 
 	expiresStr := ""
@@ -429,7 +433,7 @@ func AdminRevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if found {
-		log.Printf("Token revoked: id=%s", id)
+		log.Printf("Token revoked: id=%q", id)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"revoked":    true,
 			"id":         id,
@@ -445,7 +449,7 @@ func AdminRevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if ok {
 		disconnected := ws.RevokeRelayParentLink(rt.JTI)
-		log.Printf("Relay-parent token revoked: id=%s parent=%s link_closed=%v", id, rt.ParentID, disconnected)
+		log.Printf("Relay-parent token revoked: id=%q parent=%q link_closed=%v", id, rt.ParentID, disconnected)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"revoked":      true,
 			"id":           id,
@@ -517,7 +521,7 @@ func AdminDeleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if deleted {
-		log.Printf("Enrollment token deleted: id=%s", id)
+		log.Printf("Enrollment token deleted: id=%q", id)
 		writeJSON(w, http.StatusOK, map[string]interface{}{"deleted": true, "id": id})
 		return
 	}
@@ -530,7 +534,7 @@ func AdminDeleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if deleted {
-		log.Printf("Plugin token deleted: id=%s", id)
+		log.Printf("Plugin token deleted: id=%q", id)
 		writeJSON(w, http.StatusOK, map[string]interface{}{"deleted": true, "id": id})
 		return
 	}
@@ -635,6 +639,7 @@ func pluginTokenToSummary(t storage.PluginToken) PluginTokenSummary {
 	}
 	if t.LastUsedAt != nil {
 		s.LastUsedAt = t.LastUsedAt.UTC().Format(time.RFC3339)
+		s.LastUsedApproximate = true
 	}
 	return s
 }

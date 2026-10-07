@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -9,11 +10,11 @@ import (
 	"time"
 )
 
-// Slow webhooks cannot pile goroutines up: at most RELAY_HOOKS_MAX_CONCURRENT_ACTIONS actions run
-// at once, the others are dropped (counted) without blocking the dispatch.
-func TestDispatcher_ConcurrentActionsAreBounded(t *testing.T) {
+// Slow webhooks cannot pile goroutines up: at most RELAY_HOOKS_MAX_CONCURRENT_ACTIONS events are
+// processed at once, the others WAIT in the queue (back-pressure, #183): none is dropped.
+func TestDispatcher_ConcurrentActionsAreBoundedAndNothingIsDropped(t *testing.T) {
 	t.Setenv("RELAY_HOOKS_MAX_CONCURRENT_ACTIONS", "3")
-	var running, peak atomic.Int32
+	var running, peak, done atomic.Int32
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := running.Add(1)
@@ -25,9 +26,9 @@ func TestDispatcher_ConcurrentActionsAreBounded(t *testing.T) {
 		}
 		<-release
 		running.Add(-1)
+		done.Add(1)
 	}))
 	defer srv.Close()
-	defer close(release)
 
 	d := NewDispatcher(&mockLogger{}, 100)
 	d.SetConfig(&HooksConfig{Hooks: []HookDef{{Event: "host.up",
@@ -38,46 +39,22 @@ func TestDispatcher_ConcurrentActionsAreBounded(t *testing.T) {
 
 	start := time.Now()
 	for i := 0; i < 20; i++ {
-		d.Dispatch("host.up", "h", "connected", "")
+		d.Dispatch("host.up", fmt.Sprintf("h%d", i), "connected", "")
 	}
 	if time.Since(start) > time.Second {
 		t.Error("Dispatch must never block")
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for d.DroppedActions() < 17 && time.Now().Before(deadline) {
+	time.Sleep(200 * time.Millisecond)
+	if got := peak.Load(); got > 3 {
+		t.Errorf("peak concurrent events = %d, want <= 3", got)
+	}
+	close(release)
+	deadline := time.Now().Add(10 * time.Second)
+	for done.Load() < 20 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
-	time.Sleep(200 * time.Millisecond)
-	if got := d.DroppedActions(); got != 17 {
-		t.Errorf("dropped = %d, want 17 (20 jobs, 3 slots)", got)
-	}
-	if got := peak.Load(); got > 3 {
-		t.Errorf("peak concurrent actions = %d, want <= 3", got)
-	}
-}
-
-// Finished actions free their slot.
-func TestDispatcher_SlotsAreReleased(t *testing.T) {
-	t.Setenv("RELAY_HOOKS_MAX_CONCURRENT_ACTIONS", "1")
-	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
-	defer srv.Close()
-	d := NewDispatcher(&mockLogger{}, 100)
-	d.SetConfig(&HooksConfig{Hooks: []HookDef{{Event: "host.up",
-		Actions: []ActionDef{{Type: "webhook", URL: srv.URL}}}}})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	d.Start(ctx)
-	for i := 0; i < 5; i++ {
-		d.Dispatch("host.up", "h", "connected", "")
-		deadline := time.Now().Add(3 * time.Second)
-		for hits.Load() < int32(i+1) && time.Now().Before(deadline) {
-			time.Sleep(10 * time.Millisecond)
-		}
-		time.Sleep(50 * time.Millisecond) // let the slot be released
-	}
-	if hits.Load() != 5 || d.DroppedActions() != 0 {
-		t.Errorf("hits=%d dropped=%d, want 5 and 0: a finished action must free its slot", hits.Load(), d.DroppedActions())
+	if done.Load() != 20 || d.DroppedEvents() != 0 || d.DroppedActions() != 0 {
+		t.Errorf("executed=%d droppedEvents=%d droppedActions=%d, want 20/0/0", done.Load(), d.DroppedEvents(), d.DroppedActions())
 	}
 }
 

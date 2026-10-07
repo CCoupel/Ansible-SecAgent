@@ -1,52 +1,61 @@
-// Phase 12 — store_relay.go
-// CRUD operations for relay_nodes and relay_routing tables.
-// These tables back the Proxy/Gateway mode of secagent-server.
+// store_relay.go — relay nodes (persistent configuration) and their volatile status.
 package storage
 
 import (
-	"database/sql"
+	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
+
+	"secagent-server/cmd/secagent-server/internal/state"
 )
 
 // RelayNode represents a downstream relay registered on a proxy.
 // Mode "pull": the relay connects to the proxy via /ws/relay.
-// Mode "push": the proxy initiates HTTP REST calls to the relay's URL.
+// Mode "push": the proxy dials the relay's URL.
+//
+// TokenHash (pull: SHA-256 of the relay JWT) and TokenSecret (push: the token the proxy presents,
+// ALWAYS "enc:"-sealed, bound to the relay id) are distinct fields. Status and LastSeen are
+// volatile (rebuilt by the topology snapshots), CreatedAt and the rest are persistent.
 type RelayNode struct {
-	ID          string // UUID (internal primary key)
-	RelayID     string // human-readable unique ID, e.g. "dmz1"
-	URL         string // HTTP base URL — push mode only, empty for pull
+	ID          string   // UUID (internal primary key)
+	RelayID     string   // human-readable unique ID, e.g. "dmz1"
+	URLs        []string // wss:// addresses of the child's instances — push mode only (tried in order), empty for pull
 	Description string
-	TokenHash   string // SHA-256 of bearer token — push mode; SHA-256 of JWT JTI — pull mode
+	TokenHash   string // pull mode: SHA-256 of the relay token
+	TokenSecret string // push mode: sealed token ("enc:…"), see state.SealSecret
 	Mode        string // "pull" | "push"
 	IsProxy     bool   // true if the downstream relay is itself a proxy
 	CreatedAt   int64  // Unix timestamp
-	LastSeen    *int64 // nil if never connected
-	Status      string // "connected" | "disconnected" | "pending"
+	LastSeen    *int64 // nil if never connected (volatile)
+	Status      string // "connected" | "disconnected" | "pending" (volatile)
 }
 
-// nullableInt64 converts *int64 to nil/int64 for SQL parameters.
-func nullableInt64(v *int64) interface{} {
-	if v == nil {
-		return nil
+func (s *Store) relayFromState(n state.RelayNode) RelayNode {
+	out := RelayNode{ID: n.ID, RelayID: n.RelayID, Description: n.Description, TokenHash: n.TokenHash, TokenSecret: n.TokenSecret,
+		Mode: n.Mode, IsProxy: n.IsProxy, CreatedAt: n.CreatedAt.Unix(), Status: "pending"}
+	out.URLs = append([]string(nil), n.URLs...)
+	s.mu.RLock()
+	if v, ok := s.relayVol[n.RelayID]; ok {
+		if v.status != "" {
+			out.Status = v.status
+		}
+		if v.lastSeen != nil {
+			ls := *v.lastSeen
+			out.LastSeen = &ls
+		}
 	}
-	return *v
+	s.mu.RUnlock()
+	return out
 }
 
-// ========================================================================
-// relay_nodes — CRUD
-// ========================================================================
-
-// UpsertRelayNode inserts or updates a relay node keyed on relay_id.
-// If the row already exists (ON CONFLICT relay_id), the mutable columns are updated.
+// UpsertRelayNode inserts or updates a relay node keyed on relay_id. On update the identity, the
+// creation time, the token info (jti, expiry, revoked flag) and the group vars are kept.
 func (s *Store) UpsertRelayNode(node RelayNode) error {
 	if err := checkRelayID(node.RelayID); err != nil { // last line of defence for every entry point
 		return fmt.Errorf("UpsertRelayNode: %w", err)
 	}
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
-
 	if node.CreatedAt == 0 {
 		node.CreatedAt = time.Now().UTC().Unix()
 	}
@@ -56,325 +65,350 @@ func (s *Store) UpsertRelayNode(node RelayNode) error {
 	if node.Mode == "" {
 		node.Mode = "pull"
 	}
-
-	isProxy := 0
-	if node.IsProxy {
-		isProxy = 1
-	}
-
-	_, err := s.db.Exec(`
-		INSERT INTO relay_nodes
-			(id, relay_id, url, description, token_hash, mode, is_proxy, created_at, last_seen, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(relay_id) DO UPDATE SET
-			url         = excluded.url,
-			description = excluded.description,
-			token_hash  = excluded.token_hash,
-			mode        = excluded.mode,
-			is_proxy    = excluded.is_proxy,
-			status      = excluded.status
-	`, node.ID, node.RelayID,
-		nullableString(node.URL), nullableString(node.Description),
-		nullableString(node.TokenHash), node.Mode, isProxy,
-		node.CreatedAt, nullableInt64(node.LastSeen), node.Status)
+	err := s.mutate(func(tx *state.Tx) error {
+		n, exists := tx.RelayNode(node.RelayID)
+		if !exists {
+			n = state.RelayNode{ID: node.ID, RelayID: node.RelayID, CreatedAt: time.Unix(node.CreatedAt, 0).UTC()}
+		}
+		n.URLs = append([]string(nil), node.URLs...)
+		n.Description, n.TokenHash, n.TokenSecret, n.Mode, n.IsProxy = node.Description, node.TokenHash, node.TokenSecret, node.Mode, node.IsProxy
+		return tx.PutRelayNode(n)
+	})
 	if err != nil {
 		return fmt.Errorf("UpsertRelayNode %q: %w", node.RelayID, err)
 	}
-
-	log.Printf("RelayNode upserted: relay_id=%s mode=%s status=%s", node.RelayID, node.Mode, node.Status)
+	s.mu.Lock()
+	v := s.relayVol[node.RelayID]
+	v.status, v.lastSeen = node.Status, node.LastSeen
+	s.relayVol[node.RelayID] = v
+	s.mu.Unlock()
+	log.Printf("RelayNode upserted: relay_id=%q mode=%q status=%q", node.RelayID, node.Mode, node.Status)
 	return nil
 }
 
-// GetRelayNode returns the relay node for the given relay_id, or nil if not found.
+// GetRelayNode returns the relay node with this relay_id, or (nil, nil).
 func (s *Store) GetRelayNode(relayID string) (*RelayNode, error) {
-	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
-
-	row := s.db.QueryRow(`
-		SELECT id, relay_id, url, description, token_hash, mode, is_proxy, created_at, last_seen, status
-		FROM relay_nodes WHERE relay_id = ?
-	`, relayID)
-
-	return scanRelayNode(row)
+	n, ok := s.snap().RelayNode(relayID)
+	if !ok {
+		return nil, nil
+	}
+	out := s.relayFromState(n)
+	return &out, nil
 }
 
-// GetRelayNodeByID returns the relay node for the given internal UUID, or nil if not found.
+// GetRelayNodeByID returns the relay node with this internal id, or (nil, nil).
 func (s *Store) GetRelayNodeByID(id string) (*RelayNode, error) {
-	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
-
-	row := s.db.QueryRow(`
-		SELECT id, relay_id, url, description, token_hash, mode, is_proxy, created_at, last_seen, status
-		FROM relay_nodes WHERE id = ?
-	`, id)
-
-	return scanRelayNode(row)
+	n, ok := s.snap().RelayNodeByID(id)
+	if !ok {
+		return nil, nil
+	}
+	out := s.relayFromState(n)
+	return &out, nil
 }
 
 // ListRelayNodes returns all relay nodes ordered by relay_id.
 func (s *Store) ListRelayNodes() ([]RelayNode, error) {
-	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
-
-	rows, err := s.db.Query(`
-		SELECT id, relay_id, url, description, token_hash, mode, is_proxy, created_at, last_seen, status
-		FROM relay_nodes ORDER BY relay_id
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("ListRelayNodes: %w", err)
+	var out []RelayNode
+	for _, n := range s.snap().RelayNodes() {
+		out = append(out, s.relayFromState(n))
 	}
-	defer func() { _ = rows.Close() }()
-
-	var nodes []RelayNode
-	for rows.Next() {
-		n, err := scanRelayNodeRow(rows)
-		if err != nil {
-			return nil, fmt.Errorf("ListRelayNodes scan: %w", err)
-		}
-		nodes = append(nodes, *n)
-	}
-	return nodes, rows.Err()
+	return out, nil
 }
 
-// DeleteRelayNode removes a relay node by its internal UUID.
-// Returns (true, nil) if deleted, (false, nil) if not found.
-// Cascades to relay_routing rows (ON DELETE CASCADE).
+// DeleteRelayNode removes a relay node by its internal id, with its routes and volatile data.
 func (s *Store) DeleteRelayNode(id string) error {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
-
-	result, err := s.db.Exec("DELETE FROM relay_nodes WHERE id = ?", id)
+	var relayID string
+	err := s.mutate(func(tx *state.Tx) error {
+		n, ok := tx.RelayNodeByID(id)
+		if !ok {
+			return nil
+		}
+		relayID = n.RelayID
+		tx.DeleteRelayNode(n.RelayID)
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("DeleteRelayNode: %w", err)
 	}
-
-	n, _ := result.RowsAffected()
-	if n > 0 {
-		log.Printf("RelayNode deleted: id=%s", id)
+	if relayID != "" {
+		s.mu.Lock()
+		delete(s.relayVol, relayID)
+		for h, r := range s.routes { // ON DELETE CASCADE
+			if r.RelayID == relayID {
+				delete(s.routes, h)
+			}
+		}
+		s.mu.Unlock()
+		log.Printf("RelayNode deleted: id=%q", id)
 	}
 	return nil
 }
 
-// SetRelayIsProxy updates the is_proxy flag for a relay identified by relay_id.
-// Called when a relay announces itself as a proxy node in relay_hello.
+// SetRelayIsProxy updates the is_proxy flag of a relay (no error when it is unknown).
 func (s *Store) SetRelayIsProxy(relayID string, isProxy bool) error {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
-
-	val := 0
-	if isProxy {
-		val = 1
-	}
-	_, err := s.db.Exec(
-		"UPDATE relay_nodes SET is_proxy = ? WHERE relay_id = ?", val, relayID)
+	err := s.mutate(func(tx *state.Tx) error {
+		n, ok := tx.RelayNode(relayID)
+		if !ok || n.IsProxy == isProxy {
+			return nil
+		}
+		n.IsProxy = isProxy
+		return tx.PutRelayNode(n)
+	})
 	if err != nil {
 		return fmt.Errorf("SetRelayIsProxy %q: %w", relayID, err)
 	}
 	return nil
 }
 
-// UpdateRelayStatus updates the status and last_seen for a relay identified by relay_id.
+// UpdateRelayStatus records the connection status and last_seen of a relay (memory only).
 func (s *Store) UpdateRelayStatus(relayID, status string, lastSeen int64) error {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
-
-	_, err := s.db.Exec(
-		"UPDATE relay_nodes SET status = ?, last_seen = ? WHERE relay_id = ?",
-		status, lastSeen, relayID)
-	if err != nil {
-		return fmt.Errorf("UpdateRelayStatus %q: %w", relayID, err)
-	}
+	s.mu.Lock()
+	v := s.relayVol[relayID]
+	ls := lastSeen
+	v.status, v.lastSeen = status, &ls
+	s.relayVol[relayID] = v
+	s.mu.Unlock()
 	return nil
 }
 
-// ========================================================================
-// relay_routing — hostname → relay_id mapping
-// ========================================================================
-
-// UpsertRelayRouting inserts or updates a single hostname → relay_id mapping.
-func (s *Store) UpsertRelayRouting(hostname, relayID string) error {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
-
-	now := time.Now().UTC().Unix()
-	_, err := s.db.Exec(`
-		INSERT INTO relay_routing (hostname, relay_id, updated_at, relay_chain)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(hostname) DO UPDATE SET relay_id = excluded.relay_id, updated_at = excluded.updated_at,
-			relay_chain = excluded.relay_chain
-	`, hostname, relayID, now, chainJSON([]string{relayID}))
-	if err != nil {
-		return fmt.Errorf("UpsertRelayRouting %q→%q: %w", hostname, relayID, err)
+// SetRelayChain records the top-down path to a deep relay (memory only). found=false when the relay
+// is unknown.
+func (s *Store) SetRelayChain(relayID string, chain []string) (bool, error) {
+	if _, ok := s.snap().RelayNode(relayID); !ok {
+		return false, nil
 	}
-	return nil
+	s.mu.Lock()
+	v := s.relayVol[relayID]
+	v.chain = append([]string(nil), chain...)
+	s.relayVol[relayID] = v
+	s.mu.Unlock()
+	return true, nil
 }
 
-// GetRelayForHostname returns the relay_id that owns the given hostname.
-// Returns ("", nil) if the hostname is not in any relay's routing table.
-func (s *Store) GetRelayForHostname(hostname string) (string, error) {
-	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
-
-	var relayID string
-	err := s.db.QueryRow(
-		"SELECT relay_id FROM relay_routing WHERE hostname = ?", hostname).Scan(&relayID)
-	if err == sql.ErrNoRows {
-		return "", nil
+// ListRelayChains returns the recorded chains, by relay_id.
+func (s *Store) ListRelayChains() (map[string][]string, error) {
+	out := map[string][]string{}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for id, v := range s.relayVol {
+		if len(v.chain) > 0 {
+			out[id] = append([]string(nil), v.chain...)
+		}
 	}
-	if err != nil {
-		return "", fmt.Errorf("GetRelayForHostname %q: %w", hostname, err)
-	}
-	if !hostnameShape.MatchString(hostname) || !ValidRelayID(relayID) {
-		warnIgnoredOnce("relay route", hostname)
-		return "", nil
-	}
-	return relayID, nil
+	return out, nil
 }
 
-// BulkUpsertRelayRouting replaces all routing entries for relayID with the given
-// hostnames list. Hostnames no longer present in the list are removed.
-// Uses a transaction for atomicity. Safe with 100+ hostnames.
-func (s *Store) BulkUpsertRelayRouting(relayID string, hostnames []string) error {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("BulkUpsertRelayRouting begin tx: %w", err)
+// SetRelayGroupVars stores the Ansible group vars (a JSON object) of a relay; "" clears them.
+func (s *Store) SetRelayGroupVars(relayID, groupVarsJSON string) (bool, error) {
+	var gv map[string]any
+	if groupVarsJSON != "" {
+		if err := json.Unmarshal([]byte(groupVarsJSON), &gv); err != nil {
+			return false, fmt.Errorf("SetRelayGroupVars %q: group vars are not a JSON object: %w", relayID, err)
+		}
 	}
-	defer func() {
+	found := false
+	err := s.mutate(func(tx *state.Tx) error {
+		n, ok := tx.RelayNode(relayID)
+		if !ok {
+			return nil
+		}
+		found = true
+		n.GroupVars = gv
+		return tx.PutRelayNode(n)
+	})
+	if err != nil {
+		return false, fmt.Errorf("SetRelayGroupVars %q: %w", relayID, err)
+	}
+	return found, nil
+}
+
+// ListRelayGroupVars returns the group vars (JSON) of the relays that have some.
+func (s *Store) ListRelayGroupVars() (map[string]string, error) {
+	out := map[string]string{}
+	for _, n := range s.snap().RelayNodes() {
+		if len(n.GroupVars) == 0 {
+			continue
+		}
+		b, err := json.Marshal(n.GroupVars)
 		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	// Remove all existing entries for this relay
-	if _, err = tx.Exec("DELETE FROM relay_routing WHERE relay_id = ?", relayID); err != nil {
-		return fmt.Errorf("BulkUpsertRelayRouting delete: %w", err)
-	}
-
-	now := time.Now().UTC().Unix()
-	// Last arrival wins: a hostname already routed through another relay is re-pointed here
-	// (the caller emits host.conflict). relay_chain defaults to [relayID] (direct agents).
-	stmt, err := tx.Prepare(`INSERT INTO relay_routing (hostname, relay_id, updated_at, relay_chain) VALUES (?, ?, ?, ?)
-		ON CONFLICT(hostname) DO UPDATE SET relay_id = excluded.relay_id, updated_at = excluded.updated_at,
-			relay_chain = excluded.relay_chain`)
-	if err != nil {
-		return fmt.Errorf("BulkUpsertRelayRouting prepare: %w", err)
-	}
-	defer func() { _ = stmt.Close() }()
-
-	for _, hostname := range hostnames {
-		if hostname == "" {
 			continue
 		}
-		if _, err = stmt.Exec(hostname, relayID, now, chainJSON([]string{relayID})); err != nil {
-			return fmt.Errorf("BulkUpsertRelayRouting insert %q: %w", hostname, err)
+		out[n.RelayID] = string(b)
+	}
+	return out, nil
+}
+
+// ── relay-parent tokens ──────────────────────────────────────────────────────
+
+// RelayParentToken is the metadata of a relay-parent token minted on a child relay (#150): never the JWT.
+type RelayParentToken struct {
+	ID          string // internal id used by `tokens revoke`
+	JTI         string // JWT identifier (blacklist key)
+	ParentID    string // jwt.sub: the parent this token was minted for
+	Description string
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+	RevokedAt   *time.Time
+}
+
+// Revoked reports whether the token was revoked.
+func (t RelayParentToken) Revoked() bool { return t.RevokedAt != nil }
+
+func parentFromState(t state.RelayParentToken) RelayParentToken {
+	return RelayParentToken{ID: t.ID, JTI: t.JTI, ParentID: t.ParentID, Description: t.Description, CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt, RevokedAt: t.RevokedAt}
+}
+
+// CreateRelayParentToken records a token's metadata.
+func (s *Store) CreateRelayParentToken(ctx context.Context, t RelayParentToken) error {
+	err := s.mutate(func(tx *state.Tx) error {
+		if _, exists := tx.RelayParentToken(t.ID); exists {
+			return fmt.Errorf("%w: relay-parent token id %q", state.ErrDuplicate, t.ID)
 		}
+		return tx.PutRelayParentToken(state.RelayParentToken{ID: t.ID, JTI: t.JTI, ParentID: t.ParentID, Description: t.Description,
+			CreatedAt: t.CreatedAt.UTC().Truncate(time.Second), ExpiresAt: t.ExpiresAt.UTC().Truncate(time.Second)})
+	})
+	if err != nil {
+		return fmt.Errorf("CreateRelayParentToken: %w", err)
 	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("BulkUpsertRelayRouting commit: %w", err)
-	}
-
-	log.Printf("BulkUpsertRelayRouting: relay_id=%s count=%d", relayID, len(hostnames))
+	log.Printf("Relay-parent token created: id=%q parent=%q", t.ID, t.ParentID)
 	return nil
 }
 
-// DeleteRelayRoutingByRelay removes all routing entries for the given relay_id.
-func (s *Store) DeleteRelayRoutingByRelay(relayID string) error {
-	s.dbMu.Lock()
-	defer s.dbMu.Unlock()
-
-	result, err := s.db.Exec("DELETE FROM relay_routing WHERE relay_id = ?", relayID)
-	if err != nil {
-		return fmt.Errorf("DeleteRelayRoutingByRelay %q: %w", relayID, err)
+// ListRelayParentTokens returns the tokens, newest first.
+func (s *Store) ListRelayParentTokens(ctx context.Context) ([]RelayParentToken, error) {
+	var out []RelayParentToken
+	for _, t := range s.snap().RelayParentTokens() {
+		out = append(out, parentFromState(t))
 	}
-	n, _ := result.RowsAffected()
-	log.Printf("DeleteRelayRoutingByRelay: relay_id=%q deleted=%d", relayID, n)
-	return nil
+	sortParentTokens(out)
+	return out, nil
 }
 
-// ListRelayRouting returns all routing entries for a given relay_id.
-// Returns (hostnames, nil). Empty slice if none.
-func (s *Store) ListRelayRouting(relayID string) ([]string, error) {
-	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
-
-	rows, err := s.db.Query(
-		"SELECT hostname FROM relay_routing WHERE relay_id = ? ORDER BY hostname", relayID)
-	if err != nil {
-		return nil, fmt.Errorf("ListRelayRouting: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var hostnames []string
-	for rows.Next() {
-		var h string
-		if err := rows.Scan(&h); err != nil {
-			return nil, fmt.Errorf("ListRelayRouting scan: %w", err)
-		}
-		if !hostnameShape.MatchString(h) {
-			warnIgnoredOnce("relay route", h)
-			continue
-		}
-		hostnames = append(hostnames, h)
-	}
-	return hostnames, rows.Err()
-}
-
-// ========================================================================
-// Internal helpers
-// ========================================================================
-
-func scanRelayNode(row *sql.Row) (*RelayNode, error) {
-	var n RelayNode
-	var url, description, tokenHash sql.NullString
-	var lastSeen sql.NullInt64
-	var isProxy int
-
-	err := row.Scan(
-		&n.ID, &n.RelayID, &url, &description, &tokenHash,
-		&n.Mode, &isProxy, &n.CreatedAt, &lastSeen, &n.Status)
-	if err == sql.ErrNoRows {
+// GetRelayParentToken returns one token, or (nil, nil).
+func (s *Store) GetRelayParentToken(ctx context.Context, id string) (*RelayParentToken, error) {
+	t, ok := s.snap().RelayParentToken(id)
+	if !ok {
 		return nil, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("scanRelayNode: %w", err)
-	}
-
-	n.URL = url.String
-	n.Description = description.String
-	n.TokenHash = tokenHash.String
-	n.IsProxy = isProxy == 1
-	if lastSeen.Valid {
-		v := lastSeen.Int64
-		n.LastSeen = &v
-	}
-	return &n, nil
+	out := parentFromState(t)
+	return &out, nil
 }
 
-// scanRelayNodeRow scans a *sql.Rows (not *sql.Row) into a RelayNode.
-func scanRelayNodeRow(rows *sql.Rows) (*RelayNode, error) {
-	var n RelayNode
-	var url, description, tokenHash sql.NullString
-	var lastSeen sql.NullInt64
-	var isProxy int
-
-	err := rows.Scan(
-		&n.ID, &n.RelayID, &url, &description, &tokenHash,
-		&n.Mode, &isProxy, &n.CreatedAt, &lastSeen, &n.Status)
+// RevokeRelayParentToken marks the token revoked AND blacklists its JTI in ONE mutation. Idempotent.
+// found=false when the token does not exist.
+func (s *Store) RevokeRelayParentToken(ctx context.Context, id string) (*RelayParentToken, bool, error) {
+	var out RelayParentToken
+	found := false
+	err := s.mutate(func(tx *state.Tx) error {
+		t, ok := tx.RelayParentToken(id)
+		if !ok {
+			return nil
+		}
+		found = true
+		now := time.Now().UTC().Truncate(time.Second)
+		if t.RevokedAt == nil {
+			t.RevokedAt = &now
+			if err := tx.PutRelayParentToken(t); err != nil {
+				return err
+			}
+		}
+		if err := putBlacklist(tx, t.JTI, t.ParentID, "relay-parent token revoked", now, t.ExpiresAt.UTC()); err != nil {
+			return err
+		}
+		out = parentFromState(t)
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("scanRelayNodeRow: %w", err)
+		return nil, false, fmt.Errorf("RevokeRelayParentToken: %w", err)
 	}
+	if !found {
+		return nil, false, nil
+	}
+	log.Printf("Relay-parent token revoked: id=%q parent=%q", out.ID, out.ParentID)
+	return &out, true, nil
+}
 
-	n.URL = url.String
-	n.Description = description.String
-	n.TokenHash = tokenHash.String
-	n.IsProxy = isProxy == 1
-	if lastSeen.Valid {
-		v := lastSeen.Int64
-		n.LastSeen = &v
+// ── relay token info and revocation ──────────────────────────────────────────
+
+// RelayTokenInfo is the JWT identity of a relay's registration token.
+type RelayTokenInfo struct {
+	JTI     string // "" when unknown
+	Exp     int64  // unix seconds, 0 when unknown
+	Revoked bool
+}
+
+// SetRelayTokenInfo records the JTI and expiry of the token issued at registration, and clears the
+// revoked flag (a re-registration issues a new token).
+func (s *Store) SetRelayTokenInfo(relayID, jti string, exp int64) error {
+	err := s.mutate(func(tx *state.Tx) error {
+		n, ok := tx.RelayNode(relayID)
+		if !ok {
+			return fmt.Errorf("unknown relay")
+		}
+		n.JTI, n.TokenExp, n.Revoked = jti, exp, false
+		return tx.PutRelayNode(n)
+	})
+	if err != nil {
+		return fmt.Errorf("SetRelayTokenInfo %q: %w", relayID, err)
 	}
-	return &n, nil
+	return nil
+}
+
+// GetRelayTokenInfo returns the token info of a relay (zero value when unknown).
+func (s *Store) GetRelayTokenInfo(relayID string) (RelayTokenInfo, error) {
+	n, ok := s.snap().RelayNode(relayID)
+	if !ok {
+		return RelayTokenInfo{}, nil
+	}
+	return RelayTokenInfo{JTI: n.JTI, Exp: n.TokenExp, Revoked: n.Revoked}, nil
+}
+
+// RevokeRelayNode flags relayID revoked and blacklists its JTI in ONE mutation (the state engine
+// refuses a revoked relay whose token is not blacklisted, so a crash can never leave one without
+// the other). It returns the token info as it was. Idempotent. found=false when unknown.
+//
+// A relay that never had a token JTI (declared automatically when it connected) is given a
+// synthetic one for the duration of the revocation, so that the invariant holds; the revoked flag
+// is what refuses its connections.
+func (s *Store) RevokeRelayNode(ctx context.Context, relayID, reason string) (info RelayTokenInfo, found bool, err error) {
+	err = s.mutate(func(tx *state.Tx) error {
+		n, ok := tx.RelayNode(relayID)
+		if !ok {
+			return nil
+		}
+		found = true
+		info = RelayTokenInfo{JTI: n.JTI, Exp: n.TokenExp, Revoked: n.Revoked}
+		now := time.Now().UTC().Truncate(time.Second)
+		expires := now.Add(30 * 24 * time.Hour)
+		if info.Exp > 0 {
+			expires = time.Unix(info.Exp, 0).UTC()
+		}
+		jti := n.JTI
+		if jti == "" {
+			jti = "no-token:" + relayID
+			n.JTI, n.TokenExp = jti, expires.Unix()
+		}
+		n.Revoked = true
+		if err := putBlacklist(tx, jti, relayID, reason, now, expires); err != nil {
+			return err
+		}
+		return tx.PutRelayNode(n)
+	})
+	if err != nil {
+		return RelayTokenInfo{}, false, fmt.Errorf("RevokeRelayNode: %w", err)
+	}
+	if found {
+		log.Printf("Relay revoked: relay_id=%q jti_known=%v", relayID, info.JTI != "")
+	}
+	return info, found, nil
+}
+
+// BlacklistJTI blacklists a JTI (30 days when exp is unknown).
+func (s *Store) BlacklistJTI(ctx context.Context, jti, relayID, reason string, exp int64) error {
+	expires := time.Now().UTC().Add(30 * 24 * time.Hour)
+	if exp > 0 {
+		expires = time.Unix(exp, 0).UTC()
+	}
+	r := reason
+	return s.AddToBlacklist(ctx, jti, relayID, expires.Format(time.RFC3339), &r)
 }

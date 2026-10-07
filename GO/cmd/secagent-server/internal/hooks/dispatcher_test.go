@@ -8,7 +8,7 @@ package hooks
 // API réelle implémentée dans dispatcher.go :
 //
 //   ActionLogger interface {
-//     CreateActionLog(ctx context.Context, entry storage.ActionLogEntry) error
+//     CreateActionLog(ctx context.Context, entry actionlog.Entry) error
 //   }
 //
 //   NewDispatcher(store ActionLogger, bufSize int) *Dispatcher
@@ -27,7 +27,7 @@ import (
 	"testing"
 	"time"
 
-	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/actionlog"
 )
 
 // ========================================================================
@@ -36,10 +36,10 @@ import (
 
 type mockLogger struct {
 	mu      sync.Mutex
-	entries []storage.ActionLogEntry
+	entries []actionlog.Entry
 }
 
-func (m *mockLogger) CreateActionLog(_ context.Context, e storage.ActionLogEntry) error {
+func (m *mockLogger) Append(e actionlog.Entry) error {
 	m.mu.Lock()
 	m.entries = append(m.entries, e)
 	m.mu.Unlock()
@@ -47,7 +47,7 @@ func (m *mockLogger) CreateActionLog(_ context.Context, e storage.ActionLogEntry
 }
 
 // waitEntries attend que n entrées soient disponibles (timeout fatal).
-func (m *mockLogger) waitEntries(t *testing.T, n int, timeout time.Duration) []storage.ActionLogEntry {
+func (m *mockLogger) waitEntries(t *testing.T, n int, timeout time.Duration) []actionlog.Entry {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {
@@ -56,7 +56,7 @@ func (m *mockLogger) waitEntries(t *testing.T, n int, timeout time.Duration) []s
 		m.mu.Unlock()
 		if count >= n {
 			m.mu.Lock()
-			result := make([]storage.ActionLogEntry, len(m.entries))
+			result := make([]actionlog.Entry, len(m.entries))
 			copy(result, m.entries)
 			m.mu.Unlock()
 			return result
@@ -240,7 +240,7 @@ func TestDispatcher_queue_full_drop(t *testing.T) {
 
 // ========================================================================
 // TestDispatcher_writes_action_log
-// Après exécution → store.CreateActionLog appelé avec les bons champs
+// Après exécution → journal.Append appelé avec les bons champs
 // ========================================================================
 
 func TestDispatcher_writes_action_log(t *testing.T) {

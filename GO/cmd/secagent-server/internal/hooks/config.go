@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 )
 
 // HooksConfig is the root of the hooks JSON configuration file.
@@ -61,6 +62,11 @@ func (c *HooksConfig) Validate() error {
 				return fmt.Errorf("hook[%d] (%s): relay_chain_contains %q is not a valid relay id", i, h.Event, h.Filter.RelayChainContains)
 			}
 		}
+		for j, a := range h.Actions {
+			if err := a.validateEnv(); err != nil {
+				return fmt.Errorf("hook[%d] (%s) action[%d]: %w", i, h.Event, j, err)
+			}
+		}
 	}
 	return nil
 }
@@ -85,6 +91,47 @@ type ActionDef struct {
 	Append         string            `json:"append,omitempty"`          // file
 	MaxRetries     int               `json:"max_retries,omitempty"`     // webhook, api
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"` // webhook, shell, api
+	// Env: variables handed to a shell command, on top of the allow-list (see shellEnvironment).
+	// Values are masked in the action journal. The server's own variables are never inherited.
+	Env map[string]string `json:"env,omitempty"` // shell
+}
+
+// maxActionEnv bounds the variables of one shell action.
+const maxActionEnv = 64
+
+var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// neverInheritedEnv are the secrets of the server itself: they are never handed to a hook, and a
+// configuration that declares one of them in env is refused (an env value must be a secret OWN to
+// the hook, never a copy of one of these).
+var neverInheritedEnv = []string{"ADMIN_TOKEN", "JWT_SECRET_KEY", "RSA_MASTER_KEY", "REPEATER_UPSTREAM_TOKEN", "RELAY_ENROLLMENT_TOKEN"}
+
+func (a ActionDef) validateEnv() error {
+	if len(a.Env) == 0 {
+		return nil
+	}
+	if a.Type != "shell" {
+		return fmt.Errorf("env is only valid for a shell action (type %q)", a.Type)
+	}
+	if len(a.Env) > maxActionEnv {
+		return fmt.Errorf("env: %d variables, maximum is %d", len(a.Env), maxActionEnv)
+	}
+	for name, value := range a.Env {
+		switch {
+		case !envNamePattern.MatchString(name):
+			return fmt.Errorf("env: invalid variable name %q", name)
+		case strings.HasPrefix(strings.ToUpper(name), "SECAGENT_"):
+			return fmt.Errorf("env: %q: the SECAGENT_ prefix is reserved to the event variables", name)
+		case strings.ContainsRune(value, 0):
+			return fmt.Errorf("env: %q: invalid value", name)
+		}
+		for _, banned := range neverInheritedEnv {
+			if strings.EqualFold(name, banned) {
+				return fmt.Errorf("env: %q is a secret of the server and can never be handed to a hook", name)
+			}
+		}
+	}
+	return nil
 }
 
 const defaultConfigPath = "/etc/secagent-server/hooks.json"

@@ -26,8 +26,11 @@ func deleteRelayByID(t *testing.T, id string) *httptest.ResponseRecorder {
 
 func seedLegacyRelay(t *testing.T, s *storage.Store, relayID, mode string) {
 	t.Helper()
-	if err := s.UpsertRelayNode(storage.RelayNode{ID: "uuid-" + relayID, RelayID: relayID, Mode: mode,
-		Status: "connected", CreatedAt: time.Now().Unix()}); err != nil {
+	n := storage.RelayNode{ID: "uuid-" + relayID, RelayID: relayID, Mode: mode, Status: "connected", CreatedAt: time.Now().Unix()}
+	if mode == "push" {
+		n.TokenSecret = "enc:sealed-for-" + relayID // the state only holds sealed push tokens
+	}
+	if err := s.UpsertRelayNode(n); err != nil {
 		t.Fatal(err)
 	}
 }

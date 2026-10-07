@@ -112,12 +112,40 @@ func setupRelayTestServer(t *testing.T) *httptest.Server {
 	JWTSecretsFunc = func() (string, string, time.Time) {
 		return relayTestSecret, "", time.Time{}
 	}
+	var handlers sync.WaitGroup
 	t.Cleanup(func() {
+		// Runs after the client connections are closed (registered later => run earlier).
+		awaitHandlersDone(t, &handlers)
 		JWTSecretsFunc = origFn
 		resetRelayState()
 	})
 
-	return httptest.NewServer(http.HandlerFunc(RelayHandler))
+	return httptest.NewServer(trackHandlers(&handlers, http.HandlerFunc(RelayHandler)))
+}
+
+// trackHandlers counts the in-flight handler goroutines. A hijacked WebSocket is NOT awaited by
+// httptest.Server.Close, so without this a handler (and its deferred cleanup: unregister, routing
+// clear, topology notification) of test N keeps running into test N+1 and fires the hooks and
+// global registries that test installed (flaky counts / "not registered" under load).
+func trackHandlers(wg *sync.WaitGroup, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wg.Add(1)
+		defer wg.Done()
+		h.ServeHTTP(w, r)
+	})
+}
+
+// awaitHandlersDone blocks (bounded) until every tracked handler, including its deferred cleanup,
+// has returned.
+func awaitHandlersDone(t *testing.T, wg *sync.WaitGroup) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Errorf("relay handler goroutine still running 10s after the test ended")
+	}
 }
 
 // dialRelay opens a WebSocket connection to the test server using the given JWT.

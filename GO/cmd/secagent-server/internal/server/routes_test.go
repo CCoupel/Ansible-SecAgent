@@ -2,6 +2,7 @@ package server
 
 import (
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -16,8 +17,6 @@ var (
 		"POST /api/upload/{hostname}",
 		"POST /api/fetch/{hostname}",
 		"GET /api/inventory",
-		"GET /api/async_status/{task_id}",
-		"POST /api/token/refresh",
 		"POST /api/admin/authorize",
 		"/ws/agent",
 		"/ws/relay",
@@ -79,7 +78,7 @@ func equalSets(t *testing.T, name string, got, want []string) {
 }
 
 func TestRoutes_ExposedSurfaceIsExactlyTheDeclaredOne(t *testing.T) {
-	n, err := Build(Config{JWTSecret: "s", AdminToken: "a", NATSURL: "nats://127.0.0.1:1", DatabaseURL: ":memory:"})
+	n, err := Build(Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,4 +87,20 @@ func TestRoutes_ExposedSurfaceIsExactlyTheDeclaredOne(t *testing.T) {
 	equalSets(t, "public API", api, wantAPIRoutes)
 	equalSets(t, "admin", admin, wantAdminRoutes)
 	equalSets(t, "WebSocket", wsRoutes, wantWSRoutes)
+}
+
+// #176: /api/async_status was removed (its in-memory cache was unbounded and racy, and async jobs
+// are polled through exec → async_status.py on the minion). It must never come back unnoticed.
+func TestRoutes_NoAsyncStatusEndpoint(t *testing.T) {
+	n, err := Build(Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+	api, admin, wsRoutes := n.Routes()
+	for _, r := range append(append(append([]string{}, api...), admin...), wsRoutes...) {
+		if strings.Contains(r, "async_status") {
+			t.Errorf("route %q must not exist (#176)", r)
+		}
+	}
 }

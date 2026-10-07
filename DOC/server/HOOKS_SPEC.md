@@ -26,7 +26,7 @@ Le système d'**event hooks** permet d'exécuter des actions automatiques lorsqu
   webhook │ shell │ file │ api
         │
         ▼
-  action_log (SQLite)
+  actions.log (JSON Lines, STATE_DIR/actions.log)
 ```
 
 ---
@@ -125,17 +125,31 @@ X-Signature:   sha256=<hex(HMAC-SHA256(secret, body))>   ← si secret défini
 | `cmd` | ✅ | — | Chemin absolu de la commande ou script |
 | `args` | ❌ | `[]` | Arguments (template supporté) |
 | `timeout_seconds` | ❌ | `30` | Timeout d'exécution |
+| `env` | ❌ | `{}` | Variables supplémentaires (nom → valeur, template supporté, 64 max) ; valeurs masquées dans le journal |
 
-**Variables d'environnement injectées** :
+**Environnement du processus (liste blanche, #185)** : le processus **n'hérite jamais** de l'environnement du serveur
+(`ADMIN_TOKEN`, `JWT_SECRET_KEY`, `RSA_MASTER_KEY`, `REPEATER_UPSTREAM_TOKEN`… ne lui sont pas visibles). Il reçoit uniquement :
+
+- `PATH` fixe (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`) ;
+- `HOME` (celui du serveur, sinon `/nonexistent`), `LANG`, `LC_*`, `TZ` (valeurs du serveur, si définies) ;
+- les variables déclarées dans `env` de l'action ;
+- les variables d'événement, qui l'emportent sur tout le reste :
 ```
 SECAGENT_EVENT=host.new
 SECAGENT_HOSTNAME=my-server-01
 SECAGENT_TIMESTAMP=2026-05-22T14:30:00Z
 SECAGENT_STATUS=disconnected
 SECAGENT_ENROLLED_AT=2026-05-22T14:30:00Z   ← host.new uniquement
+SECAGENT_RELAY_CHAIN / SECAGENT_RELAY_ORIGIN ← événement venu d'un relay enfant
 ```
 
-**Succès** : code de retour 0. Toute autre valeur → success=false, stderr capturé dans le log.
+Règles de validation de `env` (la configuration entière est refusée sinon) : réservé à `type: "shell"` ; noms
+`[A-Za-z_][A-Za-z0-9_]*` ; préfixe `SECAGENT_` réservé ; **`ADMIN_TOKEN`, `JWT_SECRET_KEY`, `RSA_MASTER_KEY`,
+`REPEATER_UPSTREAM_TOKEN` et `RELAY_ENROLLMENT_TOKEN` interdits** (insensible à la casse). Une valeur sensible dans `env`
+(ex. jeton d'une API tierce) doit être un secret **propre au hook**, jamais une copie d'un secret du serveur. Aucun réglage
+ne permet de désactiver la liste blanche.
+
+**Succès** : code de retour 0. Toute autre valeur → success=false ; seul le statut de sortie (`exit status N`) est journalisé : le stderr est ignoré (il peut citer des secrets, #161).
 
 ---
 
@@ -343,9 +357,9 @@ Variables inconnues (`{{foo}}`) sont laissées telles quelles.
 
 ---
 
-## 7. Log d'exécution (table `action_log`)
+## 7. Log d'exécution (journal `actions.log`)
 
-Toutes les exécutions sont tracées en base SQLite, consultables via CLI.
+Toutes les exécutions sont tracées dans un journal JSON Lines append-only (`actions.log`, défaut `STATE_DIR/actions.log`), consultable via CLI. **Les secrets (HMAC, tokens, en-têtes) sont masqués** dans le journal (ils n'apparaissent jamais, contrairement aux versions v1.0.0/v2.0.0 qui exposaient les secrets en clair dans `action_log.config_snapshot`). Rotation par taille (10 Mio × 5).
 
 | Colonne | Description |
 |---------|-------------|
@@ -399,6 +413,22 @@ EXECUTED_AT           EVENT       HOSTNAME       TYPE     SUCCESS  DURATION  ERR
 | Variable | Défaut | Description |
 |----------|--------|-------------|
 | `RELAY_HOOKS_CONFIG` | `/etc/secagent-server/hooks.json` | Chemin du fichier de configuration des hooks |
+| `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` | `64` | Nombre de workers (événements traités en parallèle) |
+| `RELAY_HOOKS_QUEUE_SIZE` | `10000` | Nombre d'événements en file, tous workers confondus (voir §9b) |
+
+### 9b. Traitement des événements : file, ordre, contre-pression (#183)
+
+Le dispatcher est un **pool de workers** (`RELAY_HOOKS_MAX_CONCURRENT_ACTIONS`, défaut 64), chacun avec sa file FIFO bornée.
+Un événement est confié au worker désigné par un **hachage du hostname** ; ce worker exécute les actions de l'événement **l'une après l'autre**.
+
+- **Contre-pression, pas de perte** : une action n'est plus abandonnée parce que « trop d'actions tournent » : elle attend dans la file.
+- **Ordre** : FIFO par hostname (`host.up` puis `host.down` d'un même hôte ne s'inversent jamais) ; **aucune garantie d'ordre entre hôtes**.
+- **Isolation** : un webhook lent ne bloque que son worker (borné par `timeout_seconds`, défaut 10 s, plus les retries) ; les hôtes des autres workers progressent. Les hôtes du même worker attendent.
+- **Dimensionnement** : la file contient `RELAY_HOOKS_QUEUE_SIZE` événements (défaut 10 000, réparti sur les workers : `ceil(taille/workers)` chacun, au moins 1) pour absorber plusieurs événements par hôte d'un parc de plus de 3 000 hôtes qui se reconnecte (bascule actif/passif, redémarrage). Mémoire : environ 200 octets + chaînes par événement, soit quelques Mo au défaut. Budget de débit : avec 64 workers et le pire timeout (10 s), 3 000 actions lentes se rattrapent en environ 470 s, toutes conservées.
+- **Au-delà de la file** : l'événement est rejeté et **compté** (`hooks_dropped_events`) ; un seul `[WARN] hooks: N event(s) …` agrégé par minute, et une entrée **`dropped`** agrégée dans le journal des actions (`action_type:"dropped"`, `event:"*"`, le message donne les comptes). Jamais une ligne par événement.
+- **Compteurs** (`GET /api/admin/status`, `secagent-server server status`) : `hooks_queue_depth` (+ `hooks_queue_capacity`), `hooks_inflight`, `hooks_dropped_events`, `hooks_dropped_actions` (actions perdues avec des événements en file lors d'un arrêt brutal : doit rester 0 en marche).
+- **Arrêt propre** (signal d'arrêt) : les serveurs HTTP s'arrêtent, puis la file est vidée pendant 10 s au plus ; le reste est compté et loggué (`[SHUTDOWN] hooks: N event(s) still pending`). **Arrêt brutal** (perte du verrou actif/passif, #163) : sortie immédiate, les événements en file sont perdus, comptés et loggués (`Dispatcher stopped: N queued event(s) not processed`). Le nouveau maître reçoit de toute façon les `host.up` des reconnexions.
+- **Budgets séparés avec #179** : les actions de hook ne consomment pas de slot de tâche `exec` ; une action `api` qui appellerait l'API exec du serveur serait soumise à #179 comme n'importe quel client.
 
 ---
 
@@ -408,7 +438,7 @@ EXECUTED_AT           EVENT       HOSTNAME       TYPE     SUCCESS  DURATION  ERR
 |-----------|-------------|
 | Fichier absent | Démarrage normal, log info `hooks config not found`, 0 hook actif |
 | JSON invalide au chargement | Log error, config précédente conservée (ou vide si premier chargement) |
-| Queue pleine (1000 jobs) | Drop event + log `WARN webhook queue full` |
+| Queue pleine (`RELAY_HOOKS_QUEUE_SIZE`, 10 000 par défaut) | Événement rejeté et compté (`hooks_dropped_events`), un `[WARN]` agrégé par minute + entrée `dropped` dans le journal (§9b) |
 | Type d'action inconnu | Log `WARN unknown action type`, action ignorée |
 | `shell` : commande introuvable | success=false, erreur dans action_log |
 | `file` : permissions insuffisantes | success=false, erreur OS dans action_log |

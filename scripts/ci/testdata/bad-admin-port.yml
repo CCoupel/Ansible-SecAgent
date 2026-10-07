@@ -1,0 +1,8 @@
+# Compose VOLONTAIREMENT non conforme (test negatif du controle CI) : doit faire echouer check_compose.py.
+services:
+  secagent-server:
+    image: ghcr.io/ccoupel/secagent-server:v0.0.0
+    environment:
+      ADMIN_ADDR: "0.0.0.0:7771"
+    ports:
+      - "7771:7771"

@@ -36,7 +36,21 @@ version_added: "1.0"
 options:
   secagent_server:
     description:
-      - Base URL of the Ansible-SecAgent FastAPI server (HTTP or HTTPS).
+      - Base URL of the Ansible-SecAgent server (HTTP or HTTPS), or a
+        comma-separated list of URLs (active/passive relay).
+      - Addresses are tried in order, the last good one first. The plugin
+        moves to the next address ONLY when the connection fails before the
+        request is sent (connect error, connect timeout, TLS failure). Any
+        failure after the request was sent (read timeout, protocol error,
+        HTTP 5xx) raises an error WITHOUT replaying the request elsewhere.
+      - Each entry must be http:// or https:// with a host and a valid port,
+        and must NOT contain credentials (user:pass@host is rejected).
+        Plain http:// outside loopback sends the token in clear text and
+        triggers a warning; use https:// (see SECURITY.md section 1).
+      - The "last good address" memory only lives inside one Ansible process.
+        Every fork starts again from the configured order, so a dead address
+        costs one connect timeout (secagent_connect_timeout) per fork. List
+        the most probable address first.
     default: http://localhost:7770
     ini:
       - section: secagent_connection
@@ -79,12 +93,27 @@ options:
       - name: RELAY_TIMEOUT
     vars:
       - name: ansible_secagent_timeout
+  secagent_connect_timeout:
+    description:
+      - Seconds to wait for the connection to each address to be established.
+    default: 5
+    type: integer
+    ini:
+      - section: secagent_connection
+        key: connect_timeout
+    env:
+      - name: RELAY_CONNECT_TIMEOUT
+    vars:
+      - name: ansible_secagent_connect_timeout
 """
 
 import base64
+import errno
 import json
 import os
+import stat
 import uuid
+from urllib.parse import urlsplit
 
 try:
     import httpx
@@ -97,8 +126,115 @@ from ansible.utils.display import Display
 
 display = Display()
 
+# Last address that answered, kept for the lifetime of the Ansible run
+# (module level: shared by every Connection instance of the process).
+# Limit: this memory is per process. Ansible forks workers, so each fork
+# starts again from the configured order (no file cache on purpose: it would
+# add an attack surface in a shared tmp). The cost of a dead address is one
+# connect timeout per fork, bounded by secagent_connect_timeout.
+_LAST_GOOD_URL = None
 
-class ConnectionPlugin(ConnectionBase):
+# Same default as the DOCUMENTATION above (never a world-writable directory like /tmp).
+DEFAULT_TOKEN_FILE = "/etc/ansible/secagent_plugin.jwt"
+
+_LOOPBACK_HOSTS = ("localhost", "::1")
+_WARNED_CLEARTEXT = set()
+
+
+def _is_loopback(host):
+    """Return True for localhost, 127.0.0.0/8 and ::1."""
+    host = (host or "").lower()
+    return host in _LOOPBACK_HOSTS or host.startswith("127.")
+
+
+def _validate_url(url, position):
+    """Validate one server URL; raise AnsibleError naming only its position.
+
+    The URL itself is never echoed: it could contain a secret.
+    """
+    def bad(cause):
+        return AnsibleError(f"secagent_server: invalid entry #{position}: {cause}")
+
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        parts.port  # noqa: B018 - raises ValueError on an invalid port
+    except ValueError:
+        raise bad("malformed URL or invalid port")
+    if parts.scheme not in ("http", "https"):
+        raise bad("scheme must be http or https")
+    if not host:
+        raise bad("missing host")
+    if "@" in parts.netloc:
+        raise bad("credentials (user:pass@host) are not allowed in the URL")
+
+
+def _parse_urls(raw):
+    """Split a comma-separated server option into validated base URLs.
+
+    Raises AnsibleError on any invalid entry (position and cause only).
+    """
+    urls = []
+    for pos, item in enumerate(str(raw).split(","), start=1):
+        item = item.strip()
+        if not item:
+            continue
+        _validate_url(item, pos)
+        urls.append(item.rstrip("/"))
+    return urls
+
+
+def _warn_if_cleartext(url):
+    """Warn once per address when http:// targets a non-loopback host."""
+    parts = urlsplit(url)
+    if parts.scheme == "http" and not _is_loopback(parts.hostname):
+        key = _host_port(url)
+        if key not in _WARNED_CLEARTEXT:
+            _WARNED_CLEARTEXT.add(key)
+            display.warning(
+                f"secagent_server {key} uses http://: the plugin token is sent in "
+                "clear text. WSS/HTTPS is required outside localhost (SECURITY.md section 1)."
+            )
+
+
+def _error_detail(resp):
+    """Extract a short, sanitized error field from a JSON server response.
+
+    Only a known field of a JSON object is used (never the raw body, which
+    could come from an intermediate proxy). Returns "" when none.
+    """
+    try:
+        data = resp.json()
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    for key in ("error", "detail", "message"):
+        val = data.get(key)
+        if isinstance(val, str) and val:
+            return "".join(c for c in val[:100] if c.isprintable())
+    return ""
+
+
+def _order_urls(urls):
+    """Return urls with the last good one first (if it is in the list)."""
+    last = _LAST_GOOD_URL
+    if last in urls:
+        return [last] + [u for u in urls if u != last]
+    return list(urls)
+
+
+def _host_port(url):
+    """Return 'host:port' of a URL, without scheme, userinfo or path."""
+    try:
+        u = httpx.URL(url)
+        port = u.port or (443 if u.scheme == "https" else 80)
+        return f"{u.host}:{port}"
+    except Exception:
+        return "<invalid-address>"
+
+
+class Connection(ConnectionBase):
     """Ansible-SecAgent connection plugin — routes commands through the relay server via HTTP/REST."""
 
     transport = "relay"
@@ -112,9 +248,11 @@ class ConnectionPlugin(ConnectionBase):
     def _get_opt(self, name, env_var, default=""):
         """Get option via get_option() with fallback to env var and default.
 
-        Ansible 2.19 may not register plugin config definitions for custom
-        plugins loaded via ansible.cfg paths, causing get_option() to raise
-        AnsibleUndefinedConfigEntry. This fallback ensures the plugin works.
+        get_option() resolves, in Ansible's own order, host variables
+        (ansible_secagent_*), environment (RELAY_*), ansible.cfg
+        ([secagent_connection]) then the default. The fallback only covers
+        a plugin instantiated outside Ansible (unit tests) and options whose
+        value is None.
         """
         try:
             val = self.get_option(name)
@@ -124,11 +262,26 @@ class ConnectionPlugin(ConnectionBase):
             pass
         return os.environ.get(env_var, default)
 
+    def _secagent_servers(self):
+        """Return the configured server base URLs (list, at least one)."""
+        urls = _parse_urls(
+            self._get_opt("secagent_server", "RELAY_SERVER_URL", "http://localhost:7770")
+        )
+        if not urls:
+            display.warning(
+                "secagent_server is empty: falling back to http://localhost:7770"
+            )
+            return ["http://localhost:7770"]
+        for url in urls:
+            _warn_if_cleartext(url)
+        return urls
+
     def _secagent_server(self):
-        return self._get_opt("secagent_server", "RELAY_SERVER_URL", "http://localhost:7770").rstrip("/")
+        """Return the first configured server URL (single-address compatibility)."""
+        return self._secagent_servers()[0]
 
     def _secagent_token_file(self):
-        return self._get_opt("secagent_token_file", "RELAY_TOKEN_FILE", "/tmp/secagent_token.jwt")
+        return self._get_opt("secagent_token_file", "RELAY_TOKEN_FILE", DEFAULT_TOKEN_FILE)
 
     def _secagent_ca_bundle(self):
         return self._get_opt("secagent_ca_bundle", "RELAY_CA_BUNDLE", "")
@@ -143,20 +296,68 @@ class ConnectionPlugin(ConnectionBase):
     def _timeout(self):
         return int(self._get_opt("secagent_timeout", "RELAY_TIMEOUT", "30"))
 
+    def _connect_timeout(self):
+        return int(self._get_opt("secagent_connect_timeout", "RELAY_CONNECT_TIMEOUT", "5"))
+
     def _hostname(self):
         return self._play_context.remote_addr
 
     def _load_jwt(self):
-        """Load JWT token from file."""
-        token_file = self._secagent_token_file()
-        if not token_file or not os.path.exists(token_file):
-            return ""
+        """Load the JWT from the token file.
 
-        try:
-            with open(token_file, "r") as f:
-                return f.read().strip()
-        except Exception:
+        Returns "" when the file is missing or unreadable. Raises
+        AnsibleConnectionFailure when the file is a symlink, not a regular file, is not owned by the current
+        user or is accessible by group/others (mode & 0o077): the message
+        names the path and the problem, never the token.
+        """
+        token_file = self._secagent_token_file()
+        if not token_file:
             return ""
+        try:
+            # O_NOFOLLOW: a symlink is refused, so the checks below apply to the
+            # path the operator configured and not to an attacker-chosen target.
+            # O_NONBLOCK: opening a FIFO must not block Ansible forever.
+            fd = os.open(
+                token_file,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            )
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise AnsibleConnectionFailure(
+                    f"JWT token file {token_file} is a symbolic link; refusing to follow it"
+                )
+            try:
+                special = not stat.S_ISREG(os.lstat(token_file).st_mode)
+            except OSError:
+                special = False
+            if special:  # e.g. a socket, which cannot be opened
+                raise AnsibleConnectionFailure(
+                    f"JWT token file {token_file} is not a regular file; refusing to use it"
+                )
+            return ""
+        try:
+            st = os.fstat(fd)  # on the opened file: no check/use race
+            if not stat.S_ISREG(st.st_mode):
+                raise AnsibleConnectionFailure(
+                    f"JWT token file {token_file} is not a regular file; refusing to use it"
+                )
+            if hasattr(os, "geteuid") and st.st_uid != os.geteuid():
+                raise AnsibleConnectionFailure(
+                    f"JWT token file {token_file} is not owned by the current user; refusing to use it"
+                )
+            if st.st_mode & 0o077:
+                raise AnsibleConnectionFailure(
+                    f"JWT token file {token_file} is accessible by group/others "
+                    f"(mode {st.st_mode & 0o777:04o}); run: chmod 600 {token_file}"
+                )
+            with os.fdopen(fd, "r") as f:
+                fd = -1
+                return f.read().strip()
+        except OSError:
+            return ""
+        finally:
+            if fd != -1:
+                os.close(fd)
 
     def _get_client(self):
         """Create httpx client with proper TLS configuration."""
@@ -165,7 +366,10 @@ class ConnectionPlugin(ConnectionBase):
         if ca_bundle:
             verify = ca_bundle
 
-        return httpx.Client(verify=verify, timeout=self._timeout())
+        return httpx.Client(
+            verify=verify,
+            timeout=httpx.Timeout(self._timeout(), connect=self._connect_timeout()),
+        )
 
     def _post_relay(self, endpoint: str, payload: dict) -> dict:
         """POST a task to relay server and parse result."""
@@ -174,24 +378,63 @@ class ConnectionPlugin(ConnectionBase):
                 "httpx library is required. Install with: pip install httpx"
             )
 
+        global _LAST_GOOD_URL
         hostname = self._hostname()
-        url = f"{self._secagent_server()}{endpoint}"
+        headers = self._headers()
+        servers = _order_urls(self._secagent_servers())
 
         display.vvv(f"RELAY: POST {endpoint} (host={hostname})", host=hostname)
 
+        resp = None
+        used = None
+        failed = []
         client = self._get_client()
         try:
-            resp = client.post(url, headers=self._headers(), json=payload)
-        except httpx.TimeoutException:
-            raise AnsibleConnectionFailure(
-                f"Relay timeout ({self._timeout()}s) waiting for host '{hostname}'"
-            )
-        except httpx.ConnectError as exc:
-            raise AnsibleConnectionFailure(
-                f"Cannot reach relay server at '{self._secagent_server()}': {exc}"
-            )
+            for base in servers:
+                addr = _host_port(base)
+                try:
+                    resp = client.post(f"{base}{endpoint}", headers=headers, json=payload)
+                except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                    # Failure BEFORE the request was sent (incl. TLS handshake):
+                    # safe to try the next address.
+                    display.vvv(
+                        f"RELAY: {addr} unreachable ({type(exc).__name__}), trying next",
+                        host=hostname,
+                    )
+                    failed.append(f"{addr} ({type(exc).__name__})")
+                    continue
+                except httpx.TimeoutException:
+                    # ReadTimeout / WriteTimeout / PoolTimeout: request may have been
+                    # sent — never replay on another address.
+                    raise AnsibleConnectionFailure(
+                        f"Relay timeout ({self._timeout()}s) waiting for host "
+                        f"'{hostname}' via {addr}; request not retried"
+                    )
+                except httpx.HTTPError as exc:
+                    # RemoteProtocolError, ReadError, ... after send: no replay.
+                    raise AnsibleConnectionFailure(
+                        f"Relay connection to {addr} failed after sending the request "
+                        f"({type(exc).__name__}); request not retried"
+                    )
+                used = base
+                display.vvv(f"RELAY: using {addr}", host=hostname)
+                break
         finally:
             client.close()
+
+        if resp is None:
+            raise AnsibleConnectionFailure(
+                "Cannot reach any relay server address: " + ", ".join(failed)
+            )
+
+        if resp.status_code >= 500:
+            raise AnsibleConnectionFailure(
+                f"Relay server error {resp.status_code} from {_host_port(used)}; "
+                "request not retried"
+            )
+
+        # A server that answers (non-5xx) is a good address; a 5xx is not remembered.
+        _LAST_GOOD_URL = used
 
         if resp.status_code == 404:
             raise AnsibleConnectionFailure(
@@ -199,14 +442,15 @@ class ConnectionPlugin(ConnectionBase):
             )
 
         if resp.status_code != 200:
+            detail = _error_detail(resp)
             raise AnsibleError(
-                f"Relay server error {resp.status_code}: {resp.text[:200]}"
+                f"Relay server error {resp.status_code}" + (f": {detail}" if detail else "")
             )
 
         try:
             result = resp.json()
         except ValueError:
-            raise AnsibleError(f"Relay server returned non-JSON response: {resp.text[:200]}")
+            raise AnsibleError("Relay server returned a non-JSON response")
 
         display.vvv(
             f"RELAY: result rc={result.get('rc', '?')}",
@@ -251,10 +495,13 @@ class ConnectionPlugin(ConnectionBase):
         super().exec_command(cmd, in_data=in_data, sudoable=sudoable)
 
         hostname = self._hostname()
-        payload = {
-            "cmd": cmd,
-            "stdin": (in_data or b"").decode("utf-8", errors="replace"),
-        }
+        payload = {"cmd": cmd}
+        if in_data:
+            # The server contract (handlers/exec.go) expects stdin base64-encoded;
+            # raw bytes (pipelined module, binary data) must survive untouched.
+            if isinstance(in_data, str):
+                in_data = in_data.encode("utf-8")
+            payload["stdin"] = base64.b64encode(in_data).decode("ascii")
 
         result = self._post_relay(f"/api/exec/{hostname}", payload)
 
@@ -325,5 +572,7 @@ class ConnectionPlugin(ConnectionBase):
         self._connected = False
 
 
-# Ansible expects a class named "Connection", not "ConnectionPlugin"
-Connection = ConnectionPlugin
+# Backward-compatible alias. The class MUST be named "Connection": Ansible derives the
+# plugin type from the class name (AnsiblePlugin.plugin_type = name.lower()), so any other
+# name ("connectionplugin") makes option lookups (hostvars, ansible.cfg, env) fail.
+ConnectionPlugin = Connection

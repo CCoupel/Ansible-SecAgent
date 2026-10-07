@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -20,8 +22,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 
-	"secagent-server/cmd/secagent-server/internal/crypto"
 	"secagent-server/cmd/secagent-server/internal/hooks"
+	"secagent-server/cmd/secagent-server/internal/state"
 	"secagent-server/cmd/secagent-server/internal/storage"
 )
 
@@ -54,12 +56,6 @@ type AdminAuthorizeRequest struct {
 	Hostname     string `json:"hostname"`
 	PublicKeyPEM string `json:"public_key_pem"`
 	ApprovedBy   string `json:"approved_by"`
-}
-
-// TokenRefreshRequest refreshes an agent JWT
-type TokenRefreshRequest struct {
-	Hostname           string `json:"hostname"`
-	ChallengeEncrypted string `json:"challenge_encrypted"`
 }
 
 // ServerState holds global server state (RSA keypair + JWT secrets).
@@ -109,24 +105,25 @@ func SetRegisterStore(s *storage.Store) {
 }
 
 func init() {
-	// Minimal init: load admin token from env.
-	// RSA + JWT secrets are loaded from DB via InitServerState().
-	adminToken := os.Getenv("ADMIN_TOKEN")
-	if adminToken == "" {
-		log.Fatal("ADMIN_TOKEN environment variable not set")
-	}
-	secret := os.Getenv("JWT_SECRET_KEY")
-	if secret == "" {
-		log.Fatal("JWT_SECRET_KEY environment variable not set")
-	}
-
-	// Bootstrap server state with env-provided secret (overridden by DB in InitServerState).
-	// This allows tests that don't call InitServerState to still work.
+	// Bootstrap server state from the environment. Nothing is required here: local commands
+	// (`state init`, `--help`, ...) import this package and must not need the server secrets.
+	// server.Build / ConfigureServer install the validated values (server.ConfigFromEnv refuses a
+	// missing JWT_SECRET_KEY or ADMIN_TOKEN), and an empty admin token never authenticates
+	// (adminTokenMatches). RSA + JWT secrets are loaded from DB via InitServerState().
 	server = &ServerState{
-		JWTSecret:  secret,
-		AdminToken: adminToken,
+		JWTSecret:  os.Getenv("JWT_SECRET_KEY"),
+		AdminToken: os.Getenv("ADMIN_TOKEN"),
 		JWTttl:     time.Hour,
 	}
+}
+
+// adminTokenMatches reports whether tok is the configured admin token. An empty configured token
+// matches nothing (fail closed: a server that never received its ADMIN_TOKEN has no admin).
+func adminTokenMatches(tok string) bool {
+	server.mu.RLock()
+	want := server.AdminToken
+	server.mu.RUnlock()
+	return want != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(want)) == 1
 }
 
 // ConfigureServer sets the bootstrap JWT secret and the admin token from the server Config
@@ -147,43 +144,49 @@ func rsaMasterKey() (string, bool) {
 	return v, v != ""
 }
 
-// persistRSAKey encrypts privPEM with AES-256-GCM (when masterKey is set) and stores it.
-func persistRSAKey(ctx context.Context, store *storage.Store, configKey, privPEM string) error {
-	masterKey, hasMaster := rsaMasterKey()
-	var toStore string
-	if hasMaster {
-		encrypted, err := crypto.EncryptAESGCM(privPEM, masterKey)
+// persistConfigSecret stores a server_config secret (RSA private key, JWT secret): sealed with
+// AES-256-GCM under RSA_MASTER_KEY and bound to its field name (AAD) when a master key is set; in
+// clear only without master key (dev/test: the state engine accepts that only in its explicit
+// insecure test mode).
+func persistConfigSecret(ctx context.Context, store *storage.Store, configKey, plain string) error {
+	toStore := plain
+	if masterKey, hasMaster := rsaMasterKey(); hasMaster {
+		sealed, err := state.SealSecret(plain, masterKey, state.ConfigAAD(configKey))
 		if err != nil {
 			return fmt.Errorf("encrypt %s: %w", configKey, err)
 		}
-		toStore = "enc:" + encrypted // prefix to distinguish encrypted from plaintext
-	} else {
-		toStore = privPEM // unencrypted — dev/test mode
+		toStore = sealed
 	}
 	return store.ConfigSet(ctx, configKey, toStore)
 }
 
-// loadRSAKey retrieves and decrypts (if needed) a stored RSA private key PEM.
-func loadRSAKey(ctx context.Context, store *storage.Store, configKey string) (string, error) {
+// loadConfigSecret retrieves and decrypts a server_config secret ("" when absent).
+func loadConfigSecret(ctx context.Context, store *storage.Store, configKey string) (string, error) {
 	stored, err := store.ConfigGet(ctx, configKey)
 	if err != nil || stored == "" {
 		return stored, err
 	}
-
-	if len(stored) > 4 && stored[:4] == "enc:" {
+	if strings.HasPrefix(stored, state.EncPrefix) {
 		masterKey, hasMaster := rsaMasterKey()
 		if !hasMaster {
 			return "", fmt.Errorf("RSA_MASTER_KEY required to decrypt %s", configKey)
 		}
-		plaintext, err := crypto.DecryptAESGCM(stored[4:], masterKey)
+		plaintext, err := state.OpenSecret(stored, masterKey, state.ConfigAAD(configKey))
 		if err != nil {
 			return "", fmt.Errorf("decrypt %s: %w", configKey, err)
 		}
 		return plaintext, nil
 	}
+	return stored, nil // clear: dev/test mode
+}
 
-	// Unencrypted (dev/test mode or legacy)
-	return stored, nil
+// persistRSAKey / loadRSAKey: the RSA private keys of server_config.
+func persistRSAKey(ctx context.Context, store *storage.Store, configKey, privPEM string) error {
+	return persistConfigSecret(ctx, store, configKey, privPEM)
+}
+
+func loadRSAKey(ctx context.Context, store *storage.Store, configKey string) (string, error) {
+	return loadConfigSecret(ctx, store, configKey)
 }
 
 // InitServerState loads (or generates) RSA keypair and JWT secret from DB.
@@ -201,14 +204,14 @@ func InitServerState(ctx context.Context, store *storage.Store) error {
 	}
 
 	// --- JWT secret ---
-	jwtCurrent, err := store.ConfigGet(ctx, "jwt_secret_current")
+	jwtCurrent, err := loadConfigSecret(ctx, store, "jwt_secret_current")
 	if err != nil {
 		return fmt.Errorf("ConfigGet jwt_secret_current: %w", err)
 	}
 	if jwtCurrent == "" {
 		// First boot: persist the env-provided secret
 		jwtCurrent = server.JWTSecret
-		if err := store.ConfigSet(ctx, "jwt_secret_current", jwtCurrent); err != nil {
+		if err := persistConfigSecret(ctx, store, "jwt_secret_current", jwtCurrent); err != nil {
 			return fmt.Errorf("ConfigSet jwt_secret_current: %w", err)
 		}
 		log.Println("[INIT] JWT secret persisted to DB")
@@ -218,7 +221,7 @@ func InitServerState(ctx context.Context, store *storage.Store) error {
 	}
 
 	// Load previous JWT secret (may be empty)
-	jwtPrev, err := store.ConfigGet(ctx, "jwt_secret_previous")
+	jwtPrev, err := loadConfigSecret(ctx, store, "jwt_secret_previous")
 	if err != nil {
 		return fmt.Errorf("ConfigGet jwt_secret_previous: %w", err)
 	}
@@ -464,10 +467,13 @@ func RegisterAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// -----------------------------------------------------------------------
-	// Legacy flow: authorized_keys lookup (backward-compatible)
-	// -----------------------------------------------------------------------
-	registerAgentLegacy(w, ctx, req)
+	// No enrollment token: refused (#192c). The historical "pre-authorized key" flow answered with a
+	// JWT and a NEW JTI without any proof that the caller holds the private key and without looking at
+	// the revocation: a revoked agent re-registered itself, and anybody knowing a hostname and its
+	// (public) key replaced the JTI of an enrolled agent. Every enrollment now goes through an
+	// enrollment token AND the nonce challenge (registerAgentWithToken).
+	log.Printf("[SECURITY WARNING] enrollment refused: no enrollment token (hostname=%q)", req.Hostname)
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": "enrollment_token_required"})
 }
 
 // registerAgentWithToken handles enrollment-token based registration (SECURITY.md §3).
@@ -483,6 +489,17 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 			status = http.StatusInternalServerError
 		}
 		writeJSON(w, status, map[string]string{"error": errCode})
+		return
+	}
+
+	// A revoked host never gets a challenge nor a token (#193): refused before anything is consumed,
+	// whatever the token (a reusable one included) until an admin lifts the revocation.
+	if revoked, err := registerStore.IsAgentRevoked(ctx, req.Hostname); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		return
+	} else if revoked {
+		log.Printf("[SECURITY WARNING] enrollment refused: hostname=%q is revoked", req.Hostname)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "agent_revoked"})
 		return
 	}
 
@@ -524,7 +541,7 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 		// Expected payload: nonce (16 bytes) + token (plain text)
 		expected := append(pendingNonce, []byte(pendingToken)...)
 		if string(decrypted) != string(expected) {
-			log.Printf("RegisterAgent challenge mismatch: hostname=%s", req.Hostname)
+			log.Printf("RegisterAgent challenge mismatch: hostname=%q", req.Hostname)
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "challenge_response_mismatch"})
 			return
 		}
@@ -553,22 +570,21 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 		}
 
 		// Persist: consume token (increment use_count), store authorized_key, register agent
-		if err := registerStore.ConsumeEnrollmentToken(ctx, tok.ID); err != nil {
-			log.Printf("RegisterAgent ConsumeEnrollmentToken: %v", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
-			return
-		}
-		if err := registerStore.AddAuthorizedKey(ctx, req.Hostname, req.PublicKeyPEM, "enrollment_token:"+tok.ID); err != nil {
-			log.Printf("RegisterAgent AddAuthorizedKey: %v", err)
-			// Non-fatal: continue (key may already exist from prior enrollment)
-		}
-		if _, err := registerStore.RegisterAgent(ctx, req.Hostname, req.PublicKeyPEM, jti); err != nil {
-			log.Printf("RegisterAgent persist: %v", err)
+		// ONE mutation (#160): the token is consumed, the key authorized and the agent registered,
+		// or nothing happens (a failure between the steps can not leave a consumed token without
+		// agent, nor an agent without key).
+		if err := registerStore.EnrollAgent(ctx, tok.ID, req.Hostname, req.PublicKeyPEM, jti, "enrollment_token:"+tok.ID); err != nil {
+			if errors.Is(err, storage.ErrAgentRevoked) { // revoked between the two phases: token not consumed
+				log.Printf("[SECURITY WARNING] enrollment refused: hostname=%q is revoked", req.Hostname)
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "agent_revoked"})
+				return
+			}
+			log.Printf("RegisterAgent EnrollAgent: %v", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 			return
 		}
 
-		log.Printf("RegisterAgent enrollment complete: hostname=%s token_id=%s", req.Hostname, tok.ID)
+		log.Printf("RegisterAgent enrollment complete: hostname=%q token_id=%q", req.Hostname, tok.ID)
 
 		// Dispatch host.new event (async, nil-safe during tests)
 		if hooks.GlobalDispatcher != nil {
@@ -603,70 +619,11 @@ func registerAgentWithToken(w http.ResponseWriter, r *http.Request, ctx context.
 	// Store nonce for phase-2 verification
 	storePendingNonce(req.Hostname, nonce, req.EnrollmentToken)
 
-	log.Printf("RegisterAgent challenge issued: hostname=%s token_id=%s", req.Hostname, tok.ID)
+	log.Printf("RegisterAgent challenge issued: hostname=%q token_id=%q", req.Hostname, tok.ID)
 
 	writeJSON(w, http.StatusOK, ChallengeResponse{
 		Challenge:       challengeEncrypted,
 		ServerPublicKey: pubPEM,
-	})
-}
-
-// registerAgentLegacy handles the legacy authorized_keys enrollment flow (backward-compat).
-func registerAgentLegacy(w http.ResponseWriter, ctx context.Context, req RegisterRequest) {
-	authKey, err := registerStore.GetAuthorizedKey(ctx, req.Hostname)
-	if err != nil {
-		log.Printf("RegisterAgent GetAuthorizedKey: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
-		return
-	}
-	if authKey == nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized_hostname"})
-		return
-	}
-
-	if strings.TrimSpace(authKey.PublicKeyPEM) != req.PublicKeyPEM {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "public_key_mismatch"})
-		return
-	}
-
-	server.mu.RLock()
-	jwtSecret := server.JWTSecret
-	pubPEM := server.PublicPEM
-	jwtTTL := server.JWTttl
-	server.mu.RUnlock()
-
-	jti := uuid.New().String()
-	now := time.Now()
-	claims := jwt.MapClaims{
-		"sub":  req.Hostname,
-		"role": "agent",
-		"jti":  jti,
-		"iat":  now.Unix(),
-		"exp":  now.Add(jwtTTL).Unix(),
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	rawJWT, err := token.SignedString([]byte(jwtSecret))
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "jwt_generation_failed"})
-		return
-	}
-
-	tokenEncrypted, err := encryptWithPublicKey(rawJWT, req.PublicKeyPEM)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_public_key"})
-		return
-	}
-
-	if _, err := registerStore.RegisterAgent(ctx, req.Hostname, req.PublicKeyPEM, jti); err != nil {
-		log.Printf("RegisterAgent persist: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, RegisterResponse{
-		TokenEncrypted:     tokenEncrypted,
-		ServerPublicKeyPEM: pubPEM,
 	})
 }
 
@@ -686,7 +643,7 @@ func AdminAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tok := authHeader[7:]
-	if tok != server.AdminToken {
+	if !adminTokenMatches(tok) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_admin_token"})
 		return
 	}
@@ -719,102 +676,6 @@ func AdminAuthorize(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"hostname": req.Hostname,
 		"status":   "authorized",
-	})
-}
-
-// TokenRefresh refreshes an agent JWT
-// POST /api/token/refresh
-func TokenRefresh(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	defer func() { _ = r.Body.Close() }()
-
-	var req TokenRefreshRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
-		return
-	}
-
-	server.mu.RLock()
-	privKey := server.PrivateKey
-	pubPEM := server.PublicPEM
-	jwtSecret := server.JWTSecret
-	jwtTTL := server.JWTttl
-	server.mu.RUnlock()
-
-	if privKey == nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_key_not_initialized"})
-		return
-	}
-
-	// Step 1: Decrypt challenge with server private key
-	ciphertextBytes, err := base64.StdEncoding.DecodeString(req.ChallengeEncrypted)
-	if err != nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "challenge_decryption_failed"})
-		return
-	}
-
-	_, err = rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, ciphertextBytes, nil)
-	if err != nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "challenge_decryption_failed"})
-		return
-	}
-
-	// Step 2: Issue new JWT with current secret
-	newJTI := uuid.New().String()
-	now := time.Now()
-	claims := jwt.MapClaims{
-		"sub":  req.Hostname,
-		"role": "agent",
-		"jti":  newJTI,
-		"iat":  now.Unix(),
-		"exp":  now.Add(jwtTTL).Unix(),
-	}
-
-	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	rawJWT, err := jwtToken.SignedString([]byte(jwtSecret))
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "jwt_generation_failed"})
-		return
-	}
-
-	// Step 3: Lookup agent public key from DB to encrypt the new JWT
-	if registerStore == nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "store_not_initialized"})
-		return
-	}
-
-	agent, err := registerStore.GetAgent(r.Context(), req.Hostname)
-	if err != nil {
-		log.Printf("TokenRefresh GetAgent: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
-		return
-	}
-	if agent == nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "agent_not_found"})
-		return
-	}
-
-	// Step 4: Encrypt new JWT with agent's RSA public key (RSA-OAEP / SHA-256)
-	tokenEncrypted, err := encryptWithPublicKey(rawJWT, agent.PublicKeyPEM)
-	if err != nil {
-		log.Printf("TokenRefresh encrypt: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "encryption_failed"})
-		return
-	}
-
-	// Step 5: Update token JTI in DB
-	if _, err := registerStore.UpdateTokenJTI(r.Context(), req.Hostname, newJTI); err != nil {
-		log.Printf("TokenRefresh UpdateTokenJTI: %v", err)
-		// Non-fatal: token was issued, log and continue
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{
-		"token_encrypted":       tokenEncrypted,
-		"server_public_key_pem": pubPEM,
 	})
 }
 

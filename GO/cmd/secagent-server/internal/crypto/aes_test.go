@@ -92,3 +92,54 @@ func TestDeriveKeyLength(t *testing.T) {
 		t.Errorf("expected 32-byte key (AES-256), got %d", len(key))
 	}
 }
+
+func TestWithAAD_RoundTripAndBinding(t *testing.T) {
+	enc, err := EncryptWithAAD("secret", "mk", []byte("jwt_secret_current"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := DecryptWithAAD(enc, "mk", []byte("jwt_secret_current")); err != nil || got != "secret" {
+		t.Fatalf("round trip: %q %v", got, err)
+	}
+	for _, aad := range [][]byte{[]byte("jwt_secret_previous"), nil, {}, []byte("jwt_secret_currentX")} {
+		if _, err := DecryptWithAAD(enc, "mk", aad); err == nil {
+			t.Errorf("a ciphertext moved to AAD %q must be rejected", aad)
+		}
+	}
+	if _, err := DecryptWithAAD(enc, "other-key", []byte("jwt_secret_current")); err == nil {
+		t.Error("wrong key must be rejected")
+	}
+	if _, err := DecryptWithAAD("!!!", "mk", nil); err == nil {
+		t.Error("bad base64 must be rejected")
+	}
+	if _, err := DecryptWithAAD("AAAA", "mk", nil); err == nil {
+		t.Error("short ciphertext must be rejected")
+	}
+}
+
+// The legacy functions keep their behaviour (AAD nil): the SQLite store still uses them.
+func TestAAD_DoesNotChangeLegacyFunctions(t *testing.T) {
+	legacy, _ := EncryptAESGCM("v", "mk")
+	if got, err := DecryptWithAAD(legacy, "mk", nil); err != nil || got != "v" {
+		t.Fatalf("legacy ciphertext must open with nil AAD: %q %v", got, err)
+	}
+	withAAD, _ := EncryptWithAAD("v", "mk", []byte("f"))
+	if _, err := DecryptAESGCM(withAAD, "mk"); err == nil {
+		t.Fatal("legacy decrypt must not open an AAD-bound ciphertext")
+	}
+}
+
+func TestDeriveStateHMACKey(t *testing.T) {
+	a, err := DeriveStateHMACKey("mk")
+	if err != nil || len(a) != 32 {
+		t.Fatalf("%v %d", err, len(a))
+	}
+	b, _ := DeriveStateHMACKey("mk")
+	c, _ := DeriveStateHMACKey("other")
+	if string(a) != string(b) || string(a) == string(c) {
+		t.Error("derivation must be deterministic and key dependent")
+	}
+	if string(a) == string(deriveKey("mk")) {
+		t.Error("HMAC key must be a distinct derivation domain from the AES key")
+	}
+}

@@ -19,7 +19,7 @@ func runStatus(t *testing.T, payload map[string]interface{}) string {
 
 func TestServerStatus_ShowsRefusedPermanentLinkAndWarning(t *testing.T) {
 	out := runStatus(t, map[string]interface{}{
-		"nats": "ok", "db": "ok", "ws_connections": 2, "uptime": "10s",
+		"db": "ok", "ws_connections": 2, "uptime": "10s",
 		"links": map[string]interface{}{
 			"degraded": true,
 			"upstream": map[string]interface{}{"mode": "pull", "peer": "central", "state": "refused_permanent",
@@ -37,7 +37,7 @@ func TestServerStatus_ShowsRefusedPermanentLinkAndWarning(t *testing.T) {
 }
 
 func TestServerStatus_NoLinksSectionWithoutLinks(t *testing.T) {
-	out := runStatus(t, map[string]interface{}{"nats": "ok", "db": "ok", "ws_connections": 0, "uptime": "1s"})
+	out := runStatus(t, map[string]interface{}{"db": "ok", "ws_connections": 0, "uptime": "1s"})
 	if strings.Contains(out, "LINK") || strings.Contains(out, "WARNING") {
 		t.Errorf("unexpected links section:\n%s", out)
 	}
@@ -45,7 +45,7 @@ func TestServerStatus_NoLinksSectionWithoutLinks(t *testing.T) {
 
 func TestServerStatus_HealthyLinksNoWarning(t *testing.T) {
 	out := runStatus(t, map[string]interface{}{
-		"nats": "ok", "db": "ok", "ws_connections": 0, "uptime": "1s",
+		"db": "ok", "ws_connections": 0, "uptime": "1s",
 		"links": map[string]interface{}{"degraded": false,
 			"upstream": map[string]interface{}{"mode": "push", "state": "connected"}},
 	})

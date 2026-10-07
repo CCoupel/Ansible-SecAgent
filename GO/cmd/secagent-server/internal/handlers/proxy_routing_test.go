@@ -62,13 +62,13 @@ func setupProxyTest(t *testing.T) (*storage.Store, func(r *http.Request) *http.R
 func seedProxyRelay(t *testing.T, s *storage.Store, relayID, url string, hosts []string) {
 	t.Helper()
 	node := storage.RelayNode{
-		ID:        "uuid-" + relayID,
-		RelayID:   relayID,
-		URL:       url,
-		TokenHash: "relay-token",
-		Mode:      "push",
-		Status:    "connected",
-		CreatedAt: time.Now().Unix(),
+		ID:          "uuid-" + relayID,
+		RelayID:     relayID,
+		URLs:        splitURLs(url),
+		TokenSecret: "enc:relay-token", // the state only holds sealed push tokens
+		Mode:        "push",
+		Status:      "connected",
+		CreatedAt:   time.Now().Unix(),
 	}
 	if err := s.UpsertRelayNode(node); err != nil {
 		t.Fatalf("seedProxyRelay: UpsertRelayNode: %v", err)
@@ -161,7 +161,7 @@ func TestExecCommand_ProxyRouting_RelayOffline(t *testing.T) {
 	// Register relay with no URL
 	node := storage.RelayNode{
 		ID: "uuid-nourl", RelayID: "no-url-relay",
-		URL: "", Mode: "pull", Status: "disconnected", CreatedAt: time.Now().Unix(),
+		Mode: "pull", Status: "disconnected", CreatedAt: time.Now().Unix(),
 	}
 	_ = s.UpsertRelayNode(node)
 	_ = s.BulkUpsertRelayRouting("no-url-relay", []string{"host-no-relay"})
@@ -318,7 +318,7 @@ func TestGetInventory_LocalAgentTakesPrecedenceOverRelay(t *testing.T) {
 	// Seed relay routing for a host that's "also" local
 	_ = s.UpsertRelayNode(storage.RelayNode{
 		ID: "uuid-dup", RelayID: "dmz-dup",
-		URL: "http://dmz-dup:7770", Mode: "push", Status: "connected", CreatedAt: time.Now().Unix(),
+		URLs: []string{"wss://dmz-dup:7770"}, Mode: "push", Status: "connected", CreatedAt: time.Now().Unix(),
 	})
 	_ = s.BulkUpsertRelayRouting("dmz-dup", []string{"dup-host"})
 
@@ -387,4 +387,12 @@ func TestGetInventory_NoProxyRouter_LocalOnly(t *testing.T) {
 	if resp.All.Hosts == nil {
 		t.Error("expected non-nil hosts array")
 	}
+}
+
+// splitURLs turns a comma list ("" = none) into the RelayNode.URLs form.
+func splitURLs(u string) []string {
+	if u == "" {
+		return nil
+	}
+	return strings.Split(u, ",")
 }

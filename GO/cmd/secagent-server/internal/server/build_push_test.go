@@ -1,13 +1,17 @@
 package server
 
 import (
+	"errors"
 	"net"
-	"path/filepath"
+	"os"
+	"secagent-server/cmd/secagent-server/internal/repeater"
+	"secagent-server/cmd/secagent-server/internal/tlsca"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/handlers"
+	"secagent-server/cmd/secagent-server/internal/state"
 	"secagent-server/cmd/secagent-server/internal/storage"
 )
 
@@ -45,8 +49,8 @@ func (c *countingListener) wssURL() string { return "wss://" + c.ln.Addr().Strin
 // seedDB pre-populates a database file with relay rows and returns its URL.
 func seedDB(t *testing.T, seed func(st *storage.Store)) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "relay.db")
-	st, err := storage.NewStore(path)
+	path := testStateDir(t)
+	st, err := openSeedStore(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +64,9 @@ func seedDB(t *testing.T, seed func(st *storage.Store)) string {
 func buildWith(t *testing.T, dbPath string, tune func(*Config)) *Node {
 	t.Helper()
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
-	cfg := Config{JWTSecret: "s", AdminToken: "a", NATSURL: "nats://127.0.0.1:1", DatabaseURL: dbPath}
+	repeater.UnsafeAllowInternalDialTargets(true) // the stored push targets are loopback test servers
+	t.Cleanup(func() { repeater.UnsafeAllowInternalDialTargets(false) })
+	cfg := Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: dbPath, InsecureTestState: true, WriteGuard: allowWrites}
 	if tune != nil {
 		tune(&cfg)
 	}
@@ -75,7 +81,7 @@ func buildWith(t *testing.T, dbPath string, tune func(*Config)) *Node {
 func TestBuild_StartsADialerForEachStoredPushRelay(t *testing.T) {
 	t.Setenv("RSA_MASTER_KEY", "build-push-master-key")
 	child := newCountingListener(t)
-	sealed, err := handlers.SealPushToken("child-signed-jwt")
+	sealed, err := handlers.SealPushToken("dmz-push", "child-signed-jwt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,26 +104,60 @@ func TestBuild_StartsADialerForEachStoredPushRelay(t *testing.T) {
 	}
 }
 
-func TestBuild_SkipsUnreadablePushRowsWithoutBlockingStartup(t *testing.T) {
-	// Rows sealed with a master key that is no longer available, and rows with a non-wss URL:
-	// ignored with a warning, the node still starts.
-	t.Setenv("RSA_MASTER_KEY", "key-at-registration-time")
-	sealed, err := handlers.SealPushToken("child-signed-jwt")
+// A push row with an insecure URL is skipped with a warning and the node still starts.
+func TestBuild_SkipsInsecurePushRowsWithoutBlockingStartup(t *testing.T) {
+	t.Setenv("RSA_MASTER_KEY", "build-push-master-key")
+	sealed, err := handlers.SealPushToken("dmz-insecure", "child-signed-jwt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	child := newCountingListener(t)
 	db := seedDB(t, func(st *storage.Store) {
-		seedRelay(t, st, "dmz-sealed", "push", child.wssURL(), sealed)
-		seedRelay(t, st, "dmz-insecure", "push", "ws://insecure:7772", "plain-token")
+		seedRelay(t, st, "dmz-insecure", "push", "ws://insecure:7772", sealed)
 	})
-	t.Setenv("RSA_MASTER_KEY", "") // the key is gone at start-up: the sealed row cannot be opened
 	n := buildWith(t, db, nil)
 	if got := n.dialers.Statuses(); len(got) != 0 {
-		t.Errorf("no dialer may start for an unreadable / insecure row: %+v", got)
+		t.Errorf("no dialer may start for an insecure row: %+v", got)
+	}
+}
+
+// A state sealed under another master key is refused as a whole (fail closed): the node does not
+// start with secrets it can not authenticate.
+func TestBuild_RefusesAStateSealedUnderAnotherMasterKey(t *testing.T) {
+	t.Setenv("RSA_MASTER_KEY", "key-at-registration-time")
+	child := newCountingListener(t)
+	sealed, _ := handlers.SealPushToken("dmz-sealed", "child-signed-jwt")
+	db := seedDB(t, func(st *storage.Store) {
+		seedRelay(t, st, "dmz-sealed", "push", child.wssURL(), sealed)
+	})
+	t.Setenv("RSA_MASTER_KEY", "another-key")
+	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
+	if _, err := Build(Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: db, WriteGuard: allowWrites}); err == nil {
+		t.Fatal("a state that does not open with the configured master key must refuse to start")
 	}
 	time.Sleep(100 * time.Millisecond)
 	if child.attempts.Load() != 0 {
-		t.Errorf("the child must not be dialed with an unreadable token (%d attempts)", child.attempts.Load())
+		t.Errorf("the child must not be dialed (%d attempts)", child.attempts.Load())
+	}
+}
+
+// openSeedStore opens the test state of dir the way Build will (same master key, if any).
+func openSeedStore(dir string) (*storage.Store, error) {
+	return storage.Open(state.Options{Dir: dir, MasterKey: os.Getenv("RSA_MASTER_KEY"), InsecureTestMode: os.Getenv("RSA_MASTER_KEY") == "",
+		BeforeWrite: func() error { return nil }})
+}
+
+// Build refuses an unusable CA file (fail closed): no node is started with the system roots instead.
+func TestBuild_RefusesAnUnusableCAFile(t *testing.T) {
+	bad := t.TempDir() + "/ca.pem"
+	if err := os.WriteFile(bad, []byte("garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
+	cfg := Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: seedDB(t, func(*storage.Store) {}), InsecureTestState: true, WriteGuard: allowWrites, CAFile: bad}
+	if n, err := Build(cfg); err == nil {
+		n.Close()
+		t.Fatal("Build must refuse an unusable CA file")
+	} else if !errors.Is(err, tlsca.ErrInvalidCAFile) {
+		t.Fatalf("err = %v", err)
 	}
 }

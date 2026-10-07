@@ -1,0 +1,10 @@
+# Surcharge pour un relay ENFANT (lien pull/push vers un relay parent) :
+#   docker compose -f docker-compose.server.yml -f docker-compose.child.yml up -d
+# Les valeurs (URLs, token, CA) restent dans prod.env / .env, hors artefact. Les listes d'adresses
+# sont separees par des virgules (le parent peut etre actif/passif sur plusieurs hotes).
+services:
+  secagent-server:
+    environment:
+      REPEATER_ID: ${REPEATER_ID:?REPEATER_ID est obligatoire pour un relay enfant}
+      REPEATER_UPSTREAM_URL: ${REPEATER_UPSTREAM_URL:?REPEATER_UPSTREAM_URL (liste d'adresses du parent) est obligatoire}
+      # REPEATER_UPSTREAM_TOKEN : secret, dans prod.env (env_file).

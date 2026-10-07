@@ -2,9 +2,12 @@ package storage
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"secagent-server/cmd/secagent-server/internal/state"
 )
 
 func sampleParentToken(id, jti string) RelayParentToken {
@@ -71,24 +74,15 @@ func TestRelayParentToken_RevokeBlacklistsJTIAtomically(t *testing.T) {
 	}
 }
 
-// The table must hold metadata only: a JWT-looking value can never end up in it.
-func TestRelayParentToken_SchemaHasNoTokenColumn(t *testing.T) {
-	s := newRelayTestStore(t)
-	rows, err := s.db.Query("PRAGMA table_info(relay_parent_tokens)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notnull, pk int
-		var dflt any
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(strings.ToLower(name), "token") || strings.Contains(strings.ToLower(name), "jwt") {
-			t.Errorf("column %q could hold the token", name)
+// The record must hold metadata only: a JWT-looking value can never end up in it (neither in the
+// store type nor in the state entity written to the file).
+func TestRelayParentToken_RecordHasNoTokenField(t *testing.T) {
+	for _, typ := range []reflect.Type{reflect.TypeOf(RelayParentToken{}), reflect.TypeOf(state.RelayParentToken{})} {
+		for i := 0; i < typ.NumField(); i++ {
+			name := strings.ToLower(typ.Field(i).Name)
+			if strings.Contains(name, "token") || strings.Contains(name, "jwt") {
+				t.Errorf("%s.%s could hold the token", typ, typ.Field(i).Name)
+			}
 		}
 	}
 }

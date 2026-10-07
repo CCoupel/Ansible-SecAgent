@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 )
 
@@ -597,107 +598,72 @@ func TestSetJWTSecretsFunc(t *testing.T) {
 }
 
 // ========================================================================
-// extractSubFromJWTUnsafe
+// extractHostnameFromRequest — no unsigned fallback (#169b)
 // ========================================================================
 
-func TestExtractSubFromJWTUnsafe_ValidToken(t *testing.T) {
-	// Build a simple JWT manually: header.payload.signature
-	// payload = {"sub":"host-test","role":"agent"}
-	import_header := "eyJhbGciOiJIUzI1NiJ9"                            // {"alg":"HS256"}
-	import_payload := "eyJzdWIiOiJob3N0LXRlc3QiLCJyb2xlIjoiYWdlbnQifQ" // {"sub":"host-test","role":"agent"}
-	tokenStr := import_header + "." + import_payload + ".fakesig"
+func withAgentSecret(t *testing.T) {
+	t.Helper()
+	SetJWTSecretsFunc(func() (string, string, time.Time) { return "agent-secret", "", time.Time{} })
+	t.Cleanup(func() { JWTSecretsFunc = nil })
+}
 
-	sub := extractSubFromJWTUnsafe(tokenStr)
-	if sub != "host-test" {
-		t.Errorf("expected host-test, got %q", sub)
+func TestExtractHostnameFromRequest_RefusesEverythingUnsigned(t *testing.T) {
+	withAgentSecret(t)
+	// payload = {"sub":"victim"} with a fake signature
+	forged := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ2aWN0aW0ifQ.fakesig"
+	cases := []struct {
+		name, url, auth string
+	}{
+		{"no header", "/ws", ""},
+		{"query hostname only", "/ws?hostname=victim", ""},
+		{"basic", "/ws?hostname=victim", "Basic abc"},
+		{"empty bearer", "/ws?hostname=victim", "Bearer "},
+		{"bearer without space", "/ws?hostname=victim", "Bearer"},
+		{"lowercase scheme", "/ws", "bearer " + forged},
+		{"forged unsigned bearer", "/ws", "Bearer " + forged},
+		{"wrong secret", "/ws", "Bearer " + makeTestJWT("wrong", "victim", time.Now().Add(time.Hour))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", tc.url, nil)
+			if tc.auth != "" {
+				req.Header.Set("Authorization", tc.auth)
+			}
+			if h, _, err := extractHostnameFromRequest(req); err == nil {
+				t.Fatalf("accepted as %q, want refusal", h)
+			}
+		})
 	}
 }
 
-func TestExtractSubFromJWTUnsafe_InvalidFormat(t *testing.T) {
-	sub := extractSubFromJWTUnsafe("not.a.jwt.with.extra.parts")
-	// Should handle gracefully — either return "" or the sub if parseable
-	// The important thing: no panic
-	_ = sub
-}
-
-func TestExtractSubFromJWTUnsafe_InvalidBase64(t *testing.T) {
-	sub := extractSubFromJWTUnsafe("aaa.!!!invalid!!!.bbb")
-	if sub != "" {
-		t.Errorf("expected empty sub for invalid base64, got %q", sub)
-	}
-}
-
-func TestExtractSubFromJWTUnsafe_NoSubClaim(t *testing.T) {
-	// payload = {"role":"agent"} — no sub
-	import_payload := "eyJyb2xlIjoiYWdlbnQifQ" // {"role":"agent"}
-	tokenStr := "eyJhbGciOiJIUzI1NiJ9." + import_payload + ".sig"
-
-	sub := extractSubFromJWTUnsafe(tokenStr)
-	if sub != "" {
-		t.Errorf("expected empty sub when no sub claim, got %q", sub)
-	}
-}
-
-// ========================================================================
-// extractHostnameFromRequest
-// ========================================================================
-
-func TestExtractHostnameFromRequest_QueryParam(t *testing.T) {
-	// Without JWTSecretsFunc and without Bearer — uses ?hostname=
-	oldFn := JWTSecretsFunc
+func TestExtractHostnameFromRequest_NoVerifierFailsClosed(t *testing.T) {
 	JWTSecretsFunc = nil
-	defer func() { JWTSecretsFunc = oldFn }()
-
-	req, _ := http.NewRequest("GET", "/ws?hostname=test-host", nil)
-	hostname, usedPrev, err := extractHostnameFromRequest(req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if hostname != "test-host" {
-		t.Errorf("expected test-host, got %q", hostname)
-	}
-	if usedPrev {
-		t.Error("expected usedPrevious=false for query param path")
+	// even a perfectly well-formed token is refused without a verifier
+	req, _ := http.NewRequest("GET", "/ws?hostname=h", nil)
+	req.Header.Set("Authorization", "Bearer "+makeTestJWT("s", "h", time.Now().Add(time.Hour)))
+	if _, _, err := extractHostnameFromRequest(req); err == nil {
+		t.Fatal("must fail closed without JWTSecretsFunc")
 	}
 }
 
-func TestExtractHostnameFromRequest_MissingAll(t *testing.T) {
-	oldFn := JWTSecretsFunc
-	JWTSecretsFunc = nil
-	defer func() { JWTSecretsFunc = oldFn }()
-
+func TestExtractHostnameFromRequest_RoleMustBeAgent(t *testing.T) {
+	withAgentSecret(t)
+	for _, role := range []string{"plugin", "admin", "relay", "relay-parent", "enrollment", ""} {
+		claims := jwt.MapClaims{"sub": "host-a", "jti": "j", "exp": time.Now().Add(time.Hour).Unix()}
+		if role != "" {
+			claims["role"] = role
+		}
+		tok, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("agent-secret"))
+		req, _ := http.NewRequest("GET", "/ws", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		if _, _, err := extractHostnameFromRequest(req); err == nil {
+			t.Errorf("role %q accepted on /ws/agent", role)
+		}
+	}
 	req, _ := http.NewRequest("GET", "/ws", nil)
-	_, _, err := extractHostnameFromRequest(req)
-	if err == nil {
-		t.Error("expected error for missing hostname")
-	}
-	if err.Error() != "missing_hostname" {
-		t.Errorf("expected missing_hostname, got %q", err.Error())
-	}
-}
-
-func TestExtractHostnameFromRequest_BearerFallback(t *testing.T) {
-	// Without JWTSecretsFunc, Bearer token → extract sub without verification
-	oldFn := JWTSecretsFunc
-	JWTSecretsFunc = nil
-	defer func() { JWTSecretsFunc = oldFn }()
-
-	// payload = {"sub":"bearer-host"}
-	import_payload := "eyJzdWIiOiJiZWFyZXItaG9zdCJ9"
-	tokenStr := "eyJhbGciOiJIUzI1NiJ9." + import_payload + ".fakesig"
-
-	req, _ := http.NewRequest("GET", "/ws", nil)
-	req.Header.Set("Authorization", "Bearer "+tokenStr)
-
-	hostname, usedPrev, err := extractHostnameFromRequest(req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if hostname != "bearer-host" {
-		t.Errorf("expected bearer-host, got %q", hostname)
-	}
-	if usedPrev {
-		t.Error("expected usedPrevious=false for fallback path")
+	req.Header.Set("Authorization", "Bearer "+makeTestJWT("agent-secret", "host-a", time.Now().Add(time.Hour)))
+	if h, _, err := extractHostnameFromRequest(req); err != nil || h != "host-a" {
+		t.Fatalf("role agent: %q %v", h, err)
 	}
 }
 
@@ -802,65 +768,63 @@ func TestCloseAgent_ConnectedAgent(t *testing.T) {
 // AgentHandler — via httptest WS server
 // ========================================================================
 
-func TestAgentHandler_MissingHostname(t *testing.T) {
+// TestAgentHandler_UnsignedIsRefusedWith401 drives the real handler: nothing unsigned upgrades.
+func TestAgentHandler_UnsignedIsRefusedWith401(t *testing.T) {
 	resetState()
-	oldFn := JWTSecretsFunc
-	JWTSecretsFunc = nil
-	defer func() { JWTSecretsFunc = oldFn }()
-
+	withAgentSecret(t)
+	SetAgentJTICheckFunc(func(string, string, bool) error { return nil }) // would accept anything signed
+	t.Cleanup(func() { SetAgentJTICheckFunc(nil) })
 	srv := httptest.NewServer(http.HandlerFunc(AgentHandler))
 	defer srv.Close()
-
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
-	// No ?hostname= and no Bearer → 401
-	resp, err := http.Get("http" + strings.TrimPrefix(wsURL, "ws"))
-	if err != nil {
-		// Connection may be refused or closed — that's fine
-		return
+
+	for name, hdr := range map[string]http.Header{
+		"no authorization": {},
+		"basic":            {"Authorization": {"Basic abc"}},
+		"other role":       {"Authorization": {"Bearer " + makeRoleJWT("agent-secret", "victim", "plugin")}},
+		"wrong secret":     {"Authorization": {"Bearer " + makeTestJWT("nope", "victim", time.Now().Add(time.Hour))}},
+	} {
+		for _, q := range []string{"", "?hostname=victim"} {
+			c, resp, err := websocket.DefaultDialer.Dial(wsURL+q, hdr)
+			if c != nil {
+				_ = c.Close()
+			}
+			if err == nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("%s%s: err=%v resp=%v, want 401", name, q, err, resp)
+			}
+		}
 	}
-	defer func() { _ = resp.Body.Close() }()
-	// Should not be 101 (upgrade) — missing hostname means rejection
-	if resp.StatusCode == http.StatusSwitchingProtocols {
-		t.Error("expected rejection (not 101) when hostname is missing")
+	if _, e := GetConnection("victim"); e == nil {
+		t.Fatal("victim must not be registered")
 	}
 }
 
-func TestAgentHandler_WithQueryParamHostname(t *testing.T) {
+func makeRoleJWT(secret, sub, role string) string {
+	claims := jwt.MapClaims{"sub": sub, "role": role, "jti": "j", "exp": time.Now().Add(time.Hour).Unix()}
+	s, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+	return s
+}
+
+func TestAgentHandler_SignedAgentIsRegistered(t *testing.T) {
 	resetState()
-	oldFn := JWTSecretsFunc
-	JWTSecretsFunc = nil
-	defer func() { JWTSecretsFunc = oldFn }()
+	withAgentSecret(t)
+	SetAgentJTICheckFunc(func(string, string, bool) error { return nil })
+	t.Cleanup(func() { SetAgentJTICheckFunc(nil) })
 
-	connected := make(chan string, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		AgentHandler(w, r)
-		connected <- "done"
-	}))
+	srv := httptest.NewServer(http.HandlerFunc(AgentHandler))
 	defer srv.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "?hostname=qp-host"
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	h := http.Header{"Authorization": {"Bearer " + makeTestJWT("agent-secret", "qp-host", time.Now().Add(time.Hour))}}
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), h)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-
-	// Verify connection was registered
+	defer func() { _ = conn.Close() }()
 	if !awaitCondition(2*time.Second, func() bool {
 		_, e := GetConnection("qp-host")
 		return e == nil
 	}) {
 		t.Fatal("agent qp-host not registered within timeout")
 	}
-	agentConn, getErr := GetConnection("qp-host")
-	if getErr != nil {
-		t.Fatalf("agent not registered: %v", getErr)
-	}
-	if agentConn.Hostname != "qp-host" {
-		t.Errorf("expected qp-host, got %q", agentConn.Hostname)
-	}
-
-	_ = conn.Close()
-	<-connected
 }
 
 // ========================================================================
@@ -933,5 +897,85 @@ func TestConcurrentGetConnectedHostnames(t *testing.T) {
 	// After all goroutines finish, map should be empty (or have no leaked entries)
 	if n := GetConnectedCount(); n != 0 {
 		t.Errorf("expected 0 after cleanup, got %d", n)
+	}
+}
+
+// ========================================================================
+// /ws/agent revocation check (#169): fail closed, before the upgrade
+// ========================================================================
+
+func jtiHandshake(t *testing.T, secret, jti string) (status int, err error) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(AgentHandler))
+	defer srv.Close()
+	h := http.Header{}
+	h.Set("Authorization", "Bearer "+makeJTIToken(secret, "jti-host", jti))
+	c, resp, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), h)
+	if c != nil {
+		_ = c.Close()
+	}
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	return status, err
+}
+
+func makeJTIToken(secret, sub, jti string) string {
+	claims := jwt.MapClaims{"sub": sub, "role": "agent", "exp": time.Now().Add(time.Hour).Unix()}
+	if jti != "" {
+		claims["jti"] = jti
+	}
+	s, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+	return s
+}
+
+func TestAgentHandler_JTICheckNotConfiguredFailsClosed(t *testing.T) {
+	resetState()
+	SetJWTSecretsFunc(func() (string, string, time.Time) { return "s3cret", "", time.Time{} })
+	SetAgentJTICheckFunc(nil)
+	defer func() { JWTSecretsFunc = nil }()
+
+	status, err := jtiHandshake(t, "s3cret", "some-jti")
+	if err == nil || status != http.StatusUnauthorized {
+		t.Fatalf("valid JWT without a configured check: status %d err %v, want 401", status, err)
+	}
+	if _, e := GetConnection("jti-host"); e == nil {
+		t.Error("the agent must not be registered")
+	}
+}
+
+func TestAgentHandler_JTICheckRefusalAndAcceptance(t *testing.T) {
+	resetState()
+	SetJWTSecretsFunc(func() (string, string, time.Time) { return "s3cret", "prev", time.Now().Add(time.Hour) })
+	defer func() { JWTSecretsFunc = nil; SetAgentJTICheckFunc(nil) }()
+
+	var gotHost, gotJTI string
+	var gotPrev bool
+	SetAgentJTICheckFunc(func(host, jti string, prev bool) error {
+		gotHost, gotJTI, gotPrev = host, jti, prev
+		if jti == "revoked" {
+			return fmt.Errorf("token_revoked")
+		}
+		return nil
+	})
+
+	if status, err := jtiHandshake(t, "s3cret", "revoked"); err == nil || status != http.StatusUnauthorized {
+		t.Fatalf("revoked: status %d err %v, want 401", status, err)
+	}
+	if status, err := jtiHandshake(t, "s3cret", ""); err == nil || status != http.StatusUnauthorized {
+		t.Fatalf("token without jti: status %d err %v, want 401", status, err)
+	}
+	if status, err := jtiHandshake(t, "s3cret", "good"); err != nil || status != http.StatusSwitchingProtocols {
+		t.Fatalf("accepted token: status %d err %v, want 101", status, err)
+	}
+	if gotHost != "jti-host" || gotJTI != "good" || gotPrev {
+		t.Errorf("check received (%q, %q, prev=%v)", gotHost, gotJTI, gotPrev)
+	}
+	// a token signed with the PREVIOUS secret reports usedPrevious=true to the check
+	if status, err := jtiHandshake(t, "prev", "good2"); err != nil || status != http.StatusSwitchingProtocols {
+		t.Fatalf("previous-secret token: status %d err %v", status, err)
+	}
+	if !gotPrev || gotJTI != "good2" {
+		t.Errorf("usedPrevious not propagated: (%q, prev=%v)", gotJTI, gotPrev)
 	}
 }

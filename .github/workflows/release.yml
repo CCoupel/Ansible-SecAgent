@@ -39,7 +39,7 @@ jobs:
       is_latest: ${{ steps.resolve.outputs.is_latest }}
       run_tests: ${{ steps.resolve.outputs.run_tests }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -88,11 +88,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: GO/go.work
           cache-dependency-path: GO/go.sum
@@ -109,11 +109,38 @@ jobs:
           ADMIN_TOKEN: test
         run: go test ./... -timeout 120s
 
+  # Prerequis BLOQUANT de la publication (#174 M6) : le basculement actif/passif est verifie avec l'image
+  # construite localement depuis le commit du tag (arret propre puis docker kill, vraies peremptions).
+  failover:
+    name: Basculement en conteneurs (stop + kill)
+    needs: [prepare, test]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SECAGENT_IMAGE: secagent-server:ci
+      QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+      - name: Build de l'image du tag (local, sans push)
+        run: docker build -t secagent-server:ci -f GO/Dockerfile GO
+      - name: Preparation
+        run: bash DEPLOYMENT/qualif/failover-test.sh setup-ci
+      - name: Arret propre
+        run: bash DEPLOYMENT/qualif/failover-test.sh run stop
+      - name: docker kill
+        run: bash DEPLOYMENT/qualif/failover-test.sh run kill
+      - name: Nettoyage
+        if: always()
+        run: bash DEPLOYMENT/qualif/failover-test.sh teardown || true
+
   images:
     name: Image GHCR ${{ matrix.image }}
-    needs: [prepare, test]
+    needs: [prepare, test, failover]
     # test peut etre 'skipped' (skip_tests) mais jamais 'failure'
-    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') && needs.failover.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -128,13 +155,13 @@ jobs:
           - image: secagent-minion
             dockerfile: Dockerfile.agent
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -142,7 +169,7 @@ jobs:
 
       - name: Metadonnees image
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}
           flavor: latest=false
@@ -153,16 +180,79 @@ jobs:
           labels: |
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
 
-      - uses: docker/build-push-action@v6
+      # Date du commit du tag : horodatages reproductibles (rewrite-timestamp) pour un rebuild deterministe.
+      - name: SOURCE_DATE_EPOCH
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+
+      - name: Build et push
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         with:
           context: GO
           file: GO/${{ matrix.dockerfile }}
-          push: true
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,push=true,rewrite-timestamp=true
+          # M10 : SBOM et attestation de provenance attaches aux images (signature cosign : a proposer)
+          provenance: true
+          sbom: true
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      # M2 : le digest est transmis au job release (les sorties de matrice s'ecrasent : artefact par image).
+      - name: Exporter le digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          case "$DIGEST" in sha256:????????????????????????????????????????????????????????????????) ;; *) echo "::error::Digest invalide '$DIGEST'"; exit 1;; esac
+          mkdir -p digests && printf '%s' "$DIGEST" > "digests/${{ matrix.image }}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: digest-${{ matrix.image }}
+          path: digests/${{ matrix.image }}
+          if-no-files-found: error
+
+  # Controle de reproductibilite (M1) : deux builds locaux (sans attestation, qui contiennent des dates)
+  # du meme commit doivent donner le meme digest. Avertissement au premier passage ; a passer en
+  # erreur une fois la reproductibilite obtenue (retirer `continue-on-error` et le ::warning::).
+  reproducibility:
+    name: Reproductibilite ${{ matrix.image }}
+    needs: [prepare, test]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {image: secagent-server, dockerfile: Dockerfile}
+          - {image: secagent-minion, dockerfile: Dockerfile.agent}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Deux builds, comparaison des digests
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          for n in 1 2; do
+            docker buildx build --provenance=false --sbom=false --no-cache \
+              --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+              -f GO/${{ matrix.dockerfile }} \
+              --output "type=oci,dest=build$n.tar,rewrite-timestamp=true" GO
+            mkdir "o$n" && tar -xf "build$n.tar" -C "o$n"
+            python3 -c "import json;print(json.load(open('o$n/index.json'))['manifests'][0]['digest'])" > "d$n"
+          done
+          echo "build1=$(cat d1) build2=$(cat d2)"
+          if ! cmp -s d1 d2; then
+            echo "::warning::${{ matrix.image }} : builds non reproductibles ($(cat d1) != $(cat d2)). Cause probable : couche runtime (apk) ou metadonnees ; a documenter puis passer en erreur."
+          fi
 
   release:
     name: Release GitHub
@@ -173,7 +263,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
 
@@ -192,7 +282,7 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         if: steps.exists.outputs.exists == 'false'
         with:
           go-version-file: GO/go.work
@@ -212,6 +302,23 @@ jobs:
             echo "::error::Aucune entree '## [$TAG]' dans CHANGELOG.md"; exit 1
           fi
 
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: steps.exists.outputs.exists == 'false'
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+
+      # M3 : Compose de production publies AVEC la release, images reecrites en tag@digest.
+      - name: Archive Compose (secagent-compose)
+        if: steps.exists.outputs.exists == 'false'
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/build_compose_archive.sh "$TAG" "$VERSION" "$(cat digests/secagent-server)" dist
+
       - name: Binaires linux/amd64 + sommes de controle
         if: steps.exists.outputs.exists == 'false'
         env:
@@ -220,10 +327,10 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cd GO
-          # server : CGO (go-sqlite3), comme GO/Dockerfile
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "../dist/secagent-server-${VERSION}-linux-amd64" ./cmd/secagent-server
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "../dist/secagent-minion-${VERSION}-linux-amd64" ./cmd/secagent-minion
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "../dist/secagent-inventory-${VERSION}-linux-amd64" ./cmd/secagent-inventory
+          # server : pur Go, sans CGO (l'état du relay est un fichier, plus de SQLite : #160), comme GO/Dockerfile
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w" -o "../dist/secagent-server-${VERSION}-linux-amd64" ./cmd/secagent-server
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w" -o "../dist/secagent-minion-${VERSION}-linux-amd64" ./cmd/secagent-minion
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w" -o "../dist/secagent-inventory-${VERSION}-linux-amd64" ./cmd/secagent-inventory
           cd ../dist
           sha256sum ./* > "SHA256SUMS-${VERSION}.txt"
 

@@ -1,8 +1,6 @@
 package storage
 
 import (
-	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -14,47 +12,6 @@ func seedNodes(t *testing.T, s *Store, ids ...string) {
 			t.Fatal(err)
 		}
 	}
-}
-
-func TestRouting_MigrationKeepsLegacyRows(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "legacy.db")
-	raw, err := sql.Open("sqlite3", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// legacy (pre-#127) schema and data
-	for _, q := range []string{
-		`CREATE TABLE relay_nodes (id TEXT PRIMARY KEY, relay_id TEXT NOT NULL UNIQUE, url TEXT, description TEXT,
-			token_hash TEXT, mode TEXT NOT NULL DEFAULT 'pull', is_proxy INTEGER NOT NULL DEFAULT 0,
-			created_at INTEGER NOT NULL, last_seen INTEGER, status TEXT NOT NULL DEFAULT 'disconnected')`,
-		`CREATE TABLE relay_routing (hostname TEXT PRIMARY KEY, relay_id TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
-		`INSERT INTO relay_nodes (id, relay_id, created_at) VALUES ('u1', 'dmz1', 1)`,
-		`INSERT INTO relay_routing (hostname, relay_id, updated_at) VALUES ('old-host', 'dmz1', 1)`,
-	} {
-		if _, err := raw.Exec(q); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	_ = raw.Close()
-
-	s, err := NewStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = s.Close() }()
-	r, err := s.GetRelayRoute("old-host")
-	if err != nil || r == nil {
-		t.Fatalf("legacy row lost: %v %v", r, err)
-	}
-	if r.RelayID != "dmz1" || r.HopType != "relay" || len(r.RelayChain) != 0 || r.NextHop() != "dmz1" {
-		t.Errorf("legacy row after migration = %+v (next hop %q)", r, r.NextHop())
-	}
-	// a second open (columns already exist) must not fail
-	s2, err := NewStore(path)
-	if err != nil {
-		t.Fatalf("re-open after migration: %v", err)
-	}
-	_ = s2.Close()
 }
 
 func TestRouting_UpsertRouteLastWinsReturnsPrevious(t *testing.T) {

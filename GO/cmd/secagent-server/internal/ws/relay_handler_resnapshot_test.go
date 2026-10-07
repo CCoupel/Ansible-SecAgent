@@ -323,11 +323,15 @@ func TestResnapshot_TopologyChangedNotified(t *testing.T) {
 	handshake(t, c, "relay1")
 	sendSnapshot(t, c, nil, nil)
 	expectAck(t, readMsg(t, c))
+	// The ack is written BEFORE the parent notification: the notification is asynchronous with
+	// respect to the ack, so wait (bounded) for it, then assert the exact count (no extra one).
+	waitUntil(t, "first snapshot notified", func() bool { return count() >= 1 })
 	if count() != 1 {
 		t.Errorf("notifications after first snapshot = %d, want 1", count())
 	}
 	sendSnapshot(t, c, nil, nil)
 	expectAck(t, readMsg(t, c))
+	waitUntil(t, "replacement snapshot notified", func() bool { return count() >= 2 })
 	if count() != 2 {
 		t.Errorf("notifications after replacement = %d, want 2", count())
 	}

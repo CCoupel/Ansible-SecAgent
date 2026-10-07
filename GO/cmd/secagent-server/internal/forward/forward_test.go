@@ -3,6 +3,7 @@ package forward
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -138,7 +139,7 @@ func run(t *testing.T, f *Forwarder, msg ws.RelayMessage) ws.RelayMessage {
 
 func routeStore(t *testing.T) *storage.Store {
 	t.Helper()
-	s, err := storage.NewStore(":memory:")
+	s, err := storage.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,5 +375,40 @@ func TestForward_ContextCancelStopsWaiting(t *testing.T) {
 		}
 	case <-time.After(wait):
 		t.Fatal("Handle did not return after cancel")
+	}
+}
+
+// #173: the relay that holds the agent decides; the refusal travels up in task_result.error.
+func TestForward_SuspendedLocalAgentRefusesAndLiftIsImmediate(t *testing.T) {
+	agent := connectAgent(t, "susp-1", 0, "ran", "")
+	var suspended bool
+	var failure error
+	f := &Forwarder{
+		NextHop:   func(string) (string, error) { return "", nil },
+		Suspended: func(string) (bool, error) { return suspended, failure },
+	}
+	msg := ws.RelayMessage{Type: "task_dispatch", TaskID: "t-susp", Hostname: "susp-1", Cmd: "id", Timeout: 5, Stdin: "c2VjcmV0"}
+
+	suspended = true
+	for _, typ := range []string{"task_dispatch", "file_upload", "file_fetch"} {
+		m := msg
+		m.Type, m.TaskID = typ, "t-"+typ
+		if res := run(t, f, m); res.Error != ErrAgentSuspended {
+			t.Errorf("%s: error = %q, want %q", typ, res.Error, ErrAgentSuspended)
+		}
+	}
+	failure = errors.New("db down")
+	suspended = false
+	if res := run(t, f, msg); res.Error != ErrAgentStateUnavailable {
+		t.Errorf("unreadable state: error = %q, want %q (fail closed)", res.Error, ErrAgentStateUnavailable)
+	}
+
+	failure = nil
+	msg.TaskID = "t-after"
+	if res := run(t, f, msg); res.Error != "" || res.Stdout != "ran" {
+		t.Errorf("after resume: %+v", res)
+	}
+	if got := agent.received(); len(got) != 1 || got[0]["task_id"] != "t-after" {
+		t.Errorf("only the post-resume task may reach the agent: %v", got)
 	}
 }

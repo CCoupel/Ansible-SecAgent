@@ -16,6 +16,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -187,22 +188,6 @@ func TestRekeyMsgJSON(t *testing.T) {
 // Dispatcher — WithEnrollConfig
 // ============================================================================
 
-func TestWithEnrollConfigDefaultMaxRetries(t *testing.T) {
-	d := NewDispatcher(ConnConfig{}, nil)
-	d.WithEnrollConfig(EnrollConfig{MaxRetries: 0})
-	if d.enrollCfg.MaxRetries != 3 {
-		t.Errorf("MaxRetries default: got %d, want 3", d.enrollCfg.MaxRetries)
-	}
-}
-
-func TestWithEnrollConfigCustomMaxRetries(t *testing.T) {
-	d := NewDispatcher(ConnConfig{}, nil)
-	d.WithEnrollConfig(EnrollConfig{MaxRetries: 5})
-	if d.enrollCfg.MaxRetries != 5 {
-		t.Errorf("MaxRetries: got %d, want 5", d.enrollCfg.MaxRetries)
-	}
-}
-
 func TestWithEnrollConfigChaining(t *testing.T) {
 	key := generateTestKey2048(t)
 	d := NewDispatcher(ConnConfig{JWT: "initial"}, nil).
@@ -211,7 +196,6 @@ func TestWithEnrollConfigChaining(t *testing.T) {
 			Hostname:    "test-host",
 			PrivateKey:  key,
 			JWTPath:     "/tmp/token.jwt",
-			MaxRetries:  2,
 		})
 	if d.enrollCfg.Hostname != "test-host" {
 		t.Errorf("Hostname: got %q", d.enrollCfg.Hostname)
@@ -288,7 +272,6 @@ func TestDispatcherRekeyUpdatesJWT(t *testing.T) {
 		Insecure:  true,
 	}, nil).WithEnrollConfig(EnrollConfig{
 		PrivateKey: key,
-		MaxRetries: 1,
 	})
 
 	// Override decryptAndSaveToken pour capturer l'appel
@@ -357,10 +340,10 @@ func TestDispatcherReenrollOn401(t *testing.T) {
 		JWT:       "expired-jwt",
 		Insecure:  true,
 	}, nil).WithEnrollConfig(EnrollConfig{
-		RegisterURL: srv.URL + "/api/register",
-		Hostname:    "test-agent",
-		PrivateKey:  key,
-		MaxRetries:  1,
+		RegisterURL:     srv.URL + "/api/register",
+		Hostname:        "test-agent",
+		PrivateKey:      key,
+		EnrollmentToken: "tok",
 	})
 
 	// Mock reEnrollOnce pour retourner un nouveau JWT sans appel HTTP réel
@@ -406,10 +389,10 @@ func TestDispatcherReenroll403StopsLoop(t *testing.T) {
 		JWT:       "expired-jwt",
 		Insecure:  true,
 	}, nil).WithEnrollConfig(EnrollConfig{
-		RegisterURL: srv.URL + "/api/register",
-		Hostname:    "test-agent",
-		PrivateKey:  key,
-		MaxRetries:  1,
+		RegisterURL:     srv.URL + "/api/register",
+		Hostname:        "test-agent",
+		PrivateKey:      key,
+		EnrollmentToken: "tok",
 	})
 
 	// Mock reEnrollOnce pour simuler un 403
@@ -481,10 +464,10 @@ func TestHandleUnauthorizedNoConfig(t *testing.T) {
 func TestHandleUnauthorizedSuccessOnFirstAttempt(t *testing.T) {
 	key := generateTestKey2048(t)
 	d := NewDispatcher(ConnConfig{}, nil).WithEnrollConfig(EnrollConfig{
-		RegisterURL: "https://relay.example.com/api/register",
-		Hostname:    "test",
-		PrivateKey:  key,
-		MaxRetries:  3,
+		RegisterURL:     "https://relay.example.com/api/register",
+		Hostname:        "test",
+		PrivateKey:      key,
+		EnrollmentToken: "tok",
 	})
 
 	originalFn := reEnrollOnce
@@ -503,79 +486,37 @@ func TestHandleUnauthorizedSuccessOnFirstAttempt(t *testing.T) {
 	}
 }
 
-func TestHandleUnauthorizedRetryOnTransientError(t *testing.T) {
+// handleUnauthorized fait UNE tentative : une erreur corrigible est rendue telle quelle (pas
+// permanente) et c'est Run qui réessaie avec backoff.
+func TestHandleUnauthorizedTransientErrorIsNotPermanent(t *testing.T) {
 	key := generateTestKey2048(t)
 	d := NewDispatcher(ConnConfig{}, nil).WithEnrollConfig(EnrollConfig{
-		RegisterURL: "https://relay.example.com/api/register",
-		Hostname:    "test",
-		PrivateKey:  key,
-		MaxRetries:  3,
+		RegisterURL: "https://relay.example.com/api/register", Hostname: "test", PrivateKey: key, EnrollmentToken: "tok",
 	})
-
 	originalFn := reEnrollOnce
 	defer func() { reEnrollOnce = originalFn }()
-
-	var attempts atomic.Int32
-	reEnrollOnce = func(ctx context.Context, ec EnrollConfig, pubPEM string) (string, error) {
-		n := attempts.Add(1)
-		if n < 3 {
-			return "", &httpStatusError{code: 503, msg: "service unavailable"}
-		}
-		return "jwt-after-retry", nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	jwt, err := d.handleUnauthorized(ctx)
-	if err != nil {
-		t.Fatalf("handleUnauthorized after retry: %v", err)
-	}
-	if jwt != "jwt-after-retry" {
-		t.Errorf("JWT: got %q", jwt)
-	}
-	if attempts.Load() != 3 {
-		t.Errorf("attempts: got %d, want 3", attempts.Load())
-	}
-}
-
-func TestHandleUnauthorizedFailsAfterMaxRetries(t *testing.T) {
-	key := generateTestKey2048(t)
-	d := NewDispatcher(ConnConfig{}, nil).WithEnrollConfig(EnrollConfig{
-		RegisterURL: "https://relay.example.com/api/register",
-		Hostname:    "test",
-		PrivateKey:  key,
-		MaxRetries:  2,
-	})
-
-	originalFn := reEnrollOnce
-	defer func() { reEnrollOnce = originalFn }()
-
 	var attempts atomic.Int32
 	reEnrollOnce = func(ctx context.Context, ec EnrollConfig, pubPEM string) (string, error) {
 		attempts.Add(1)
 		return "", &httpStatusError{code: 503, msg: "unavailable"}
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	_, err := d.handleUnauthorized(ctx)
-	if err == nil {
-		t.Error("expected error after max retries")
+	_, err := d.handleUnauthorized(context.Background())
+	var perm *permanentError
+	if err == nil || errors.As(err, &perm) {
+		t.Fatalf("a 503 must be a retryable error, got %v", err)
 	}
-	if attempts.Load() != 2 {
-		t.Errorf("attempts: got %d, want 2", attempts.Load())
+	if attempts.Load() != 1 {
+		t.Errorf("attempts: got %d, want 1", attempts.Load())
 	}
 }
 
 func TestHandleUnauthorizedStopsOn403(t *testing.T) {
 	key := generateTestKey2048(t)
 	d := NewDispatcher(ConnConfig{}, nil).WithEnrollConfig(EnrollConfig{
-		RegisterURL: "https://relay.example.com/api/register",
-		Hostname:    "test",
-		PrivateKey:  key,
-		MaxRetries:  5,
+		RegisterURL:     "https://relay.example.com/api/register",
+		Hostname:        "test",
+		PrivateKey:      key,
+		EnrollmentToken: "tok",
 	})
 
 	originalFn := reEnrollOnce
@@ -591,7 +532,11 @@ func TestHandleUnauthorizedStopsOn403(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for 403")
 	}
-	// Ne doit pas boucler jusqu'à MaxRetries — stoppe dès le premier 403
+	var perm *permanentError
+	if !errors.As(err, &perm) {
+		t.Errorf("403 must be a permanent error, got %v", err)
+	}
+	// stoppe dès le premier 403
 	if attempts.Load() != 1 {
 		t.Errorf("attempts: got %d, want 1 (should stop immediately on 403)", attempts.Load())
 	}
@@ -608,16 +553,12 @@ func TestEnrollConfigFields(t *testing.T) {
 		Hostname:    "my-agent",
 		PrivateKey:  key,
 		JWTPath:     "/etc/secagent-minion/token.jwt",
-		MaxRetries:  3,
 	}
 	if ec.Hostname != "my-agent" {
 		t.Error("Hostname not preserved")
 	}
 	if ec.PrivateKey == nil {
 		t.Error("PrivateKey is nil")
-	}
-	if ec.MaxRetries != 3 {
-		t.Error("MaxRetries not preserved")
 	}
 }
 

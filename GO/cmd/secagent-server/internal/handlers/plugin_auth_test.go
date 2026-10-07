@@ -80,6 +80,7 @@ func TestExtractClientIPRemoteAddr(t *testing.T) {
 }
 
 func TestExtractClientIPXForwardedFor(t *testing.T) {
+	trustProxies(t, "10.0.0.0/8")
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "10.0.0.1:80"
 	req.Header.Set("X-Forwarded-For", "192.168.1.100, 10.0.0.1")
@@ -91,6 +92,7 @@ func TestExtractClientIPXForwardedFor(t *testing.T) {
 }
 
 func TestExtractClientIPXForwardedForSingle(t *testing.T) {
+	trustProxies(t, "172.16.0.0/12")
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "172.16.0.1:9000"
 	req.Header.Set("X-Forwarded-For", "203.0.113.5")
@@ -272,6 +274,7 @@ func TestPluginAuthIPNoRestriction(t *testing.T) {
 }
 
 func TestPluginAuthIPFromXForwardedFor(t *testing.T) {
+	trustProxies(t, "10.0.0.0/8")
 	s := newTestStore(t)
 	SetAdminStore(s)
 	plain := "secagent_plg_xff_01"

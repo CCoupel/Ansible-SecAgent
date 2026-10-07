@@ -2,7 +2,7 @@
 
 > Document de référence pour le modèle de sécurité d'Ansible-SecAgent.
 > Remplace et étend ARCHITECTURE.md §7.
-> Dernière mise à jour : 2026-03-06
+> Dernière mise à jour : 2026-10-06 (v3.0.3)
 
 ---
 
@@ -11,7 +11,7 @@
 ```
 Zero-Trust sur le transport  : TLS obligatoire sur toutes les connexions (WSS + HTTPS)
 Zero-Trust sur les identités : chaque composant prouve son identité à chaque connexion
-Pas de TOFU                  : aucun composant n'est accepté sans pré-autorisation explicite
+Pas de TOFU                  : aucun composant n'est accepté sans autorisation explicite de l'admin (jeton d'enrôlement émis par l'admin + preuve de possession de la clef)
 Défense en profondeur        : IP binding + hostname claim + token secret + TLS
 ```
 
@@ -31,7 +31,7 @@ Défense en profondeur        : IP binding + hostname claim + token secret + TLS
 |---|---|---|---|
 | `agent` | secagent-minion (hôte cible) | `POST /api/register`, `WSS /ws/agent` | JWT HMAC-HS256 chiffré RSA-OAEP |
 | `plugin` | Ansible Control Node | `GET /api/inventory`, `POST /api/exec`, `/api/upload`, `/api/fetch` | Token statique hashé (SHA-256) |
-| `relay-child` | repeater-enfant (présenté au handshake) | `WSS /ws/relay` (relay_hello, agent_list, event_forward, task_forward) | JWT HMAC-HS256 (créé et signé par le relay parent avec sa JWT_SECRET_KEY) |
+| `relay` (dit « relay-child ») | repeater-enfant (présenté au handshake) | `WSS /ws/relay` (relay_hello, agent_list, event_forward, task_forward) | JWT HMAC-HS256 (créé et signé par le relay parent avec sa JWT_SECRET_KEY) |
 | `relay-parent` | repeater-parent en mode push (présenté au handshake) | `WSS /ws/relay` (ouvrir connexion vers enfant) | JWT HMAC-HS256 (créé et signé par le relay enfant avec sa JWT_SECRET_KEY) |
 | `admin` | CLI dans le container serveur | Port 7771 — tous les endpoints d'administration | `ADMIN_TOKEN` env var (container-interne) |
 
@@ -39,7 +39,7 @@ Défense en profondeur        : IP binding + hostname claim + token secret + TLS
 
 - Un token `role: agent` ne peut **pas** appeler `/api/exec` ni `/api/inventory` ni ouvrir `/ws/relay`
 - Un token `role: plugin` ne peut **pas** ouvrir `/ws/agent` ni `/ws/relay`
-- Un token `role: relay-child` ne peut **pas** accéder `/api/inventory`, `/api/exec`, `/api/upload`, `/api/fetch`, ni `/ws/agent` (repeater-to-repeater uniquement)
+- Un token `role: relay` (dit relay-child) ne peut **pas** accéder `/api/inventory`, `/api/exec`, `/api/upload`, `/api/fetch`, ni `/ws/agent` (repeater-to-repeater uniquement)
 - Un token `role: relay-parent` ne peut **pas** accéder `/api/inventory`, `/api/exec`, `/api/upload`, `/api/fetch`, ni `/ws/agent` (repeater-to-repeater uniquement)
 - Le port 7771 (admin) n'est **jamais** exposé hors du container (`expose:` uniquement, pas `ports:`)
 - L'admin CLI s'authentifie via `localhost:7771` en lisant `ADMIN_TOKEN` depuis l'environnement du container
@@ -132,9 +132,12 @@ Admin                    Server                        Agent (hôte cible)
 - `permanent + hostname_pattern = "vp.*"` → pipeline CI/CD : N hôtes `vp-*` peuvent s'enrôler à volonté
 - `permanent + hostname_pattern = ".*" + expires_at = now+30d` → token de bootstrap temporaire pour une vague de déploiement
 
-### Table DB
+### Modèle de données
+
+> Depuis la v3.0.3 il n'y a plus de base SQL : ces enregistrements vivent dans le fichier d'état (`relay.state`). Le schéma ci-dessous est un **modèle logique** des champs conservés, pas une table existante. Le jeton en clair (`secagent_enr_` + 64 hex, opaque, non-JWT) n'est jamais stocké.
 
 ```sql
+-- modèle logique (champs de l'enregistrement dans l'état)
 CREATE TABLE enrollment_tokens (
     id               TEXT PRIMARY KEY,        -- UUID
     token_hash       TEXT NOT NULL UNIQUE,    -- SHA-256(token) — jamais en clair
@@ -155,7 +158,7 @@ CREATE TABLE enrollment_tokens (
 1. token_hash présent en DB ?                          → sinon 403 token_not_found
 2. expires_at IS NOT NULL AND expires_at < now() ?     → sinon 403 token_expired
 3. reusable = 0 AND use_count > 0 ?                    → sinon 403 token_already_used
-4. regexp.MatchString("^" + hostname_pattern + "$", hostname) ?  → sinon 403 hostname_not_allowed
+4. regexp.MatchString("^(?:" + hostname_pattern + ")$", hostname) ?  → sinon 403 hostname_not_allowed
    [enrollment autorisé → challenge-response → JWT]
 5. use_count++ ; last_used_at = now()                  → toujours, quel que soit reusable
 ```
@@ -199,20 +202,20 @@ Agent                         Server
 
 | Code | Signification | Comportement agent |
 |---|---|---|
-| `4001` | JWT blacklisté / révocation admin | **Arrêt définitif** — ne jamais reconnecter |
-| `4002` | JWT expiré | Ré-enrollment automatique (POST /api/register) |
-| `4003` | Re-enrollment requis (rotation de clefs) | Ré-enrollment automatique |
-| `1001` | Restart serveur / coupure réseau | Reconnexion avec backoff exponentiel (1s→2s→4s→…→60s max) |
+| `4001` | Révocation admin (JTI blacklisté) | **Arrêt définitif** — ne jamais reconnecter (code de sortie 77) |
+| `4000` | Agent supprimé (`DELETE /api/admin/minions/{hostname}`) | Reconnexion avec backoff exponentiel |
+| `1001` | Arrêt propre du serveur, perte du verrou maître, coupure réseau | Reconnexion avec backoff exponentiel (1s→2s→4s→…→60s max) |
+
+Le serveur n'émet vers les agents que `4000`, `4001` et `1001`. `4002` existe comme constante (`ws/handler.go:24`) mais n'est jamais émis ; `4003` et `4004` n'existent pas. Un JWT expiré ou invalide n'est pas signalé par un code de fermeture : l'upgrade WebSocket est refusé en **HTTP 401** et l'agent se ré-enrôle (voir « Gestion du 401 »). Tout code autre que `4001` provoque une reconnexion.
 
 #### Codes de fermeture WebSocket `/ws/relay` (#148)
 
 | Code | Nature | Signification | Comportement du pair qui reçoit le close |
 |---|---|---|---|
 | `4010` | **Refus permanent** | Identité non autorisée pour ce lien : token révoqué, `relay_id` ≠ `jwt.sub`, identité du pair différente de celle attendue, boucle détectée (C ∈ {P} ∪ ancêtres(P)) | **Ne pas reconnecter** : le client/dialer s'arrête (état terminal, log ERROR) ; une action opérateur est nécessaire |
-| `4011` | Token expiré | Token relay expiré (TTL dépassé) | Rafraîchir le token puis reconnecter |
+| `4011` | **Non émis** | Constante réservée (`ws/relay_handler.go:37`), jamais envoyée ni traitée : un token expiré est refusé par un 401 avant l'upgrade | — |
 | `4012` | **Refus corrigible** | Erreur protocolaire ou de validation pouvant se résoudre : `topology_snapshot` invalide / déjà reçu / reçu avant `relay_hello`, conflit de routage ou de relay déclaré, slot « parent unique » occupé | Reconnexion avec backoff exponentiel (5 s → 60 s max) |
-| `4000` | Normal | Fermeture normale ou initiée par le client | — |
-| `1000` | Normal | Fermeture WebSocket standard | — |
+| `4000` | Constante définie, non émise sur les liens relay | — | — |
 
 > Un refus HTTP 401 avant l'upgrade (token invalide, révoqué à la reconnexion, secret non configuré) n'a pas de code de fermeture : le client le traite comme une erreur de connexion (backoff 5 s → 60 s).
 
@@ -258,7 +261,7 @@ Admin                    Server                        Agents connectés
 ### Gestion du 401 par les agents hors-ligne
 
 Un agent qui se reconnecte après la deadline avec un ancien JWT reçoit HTTP 401.
-Il déclenche automatiquement un ré-enrollment (close(4003) ou 401 sur /api/register).
+Il déclenche automatiquement un ré-enrollment complet (`POST /api/register` avec `RELAY_ENROLLMENT_TOKEN`) puis se reconnecte. Un code de fermeture ne déclenche jamais de ré-enrôlement. Sans jeton d'enrôlement configuré, ou si le serveur répond `403`, le minion s'arrête avec le code 78.
 
 ### Stockage des secrets
 
@@ -290,9 +293,12 @@ Le plugin (inventory + connection) tourne sur l'**Ansible Control Node**, une ma
 administrée et de confiance. Il n'a pas de keypair RSA — il utilise un token statique
 émis par l'admin et hashé en DB.
 
-### Table DB
+### Modèle de données
+
+> Depuis la v3.0.3 il n'y a plus de table `plugin_tokens` : les jetons plugin sont des enregistrements du fichier d'état, et le jeton lui-même (`secagent_plg_` + 64 hex) est une chaîne opaque, **pas un JWT**. Le schéma ci-dessous est un modèle logique des champs conservés.
 
 ```sql
+-- modèle logique (champs de l'enregistrement dans l'état)
 CREATE TABLE plugin_tokens (
     id                       TEXT PRIMARY KEY,    -- UUID (identifiant public, affiché en CLI)
     token_hash               TEXT NOT NULL UNIQUE,-- SHA-256(token) — jamais le token en clair
@@ -318,7 +324,7 @@ Authorization: Bearer <token>
 X-Relay-Client-Host: ansible-control-prod   ← optionnel, déclaré par le client
 
 Server :
-  1. SHA-256(token) → lookup dans plugin_tokens
+  1. SHA-256(token) → recherche de l'empreinte dans l'état (enregistrements plugin)
   2. revoked == 0 ?
   3. expires_at IS NULL OR expires_at > now() ?
   4. allowed_ips IS NOT NULL → r.RemoteAddr ∈ au moins un des CIDRs ?
@@ -351,15 +357,15 @@ Pour une preuve cryptographique du hostname : utiliser mTLS (PKI interne, hors s
 
 ### Authentification plugin par relay (HAUT-6, v3.0.0)
 
-**Modèle v3.0.0** : Chaque relay signe ses propres plugin tokens (RELAY_PLUGIN_TOKEN)
-- Plugin pointe vers **UN relay uniquement** (pas de multi-relays)
-- Plugin s'authentifie avec le `RELAY_PLUGIN_TOKEN` du relay
-- Relay valide le token avec son JWT_SECRET_KEY (signature HS256)
-- **Jamais de partage** de JWT_SECRET_KEY ou RELAY_PLUGIN_TOKEN entre relays
+**Modèle** : chaque relay conserve ses propres jetons plugin dans son état et ne reconnaît que ceux-là.
+- Un jeton plugin est une chaîne opaque `secagent_plg_…` créée par `tokens create --role plugin` ; le relay n'en garde que l'empreinte SHA-256 (il n'est **pas** signé : ce n'est pas un JWT et `JWT_SECRET_KEY` n'intervient pas)
+- Le binaire `secagent-inventory` lit le jeton dans `RELAY_TOKEN` ; le plugin de connexion le lit dans un **fichier** (`RELAY_TOKEN_FILE`). Il n'existe pas de variable `RELAY_PLUGIN_TOKEN`
+- Le plugin s'adresse à **un seul relay** ; il peut recevoir plusieurs adresses (les instances du même relay en actif/passif), pas plusieurs relays distincts
+- **Jamais de partage** de JWT_SECRET_KEY ou des jetons plugin (`secagent_plg_…`) entre relays
 
-**Isolation** : Un token plugin signé par relay-central ne marche pas sur relay-dmz1
-- Chaque relay valide les tokens indépendamment
-- Pas de colonne `allowed_relay_ids` — l'isolation se fait par la clé de signature
+**Isolation** : un jeton plugin créé sur relay-central n'est pas connu de relay-dmz1
+- Chaque relay valide les jetons indépendamment, par recherche de l'empreinte dans son état
+- Il n'y a pas de champ `allowed_relay_ids` — l'isolation vient du fait que l'empreinte n'existe que dans l'état du relay qui l'a créé
 
 **Évolution envisagée (v3.0.1+)** : Centraliser la signature des tokens à la racine
 - Permettre au plugin de parler à plusieurs relays avec un seul token
@@ -624,7 +630,143 @@ Le binaire `secagent-inventory` utilise `RELAY_INSECURE_TLS` pour désactiver la
 
 ---
 
-## 11. Matrice des menaces
+## 11. Avis de sécurité
+
+### Avis 1 — Endpoints `/ws/agent` et `/ws/relay` sans authentification (v1.0.0, v2.0.0)
+
+**Versions affectées** : v1.0.0, v2.0.0
+
+**Description** : Les endpoints WebSocket `/ws/agent` (tous les nœuds) et `/ws/relay` (nœuds en mode proxy, si `PROXY_MODE=true`) acceptaient les connexions **sans token Bearer** via un repli non signé qui acceptait un paramètre de chaîne de requête `?hostname=` (pour `/ws/agent`) ou `?relay_id=` (pour `/ws/relay`).
+
+**Scénarios d'exploitation** :
+- **`/ws/agent`** : Un client sans token pouvait usurper n'importe quel hostname et recevoir les tâches destinées à cet agent, dont les commandes et les `become_pass` en stdin.
+- **`/ws/relay` (mode proxy)** : Un client pouvait usurper l'identité d'un relay, annoncer des hôtes arbitraires et détourner les tâches routées vers ces hôtes.
+
+**Versions corrigées** :
+- `/ws/agent` : **v3.0.3** (#169, commit 49ea502)
+- `/ws/relay` : **v3.0.3** (réécriture v3 avec fail-closed `extractRelayAuth`, JTI-based)
+
+**Compensation (déploiements v1.0.0 / v2.0.0)** :
+- Restriction réseau stricte des ports 7770 et 7772
+- Mise à jour vers v3.0.3 recommandée
+- Audit des logs : rechercher `JWT verification bypassed` sur `/ws/agent` ou relays suspects dans `relay_hello`/`agent_list` côté proxy
+- **Rotation des `become_pass`** des hôtes pilotés via déploiement qualif si un accès non contrôlé est possible
+
+**Recommandation** : tous les déploiements utilisant v1.0.0 ou v2.0.0 en environnement de production doivent **minimalement** restreindre les ports 7770/7772 aux adresses de confiance, et **préférentiellement** mettre à jour vers v3.0.3 ou ultérieur.
+
+### Avis 2 — Secrets de webhooks stockés en clair dans `action_log` (v1.0.0, v2.0.0)
+
+**Versions affectées** : v1.0.0, v2.0.0
+
+**Description** : L'historique des exécutions de hooks (table SQLite `action_log`) enregistrait la configuration complète de chaque hook sans masquage, y compris :
+- Secrets HMAC des webhooks
+- En-têtes incluant tokens d'autorisation
+- URL contenant des jetons en query string
+
+**Exposition** : L'endpoint `GET /api/admin/hooks/log` (et la CLI `secagent-server hooks log`) renvoyaient ces enregistrements à tout administrateur, et le fichier `relay.db` était accessible en clair lors de sauvegardes, exports ou accès au système de fichiers.
+
+**Versions corrigées** : **v3.0.3** (#161)
+- Action log remplacé par un journal append-only séparé avec masquage
+- Retrait des secrets de l'historique d'exécution
+- v3 repart d'un état vierge, pas de migration de l'historique
+
+**Recommandation (déploiements v1.0.0 / v2.0.0)** :
+- **Évaluer** tous les secrets configurés dans les hooks (HMAC, jetons URL, en-têtes) et les considérer comme exposés
+- **Faire tourner** tous les secrets de webhooks (secrets HMAC, jetons)
+- **Purger** les copies de `relay.db` : sauvegardes, exports, fichiers supprimés non écrasés
+- Revoir la liste des détenteurs de tokens admin
+- Mettre à jour vers v3.0.3
+
+### Avis 3 — `POST /api/token/refresh` non authentifiée et enrôlement sans jeton (v1.0.0, v2.0.0)
+
+**Versions affectées** : toutes les versions antérieures à v3.0.3, dont v1.0.0 et v2.0.0 (défaut présent depuis v1.0.0).
+
+**Description** : deux chemins émettaient un JWT agent **sans prouver l'identité de l'appelant** et **sans consulter la blacklist des JTI** :
+- **`POST /api/token/refresh`** : le seul contrôle était qu'un champ `challenge_encrypted` se déchiffre avec la clef du serveur (clef publique, donc fabricable par n'importe qui). Aucun en-tête `Authorization` n'était vérifié.
+- **`POST /api/register` sans `enrollment_token`** (flux historique « clef pré-autorisée ») : il suffisait de présenter un hostname et la clef publique enregistrée dans `authorized_keys`, sans preuve de possession de la clef privée.
+
+**Scénarios d'exploitation** :
+- **Contournement de la révocation** : un agent révoqué (JTI blacklisté) qui conserve sa clef privée obtenait un nouveau JTI non blacklisté et un nouveau JWT (chiffré pour sa clef, qu'il peut donc lire), puis se reconnectait à `/ws/agent`.
+- **Remplacement de JTI / déni de service** : toute personne connaissant un hostname (et, pour `/api/register`, sa clef publique, qui n'est pas secrète) remplaçait le JTI courant d'un agent légitime ; l'ancien JWT de l'agent était alors refusé (`token_replaced`) jusqu'à son ré-enrôlement. L'appelant ne pouvait pas lire le nouveau JWT (chiffré pour la clef de l'agent) : pas d'usurpation, mais une interruption répétable.
+
+**Versions corrigées** : **v3.0.3** (#192, #192c) :
+- la route `POST /api/token/refresh` est **supprimée** (`404` pour tout appelant) ; elle n'avait aucun client, le renouvellement se fait par ré-enrôlement ou message `rekey` ;
+- `POST /api/register` **sans jeton d'enrôlement est refusé** (`403 enrollment_token_required`, identique quels que soient hostname et clef) ; le flux avec jeton exige le challenge RSA-OAEP, dont la preuve de possession de la clef privée est comparée côté serveur.
+
+**Seconde porte (corrigée par #193)** : même après la suppression de ces deux chemins, la révocation ne reposait que sur la blacklist du JTI courant (rétention 25 h). Un agent révoqué qui gardait sa clef privée pouvait se **ré-enrôler avec un jeton d'enrôlement réutilisable** (ou à `hostname_pattern` large) et obtenir un nouveau JTI non blacklisté ; l'oubli de la blacklist après 25 h produisait le même effet. v3.0.3 pose à la révocation un **drapeau persistant `revoked`** sur l'agent, dans la même écriture que la blacklist : l'enrôlement (`403 agent_revoked`, jeton non consommé), le `rekey` et le handshake `/ws/agent` refusent un hôte révoqué même sans entrée de blacklist. La révocation se lève **uniquement** par `DELETE /api/admin/minions/{hostname}` (pas de `unrevoke`). Les révocations antérieures à #193 sont réparées au démarrage du maître tant que le JTI est encore en blacklist ; au-delà de 25 h elles sont oubliées et doivent être refaites. Voir `DOC/contracts/REST_ADMIN.md` et `DOC/server/STATE_SPEC.md`.
+
+**Exposition tant que v2.0.0 est en service** : l'environnement de qualification resté en v2.0.0 est exposé jusqu'à sa migration vers v3.0.3.
+
+**Mitigation réseau (déploiements v1.0.0 / v2.0.0)** :
+- bloquer l'accès à `POST /api/token/refresh` et restreindre `POST /api/register` aux réseaux d'enrôlement (pare-feu ou reverse proxy en frontal) ;
+- **en v1.0.0 / v2.0.0 la révocation n'est pas fiable** face à un agent qui conserve sa clef privée (aucun drapeau persistant) : pour un hôte à exclure, couper son accès réseau aux ports 7770/7772 (pare-feu) en attendant la mise à jour vers v3.0.3 ;
+- mettre à jour vers v3.0.3.
+
+**Recommandation** : mettre à jour vers v3.0.3 ; après la mise à jour, tous les agents se ré-enrôlent avec un jeton d'enrôlement (état vierge).
+
+### Limites connues — v3.0.3
+
+#### Révocation d'agent : drapeau persistant, retour arrière et révocations anciennes (#193)
+
+- **Retour arrière** : le décodeur d'état est strict ; un binaire antérieur à #193 rejette un état contenant `"revoked": true` (`unknown field "revoked"`, classé corruption). **Il peut alors basculer sur `relay.state.prev`** (`[SECURITY WARNING]`), génération plus ancienne qui peut ne pas contenir la révocation : **la révocation est perdue silencieusement** et l'hôte révoqué peut se ré-enrôler. Avant tout retour arrière : noter les agents révoqués, les supprimer (`DELETE`), puis ré-appliquer les révocations avec l'ancien binaire. Avant un rollback : lever les révocations (`DELETE` des agents) ou restaurer un état antérieur (`schema_version` reste 1).
+- **Révocations antérieures à #193** : réparées au démarrage du maître seulement si le JTI courant est encore en blacklist (25 h). Les plus anciennes sont oubliées : **révoquer à nouveau** ces hôtes.
+- **Levée** : `DELETE /api/admin/minions/{hostname}` supprime aussi les variables de l'hôte et sa clef autorisée ; il n'y a pas de levée qui les conserve.
+
+#### Anti-rejeu limité : arrêt à froid
+
+La garde de `write_seq` (#163) interdit le rejeu d'une copie d'état authentique plus ancienne **quand les instances sont vivantes**.
+
+**Limite** : Après un **arrêt à froid de toutes les instances**, cette garde en mémoire est perdue. Un attaquant ayant accès en écriture à `STATE_DIR` peut rejouer une copie authentique plus ancienne (avant une révocation de token ou d'agent, par exemple).
+
+**Mitigations** :
+- **Permissions strictes** sur `STATE_DIR` : propriétaire = compte de service seul, mode 0700, export NFS restreint aux hôtes candidats
+- **Sauvegardes datées** stockées hors de `STATE_DIR` (support distinct, contrôle d'accès différent)
+- **Supervision des écritures** dans `STATE_DIR` : auditer toute modification de `relay.state` en dehors du processus serveur
+- **Vérification avant redémarrage à froid** : utiliser `secagent-server state verify --min-write-seq` (#187) pour vérifier l'intégrité et l'antériorité d'une copie d'état avant de la restaurer
+
+#### DoS de promotion par `relay.lock` forgé
+
+Un attaquant ayant accès en écriture à `STATE_DIR` peut déposer un `relay.lock` contenant un `write_seq` démesuré (ex. 2^64−1).
+
+**Cas** : Les secondaires mémorisent le maximum `write_seq` observé (`l.minSeq`), et la garde anti-rejeu refuse tout état ayant un `write_seq` inférieur. Un faux `relay.lock` avec une valeur extrême bloque **définitivement toute promotion** (déni de service) tant qu'il existe.
+
+**Modèle de menace** : Identique à la corruption directe de `relay.state` (l'attaquant a déjà accès en écriture à `STATE_DIR`).
+
+**Mitigation** :
+- Restrictions d'accès à `STATE_DIR` (permissions OS, ACL NFS)
+- En cas de blocage de promotion : identifier le `relay.lock` contenant le `write_seq` incohérent (comparer avec `secagent-server state verify`), le supprimer après vérification, redémarrer les secondaires (qui perdent `l.minSeq` à la réinitialisation)
+
+#### Rotation de `RSA_MASTER_KEY`
+
+La rotation de la clé maître exige une **réécriture complète de l'état** (tous les secrets rechiffrés, HMAC recalculé), sinon l'ancien fichier est refusé au démarrage.
+
+**Procédure** :
+1. Sauvegarder `STATE_DIR` préalablement
+2. Arrêter toutes les instances (ou utiliser la bascule actif/passif)
+3. Redémarrer les instances avec la nouvelle clé : elles rechiffrent l'état au 1er démarrage
+4. Monitorer les erreurs de déchiffrement (clé mal propagée)
+
+Le serveur **ne** redéploiera **jamais** une ancienne clé en cas d'erreur : il s'arrêtera avec un message d'erreur explicite.
+
+#### Fichier de jeton du plugin Ansible : `O_NOFOLLOW` ne protège que le dernier composant
+
+Le plugin de connexion lit son jeton plugin dans un fichier (défaut `/etc/ansible/secagent_plugin.jwt`, `SECAGENT-PYTHON/ansible_plugins/connection_plugins/relay.py`). Il l'ouvre en `O_NOFOLLOW`, vérifie sur le descripteur (`fstat`) que c'est un fichier **régulier** (lien symbolique, FIFO, socket, périphérique refusés), appartenant à l'utilisateur effectif, sans droit pour le groupe ni les autres (`mode & 0o077` refusé, donc `0600` ou `0400`).
+
+**Limite** : `O_NOFOLLOW` ne s'applique qu'au **dernier** composant du chemin. Un lien symbolique placé sur un répertoire parent est suivi. **Mitigation** : protéger le répertoire parent (propriétaire root ou utilisateur Ansible, non modifiable par les autres) et ne jamais placer le fichier dans un répertoire partagé comme `/tmp`.
+
+#### REPEATER_CA_FILE n'est pas rechargé à chaud
+
+Contrairement à `TLS_CERT` / `TLS_KEY` qui sont rechargés à chaud via `GetCertificate`, le bundle CA du relais (`REPEATER_CA_FILE`) est chargé une seule fois au démarrage.
+
+**Rotation de la CA** : Si des certificats internes doivent être mis à jour, l'une des deux actions est nécessaire :
+1. **Redémarrage** de l'instance serveur (indisponibilité brève)
+2. **Basculement actif/passif** : arrêt propre du maître (le secondaire prend le relais avec la nouvelle CA)
+
+À documenter dans le runbook DEPLOYMENT lors de la rotation de certificats internes.
+
+---
+
+## 12. Matrice des menaces
 
 | Menace | Contremesure |
 |---|---|

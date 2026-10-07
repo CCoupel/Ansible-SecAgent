@@ -7,13 +7,15 @@
 //
 // Configuration (variables d'environnement) :
 //
-//	RELAY_SERVER_URL      URL HTTPS du relay server   (défaut: https://localhost:7770)
+//	RELAY_SERVER_URL      URL HTTPS du relay server, ou LISTE d'URL séparées par des virgules
+//	                      (relay actif/passif, #167) — défaut: https://localhost:7770
 //	RELAY_TOKEN           Bearer token (ADMIN_TOKEN)  (optionnel)
 //	RELAY_CA_BUNDLE       CA bundle PEM custom         (optionnel)
 //	RELAY_INSECURE_TLS    "true" pour désactiver la vérification TLS (TESTS UNIQUEMENT) :
 //	                      avertissement sur stderr à chaque exécution ; refusé si l'URL n'est pas
 //	                      une adresse de bouclage, sauf RELAY_INSECURE_TLS_ACK=i-understand-the-risk
 //	RELAY_INSECURE_TLS_ACK  confirmation explicite pour désactiver TLS vers un serveur non-bouclage
+//	RELAY_INVENTORY_VERBOSE "1" pour afficher sur stderr le détail des adresses en échec (diagnostic)
 //	RELAY_ONLY_CONNECTED  "true" pour filtrer hôtes connectés uniquement (défaut: false)
 //	RELAY_SCOPE           id d'un relay : limite l'inventaire à sa descendance (optionnel)
 //
@@ -24,17 +26,22 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
 	"strings"
 	"time"
+
+	"secagent-server/internal/endpoints"
 )
 
 // InventoryResponse est le format retourné par GET /api/inventory.
@@ -190,12 +197,15 @@ func main() {
 	}
 
 	cfg := loadConfig()
+	configureLogging(os.Stderr, getenv("RELAY_INVENTORY_VERBOSE", "") == "1")
 
 	// Garde TLS : avant toute requête, pour --list comme pour --host (qui masque les erreurs réseau).
 	if err := checkInsecureTLS(cfg, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	warnPlainHTTP(cfg, os.Stderr)
 
 	switch args[0] {
 	case "--list":
@@ -238,19 +248,54 @@ func isLoopbackURL(raw string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// checkInsecureTLS applique la garde de RELAY_INSECURE_TLS. Sans RELAY_INSECURE_TLS elle ne fait rien.
-// Sinon : refus si l'URL n'est pas en bouclage et que l'ACK explicite manque ; avertissement sur w
-// (stderr — stdout reste du JSON pur) dans les autres cas. Le token n'est jamais écrit.
+// checkInsecureTLS applique la garde de RELAY_INSECURE_TLS à CHAQUE adresse de RELAY_SERVER_URL.
+// Sans RELAY_INSECURE_TLS elle ne fait rien. Sinon : refus si une adresse n'est pas en bouclage et
+// que l'ACK explicite manque ; avertissement sur w (stderr — stdout reste du JSON pur) dans les
+// autres cas. Le token n'est jamais écrit.
 func checkInsecureTLS(cfg config, w io.Writer) error {
 	if !cfg.insecure {
 		return nil
 	}
-	if !isLoopbackURL(cfg.serverURL) && cfg.insecureAck != insecureAckValue {
-		return fmt.Errorf("RELAY_INSECURE_TLS=true refused: server URL %q is not a loopback address "+
-			"(localhost, 127.0.0.0/8, ::1); set RELAY_INSECURE_TLS_ACK=%s to confirm", cfg.serverURL, insecureAckValue)
+	urls, err := endpoints.Parse(cfg.serverURL)
+	if err != nil {
+		return fmt.Errorf("RELAY_SERVER_URL: %w", err)
 	}
-	_, err := fmt.Fprintf(w, "[SECURITY WARNING] TLS verification disabled (RELAY_INSECURE_TLS=true) for %s\n", cfg.serverURL)
+	shown := make([]string, 0, len(urls))
+	for _, u := range urls {
+		if !isLoopbackURL(u.String()) && cfg.insecureAck != insecureAckValue {
+			return fmt.Errorf("RELAY_INSECURE_TLS=true refused: server URL %q is not a loopback address "+
+				"(localhost, 127.0.0.0/8, ::1); set RELAY_INSECURE_TLS_ACK=%s to confirm", u.String(), insecureAckValue)
+		}
+		shown = append(shown, u.String())
+	}
+	_, err = fmt.Fprintf(w, "[SECURITY WARNING] TLS verification disabled (RELAY_INSECURE_TLS=true) for %s\n", strings.Join(shown, ","))
 	return err
+}
+
+// warnPlainHTTP warns (on w = stderr, stdout stays pure JSON) for every address that uses http://
+// towards a host that is not a loopback address: the bearer token would travel in clear. It never
+// refuses and never writes the token.
+func warnPlainHTTP(cfg config, w io.Writer) {
+	urls, err := endpoints.Parse(cfg.serverURL)
+	if err != nil {
+		return
+	}
+	for i, u := range urls {
+		if strings.EqualFold(u.Scheme, "http") && !isLoopbackURL(u.String()) {
+			_, _ = fmt.Fprintf(w, "[SECURITY WARNING] address #%d (%s) uses http://: the token is sent in clear, https is required outside localhost\n", i+1, u.Host)
+		}
+	}
+}
+
+// configureLogging keeps the failed-attempt diagnostics of internal/endpoints (slog warnings that
+// Ansible would show as errors while the inventory succeeds) out of stderr, unless
+// RELAY_INVENTORY_VERBOSE=1. When EVERY address fails the final error carries the detail anyway.
+func configureLogging(w io.Writer, verbose bool) {
+	if verbose {
+		slog.SetDefault(slog.New(slog.NewTextHandler(w, nil)))
+		return
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // cmdList implémente --list : GET /api/inventory → JSON Ansible complet
@@ -299,51 +344,136 @@ func cmdHost(cfg config, hostname string) error {
 	return nil
 }
 
-// fetchInventory appelle GET /api/inventory et retourne la réponse parsée
+// Délais (#167) : le timeout de 10 s du client HTTP vaut PAR ADRESSE ; fetchTotalTimeout plafonne
+// l'ensemble des essais (une liste de 16 adresses muettes ne bloque pas Ansible plus de 30 s).
+const maxInventoryBytes = 256 << 20
+
+// variables only so that the tests can shorten them.
+var (
+	perAddressTimeout = 10 * time.Second
+	fetchTotalTimeout = 30 * time.Second
+)
+
+// inventoryReply is what one address answered: any HTTP status except 503.
+type inventoryReply struct {
+	status int
+	body   []byte
+}
+
+// fetchInventory appelle GET /api/inventory sur les adresses de RELAY_SERVER_URL (dans l'ordre de
+// la liste : process éphémère, rien n'est mémorisé) et retourne la réponse parsée.
+//
+// La requête est un GET idempotent : on passe à l'adresse suivante sur un échec de connexion, un
+// timeout, une coupure en cours de réponse ou un 503 (instance en cours d'arrêt / passive). Tout
+// autre statut (401, 403, 404, 500…) est renvoyé tel quel : c'est une réponse du serveur, pas un
+// problème de disponibilité, et aucune autre adresse n'est essayée.
+//
+// Contrat endpoints.MarkSent : DialFirst classe un échec « avant envoi » tant qu'aucun octet de
+// requête n'est parti. Ici tout passe par net/http, suivi automatiquement (httptrace) : rien à
+// marquer. TOUT FUTUR DIAL BRUT (connexion TCP, upgrade WebSocket…) DEVRA appeler
+// endpoints.MarkSent(ctx) juste avant sa première écriture.
 func fetchInventory(cfg config) (*InventoryResponse, error) {
+	urls, err := endpoints.Parse(cfg.serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("RELAY_SERVER_URL: %w", err)
+	}
 	client, err := newHTTPClient(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP client: %w", err)
 	}
 
-	url := cfg.serverURL + "/api/inventory"
-	// Always pass only_connected parameter explicitly
+	query := "?only_connected=false"
 	if cfg.onlyConnected {
-		url += "?only_connected=true"
-	} else {
-		url += "?only_connected=false"
+		query = "?only_connected=true"
 	}
 	if cfg.scopeRelay != "" {
-		url += "&relay=" + neturl.QueryEscape(cfg.scopeRelay)
+		query += "&relay=" + neturl.QueryEscape(cfg.scopeRelay)
 	}
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), fetchTotalTimeout)
+	defer cancel()
+
+	var tried []string
+	for i, u := range urls {
+		reply, err := fetchFromAddress(ctx, client, u, query, cfg.token)
+		if err == nil {
+			if reply.status >= 300 && reply.status < 400 {
+				// the Location (target URL) is deliberately not echoed
+				return nil, fmt.Errorf("server returned %d: redirection refused (never followed, the token is sent to the configured addresses only)", reply.status)
+			}
+			if reply.status != http.StatusOK {
+				return nil, fmt.Errorf("server returned %d: %s", reply.status, strings.TrimSpace(string(reply.body)))
+			}
+			var inv InventoryResponse
+			if err := json.Unmarshal(reply.body, &inv); err != nil {
+				return nil, fmt.Errorf("decode response: %w", err)
+			}
+			return &inv, nil
+		}
+		// the reason never carries the token nor the query string (redacted by endpoints / see below)
+		tried = append(tried, fmt.Sprintf("#%d %s: %s", i+1, u.Host, err))
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	untried := ""
+	if n := len(urls) - len(tried); n > 0 {
+		untried = fmt.Sprintf(", %d not tried (time budget)", n)
+	}
+	return nil, fmt.Errorf("relay unreachable, %d address(es) tried%s: %s", len(tried), untried, strings.Join(tried, "; "))
+}
+
+// fetchFromAddress asks ONE address through endpoints.DialFirst (per-address timeout, failure
+// classification). A failure after the request left (timeout, reset) is also an "unavailable"
+// answer here because the GET is idempotent: the caller moves on to the next address.
+func fetchFromAddress(ctx context.Context, client *http.Client, u *neturl.URL, query, token string) (*inventoryReply, error) {
+	rotor, err := endpoints.NewRotor([]*neturl.URL{u}, endpoints.Backoff{})
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return nil, err
 	}
-
-	if cfg.token != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.token)
-	}
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := client.Do(req)
+	var cause error // the dial error itself (DialFirst wraps it with a position that would be misleading here)
+	reply, _, err := endpoints.DialFirst(ctx, rotor, perAddressTimeout,
+		func(actx context.Context, au *neturl.URL) (r *inventoryReply, derr error) {
+			defer func() { cause = derr }()
+			target := strings.TrimRight(au.String(), "/") + "/api/inventory" + query
+			req, err := http.NewRequestWithContext(actx, http.MethodGet, target, nil)
+			if err != nil {
+				return nil, fmt.Errorf("build request: %w", err)
+			}
+			if token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			req.Header.Set("Accept", "application/json")
+			resp, err := client.Do(req)
+			if err != nil {
+				return nil, unwrapURLError(err)
+			}
+			defer closeBody(resp.Body)
+			if resp.StatusCode == http.StatusServiceUnavailable {
+				return nil, endpoints.MarkBeforeSend(errors.New("HTTP 503 (instance unavailable)"))
+			}
+			body, err := io.ReadAll(io.LimitReader(resp.Body, maxInventoryBytes))
+			if err != nil {
+				return nil, fmt.Errorf("read response: %w", err)
+			}
+			return &inventoryReply{status: resp.StatusCode, body: body}, nil
+		})
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", url, err)
+		if cause != nil {
+			return nil, cause
+		}
+		return nil, err
 	}
-	defer closeBody(resp.Body)
+	return reply, nil
+}
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+// unwrapURLError drops the URL (query string included) that net/http embeds in its errors.
+func unwrapURLError(err error) error {
+	var ue *neturl.Error
+	if errors.As(err, &ue) {
+		return ue.Err
 	}
-
-	var inv InventoryResponse
-	if err := json.NewDecoder(resp.Body).Decode(&inv); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-
-	return &inv, nil
+	return err
 }
 
 // newHTTPClient crée un client HTTP avec la configuration TLS appropriée
@@ -371,6 +501,9 @@ func newHTTPClient(cfg config) (*http.Client, error) {
 	return &http.Client{
 		Transport: transport,
 		Timeout:   10 * time.Second,
+		// NO redirection is ever followed: the bearer token must only reach the configured
+		// addresses, never a host named by a Location header. A 3xx is reported as an error.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}, nil
 }
 

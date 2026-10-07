@@ -14,10 +14,10 @@ Tu travailles UNIQUEMENT dans le dossier : GO/cmd/server/
 - HLD : DOC/common/HLD.md §2 (décomposition), §3 (flux), §6 (DA)
 
 ## Domaine d'expertise
-- GO : net/http, gorilla/websocket, NATS JetStream, SQLite (modernc)
+- GO : net/http, gorilla/websocket, fichier d'état `relay.state` (HMAC, `STATE_DIR`) + verrou `relay.lock` actif/passif (ni SQLite ni NATS, `CGO_ENABLED=0`)
 - JWT : génération, vérification signature, extraction JTI, chiffrement asymétrique RSA-OAEP
 - WebSocket : acceptation, envoi/réception JSON, gestion déconnexion, ping/pong
-- NATS JetStream : publish, subscribe, streams, ACK
+- Dispatch : WebSocket direct multiplexé par `task_id` (NATS retiré en v3.0.3)
 - Enrollment token security : challenge-response OAEP, one-shot tokens, permanent tokens, CIDR matching
 - CLI cobra intégrée dans le binaire secagent-server
 

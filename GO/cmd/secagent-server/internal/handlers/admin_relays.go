@@ -21,8 +21,8 @@ import (
 	"github.com/google/uuid"
 
 	"secagent-server/cmd/secagent-server/internal/auth"
-	"secagent-server/cmd/secagent-server/internal/crypto"
 	"secagent-server/cmd/secagent-server/internal/repeater"
+	"secagent-server/cmd/secagent-server/internal/state"
 	"secagent-server/cmd/secagent-server/internal/storage"
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
@@ -31,12 +31,12 @@ import (
 
 var (
 	pushHooksMu sync.RWMutex
-	pushStartFn func(relayID, url, token string) error
+	pushStartFn func(relayID string, urls []string, token string) error
 	pushStopFn  func(relayID string)
 )
 
 // SetRelayPushHooks wires the dial-out manager: start (hot) / stop a Dialer for a push relay.
-func SetRelayPushHooks(start func(relayID, url, token string) error, stop func(relayID string)) {
+func SetRelayPushHooks(start func(relayID string, urls []string, token string) error, stop func(relayID string)) {
 	pushHooksMu.Lock()
 	pushStartFn, pushStopFn = start, stop
 	pushHooksMu.Unlock()
@@ -47,33 +47,33 @@ const pushTokenPrefix = "enc:"
 // ErrPushTokenKeyMissing is returned when a push token must be stored but RSA_MASTER_KEY is unset.
 var ErrPushTokenKeyMissing = errors.New("RSA_MASTER_KEY is required to store a push relay token")
 
-// SealPushToken encrypts a push-mode token for storage in relay_nodes.token_hash
-// (AES-256-GCM with RSA_MASTER_KEY, "enc:" prefix). Fail closed: without a master key the
-// token is never stored in clear. (The column is named token_hash for historical reasons:
-// for push nodes it holds the encrypted token, not a hash.)
-func SealPushToken(token string) (string, error) {
+// SealPushToken encrypts a push-mode token for storage in relay_nodes.token_secret: AES-256-GCM
+// under RSA_MASTER_KEY, "enc:" prefix, bound to the relay (AAD), so that a sealed token moved to
+// another relay does not open. Fail closed: without a master key the token is never stored in clear.
+func SealPushToken(relayID, token string) (string, error) {
 	key, ok := rsaMasterKey()
 	if !ok {
 		log.Printf("[SECURITY WARNING] push relay registration refused: RSA_MASTER_KEY is not set")
 		return "", ErrPushTokenKeyMissing
 	}
-	enc, err := crypto.EncryptAESGCM(token, key)
+	sealed, err := state.SealSecret(token, key, state.RelayTokenSecretAAD(relayID))
 	if err != nil {
 		return "", fmt.Errorf("encrypt push token: %w", err)
 	}
-	return pushTokenPrefix + enc, nil
+	return sealed, nil
 }
 
-// OpenPushToken returns the clear token from its stored form (legacy rows are plaintext).
-func OpenPushToken(stored string) (string, error) {
+// OpenPushToken returns the clear token from its stored form. A value that is not sealed is
+// refused (the state engine never loads one).
+func OpenPushToken(relayID, stored string) (string, error) {
 	if !strings.HasPrefix(stored, pushTokenPrefix) {
-		return stored, nil
+		return "", errors.New("push token is not sealed")
 	}
 	key, ok := rsaMasterKey()
 	if !ok {
 		return "", errors.New("push token is encrypted but RSA_MASTER_KEY is not set")
 	}
-	token, err := crypto.DecryptAESGCM(strings.TrimPrefix(stored, pushTokenPrefix), key)
+	token, err := state.OpenSecret(stored, key, state.RelayTokenSecretAAD(relayID))
 	if err != nil {
 		return "", fmt.Errorf("decrypt push token: %w", err)
 	}
@@ -86,11 +86,14 @@ func OpenPushToken(stored string) (string, error) {
 
 // RelayCreateRequest is the body for POST /api/admin/relays.
 type RelayCreateRequest struct {
-	RelayID     string `json:"relay_id"`        // required, unique name e.g. "dmz1"
-	Mode        string `json:"mode,omitempty"`  // "pull" (default) or "push"
-	URL         string `json:"url,omitempty"`   // push mode: relay HTTP base URL
-	Token       string `json:"token,omitempty"` // push mode: bearer token to auth to the relay
-	Description string `json:"description,omitempty"`
+	RelayID string `json:"relay_id"`       // required, unique name e.g. "dmz1"
+	Mode    string `json:"mode,omitempty"` // "pull" (default) or "push"
+	// push mode: wss:// address(es) of the child's instances, tried in order. "url" (a string) is
+	// the pre-v3.0.3 form, kept for compatibility: it is converted to a one-element list.
+	URLs        []string `json:"urls,omitempty"`
+	URL         string   `json:"url,omitempty"`
+	Token       string   `json:"token,omitempty"` // push mode: bearer token to auth to the relay
+	Description string   `json:"description,omitempty"`
 }
 
 // RelayCreateResponse is returned from POST /api/admin/relays.
@@ -103,22 +106,24 @@ type RelayCreateResponse struct {
 	Description string `json:"description,omitempty"`
 	// pull mode only — shown ONCE, never stored in plain text
 	JWTToken string `json:"jwt_token,omitempty"`
-	// push mode only
-	URL       string `json:"url,omitempty"`
-	CreatedAt string `json:"created_at"`
+	// push mode only: the addresses ("url" = the first one, for older clients)
+	URLs      []string `json:"urls,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	CreatedAt string   `json:"created_at"`
 }
 
 // RelaySummary is the list view for a relay node (no token plain text).
 type RelaySummary struct {
-	ID          string  `json:"id"`
-	RelayID     string  `json:"relay_id"`
-	Mode        string  `json:"mode"`
-	IsProxy     bool    `json:"is_proxy"`
-	Status      string  `json:"status"`
-	Description string  `json:"description,omitempty"`
-	URL         string  `json:"url,omitempty"`
-	LastSeen    *string `json:"last_seen,omitempty"`
-	CreatedAt   string  `json:"created_at"`
+	ID          string   `json:"id"`
+	RelayID     string   `json:"relay_id"`
+	Mode        string   `json:"mode"`
+	IsProxy     bool     `json:"is_proxy"`
+	Status      string   `json:"status"`
+	Description string   `json:"description,omitempty"`
+	URLs        []string `json:"urls,omitempty"`
+	URL         string   `json:"url,omitempty"`
+	LastSeen    *string  `json:"last_seen,omitempty"`
+	CreatedAt   string   `json:"created_at"`
 }
 
 // RelayStatusResponse is returned from GET /api/admin/relays/status.
@@ -173,7 +178,14 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Mode == "push" {
-		if strings.TrimSpace(req.URL) == "" {
+		if len(req.URLs) > 0 && strings.TrimSpace(req.URL) != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url_and_urls_are_exclusive"})
+			return
+		}
+		if len(req.URLs) == 0 && strings.TrimSpace(req.URL) != "" {
+			req.URLs = []string{strings.TrimSpace(req.URL)} // compatibility: url → one-element list
+		}
+		if len(req.URLs) == 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url_required_for_push_mode"})
 			return
 		}
@@ -182,7 +194,7 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// wss:// only, no userinfo, valid id (the error never echoes url userinfo or the token).
-		if err := repeater.ValidateDialTarget(repeater.DialTarget{RelayID: req.RelayID, URL: req.URL, Token: req.Token}); err != nil {
+		if err := repeater.ValidateNewDialTarget(repeater.DialTarget{RelayID: req.RelayID, URLs: req.URLs, Token: req.Token}); err != nil {
 			log.Printf("AdminCreateRelay push target rejected: relay_id=%q: %v", req.RelayID, err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_push_target"})
 			return
@@ -232,9 +244,9 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		node.TokenHash = fmt.Sprintf("%x", h)
 
 	case "push":
-		node.URL = req.URL
+		node.URLs = req.URLs
 		// The dialer needs the clear token: stored encrypted (RSA_MASTER_KEY), never returned.
-		sealed, err := SealPushToken(req.Token)
+		sealed, err := SealPushToken(req.RelayID, req.Token)
 		if err != nil {
 			if errors.Is(err, ErrPushTokenKeyMissing) {
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "rsa_master_key_required_for_push_mode"})
@@ -244,7 +256,7 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token_encryption_failed"})
 			return
 		}
-		node.TokenHash = sealed
+		node.TokenSecret = sealed
 	}
 
 	// Re-registering a relay issues a NEW token: remember the previous JTI so it can be cut off.
@@ -273,7 +285,7 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("Relay registered: relay_id=%q mode=%s id=%s", req.RelayID, req.Mode, id)
+	log.Printf("Relay registered: relay_id=%q mode=%q id=%q", req.RelayID, req.Mode, id)
 
 	// Push mode: start the dial-out immediately, without restart.
 	if req.Mode == "push" {
@@ -281,7 +293,7 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		start := pushStartFn
 		pushHooksMu.RUnlock()
 		if start != nil {
-			if err := start(req.RelayID, req.URL, req.Token); err != nil {
+			if err := start(req.RelayID, req.URLs, req.Token); err != nil {
 				log.Printf("AdminCreateRelay: dialer start failed: relay_id=%q: %v", req.RelayID, err)
 			}
 		}
@@ -294,7 +306,8 @@ func AdminCreateRelay(w http.ResponseWriter, r *http.Request) {
 		Status:      "pending",
 		Description: req.Description,
 		JWTToken:    jwtToken, // empty for push mode
-		URL:         req.URL,  // empty for pull mode
+		URLs:        req.URLs, // empty for pull mode
+		URL:         firstOf(req.URLs),
 		CreatedAt:   now.Format(time.RFC3339),
 	}
 	writeJSON(w, http.StatusCreated, resp)
@@ -446,7 +459,7 @@ func AdminDeleteRelay(w http.ResponseWriter, r *http.Request) {
 	// A deleted relay must not keep a live link: cut it (permanent code, #148).
 	disconnected := ws.CloseRelay(node.RelayID, ws.WSRelayCloseRevoked, "relay deleted")
 
-	log.Printf("Relay deleted: id=%s relay_id=%q link_closed=%v", id, node.RelayID, disconnected)
+	log.Printf("Relay deleted: id=%q relay_id=%q link_closed=%v", id, node.RelayID, disconnected)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -462,7 +475,8 @@ func relayNodeToSummary(n storage.RelayNode) RelaySummary {
 		IsProxy:     n.IsProxy,
 		Status:      n.Status,
 		Description: n.Description,
-		URL:         n.URL,
+		URLs:        n.URLs,
+		URL:         firstOf(n.URLs),
 		CreatedAt:   time.Unix(n.CreatedAt, 0).UTC().Format(time.RFC3339),
 	}
 	if n.LastSeen != nil {
@@ -536,7 +550,7 @@ func revokeRelayNode(r *http.Request, node *storage.RelayNode) (RelayRevokeRespo
 		resp.LegacyToken = info.JTI == ""
 	}
 	resp.Disconnected = ws.CloseRelay(node.RelayID, ws.WSRelayCloseRevoked, "token revoked")
-	log.Printf("Relay revoked: relay_id=%q mode=%s blacklisted=%v legacy=%v link_closed=%v",
+	log.Printf("Relay revoked: relay_id=%q mode=%q blacklisted=%v legacy=%v link_closed=%v",
 		node.RelayID, node.Mode, resp.Blacklisted, resp.LegacyToken, resp.Disconnected)
 	return resp, nil
 }
@@ -551,4 +565,12 @@ func RelayRevokedCheck(relayID string) (bool, error) {
 		return false, err
 	}
 	return info.Revoked, nil
+}
+
+// firstOf returns the first address of a list ("" when empty): the legacy "url" field.
+func firstOf(l []string) string {
+	if len(l) == 0 {
+		return ""
+	}
+	return l[0]
 }

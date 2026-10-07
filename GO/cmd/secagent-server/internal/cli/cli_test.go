@@ -658,7 +658,6 @@ func TestServerStatus(t *testing.T) {
 		}
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(`{
-			"nats":"connected",
 			"db":"ok",
 			"ws_connections":3,
 			"uptime":"2h30m"
@@ -677,9 +676,6 @@ func TestServerStatus(t *testing.T) {
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if result["nats"] != "connected" {
-		t.Errorf("expected nats=connected, got %v", result["nats"])
-	}
 	if result["db"] != "ok" {
 		t.Errorf("expected db=ok, got %v", result["db"])
 	}
@@ -690,16 +686,12 @@ func TestServerStatus(t *testing.T) {
 			m := v.(map[string]interface{})
 			tp := newTabPrinter()
 			tp.println("COMPONENT\tSTATUS")
-			tp.printf("nats\t%v\n", m["nats"])
 			tp.printf("db\t%v\n", m["db"])
 			tp.printf("ws_connections\t%v\n", m["ws_connections"])
 			tp.printf("uptime\t%v\n", m["uptime"])
 			return tp.flush()
 		})
 	})
-	if !strings.Contains(out, "nats") || !strings.Contains(out, "connected") {
-		t.Errorf("table output missing expected content: %q", out)
-	}
 	if !strings.Contains(out, "db") || !strings.Contains(out, "ok") {
 		t.Errorf("table output missing db status: %q", out)
 	}
@@ -1343,7 +1335,7 @@ func TestInventoryListRunE(t *testing.T) {
 func TestServerStatusRunE(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		_, _ = w.Write([]byte(`{"nats":"connected","db":"ok","ws_connections":3,"uptime":"2h"}`))
+		_, _ = w.Write([]byte(`{"db":"ok","ws_connections":3,"uptime":"2h"}`))
 	})
 
 	out := captureStdout(t, func() {
@@ -1352,8 +1344,11 @@ func TestServerStatusRunE(t *testing.T) {
 			t.Errorf("RunE returned error: %v", err)
 		}
 	})
-	if !strings.Contains(out, "nats") || !strings.Contains(out, "connected") {
-		t.Errorf("expected nats status in output, got: %q", out)
+	if !strings.Contains(out, "db") || !strings.Contains(out, "ws_connections") {
+		t.Errorf("expected db and ws_connections in output, got: %q", out)
+	}
+	if strings.Contains(strings.ToLower(out), "nats") {
+		t.Errorf("server status must not mention NATS any more (#178): %q", out)
 	}
 }
 
@@ -1520,5 +1515,23 @@ func TestSecurityKeysStatus(t *testing.T) {
 	rotActive, _ := result["rotation_active"].(bool)
 	if rotActive {
 		t.Error("expected rotation_active=false")
+	}
+}
+
+// #183: server status shows the hooks queue counters when the server reports them.
+func TestServerStatusShowsHooksCounters(t *testing.T) {
+	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"db":"ok","ws_connections":3,"uptime":"2h","hooks_queue_depth":4,"hooks_queue_capacity":10000,"hooks_inflight":2,"hooks_dropped_events":7,"hooks_dropped_actions":0}`))
+	})
+	out := captureStdout(t, func() {
+		if err := serverStatusCmd.RunE(serverStatusCmd, nil); err != nil {
+			t.Errorf("RunE: %v", err)
+		}
+	})
+	for _, want := range []string{"hooks_queue_depth", "4 / 10000", "hooks_inflight", "hooks_dropped_events", "7", "hooks_dropped_actions"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q missing from:\n%s", want, out)
+		}
 	}
 }

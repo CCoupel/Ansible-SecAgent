@@ -1,6 +1,10 @@
 # Ansible-SecAgent — Guide CDP & Exécution du projet
 
-**Ce document est le point d'entrée unique pour comprendre et exécuter le projet.**
+> **ARCHIVE HISTORIQUE** — Ce fichier est le journal CDP de la Phase 0 (v1/MVP). Il n'est plus le point d'entrée du projet.
+> Voir `README.md`, `CLAUDE.md`, `DOC/common/HLD.md` et `DOC/common/ARCHITECTURE.md` (v3.0.3 : serveur GO, WebSocket direct,
+> état fichier `relay.state` + verrou, TLS natif, déploiement Docker Compose actif/passif ; FastAPI, NATS, SQLite, Kubernetes/Helm retirés).
+
+**Journal historique de la Phase 0 ; le point d'entrée actuel est `README.md` / `CLAUDE.md`.**
 
 ---
 
@@ -61,7 +65,7 @@ Ansible_Agent/
 │   ├── facts_collector.py
 │   ├── async_registry.py
 │   └── secagent-minion.service
-├── server/                 ← Phase 2 : secagent-server FastAPI
+├── server/                 ← Phase 2 : secagent-server (GO ; Python/FastAPI retiré)
 │   ├── api/
 │   ├── db/
 │   └── broker/
@@ -88,7 +92,7 @@ Ansible_Agent/
 - **qa** : Exécute pytest, valide
 - **security-reviewer** : Audit sécurité avant validation
 - **deploy-qualif** : Docker Compose → 192.168.1.218
-- **deploy-prod** : Kubernetes via Helm → production
+- **deploy-prod** : Docker Compose multi-hôtes actif/passif → production
 
 ---
 
@@ -136,7 +140,7 @@ Tests E2E obligatoires :
 
 ### PRODUCTION (tâche #41)
 
-Déploiement Kubernetes via Helm chart.
+Déploiement Docker Compose actif/passif (Kubernetes/Helm retirés).
 
 **Condition** : Clôture MVP validée + **confirmation utilisateur EXPLICITE**.
 
@@ -172,10 +176,10 @@ Déploiement Kubernetes via Helm chart.
 
 - Transport : **WSS** obligatoire (TLS sur toutes les connexions)
 - Canal agent : **1 WebSocket persistante** par agent, multiplexée par task_id
-- Bus de messages : **NATS JetStream** (streams RELAY_TASKS + RELAY_RESULTS)
+- Dispatch des tâches : **WebSocket direct** (bus de messages NATS retiré en v3.0.3)
 - Plugin Ansible → serveur : **REST HTTP bloquant**
 - Auth : **JWT signé** (rôles agent/plugin/admin), blacklist JTI
-- `authorized_keys` : **table DB** (pas de fichiers)
+- `authorized_keys` : persistées dans le fichier d'état `relay.state` (table DB retirée) ; aucun droit d'enrôlement sans jeton `secagent_enr_…`
 - Concurrence agent : **subprocess par tâche** (pas de threads)
 - Stdout MVP : **buffer 5MB max**, truncation + flag
 - Fichiers MVP : **< 500KB**, base64 inline
@@ -211,12 +215,12 @@ TaskList → voir tâches #4-#23 (Phase 1)
 
 | Composant | Stack |
 |-----------|-------|
-| Agent | Python 3.11+, asyncio, websockets, subprocess, systemd |
-| Serveur | Python 3.11+, FastAPI, NATS JetStream, SQLite/PostgreSQL, JWT |
+| Agent | GO, gorilla/websocket, subprocess, systemd |
+| Serveur | GO, net/http, gorilla/websocket, TLS natif, état fichier, JWT (FastAPI/NATS/SQLite retirés) |
 | Plugins Ansible | Python, Ansible ConnectionBase / InventoryModule |
-| Tests | pytest, pytest-asyncio, httpx |
+| Tests | `go test` (GO), pytest (plugins Python) |
 | Déploiement qualif | Docker Compose |
-| Déploiement prod | Kubernetes, Helm chart |
+| Déploiement prod | Docker Compose multi-hôtes actif/passif (Kubernetes/Helm retirés) |
 
 ---
 
@@ -286,7 +290,7 @@ SendMessage(type: "message", recipient: "dev-agent", content: "...")
 | Phase 1 | secagent-minion enregistré + connecté WSS, 0 test fail |
 | Phase 2 | secagent-server reçoit enrollment + gère WebSocket, 0 test fail |
 | Phase 3 | Playbook Ansible exécuté via plugin relay, 0 test fail |
-| MVP | E2E : enrollment → playbook → résultat, 0 fail, prod déployée Kubernetes |
+| MVP | E2E : enrollment → playbook → résultat, 0 fail, prod déployée Docker Compose |
 
 ---
 

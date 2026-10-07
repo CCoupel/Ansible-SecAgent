@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Images de base epinglees par digest dans les Dockerfiles (builds deterministes, #174)
+  - package-ecosystem: docker
+    directory: /GO
+    schedule: {interval: weekly}
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}

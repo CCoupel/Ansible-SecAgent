@@ -30,9 +30,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
+
+	"secagent-server/internal/endpoints"
 )
 
 // Config contient les paramètres nécessaires à l'enrollment.
@@ -57,6 +60,15 @@ type Config struct {
 	Timeout time.Duration
 	// Insecure désactive la vérification TLS (tests uniquement).
 	Insecure bool
+	// Rotor, quand il est défini, remplace RegisterURL : liste d'adresses de serveurs (URL de base,
+	// "/api/register" est ajouté), essayées dans l'ordre du Rotor (dernière bonne en tête). L'enrôlement
+	// consomme un token one-shot : on ne change d'adresse que si la connexion échoue AVANT l'envoi
+	// de la requête (refus TCP, DNS, TLS, timeout de connexion). Dès qu'un octet est parti, un
+	// échec est rendu tel quel (errors.Is(err, endpoints.ErrAfterSend)), sans essai sur une autre
+	// adresse : les deux étapes du challenge-response restent d'ailleurs sur la même instance.
+	Rotor *endpoints.Rotor
+	// AttemptTimeout borne les DEUX étapes sur une même adresse (défaut 60 s).
+	AttemptTimeout time.Duration
 }
 
 // step1Request est le corps de POST /api/register (étape 1).
@@ -85,6 +97,26 @@ type step2Response struct {
 	JWTEncrypted string `json:"jwt_encrypted"` // base64(OAEP(jwt, agent_pubkey))
 }
 
+// HTTPError est retournée quand le serveur rejette une étape de l'enrôlement (statut != 200).
+// Les appelants la distinguent avec errors.As : 403 (token d'enrôlement invalide, expiré ou
+// consommé) est permanent, les autres statuts (400, 5xx…) sont corrigibles. Body est le corps
+// d'erreur JSON du serveur (jamais un secret : le serveur n'y renvoie que {"error": code}).
+type HTTPError struct {
+	Step   int // 1 ou 2
+	Status int
+	Body   map[string]any
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("enrollment step%d: server rejected (HTTP %d): %v", e.Step, e.Status, e.Body)
+}
+
+// IsForbidden indique que le serveur a refusé l'enrôlement (HTTP 403) : erreur permanente.
+func IsForbidden(err error) bool {
+	var he *HTTPError
+	return errors.As(err, &he) && he.Status == http.StatusForbidden
+}
+
 // Enroll enregistre l'agent via le protocole challenge-response en 2 étapes.
 //
 // L'agent effectue :
@@ -100,6 +132,40 @@ type step2Response struct {
 //   - Le déchiffrement RSA échoue (jamais de fallback token brut)
 //   - L'écriture du fichier JWT échoue
 func Enroll(ctx context.Context, cfg Config) (string, error) {
+	if cfg.Rotor != nil {
+		return enrollMulti(ctx, cfg)
+	}
+	return enrollOne(ctx, cfg)
+}
+
+// enrollMulti tente l'enrôlement complet sur chaque adresse (endpoints.DialFirst) : voir Config.Rotor.
+func enrollMulti(ctx context.Context, cfg Config) (string, error) {
+	timeout := cfg.AttemptTimeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	jwt, u, err := endpoints.DialFirst(ctx, cfg.Rotor, timeout, func(actx context.Context, u *url.URL) (string, error) {
+		c := cfg
+		c.Rotor = nil
+		c.RegisterURL = u.JoinPath("/api/register").String()
+		// a net/http request made with actx is tracked by DialFirst (httptrace): a timeout before
+		// the first byte leaves is "before send", after it is "after send"
+		return enrollOne(actx, c)
+	})
+	if err != nil {
+		if errors.Is(err, endpoints.ErrAfterSend) {
+			// do not start the next cycle on an address that took the request and failed
+			if i, ok := endpoints.AfterSendIndex(err); ok {
+				cfg.Rotor.Rotate(i)
+			}
+		}
+		return "", err
+	}
+	slog.Info("enrolled", "server", u.Host)
+	return jwt, nil
+}
+
+func enrollOne(ctx context.Context, cfg Config) (string, error) {
 	if cfg.PrivateKey == nil {
 		return "", errors.New("enrollment: private key is required")
 	}
@@ -188,7 +254,7 @@ func enrollStep1(ctx context.Context, client *http.Client, cfg Config) (challeng
 	if resp.StatusCode != http.StatusOK {
 		var errBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		return "", "", fmt.Errorf("enrollment step1: server rejected (HTTP %d): %v", resp.StatusCode, errBody)
+		return "", "", &HTTPError{Step: 1, Status: resp.StatusCode, Body: errBody}
 	}
 
 	var result step1Response
@@ -264,7 +330,7 @@ func enrollStep2(ctx context.Context, client *http.Client, cfg Config, nonce []b
 	if resp.StatusCode != http.StatusOK {
 		var errBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		return "", fmt.Errorf("enrollment step2: server rejected (HTTP %d): %v", resp.StatusCode, errBody)
+		return "", &HTTPError{Step: 2, Status: resp.StatusCode, Body: errBody}
 	}
 
 	var result step2Response

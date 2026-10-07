@@ -1,13 +1,12 @@
 package ws
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -81,12 +80,22 @@ var (
 	// Injected from handlers at startup; nil = send a plain rekey signal (no encrypted token).
 	RekeyFunc func(hostname string) bool
 
-	// DispatchFunc is called when an agent connects (host.up) or disconnects (host.down).
-	// Injected from main.go at startup to avoid an import cycle between ws and hooks.
-	// Signature: (event, hostname, status, enrolledAt) — enrolledAt is always "" here.
-	// nil = no dispatch (tests, degraded mode).
-	DispatchFunc func(event string, hostname string, status string, enrolledAt string)
+	// dispatchFn is called when an agent connects (host.up) or disconnects (host.down); see
+	// SetDispatchFunc. Atomic: handler goroutines of a node that is going away read it while a new
+	// node is built.
+	dispatchFn atomic.Pointer[func(event string, hostname string, status string, enrolledAt string)]
 )
+
+// SetDispatchFunc injects the function called when an agent connects (host.up) or disconnects
+// (host.down), from the server wiring, to avoid an import cycle between ws and hooks.
+// Signature: (event, hostname, status, enrolledAt) — enrolledAt is always "" here. nil = no dispatch.
+func SetDispatchFunc(fn func(event string, hostname string, status string, enrolledAt string)) {
+	if fn == nil {
+		dispatchFn.Store(nil)
+		return
+	}
+	dispatchFn.Store(&fn)
+}
 
 // SetRekeyFunc injects the function used to issue a new encrypted token to an agent.
 // Called at startup by main.go after handlers are initialized.
@@ -111,15 +120,15 @@ func RegisterConnection(hostname string, conn *AgentConnection) {
 
 	// Close any existing connection for this hostname
 	if oldConn, exists := wsConnections[hostname]; exists {
-		log.Printf("Replacing stale WS for hostname: %s", hostname)
+		log.Printf("Replacing stale WS for hostname: %q", hostname)
 		_ = oldConn.Conn.Close()
 	}
 
 	wsConnections[hostname] = conn
-	log.Printf("Agent connected: hostname=%s", hostname)
+	log.Printf("Agent connected: hostname=%q", hostname)
 
-	if DispatchFunc != nil {
-		go DispatchFunc("host.up", hostname, "connected", "")
+	if fn := dispatchFn.Load(); fn != nil {
+		go (*fn)("host.up", hostname, "connected", "")
 	}
 }
 
@@ -129,10 +138,10 @@ func UnregisterConnection(hostname string) {
 	defer connectionsMu.Unlock()
 
 	delete(wsConnections, hostname)
-	log.Printf("Agent disconnected: hostname=%s", hostname)
+	log.Printf("Agent disconnected: hostname=%q", hostname)
 
-	if DispatchFunc != nil {
-		go DispatchFunc("host.down", hostname, "disconnected", "")
+	if fn := dispatchFn.Load(); fn != nil {
+		go (*fn)("host.down", hostname, "disconnected", "")
 	}
 
 	// Resolve all pending futures with error
@@ -203,7 +212,7 @@ func ResolveFuturesForHostname(hostname string, errorMsg string) {
 			default:
 				// Channel already has a result or is closed
 			}
-			log.Printf("Future resolved with error on disconnect: task_id=%s error=%s hostname=%s",
+			log.Printf("Future resolved with error on disconnect: task_id=%q error=%s hostname=%q",
 				taskID, errorMsg, hostname)
 		}
 
@@ -248,14 +257,14 @@ func HandleMessage(msg Message, hostname string) {
 	msgType := msg.Type
 
 	if taskID == "" || msgType == "" {
-		log.Printf("WS message missing task_id or type: hostname=%s msg=%+v", hostname, msg)
+		log.Printf("WS message missing task_id or type: hostname=%q task_id=%q type=%q", hostname, taskID, msgType)
 		return
 	}
 
 	switch msgType {
 	case "ack":
 		// Subprocess started — just log
-		log.Printf("Task ack received: task_id=%s hostname=%s", taskID, hostname)
+		log.Printf("Task ack received: task_id=%q hostname=%q", taskID, hostname)
 
 	case "stdout":
 		// Accumulate stdout, enforce 5 MB cap
@@ -269,7 +278,7 @@ func HandleMessage(msg Message, hostname string) {
 				runes = runes[:len(runes)-1]
 			}
 			combined = string(runes)
-			log.Printf("Stdout buffer truncated: task_id=%s hostname=%s", taskID, hostname)
+			log.Printf("Stdout buffer truncated: task_id=%q hostname=%q", taskID, hostname)
 		}
 		stdoutBuffers[taskID] = combined
 		buffersMu.Unlock()
@@ -291,12 +300,12 @@ func HandleMessage(msg Message, hostname string) {
 		if exists {
 			select {
 			case resultChan <- msg:
-				log.Printf("Task result received: task_id=%s rc=%d hostname=%s", taskID, msg.RC, hostname)
+				log.Printf("Task result received: task_id=%q rc=%d hostname=%q", taskID, msg.RC, hostname)
 			default:
-				log.Printf("Result channel full or closed: task_id=%s hostname=%s", taskID, hostname)
+				log.Printf("Result channel full or closed: task_id=%q hostname=%q", taskID, hostname)
 			}
 		} else {
-			log.Printf("Result received but no pending future: task_id=%s hostname=%s", taskID, hostname)
+			log.Printf("Result received but no pending future: task_id=%q hostname=%q", taskID, hostname)
 		}
 
 		// Cleanup
@@ -313,76 +322,100 @@ func HandleMessage(msg Message, hostname string) {
 		taskHostMu.Unlock()
 
 	default:
-		log.Printf("Unknown WS message type: type=%s task_id=%s hostname=%s", msgType, taskID, hostname)
+		log.Printf("Unknown WS message type: type=%q task_id=%q hostname=%q", msgType, taskID, hostname)
 	}
 }
+
+// agentJTICheckFn decides whether the agent presenting jti may connect (see SetAgentJTICheckFunc).
+var (
+	agentJTICheckMu sync.RWMutex
+	agentJTICheckFn func(hostname, jti string, usedPrevious bool) error
+)
+
+// SetAgentJTICheckFunc injects the revocation check used at the /ws/agent handshake. The
+// function returns nil when the token is acceptable, an error otherwise (revoked, replaced,
+// unknown agent, store failure). usedPrevious is true when the token was validated with the
+// previous JWT secret (rotation grace period).
+func SetAgentJTICheckFunc(fn func(hostname, jti string, usedPrevious bool) error) {
+	agentJTICheckMu.Lock()
+	agentJTICheckFn = fn
+	agentJTICheckMu.Unlock()
+}
+
+// checkAgentJTI fails closed: without a configured check no verified token is accepted.
+func checkAgentJTI(hostname, jti string, usedPrevious bool) error {
+	agentJTICheckMu.RLock()
+	fn := agentJTICheckFn
+	agentJTICheckMu.RUnlock()
+	if fn == nil {
+		return fmt.Errorf("blacklist_not_configured")
+	}
+	if jti == "" {
+		return fmt.Errorf("token_without_jti")
+	}
+	return fn(hostname, jti, usedPrevious)
+}
+
+// truncateJTI keeps the log readable without reproducing a full identifier.
+func truncateJTI(jti string) string {
+	if len(jti) > 8 {
+		return jti[:8] + "…"
+	}
+	return jti
+}
+
+// agentRole is the JWT "role" claim carried by every token issued to a minion (SECURITY.md §2).
+const agentRole = "agent"
 
 // extractHostnameFromRequest validates the JWT Bearer token using dual-key validation
-// and extracts the "sub" claim as hostname. Falls back to ?hostname= query param
-// only when JWTSecretsFunc is not configured (e.g. tests without DB).
+// and extracts the "sub" claim as hostname. There is no unsigned fallback.
 // Returns (hostname, usedPreviousKey, error).
 func extractHostnameFromRequest(r *http.Request) (hostname string, usedPrevious bool, err error) {
-	authHeader := r.Header.Get("Authorization")
-
-	// If JWT validation is configured, use it (production path)
-	if JWTSecretsFunc != nil && strings.HasPrefix(authHeader, "Bearer ") {
-		claims, prev, valErr := ExtractJWTClaims(authHeader)
-		if valErr != nil {
-			return "", false, fmt.Errorf("jwt_invalid: %w", valErr)
-		}
-		sub, _ := claims["sub"].(string)
-		if sub == "" {
-			return "", false, fmt.Errorf("jwt_missing_sub")
-		}
-		return sub, prev, nil
+	id, err := authenticateAgentRequest(r)
+	if err != nil {
+		return "", false, err
 	}
-
-	// Fallback: extract sub from JWT payload without verification (tests / no-DB mode)
-	log.Printf("[SECURITY WARNING] JWT verification bypassed — JWTSecretsFunc is nil")
-	if strings.HasPrefix(authHeader, "Bearer ") && len(authHeader) > 7 {
-		sub := extractSubFromJWTUnsafe(authHeader[7:])
-		if sub != "" {
-			return sub, false, nil
-		}
-	}
-
-	// Last resort: query param (legacy / tests)
-	if h := r.URL.Query().Get("hostname"); h != "" {
-		return h, false, nil
-	}
-
-	return "", false, fmt.Errorf("missing_hostname")
+	return id.Hostname, id.UsedPrevious, nil
 }
 
-// extractSubFromJWTUnsafe decodes the JWT payload without signature verification.
-// Used only when JWTSecretsFunc is not configured (tests, degraded mode).
-func extractSubFromJWTUnsafe(tokenStr string) string {
-	parts := strings.Split(tokenStr, ".")
-	if len(parts) != 3 {
-		return ""
+// agentIdentity is what the /ws/agent handshake established about the caller. It always comes
+// from a JWT whose signature was verified.
+type agentIdentity struct {
+	Hostname     string
+	JTI          string
+	UsedPrevious bool
+}
+
+// authenticateAgentRequest validates the Bearer token (dual-key) and returns the identity.
+//
+// Fail closed (same model as extractRelayAuth on /ws/relay): the ONLY accepted credential is a
+// Bearer JWT signed with the server secret, carrying role "agent" and a non-empty sub. No
+// verifier configured, no/empty/non-Bearer Authorization header, a bad signature, another role,
+// or a bare ?hostname= are all refused. Nothing the client sends unsigned is ever trusted.
+func authenticateAgentRequest(r *http.Request) (agentIdentity, error) {
+	if JWTSecretsFunc == nil {
+		log.Printf("[SECURITY WARNING] agent connection refused: JWTSecretsFunc is not configured (fail closed)")
+		return agentIdentity{}, fmt.Errorf("jwt_not_configured")
 	}
-	// JWT uses base64url without padding
-	padded := parts[1]
-	switch len(padded) % 4 {
-	case 2:
-		padded += "=="
-	case 3:
-		padded += "="
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") || len(authHeader) <= len("Bearer ") {
+		log.Printf("[SECURITY WARNING] agent connection refused: missing bearer token")
+		return agentIdentity{}, fmt.Errorf("missing_agent_credentials")
 	}
-	decoded, err := base64.StdEncoding.DecodeString(padded)
-	if err != nil {
-		// Try RawStdEncoding as fallback (no padding)
-		decoded, err = base64.RawStdEncoding.DecodeString(parts[1])
-		if err != nil {
-			return ""
-		}
+	claims, prev, valErr := ExtractJWTClaims(authHeader)
+	if valErr != nil {
+		return agentIdentity{}, fmt.Errorf("jwt_invalid: %w", valErr)
 	}
-	var payload map[string]interface{}
-	if err := json.Unmarshal(decoded, &payload); err != nil {
-		return ""
+	if role, _ := claims["role"].(string); role != agentRole {
+		log.Printf("[SECURITY WARNING] agent connection refused: wrong JWT role %q", role)
+		return agentIdentity{}, fmt.Errorf("jwt_wrong_role")
 	}
-	sub, _ := payload["sub"].(string)
-	return sub
+	sub, _ := claims["sub"].(string)
+	if sub == "" {
+		return agentIdentity{}, fmt.Errorf("jwt_missing_sub")
+	}
+	jti, _ := claims["jti"].(string)
+	return agentIdentity{Hostname: sub, JTI: jti, UsedPrevious: prev}, nil
 }
 
 // AgentHandler manages WebSocket connections from secagent-minions.
@@ -395,9 +428,19 @@ func extractSubFromJWTUnsafe(tokenStr string) string {
 //  5. Register connection and loop on incoming messages
 //  6. On disconnect: cleanup, resolve pending futures
 func AgentHandler(w http.ResponseWriter, r *http.Request) {
-	hostname, usedPrevious, err := extractHostnameFromRequest(r)
+	id, err := authenticateAgentRequest(r)
 	if err != nil {
-		log.Printf("WS auth rejected: %v", err)
+		log.Printf("WS auth rejected: %q", err.Error())
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	hostname, usedPrevious := id.Hostname, id.UsedPrevious
+
+	// Revocation / token-replacement check BEFORE the upgrade (401, no close code, SECURITY.md §4).
+	// Fail closed: a token is only accepted when the check is configured and passes.
+	if err := checkAgentJTI(hostname, id.JTI, usedPrevious); err != nil {
+		log.Printf("[SECURITY WARNING] agent connection refused: hostname=%q jti=%q: %v",
+			hostname, truncateJTI(id.JTI), err)
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
@@ -427,11 +470,11 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 			// Fallback: plain rekey signal (agent should re-enroll)
 			agentConn.mu.Lock()
 			if err := conn.WriteJSON(map[string]interface{}{"type": "rekey"}); err != nil {
-				log.Printf("rekey WriteJSON: hostname=%s err=%v", hostname, err)
+				log.Printf("rekey WriteJSON: hostname=%q err=%v", hostname, err)
 			}
 			agentConn.mu.Unlock()
 		}
-		log.Printf("Rekey sent to agent: hostname=%s encrypted=%v", hostname, sent)
+		log.Printf("Rekey sent to agent: hostname=%q encrypted=%v", hostname, sent)
 	}
 
 	defer func() {
@@ -444,7 +487,7 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 		err := conn.ReadJSON(&msg)
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("WebSocket error: %v for hostname: %s", err, hostname)
+				log.Printf("WebSocket error: %v for hostname: %q", err, hostname)
 			}
 			break
 		}
@@ -467,7 +510,7 @@ func CloseAgent(hostname string, code int, reason string) bool {
 	conn.mu.Lock()
 	closeMsg := websocket.FormatCloseMessage(code, reason)
 	if err := conn.Conn.WriteMessage(websocket.CloseMessage, closeMsg); err != nil {
-		log.Printf("CloseAgent WriteMessage: hostname=%s code=%d err=%v", hostname, code, err)
+		log.Printf("CloseAgent WriteMessage: hostname=%q code=%d err=%v", hostname, code, err)
 	}
 	_ = conn.Conn.Close()
 	conn.mu.Unlock()
@@ -475,7 +518,7 @@ func CloseAgent(hostname string, code int, reason string) bool {
 	// Resolve any pending futures for this hostname
 	ResolveFuturesForHostname(hostname, "agent_revoked")
 
-	log.Printf("Agent force-closed: hostname=%s code=%d reason=%s", hostname, code, reason)
+	log.Printf("Agent force-closed: hostname=%q code=%d reason=%q", hostname, code, reason)
 	return true
 }
 

@@ -6,7 +6,7 @@ import (
 )
 
 func TestRelayChain_SetListClear(t *testing.T) {
-	s, err := NewStore(":memory:")
+	s, err := OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}

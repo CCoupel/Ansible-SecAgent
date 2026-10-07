@@ -3,7 +3,7 @@
 > Référence complète pour le composant secagent-server (GO).
 > Source canonique : `DOC/common/ARCHITECTURE.md` §2, §5, §6, §15, §20, §21, §22
 > Sécurité : `DOC/security/SECURITY.md` §2 (rôles), §5 (rotation), §6 (tokens plugin)
-> **Contrats d'interface** : `DOC/contracts/REST_PLUGIN.md` · `DOC/contracts/REST_ENROLLMENT.md` · `DOC/contracts/REST_ADMIN.md` · `DOC/contracts/WEBSOCKET.md` · `DOC/contracts/NATS.md`
+> **Contrats d'interface** : `DOC/contracts/REST_PLUGIN.md` · `DOC/contracts/REST_ENROLLMENT.md` · `DOC/contracts/REST_ADMIN.md` · `DOC/contracts/WEBSOCKET.md` · (`DOC/contracts/NATS.md` : déprécié, NATS retiré en v3.0.3)
 
 ---
 
@@ -12,7 +12,7 @@
 Le secagent-server est le **hub central** du système. Il :
 - Expose une API REST HTTPS pour les plugins Ansible
 - Maintient les connexions WebSocket avec les agents
-- Route les tâches via NATS JetStream (HA multi-nodes)
+- Route les tâches par WebSocket direct (actif/passif HA avec verrou exclusif)
 - Gère l'authentification (JWT agents, tokens plugin, ADMIN_TOKEN)
 - Expose une CLI d'administration (même binaire, mode cobra)
 
@@ -25,19 +25,25 @@ GO/cmd/secagent-server/
 │   ├── handlers/
 │   │   ├── register.go              — POST /api/register (enrollment agent)
 │   │   ├── exec.go                  — POST /api/exec|upload|fetch/{hostname}
-│   │   ├── inventory.go             — GET /api/inventory
-│   │   └── admin.go                 — tous les endpoints /api/admin/*
+│   │   ├── inventory.go             — GET /api/inventory (jeton plugin) et variante admin
+│   │   ├── plugin_auth.go           — authentification des jetons plugin (IP, hostname)
+│   │   ├── admin.go, admin_relays.go, admin_tokens.go — endpoints /api/admin/*
+│   │   └── security.go              — rotation des clefs, blacklist
 │   ├── ws/
 │   │   ├── handler.go               — WSS /ws/agent, ws_connections map
+│   │   ├── relay_handler.go         — WSS /ws/relay (liens relay ↔ relay)
 │   │   └── jwt.go                   — validation dual-key JWT HMAC-HS256
-│   ├── broker/
-│   │   └── nats.go                  — NATS JetStream, streams RELAY_TASKS/RESULTS
+│   ├── lock/                        — verrou actif/passif (relay.lock)
+│   ├── state/
+│   │   └── engine.go, file.go, model.go … — fichier d'état JSON (HMAC-SHA256, secrets AES-256-GCM, write_seq anti-rejeu)
 │   ├── storage/
-│   │   └── store.go                 — SQLite (modernc), toutes les tables
+│   │   └── store.go                 — interface storage sur state engine (pas de SQLite, aucun CGO)
 │   └── cli/
 │       ├── root.go                  — cobra root command
 │       ├── minions.go               — secagent-server minions *
-│       ├── security.go              — secagent-server security keys|tokens *
+│       ├── security.go              — secagent-server security keys|tokens|blacklist *
+│       ├── tokens.go, relays.go, hooks.go — tokens *, relays *, hooks *
+│       ├── state.go, state_tools.go, status_local.go — state init|verify|restore, status --local
 │       ├── inventory.go             — secagent-server inventory list
 │       └── server.go                — secagent-server server status|stats
 ```
@@ -48,11 +54,11 @@ GO/cmd/secagent-server/
 
 | Port | Exposition | Rôle |
 |---|---|---|
-| `7770` | Publique (via Caddy HTTPS) | API REST agents + plugins + enrollment |
-| `7771` | **Container-interne uniquement** (`expose:`, jamais `ports:`) | Endpoints admin CLI |
-| `7772` | Publique (via Caddy WSS) | WebSocket agents uniquement |
+| `7770` | Publique (WSS/TLS natif) | API REST agents + plugins + enrollment + `/ws/agent` |
+| `7771` | **Admin seulement** — défaut `:7771` (toutes interfaces) ; une adresse non loopback exige `ADMIN_TLS=true` (ou `ADMIN_INSECURE_HTTP` + `ADMIN_INSECURE_HTTP_ACK`), sinon le serveur refuse de démarrer (`server/tls.go` `adminExposure`) | Endpoints admin CLI + API admin |
+| `7772` | Publique (TLS natif) | Listener WebSocket dédié : `/ws/agent` et `/ws/relay` (`server/routers.go`) ; port par défaut de `RELAY_WS_URL` du minion. Pas déprécié |
 
-Le port 7771 ne doit **jamais** être exposé hors du container.
+Le port 7771 ne doit **jamais** être publié sur une interface publique (hôte : boucle locale ou réseau d'administration). Seul le **maître** ouvre ces ports ; un secondaire n'en ouvre aucun (§10).
 
 ---
 
@@ -62,51 +68,62 @@ Le port 7771 ne doit **jamais** être exposé hors du container.
 
 | Endpoint | Auth requise |
 |---|---|
-| `POST /api/register` | Aucune (enrollment token dans le body) |
-| `GET /api/inventory` | `Bearer <PLUGIN_TOKEN>` |
-| `POST /api/exec/{host}` | `Bearer <PLUGIN_TOKEN>` |
-| `POST /api/upload/{host}` | `Bearer <PLUGIN_TOKEN>` |
-| `POST /api/fetch/{host}` | `Bearer <PLUGIN_TOKEN>` |
-| `POST /api/token/refresh` | JWT agent expiré |
-| `POST /api/admin/*` | `Bearer <ADMIN_TOKEN>` (port 7771) |
-| `WSS /ws/agent` | `Bearer <JWT agent>` |
+| `POST /api/register` | Aucune en-tête ; **jeton d'enrôlement** `secagent_enr_…` obligatoire dans le body (sans lui : 403 `enrollment_token_required`, #192c) |
+| `GET /api/inventory` | `Bearer <jeton plugin>` (`secagent_plg_…`) — un `ADMIN_TOKEN` y est refusé (403) ; la variante admin est `GET /api/inventory` sur 7771 |
+| `POST /api/exec/{host}` | `Bearer <jeton plugin>` |
+| `POST /api/upload/{host}` | `Bearer <jeton plugin>` |
+| `POST /api/fetch/{host}` | `Bearer <jeton plugin>` |
+| `POST /api/token/refresh` | **Supprimée (#192)** : 404 pour tout appelant ; le renouvellement passe par le ré-enrôlement (401) ou le message WS `rekey` |
+| `/api/admin/*` | `Bearer <ADMIN_TOKEN>` (port 7771 ; `POST /api/admin/authorize` aussi sur 7770 par compatibilité) |
+| `WSS /ws/agent` | `Bearer <JWT agent>` (rôle `agent` uniquement) |
+| `WSS /ws/relay` | `Bearer <JWT rôle `relay` ou `relay-parent`>` |
+
+Les jetons plugin et d'enrôlement sont des **jetons opaques** (`secagent_plg_` / `secagent_enr_` + 64 hex), enregistrés (hachés) dans l'état — pas des JWT. Preuve : `handlers/plugin_auth.go`, `handlers/inventory.go`.
 
 ### `POST /api/register` — Enrollment agent (multi-étapes)
 
 **Étape 1 — Initiation :**
 ```json
-Requête : { "hostname": "host-A", "pubkey_pem": "...", "enrollment_token": "secagent_enr_..." }
-Réponse : { "challenge": "<OAEP(nonce, agent_pubkey) base64>" }
+Requête : { "hostname": "host-A", "public_key_pem": "...", "enrollment_token": "secagent_enr_..." }
+Réponse : { "challenge": "<OAEP(nonce, agent_pubkey) base64>", "server_public_key_pem": "..." }
 ```
 
 **Étape 2 — Vérification :**
 ```json
-Requête : { "hostname": "host-A", "response": "<OAEP(nonce+token, server_pubkey) base64>" }
-Réponse : { "jwt_encrypted": "<OAEP(jwt, agent_pubkey) base64>" }
+Requête : { "hostname": "host-A", "public_key_pem": "...", "enrollment_token": "secagent_enr_...",
+            "challenge_response": "<OAEP(nonce+token, server_pubkey) base64>" }
+Réponse : { "jwt_encrypted": "<OAEP(jwt, agent_pubkey) base64>", "token_encrypted": "<même valeur>", "server_public_key_pem": "..." }
 ```
 
-**Codes d'erreur :**
-- `403` : token invalide/expiré/déjà utilisé
-- `409` : hostname déjà enregistré avec une autre clef
-- `400` : challenge incorrect
+Le jeton d'enrôlement est revalidé à **chaque** étape. Preuve : `handlers/register.go` (`RegisterRequest`, `ChallengeResponse`, `RegisterResponse`, `registerAgentWithToken`).
+
+**Codes d'erreur** (`handlers/register.go`) :
+- `403` : `enrollment_token_required` (requête sans jeton : aucun JWT, aucun JTI posé, réponse identique quels que soient hostname et clef), `token_not_found`, `token_expired`, `token_already_used`, `hostname_not_allowed`, challenge expiré ou invalide (`challenge_*`) (`handlers/register.go:462-475`, `validateEnrollmentToken`)
+- `400` : `invalid_request`, `missing_fields`, `invalid_public_key`
+- `500` : `db_error`
+
+Un refus `403` est **permanent** pour le minion (exit 78, pas de retry : voir `DOC/contracts/REST_ENROLLMENT.md`).
 
 ### `POST /api/exec/{hostname}` — Exécution (bloquant)
 
 ```json
 Requête : {
-  "task_id": "uuid-v4",
+  "task_id": "uuid-v4",          // optionnel (généré si absent)
   "cmd": "python3 /tmp/.ansible/tmp/module.py",
-  "stdin": "<base64|null>",
+  "stdin": "<chaîne|null>",      // transmise telle quelle à l'agent
   "timeout": 30,
   "become": false,
   "become_method": "sudo"
 }
 Réponse 200 : { "rc": 0, "stdout": "...", "stderr": "", "truncated": false }
-Réponse 503  : { "error": "agent_offline" }
-Réponse 504  : { "error": "timeout" }
-Réponse 500  : { "error": "agent_disconnected" }
+Réponse 503  : { "error": "agent_offline" | "agent_disconnected" | <agent suspendu / état indisponible> }
+Réponse 504  : { "error": "task_timeout" }
 Réponse 429  : { "error": "agent_busy" }
+Réponse 500  : { "error": "<erreur renvoyée par l'agent>" }
+Réponse 508  : { "error": "relay_loop_detected" }
 ```
+
+Preuve : `handlers/exec.go` (`writeAgentError`, lignes 232-244 ; `task_timeout` ligne 353). Upload : en plus `400 invalid_base64`, `413 payload_too_large` (`handlers/exec.go:404`).
 
 ### `POST /api/upload/{hostname}` — Transfert fichier
 
@@ -144,90 +161,35 @@ Query param : `?only_connected=true`
 
 ---
 
-## 4. NATS JetStream
+## 4. Dispatch des tâches (WebSocket direct)
 
-```
-Stream RELAY_TASKS
-  Subjects    : tasks.{hostname}
-  Retention   : WorkQueue (supprimé après ack)
-  MaxAge      : 300s
-  MaxMsgSize  : 1MB
-  Replicas    : 3
-
-Stream RELAY_RESULTS
-  Subjects    : results.{task_id}
-  Retention   : Limits
-  MaxAge      : 60s
-  MaxMsgSize  : 5MB
-  Replicas    : 3
-```
-
-**Routage HA :** Plugin POST sur Node #2 → publie `tasks.host-A` → Node #1 (qui a la WS) reçoit → forward à l'agent → résultat via `results.{task_id}` → Node #2 résout le futur bloquant.
+NATS JetStream est **retiré** (v3.0.3). Le plugin envoie un `POST /api/exec|upload|fetch/{host}` bloquant au relay **maître** ;
+celui-ci écrit la tâche sur la WebSocket persistante de l'agent (multiplexage par `task_id`) et attend le résultat. Pour un hôte
+situé sous un relay enfant, la tâche est transmise (`task_forward`) le long de la chaîne de relays (§9). Il n'y a ni file, ni
+persistance de tâche : une requête en cours pendant une bascule échoue (le plugin ne rejoue pas, #168).
 
 ---
 
-## 5. Persistance — Schéma SQLite
+## 5. Persistance — fichier d'état `relay.state`
 
-```sql
--- Agents enregistrés
-CREATE TABLE agents (
-    hostname      TEXT PRIMARY KEY,
-    pubkey_pem    TEXT NOT NULL,
-    enrolled_at   INTEGER NOT NULL,
-    last_seen_at  INTEGER,
-    status        TEXT DEFAULT 'disconnected'
-);
+Il n'y a **plus de SQL** (SQLite retiré en v3.0.3, #159/#160). Les données permanentes sont dans le fichier d'état unique
+`relay.state` (JSON, authentifié HMAC-SHA-256, secrets chiffrés AES-256-GCM) : voir `DOC/server/STATE_SPEC.md`. Sections du fichier
+(`internal/state/model.go`, `Payload`) :
 
--- Tokens d'enrollment
-CREATE TABLE enrollment_tokens (
-    id               TEXT PRIMARY KEY,
-    token_hash       TEXT NOT NULL UNIQUE,      -- SHA-256(token)
-    hostname_pattern TEXT NOT NULL,             -- regexp Go validée, ancrée ^(?:pattern)$ à la validation
-                                                 -- ex: "vp.*", "web[0-9]+", "web1|db"
-                                                 -- invalide si ne compile pas → rejet 400 "invalid_hostname_pattern"
-    reusable         INTEGER DEFAULT 0,         -- 0 = one-shot, 1 = permanent
-    use_count        INTEGER DEFAULT 0,         -- nb d'enrollements via ce token
-    last_used_at     INTEGER,                   -- horodatage dernier usage
-    created_at       INTEGER NOT NULL,
-    expires_at       INTEGER,                   -- NULL = jamais expiré
-    created_by       TEXT                       -- "admin-cli", "terraform", etc.
-);
+| Section | Contenu |
+|---|---|
+| `agents` | hostname, `public_key_pem`, `token_jti`, `enrolled_at`, `suspended`, `vars`, `last_seen` |
+| `authorized_keys` | hostname, `public_key_pem`, `approved_at`, `approved_by` — écrite par l'enrôlement (`EnrollAgent`) et par `POST /api/admin/authorize` ; **n'est plus consultée par `/api/register`** (#192c) |
+| `enrollment_tokens` | id, `token_hash` (SHA-256), `hostname_pattern`, `reusable`, `use_count`, `expires_at`, `created_by` |
+| `plugin_tokens` | id, `token_hash`, `description`, `role`, `allowed_ips`, `allowed_hostname_pattern`, `expires_at`, `revoked`, `last_used_at/ip` |
+| `relay_parent_tokens` | id, `jti`, `parent_id`, `expires_at`, `revoked_at` (jamais le token) |
+| `blacklist` | `jti`, `hostname`, `revoked_at`, `reason`, `expires_at` (purge automatique) |
+| `relay_nodes` | configuration d'un relay enfant : `relay_id`, `urls`, `mode` (pull/push), `jti`, `token_exp`, `revoked`, `group_vars`, `token_hash`/`token_secret` (secret chiffré `enc:`) |
+| `server_config` | secrets chiffrés : `jwt_secret_current`, `jwt_secret_previous`, `key_rotation_deadline`, clefs RSA du serveur |
 
--- Tokens plugin (connection + inventory)
-CREATE TABLE plugin_tokens (
-    id                      TEXT PRIMARY KEY,
-    token_hash              TEXT NOT NULL UNIQUE,  -- SHA-256(token)
-    description             TEXT,
-    role                    TEXT NOT NULL,         -- "plugin"
-    allowed_ips             TEXT,                  -- CIDRs CSV | NULL
-    allowed_hostname_pattern TEXT,                 -- regexp Go validée, ancrée ^(?:pattern)$ à la validation
-                                                    -- ex: "ansible-control-[0-9]+", "web1|db"
-                                                    -- invalide si ne compile pas → rejet 400 "invalid_hostname_pattern"
-                                                    -- NULL = aucune restriction hostname
-    created_at              INTEGER NOT NULL,
-    expires_at              INTEGER,
-    last_used_at            INTEGER,
-    last_used_ip            TEXT,
-    revoked                 INTEGER DEFAULT 0
-);
+Les regexp `hostname_pattern` / `allowed_hostname_pattern` sont validées et ancrées `^(?:pattern)$` à la création (400 `invalid_hostname_pattern` si invalide).
 
--- Blacklist JTI (révocation agents)
-CREATE TABLE blacklist (
-    jti         TEXT PRIMARY KEY,
-    hostname    TEXT,
-    revoked_at  INTEGER NOT NULL,
-    reason      TEXT,
-    expires_at  INTEGER NOT NULL           -- pour purge automatique
-);
-
--- Configuration serveur (secrets chiffrés AES-256-GCM)
-CREATE TABLE server_config (
-    key    TEXT PRIMARY KEY,
-    value  TEXT NOT NULL                   -- chiffré avec RSA_MASTER_KEY
-);
--- Clefs stockées : jwt_secret_current, jwt_secret_previous,
---                  key_rotation_deadline, rsa_private_key_pem, rsa_public_key_pem
-```
+Données volatiles (statut et `last_seen` des agents et relays, routage `relay_routing`, `relay_chain`, `last_used_*` des tokens plugin) : en mémoire seulement ; `last_used_at` / `last_used_ip` des tokens plugin sont **approximatifs** (persistés avec la prochaine écriture du fichier, donc en retard de plusieurs minutes, voire perdus lors d'un arrêt brutal : l'API les signale par `last_used_approximate: true`).
 
 ---
 
@@ -256,25 +218,27 @@ Validation JWT dual-key (dans `ws/jwt.go`) :
 > Specs complètes : `DOC/server/MANAGEMENT_CLI_SPECS.md`
 
 ```bash
-# Accès exclusif depuis le container (port 7771 interne)
-docker exec relay-api secagent-server <commande>
+# Depuis le container du maître (la CLI lit ADMIN_TOKEN dans son environnement ; RELAY_API_URL = liste d'adresses admin)
+docker exec <conteneur-du-maitre> secagent-server <commande>
 
 # Minions
 secagent-server minions list [--format table|json|yaml]
 secagent-server minions get <hostname>
-secagent-server minions authorize <hostname>    # enrollment token
+secagent-server minions authorize <hostname> --key-file <clef_publique.pem>   # mémorise une clef dans authorized_keys ; ne donne AUCUN droit d'enrôlement (créer un jeton : tokens create --role enrollment)
 secagent-server minions revoke <hostname>
 secagent-server minions suspend <hostname>
 secagent-server minions resume <hostname>
-secagent-server minions vars get|set|delete <hostname> [key] [value]
+secagent-server minions set-state <hostname> connected|disconnected
+secagent-server minions vars get <hostname> | set <hostname> key=value [key=value…] | delete <hostname> <key>
 
 # Tokens
-secagent-server tokens create --role plugin --description "..." --allowed-ips "..." --allowed-hostname "..." --expires 365d
+secagent-server tokens create --role enrollment --hostname-pattern "vp.*" [--reusable] --expires 30d
+secagent-server tokens create --role plugin --description "..." --allowed-ips "..." --allowed-hostname-pattern "..." --expires 365d   # --expires : défaut never
 secagent-server tokens create --role relay-parent --sub <parent_relay_id> --expires 90d   # #150 : minté sur l'ENFANT, --expires obligatoire (max 365d)
 secagent-server tokens list [--role plugin|enrollment|relay-parent|all]
 secagent-server tokens revoke <id>      # relay-parent : blacklist du JTI + fermeture (4010) du lien parent actif
 secagent-server tokens delete <id>
-secagent-server tokens purge --expired
+secagent-server tokens purge [--expired] [--used]     # au moins un des deux
 
 # Sécurité
 secagent-server security keys status
@@ -289,6 +253,12 @@ secagent-server inventory list [--only-connected]
 # Serveur
 secagent-server server status [--format json]
 secagent-server server stats
+secagent-server status --local            # santé locale (fichier de statut), sans API : healthcheck du conteneur
+
+# Relays enfants / hooks / état
+secagent-server relays add|list|remove|status      # voir §9.3
+secagent-server hooks status|log
+secagent-server state init|verify <fichier>|restore --from <fichier>   # voir STATE_SPEC.md
 ```
 
 ---
@@ -299,23 +269,33 @@ secagent-server server stats
 |---|---|---|
 | `JWT_SECRET_KEY` | ✅ | Secret HMAC-HS256 pour signer les JWT agents |
 | `ADMIN_TOKEN` | ✅ | Token admin (port 7771) |
-| `NATS_URL` | — | URL NATS JetStream (défaut `nats://localhost:4222`) — le serveur démarre en mode dégradé si NATS n'est pas accessible |
-| `DATABASE_URL` | — | SQLite path (`./relay.db`) ou PostgreSQL URL (défaut `sqlite:///./relay.db`) |
-| `RSA_MASTER_KEY` | — | Clef AES-256-GCM pour chiffrer les secrets en DB (tokens push relay) — obligatoire seulement pour enregistrer un relay en mode push |
+| `NATS_URL` | — | **Obsolète (#178)** : NATS est retiré ; si la variable est définie, un `[WARN]` est journalisé et elle est ignorée |
+| `STATE_DIR` | — | Répertoire du fichier d'état `relay.state` (défaut `/data`), créé par `secagent-server state init` — voir `STATE_SPEC.md` (#160) |
+| `STATE_MAX_BYTES` | — | Plafond dur de taille du fichier d'état (défaut 64 Mio) |
+| `DATABASE_URL` | — | **Retirée (#160)** : SQLite n'existe plus. Si la variable est définie, le serveur **refuse de démarrer** (aucune migration d'un ancien `relay.db`) |
+| `RSA_MASTER_KEY` | ✅ en production | Secret (chaîne, pas une clef RSA) dont dérivent le HMAC du fichier d'état et le chiffrement AES-256-GCM des secrets ; exigé par `state init` (sauf `--insecure-test-mode`) et par le serveur ; identique sur tous les nœuds candidats |
 | `REPEATER_ID` | — | Identifiant du relay (ex: `dmz1`) — requis en mode enfant |
-| `REPEATER_UPSTREAM_URL` | — | URL WSS du parent (ex: `wss://central:7772`) — requis en mode enfant pull |
-| `REPEATER_UPSTREAM_TOKEN` | — | Token JWT relay-child du relay enfant — requis en mode enfant pull |
+| `REPEATER_UPSTREAM_URL` | — | URL WSS du parent (ex: `wss://central:7772`) — requis en mode enfant pull. Liste séparée par des virgules (une adresse par instance du parent, `wss://` uniquement, 16 max) : essayées dans l'ordre, la dernière qui a répondu en premier ; un échec avant envoi passe à l'adresse suivante, un échec après envoi de la requête d'upgrade ne rejoue pas sur une autre |
+| `REPEATER_UPSTREAM_TOKEN` | — | Token JWT du relay enfant (rôle `relay`, émis par `relays add` sur le parent) — requis en mode enfant pull |
 | `RELAY_GROUP_VARS` | — | Variables Ansible JSON injectées pour ce relay (ex: `{"env":"prod"}`) |
 | `API_ADDR` | — | Adresse d'écoute de l'API publique + WS agent/relay (défaut `:7770`) |
 | `ADMIN_ADDR` | — | Adresse d'écoute de l'API admin (défaut `:7771`) — ne jamais l'exposer publiquement ; les handlers admin ne sont servis que sur cette adresse (sauf `POST /api/admin/authorize`, par compatibilité) |
 | `WS_ADDR` | — | Adresse d'écoute WebSocket (défaut `:7772`) |
-| `TLS_CERT` / `TLS_KEY` | — | Certificats TLS directs (sinon Caddy) |
+| `TLS_CERT` / `TLS_KEY` | ✅ | Certificat (chaîne complète) et clef PEM : TLS natif sur 7770/7772 (et 7771 avec `ADMIN_TLS=true`). Sans paire complète et sans `TLS_DISABLE`, le serveur refuse de démarrer |
+| `TLS_DISABLE` | — | `true` = HTTP clair : tests/CI uniquement, jamais en production (booléen strict `true`/`false`) |
+| `ADMIN_TLS` | — | `true` = l'API admin sert TLS (requis si `ADMIN_ADDR` n'est pas loopback) |
+| `ADMIN_INSECURE_HTTP` / `ADMIN_INSECURE_HTTP_ACK` | — | Dérogation HTTP clair non loopback : `true` **et** `i-understand-the-risk` |
+| `RELAY_STATUS_FILE` | — | Fichier de statut local (défaut `/run/secagent/status.json`), hors `STATE_DIR` |
+| `RELAY_ACTION_LOG` | — | Chemin du journal des actions de hooks (défaut `STATE_DIR/actions.log`) |
+| `TRUSTED_PROXY_CIDRS` | — | CIDR des reverse proxies dont `X-Forwarded-For` est cru (vide = jamais) |
+| `RELAY_API_URL` | — | (CLI) liste d'adresses de l'API admin, séparées par des virgules |
 | `MAX_SNAPSHOT_RELAYS` | — | Limite nombre relays dans topology_snapshot (défaut 1000) |
 | `MAX_SNAPSHOT_HOSTS` | — | Limite nombre hôtes dans topology_snapshot (défaut 10000) |
 | `MAX_AGENT_LIST_HOSTS` | — | Limite nombre hôtes dans agent_list par appel (défaut = MAX_SNAPSHOT_HOSTS = 10 000) |
 | `MAX_WS_MESSAGE_SIZE_RELAY` | — | Taille maximale message WebSocket relay (défaut 10MB) |
-| `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` | — | Limite goroutines simultanées pour exécution des hooks (défaut `64`) — voir §9.7a |
-| `RELAY_INSECURE_TLS` | — | Utilisé par le binaire `secagent-inventory` (v3.0.2+) : accepter certificats TLS auto-signés. Requiert `RELAY_INSECURE_TLS_ACK=i-understand-the-risk` pour éviter les acceptations accidentelles (fail-closed) |
+| `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` | — | Nombre de workers des hooks (défaut `64`) — voir §9.7a |
+| `RELAY_HOOKS_QUEUE_SIZE` | — | Taille de la file des hooks (défaut `10000`) — voir §9.7a |
+| `RELAY_INSECURE_TLS` | — | **Pas une variable du serveur** : lue par `secagent-inventory` (voir INVENTORY_SPEC §3) et par le minion. Pour `secagent-inventory`, une adresse non loopback exige `RELAY_INSECURE_TLS_ACK=i-understand-the-risk` |
 
 ---
 
@@ -336,7 +316,8 @@ secagent-server server stats
 | Variable | Requis | Description |
 |---|---|---|
 | `REPEATER_ID` | — | Identifiant du relay (`dmz1`) — requis en mode repeater enfant |
-| `REPEATER_UPSTREAM_URL` | — | URL WSS du parent (`wss://central:7772`) — requise si enfant ouvre vers parent |
+| `REPEATER_UPSTREAM_URL` | — | URL(s) WSS du parent (`wss://central:7772[,wss://central2:7772]`) — requise si enfant ouvre vers parent |
+| `REPEATER_CA_FILE` | — | Bundle PEM des CA de confiance pour **tous les liens sortants** (lien pull vers le parent, dial-out push vers les enfants, CLI `secagent-server` vers l'API admin). Il **remplace** les CA système (rien d'autre n'est de confiance) ; il n'existe aucune option de non-vérification. Lu au démarrage (redémarrer pour le changer) ; fichier illisible, vide, > 1 Mio, contenant autre chose que des blocs `CERTIFICATE` (une clé privée est refusée) ou sans aucun certificat actuellement valide ⇒ le démarrage est refusé. |
 | `REPEATER_UPSTREAM_TOKEN` | — | Token d'authentification du relay enfant — requis si enfant ouvre vers parent |
 | `RELAY_GROUP_VARS` | — | Variables Ansible JSON injectées pour ce relay : `{"region":"dmz"}` |
 
@@ -362,9 +343,16 @@ RELAY_GROUP_VARS='{"region":"dmz"}'
 
 ```
 WSS /ws/relay
-Authorization: Bearer <JWT rôle="relay-child ou relay-parent selon le sens d'ouverture", sub=REPEATER_ID>
-Port : 7772 (relay handler)
+Authorization: Bearer <JWT rôle "relay" (enfant qui ouvre vers le parent) ou "relay-parent" (parent qui ouvre vers l'enfant, push), sub=relay_id du porteur>
+Port : 7772 (listener WebSocket dédié) ou 7770 (même handler, compatibilité)
 ```
+
+Rôles JWT acceptés sur `/ws/relay` : **`relay`** (nommé « relay-child » dans le reste de la documentation) et **`relay-parent`** ; tout autre rôle est refusé
+(`ws/relay_handler.go:832-889`, `extractRelayAuth`). Le `sub` doit respecter `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`, le `jti` est obligatoire et ne doit être
+ni blacklisté ni (pour un enfant) marqué `revoked` ; sinon refus **HTTP 401** avant l'upgrade (`relay_handler.go:1064`).
+
+Délais (`repeater/client.go:40-46`, `ws/relay_handler.go`) : handshake 15 s ; heartbeat WebSocket (ping) 30 s ; `agent_list` toutes les 30 s ; lecture côté serveur : 120 s sans trafic coupe le lien ;
+reconnexion de l'enfant : backoff exponentiel 5 s → 60 s.
 
 #### Handshake — Séquence d'établissement (symétrique pour pull et push)
 
@@ -381,7 +369,9 @@ Le client envoie son identité avec JWT(sub = son REPEATER_ID) :
 Serveur (récepteur) valide :
 - ✅ `relay_hello.relay_id` présent ET `relay_hello.relay_id == jwt.sub` (identité du client)
 - ✅ Détection de boucle : C ∉ {P} ∪ ancêtres(P) (voir ARCHITECTURE.md §23.2)
-- ❌ Rejeter (close **4010** — refus permanent) si l'une de ces vérifications échoue
+- ❌ Rejeter (close **4010** — refus permanent) si l'une de ces vérifications échoue (`relay_handler.go:891-900` enfant entrant, `1315-1335` lien parent)
+- ❌ Close **4012** (corrigible) si le premier message n'est pas un `relay_hello` ou si `ancestors` dépasse 32 éléments (`relay_handler.go:1315-1326`) ; en mode pull, le serveur ne vérifie
+  pas `ancestors` (le hello du client pull n'est contrôlé que sur `relay_id`)
 
 **Étape 2 — relay_ack (serveur → client)** :
 
@@ -419,7 +409,10 @@ Validation du snapshot :
 - Nombre de relays ≤ `MAX_SNAPSHOT_RELAYS` (défaut 1000)
 - Nombre d'hôtes ≤ `MAX_SNAPSHOT_HOSTS` (défaut 10000)
 - Taille du message ≤ `MAX_WS_MESSAGE_SIZE_RELAY` (défaut 10MB)
-- Rejeter (close **4012** — refus corrigible — + log) si validation échoue
+- Rejeter (close **4012** — refus corrigible — + log) si validation échoue. Contrôles réels (`validateSnapshot`, `relay_handler.go:1395-1470`) : chaque `relay_chain` commence par l'enfant émetteur et se termine par le propriétaire
+  (relay ou hôte), ≤ 32 éléments, IDs conformes, sans répétition ni identifiant de ce nœud ou de ses ancêtres ; pas de relay en double ; chaque hôte conforme à `hostnameShape`, sans doublon, rattaché à un relay déclaré
+- Refus 4012 aussi : snapshot reçu avant `relay_hello`, **plus de 40 remplacements par 60 s** sur un lien (`relay_handler.go:79,1480-1492`), `group_vars` invalides, relay déjà déclaré par un autre pair ou connecté directement,
+  **hôte connecté localement ou déjà routé via un autre pair** (`checkHostConflicts`, `relay_handler.go:354-376`) : un snapshot qui détournerait une route est **refusé**, il n'y a pas de « dernier arrivé gagne » pour les snapshots
 
 **→ Après snapshot validé, la connexion est établie** (relay_nodes, relay_routing, inventaire initialisés)
 
@@ -427,7 +420,8 @@ Validation du snapshot :
 ```json
 {"type":"agent_list", "agents":[{"hostname":"host-A", "status":"connected", "last_seen":"..."}]}
 ```
-Contient **uniquement les agents directs** du relay.
+Contient **uniquement les agents directs** du relay. Le serveur répond `agent_list_ack` (`count`). Hostnames mal formés ignorés ; liste > `MAX_AGENT_LIST_HOSTS` : close 4012
+(`relay_handler.go:946-1005`). Entre relays, le dernier arrivé gagne (avec `host.conflict`), mais un agent connecté localement n'est jamais re-routé (§9.5a).
 
 #### event_forward — Propagation des changements du sous-arbre
 
@@ -452,24 +446,27 @@ Après handshake établi, tous les changements (hôtes, relays) sont notifiés v
   "type":"event_forward",
   "event":"relay.updated",
   "relay_id":"zone-a",
-  "relay_chain":["dmz1","zone-a"],
+  "relay_chain":["zone-a","dmz1"],
   "group_vars":{"region":"zone2"},
   "timestamp":"..."
 }
 ```
 
+**Ordre de `relay_chain` dans un `event_forward`** : **origine en premier, pair émetteur en dernier** (`relay_handler.go:1617-1633`) ; pour `relay.updated`, le premier élément est le relay décrit
+(`eventShapeError`, `relay_handler.go:1692-1701`). Les snapshots utilisent l'ordre inverse (l'enfant émetteur en premier, le propriétaire en dernier).
+
 **Design** : `event_forward` unifie tous les événements ascendants (hôtes et relays) avec des types distincts (`host.{up,down,new}`, `relay.updated`).
 
 **Logique (topologie arbre, un seul chemin)** :
-1. Événement local → relay ajoute son REPEATER_ID à relay_chain
-2. Transmet au parent, parent ajoute son ID, continue vers la racine
-3. **Anti-boucle** : refuse de transmettre si REPEATER_ID ∈ relay_chain
+1. Événement local → transmis au parent par l'uplink, qui ajoute l'ID du relay à `relay_chain`
+2. Le parent ajoute son ID à son tour et continue vers la racine
+3. **Anti-boucle** : un event dont la chaîne contient l'ID du récepteur est ignoré ; un `event_forward` reçu **du parent** est ignoré et jamais renvoyé vers le haut (`repeater/uplink.go:310`)
 4. **Pas de déduplication** : un seul chemin → un seul event
-5. **Rate limit par relay** : à dimensionner à l'implémentation selon la charge attendue (pour éviter une inondation d'events par un relay compromis)
+5. **Rate limit par lien** : 200 `event_forward` par seconde (`maxEventsPerSecond`, `relay_handler.go:84`) ; au-delà, les events sont **ignorés** (journalisés), le lien reste ouvert
+6. Un event invalide (chaîne > 32, dernier élément ≠ pair authentifié, descendant inconnu, forme invalide, type inconnu, hôte hors du sous-arbre du pair) est **abandonné** sans fermer le lien (`handleEventForward`, `relay_handler.go:1599-1651`)
 
-**Validation du relay_chain à la réception** : Voir ARCHITECTURE.md §23.2 (HAUT-1) pour la règle unifiée :
-- Mode pull : relay_chain[-1] == jwt.sub (JWT relay-child du WS client)
-- Mode push : relay_chain[-1] == relay_ack.relay_id du pair serveur
+**Validation du relay_chain à la réception** : Voir ARCHITECTURE.md §23.2 (HAUT-1) pour la règle unifiée. Le code applique une seule règle : `relay_chain[-1]` == le pair authentifié du lien
+(`jwt.sub` en pull, identité confirmée par `relay_ack` en push) ; les éléments précédents doivent être des descendants déclarés par ce pair dans son snapshot.
 
 **Événement host.conflict** (détection de détournement de route) :
 Quand un relay déclare un hôte dans `topology_snapshot` ou `agent_list` alors qu'il est déjà routé vers un autre relay :
@@ -484,7 +481,9 @@ Quand un relay déclare un hôte dans `topology_snapshot` ou `agent_list` alors 
   "timestamp":"..."
 }
 ```
-**Comportement** : le dernier arrivé gagne (reroute vers le nouveau relay). ⚠️ **Production** : Configurer un hook d'alerte sur `host.conflict` pour détcter les mouvements de route suspects.
+**Comportement** : pour un `agent_list` ou un `host.up`/`host.new` reçus d'un pair, le dernier arrivé gagne entre relays (reroute), **sauf** si l'hôte est un agent connecté localement : il n'est jamais re-routé.
+Un `topology_snapshot` qui contredirait une route est refusé (4012), sans `host.conflict`. L'événement est émis une seule fois par changement de propriétaire et par lien (`reportConflictOnce`) ; un `host.conflict` détecté ici est aussi
+remonté au parent, et déclenche les hooks `host.conflict` à chaque niveau (`server/server.go:343-353`). ⚠️ **Production** : configurer un hook d'alerte sur `host.conflict` pour détecter les mouvements de route suspects.
 
 #### task_forward et dispatch vers enfant
 
@@ -505,11 +504,10 @@ Enfant qui reçoit `task_forward` lookup sa `relay_routing` pour savoir s'il est
 
 | Code | Nature | Signification | Comportement du pair qui reçoit le close |
 |---|---|---|---|
-| `4010` | **Refus permanent** | Identité non autorisée pour ce lien : token révoqué, `relay_id` ≠ `jwt.sub`, identité du pair différente de celle attendue, boucle détectée (C ∈ {P} ∪ ancêtres(P)) | **Ne pas reconnecter** : le client pull ou le dialer push s'arrête (état terminal, log ERROR « operator action required » ) ; une action opérateur est nécessaire (#153 : une trame 4010 sur un lien push établi rend le Dialer terminal) |
-| `4011` | Token expiré | Token relay expiré (TTL dépassé) | Rafraîchir le token puis reconnecter |
-| `4012` | **Refus corrigible** | Erreur protocolaire ou de validation pouvant se résoudre : `topology_snapshot` invalide / déjà reçu / reçu avant `relay_hello`, conflit de routage ou de relay déclaré, slot « parent unique » occupé | Reconnexion avec backoff exponentiel (5 s → 60 s max) |
-| `4000` | Normal | Fermeture normale ou initiée par le client | — |
-| `1000` | Normal | Fermeture WebSocket standard | — |
+| `4010` | **Refus permanent** (émis : `relay_id` ≠ `jwt.sub`, boucle, nœud n'acceptant pas de parent, et à la révocation / remplacement du token / suppression du relay — `handlers/admin_relays.go:284,460,552`) | Identité non autorisée pour ce lien : token révoqué, `relay_id` ≠ `jwt.sub`, identité du pair différente de celle attendue, boucle détectée (C ∈ {P} ∪ ancêtres(P)) | **Ne pas reconnecter** : le client pull ou le dialer push s'arrête (état terminal, log ERROR « operator action required » ) ; une action opérateur est nécessaire (#153 : une trame 4010 sur un lien push établi rend le Dialer terminal) |
+| `4011` | **Non émis** | Constante réservée (`ws/relay_handler.go:37`), jamais envoyée ni traitée : un token expiré est refusé par un **401** avant l'upgrade | — |
+| `4012` | **Refus corrigible** | Erreur protocolaire ou de validation pouvant se résoudre : `topology_snapshot` invalide / reçu avant `relay_hello` / au-delà de 40 remplacements par minute / en conflit de routage ou de relay, `agent_list` trop longue, premier message ≠ `relay_hello`, slot « parent unique » occupé | Reconnexion avec backoff exponentiel (5 s → 60 s max) |
+| `4000` | Constante définie, non émise sur les liens relay | — | — |
 
 > Un refus HTTP 401 avant l'upgrade (token invalide, révoqué à la reconnexion, secret non configuré) n'a pas de code de fermeture : le client le traite comme une erreur de connexion (backoff 5 s → 60 s). Un refus 401 à la reconnexion n'est **pas** terminal pour un parent qui redémarre.
 
@@ -542,11 +540,17 @@ GET /api/admin/relays?only_connected=false
 POST /api/admin/relays
 {
   "relay_id": "dmz1",
-  "url": "wss://dmz1.internal:7772",
+  "urls": ["wss://dmz1-a.internal:7772", "wss://dmz1-b.internal:7772"],   // l'URL est celle du relay ENFANT, wss:// seulement
   "token": "${REPEATER_UPSTREAM_TOKEN_DMZ1}",
   "mode": "push"
 }
 → 201
+# `urls` : adresses des instances du relay enfant, essayées dans l'ordre (la dernière qui a répondu
+# est réessayée en premier). `url` (chaîne) reste accepté (= liste d'un élément) ; `url` ET `urls`
+# ensemble → 400. Chaque adresse : wss:// uniquement, sans userinfo, sans doublon, 16 max, et refusée
+# si elle vise loopback / lien-local / métadonnées cloud (169.254.169.254) / 0.0.0.0 / multicast
+# (les plages RFC1918 sont acceptées). Une adresse refusée refuse toute la liste (400, l'adresse n'est
+# jamais répétée dans l'erreur). Réponses et liste : `urls` (+ `url` = première adresse, compat).
 
 # Revoke a relay (#153) : blacklist du JTI + drapeau revoked + close 4010 du lien actif
 POST /api/admin/relays/{id}/revoke
@@ -562,8 +566,11 @@ DELETE /api/admin/relays/{relay_id}
 **CLI :**
 ```bash
 secagent-server relays list
-secagent-server relays get <relay_id>
-secagent-server relays add <relay_id> --url <url> --token <token> --mode <push|pull>
+secagent-server relays status
+secagent-server relays add --id <relay_id> [--description …] [--mode pull]           # pull : JWT affiché une fois
+secagent-server relays add --id <relay_id> --mode push --url wss://enfant-a:7772[,wss://enfant-b:7772] --token <token>   # push : --url accepte une liste séparée par des virgules (`cli/relays.go:118-124`)
+secagent-server relays remove <uuid>
+# Pas de `relays get/revoke/delete` : la révocation se fait par l'API POST /api/admin/relays/{id}/revoke
 ```
 
 ---
@@ -572,7 +579,7 @@ secagent-server relays add <relay_id> --url <url> --token <token> --mode <push|p
 
 **Deux rôles JWT distincts** :
 
-**Rôle `relay-child`** (présenté par l'enfant au handshake) :
+**Rôle `relay`** (appelé « relay-child » ailleurs ; présenté par l'enfant au handshake) :
 - Permissions : ouvrir `/ws/relay`, envoyer `relay_hello`, `agent_list`, `event_forward`
 - Restrictions : pas d'accès `/api/inventory`, `/api/exec`, `/ws/agent`, `/api/admin`
 - JWT créé sur : le relay parent (l'entité qui accueille l'enfant)
@@ -585,13 +592,13 @@ secagent-server relays add <relay_id> --url <url> --token <token> --mode <push|p
 - JWT signé par : JWT_SECRET_KEY du relay enfant (vérification par l'enfant récepteur)
 
 **Modèle de signature (HAUT-6)** : Chaque relay crée et signe ses tokens avec sa JWT_SECRET_KEY :
-- relay-child (créé par le parent) : parent signe, enfant ne peut pas valider (isolation clef)
+- `relay` (créé par le parent) : parent signe, enfant ne peut pas valider (isolation clef)
 - relay-parent (créé par l'enfant) : enfant signe, parent ne peut pas valider (isolation clef)
 - Jamais de signature centralisée par la racine (évolution envisagée pour v3.0.1+)
 
 Les tokens relay sont créés via CLI avec le rôle approprié :
 
-**Relay-child** (créé sur le parent, présenté par l'enfant qui ouvre vers le parent) :
+**Rôle `relay`** (créé sur le parent, présenté par l'enfant qui ouvre vers le parent) :
 > *Pas encore disponible via `tokens create`* (modèle de rôles complet : #146). Aujourd'hui le JWT de l'enfant
 > (rôle `relay`, 30 j) est émis à l'enregistrement : `POST /api/admin/relays` (`relays add`, mode pull).
 
@@ -611,7 +618,6 @@ secagent-server tokens create --role relay-parent \
 **Sécurité :** 
 - Tokens jamais loggés en clair
 - JWT_SECRET_KEY unique par relay (jamais partagé)
-- RELAY_PLUGIN_TOKEN unique par relay (jamais partagé)
 - Chaque relay valide les tokens reçus avec sa propre clé
 
 ---
@@ -728,51 +734,21 @@ Un hôte connecté directement au relay GAGNE TOUJOURS sur la table `relay_routi
 
 ---
 
-### 9.6 Schéma SQLite (tables repeater)
+### 9.6 Données des relays enfants (état fichier)
 
-```sql
-CREATE TABLE IF NOT EXISTS relay_nodes (
-    id              TEXT PRIMARY KEY,
-    relay_id        TEXT NOT NULL UNIQUE,
-    description     TEXT,
-    token_hash      TEXT,                   -- ⚠️ misnomer: SHA-256(JTI) pour pull; AES-GCM(token) préfixé enc: pour push (#152)
-    jti             TEXT,                   -- JWT JTI du token relay (pour blacklist #153, colonne NULL pour mode push)
-    token_exp       INTEGER,                -- exp du JWT (expiration timestamp pour purge blacklist)
-    token_encrypted TEXT,                   -- token relay mode=push chiffré AES-256-GCM avec RSA_MASTER_KEY (#140)
-    revoked         INTEGER DEFAULT 0,      -- flag révocation (#153); legacy relais (sans jti) révoqués par ce flag seul
-    mode            TEXT NOT NULL DEFAULT 'pull',  -- "pull" (entrante) | "push" (sortante vers enfant)
-    created_at      INTEGER NOT NULL,
-    last_seen       INTEGER,
-    status          TEXT NOT NULL DEFAULT 'pending'  -- "connected"|"disconnected"|"pending"
-);
+Plus de tables SQL : ces données sont dans `relay.state` (`relay_nodes`, `relay_parent_tokens`, `blacklist`, voir §5 et `internal/state/model.go`) ;
+le routage (`relay_routing` : clé simple `hostname`, `relay_id`, `hop_type` agent|relay, `relay_chain`) et le statut/`last_seen` sont **en mémoire**
+(reconstruits par `topology_snapshot`). Champs de `relay_nodes` : `relay_id`, `urls`, `mode`, `jti`, `token_exp`, `revoked`, `group_vars`,
+`token_hash` (pull : hachage du JTI) ou `token_secret` (push : token chiffré AES-256-GCM, préfixe `enc:`).
 
-CREATE TABLE IF NOT EXISTS relay_parent_tokens (
-    id              TEXT PRIMARY KEY,       -- UUID publique du token
-    jti             TEXT NOT NULL UNIQUE,   -- JWT JTI pour blacklist à la révocation
-    parent_id       TEXT NOT NULL,          -- relay_id du parent (cli --sub) — validé contre relay_hello
-    description     TEXT,
-    created_at      INTEGER NOT NULL,
-    expires_at      INTEGER NOT NULL,       -- exp du JWT (obligatoire, max 365j)
-    revoked_at      INTEGER                 -- timestamp révocation (NULL si actif); INSERT blacklist(jti) à cet instant
-);
-
-CREATE TABLE IF NOT EXISTS relay_routing (
-    hostname    TEXT PRIMARY KEY,              -- clé simple (un seul chemin par hôte)
-    relay_id    TEXT NOT NULL,                 -- relay auquel l'agent se connecte directement
-    hop_type    TEXT CHECK(hop_type IN ('agent','relay')),
-    relay_chain TEXT,                          -- JSON sérialisé ["dmz1","zone-a"]
-    updated_at  INTEGER NOT NULL
-);
-```
-
-**Changement clé** : clé simple `hostname` (pas de composite). Topologie arbre = un seul chemin par hôte.
+**Changement clé** : clé de routage simple `hostname` (pas de composite). Topologie arbre = un seul chemin par hôte.
 
 **Sémantique mode** (v3.0.1) :
 - `pull` = connexion WSS entrante (enfant se connecte, auto-registration relay_hello); token persisté en tant que JTI
 - `push` = connexion WSS sortante (parent ouvre vers enfant, déclaré via API); token persisté chiffré (enc:AES-GCM)
 
 **Notes** :
-- `token_hash` (colonne) mal nommée (#152) : elle stocke soit un hash (pull) soit du token chiffré (push). Renommage envisagé.
+- Le champ `token_hash` d'un relay pull stocke un hachage ; le token d'un relay push est dans `token_secret` (chiffré).
 - Relais antérieurs à #153 (sans `jti`) : `revoked` = true suffit pour refuser ; un `DELETE` d'un tel relais ne peut pas blacklister de JTI inexistant (contrainte : révoquer avant de supprimer)
 - `relay_parent_tokens` : jamais le token en clair persisté ; métadonnées uniquement pour audit et gestion du cycle de vie
 
@@ -784,7 +760,7 @@ CREATE TABLE IF NOT EXISTS relay_routing (
 
 | Type | Déclencheur | Chaîne | Remarques |
 |---|---|---|---|
-| `host.up` | Agent se connecte via `/ws/agent` | `[relay_id]` (l'agent direct) | Non propagé à l'ancêtre si l'agent n'est qu'un agent local du relay |
+| `host.up` | Agent se connecte via `/ws/agent` | `[relay_id]` (l'agent direct) | Propagé au parent par l'uplink (et exécute les hooks locaux) ; reçu d'un enfant, il met à jour la route sauf si l'hôte est connecté localement |
 | `host.down` | Agent se déconnecte | `[relay_id]` | — |
 | `host.new` | Agent apparaît via `agent_list` d'un enfant | `[relay_id_origine, relay_parent, ...]` (chaîne de l'agent) | — |
 | `host.conflict` | Un relay déclare un hôte déjà routé vers un autre relay | `[relay_id_nouveau_propriétaire]` (l'hôte va au nouveau proprietaire) | Rare ; indicatif d'une mal-configuration ou d'une attaque (détournement de route). Un événement max par changement de propriétaire. |
@@ -792,38 +768,34 @@ CREATE TABLE IF NOT EXISTS relay_routing (
 
 **Sémantique chaîne** :
 - Chaque relay ajoute son propre ID à la chaîne lors du relayage vers le parent
-- Un événement local n'est pas re-forwardé au parent (évite les boucles)
+- Un `event_forward` reçu du parent n'est jamais renvoyé vers le haut (`repeater/uplink.go:310`)
 - Anti-boucle : un relay refuse de transmettre si son ID est déjà dans la chaîne
 
-**Rate limit** : Chaque lien relay-parent peut accepter **40 topology_snapshot** replacements par 60 s. Au-delà, fermeture WebSocket **4012** (refus corrigible) ; le relay enfant se reconnecte avec backoff.
+**Rate limit** : chaque lien accepte **40 `topology_snapshot` de remplacement par 60 s** (`relay_handler.go:79-80`) ; au-delà, fermeture WebSocket **4012** (refus corrigible), l'enfant se reconnecte avec backoff. L'uplink regroupe les changements : délai de 200 ms puis au moins 2 s entre deux snapshots (`repeater/client.go:43-44`). Les `event_forward` sont limités à 200/s par lien (§9.2).
 
-**Variables de hook** : Lors de l'exécution d'un hook, les événements injectent deux variables supplémentaires :
-- `{{relay_chain}}` : chaîne d'événement JSON (ex: `["zone-a","dmz1"]`)
-- `{{relay_origin}}` : premier élément de la chaîne (relay d'où l'événement provient ; ex: `"zone-a"`)
+**Variables de hook** : lors de l'exécution d'un hook, les événements injectent deux variables supplémentaires (`hooks/dispatcher.go:41-56`) :
+- `{{relay_chain}}` : chaîne séparée par des virgules, origine en premier (ex : `zone-a,dmz1`) ; variable d'environnement `SECAGENT_RELAY_CHAIN` (shell) ; tableau JSON `relay_chain` dans le corps d'un webhook
+- `{{relay_origin}}` : premier élément de la chaîne (relay d'où l'événement provient ; ex: `zone-a`) ; `SECAGENT_RELAY_ORIGIN`
 
 **Filtrage des hooks** (`relay_chain_contains`) : Permet un hook d'accepter les événements seulement si un relay spécifique figure dans la chaîne :
-```yaml
-hooks:
-  - event: "host.up"
-    filter: "relay_chain_contains:dmz1"
-    cmd: "notify-mgmt.sh {{hostname}}"
+```json
+{ "hooks": [ { "event": "host.up", "filter": { "relay_chain_contains": "dmz1" }, "actions": [ … ] } ] }
 ```
+(configuration JSON, voir `DOC/server/HOOKS_SPEC.md` ; un objet `filter` vide est refusé, `hooks/config.go:22-62`)
 Le filtre est validé au chargement de la config (fichier rejeté en bloc si malformé ; config précédente conservée au SIGHUP) — **fail-closed**.
 
 ---
 
-### 9.7a Sémaphore hooks et concurrence (`RELAY_HOOKS_MAX_CONCURRENT_ACTIONS`)
+### 9.7a Workers hooks et file (`RELAY_HOOKS_MAX_CONCURRENT_ACTIONS`, `RELAY_HOOKS_QUEUE_SIZE`)
 
-**Limite** : le nombre d'actions (commandes, webhooks) exécutées en parallèle par relay pour éviter un débordement de goroutines ou d'I/O en cas de tempête d'événements.
+**Pool de workers** (#183) : `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` (défaut `64`) workers, chacun avec sa file FIFO ; un événement va au worker désigné par le hachage de son hostname (ordre préservé par hôte).
 
 | Variable | Défaut | Description |
 |---|---|---|
-| `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` | `64` | Max goroutines simultanées pour les hooks (tous types confondus : commandes, webhooks) |
+| `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` | `64` | Nombre de workers = événements traités en parallèle |
+| `RELAY_HOOKS_QUEUE_SIZE` | `10000` | Événements en file, tous workers confondus |
 
-**Comportement au-delà de la limite** :
-- Action rejetée silencieusement (ne bloque pas le dispatcher)
-- Compteur `DroppedActions()` incrémenté
-- Log `[SECURITY WARNING]` (1 fois sur 100 pour éviter la saturation log) : hostname en format sûr, ID relay
+**Comportement** : contre-pression (les actions attendent dans la file, aucune n'est abandonnée tant que la file n'est pas pleine) ; au-delà de la file, rejet **compté** (`hooks_dropped_events`) avec un `[WARN]` agrégé par minute. Détails, ordre, compteurs, arrêt : `DOC/server/HOOKS_SPEC.md` §9b.
 
 ---
 
@@ -852,59 +824,55 @@ Le filtre est validé au chargement de la config (fichier rejeté en bloc si mal
 
 ---
 
-### 9.8 Docker Compose qualification v3.0.1
+### 9.8 Déploiement des relays
 
-```yaml
-services:
-  central:
-    image: secagent-server:3.0.1
-    environment:
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
-      ADMIN_TOKEN: ${ADMIN_TOKEN}
-      RSA_MASTER_KEY: ${RSA_MASTER_KEY}
-      RELAY_PLUGIN_TOKEN: ${RELAY_PLUGIN_TOKEN}
-      NATS_URL: nats://nats:4222
-      RELAY_GROUP_VARS: '{"env":"prod"}'
-      TLS_CERT: /etc/secagent/certs/server.crt
-      TLS_KEY: /etc/secagent/certs/server.key
-    expose:
-      - "7771"   # Admin CLI — container-interne uniquement
-    ports:
-      - "443:7770"    # HTTPS (API REST via Caddy)
-      - "7772:7772"   # WSS (WebSocket termination par Caddy)
-
-  relay-dmz1:
-    image: secagent-server:3.1
-    environment:
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY_DMZ1}
-      ADMIN_TOKEN: ${ADMIN_TOKEN}
-      REPEATER_ID: "dmz1"
-      REPEATER_UPSTREAM_URL: "wss://central:7772"
-      REPEATER_UPSTREAM_TOKEN: ${REPEATER_UPSTREAM_TOKEN_DMZ1}
-      RSA_MASTER_KEY: ${RSA_MASTER_KEY_DMZ1}
-      NATS_URL: nats://nats:4222
-      RELAY_PLUGIN_TOKEN: ${RELAY_PLUGIN_TOKEN_DMZ1}
-      RELAY_GROUP_VARS: '{"region":"dmz"}'
-      TLS_CERT: /etc/secagent/certs/server.crt
-      TLS_KEY: /etc/secagent/certs/server.key
-    expose:
-      - "7771"   # Admin CLI — container-interne uniquement
-    ports:
-      - "7774:7772"   # WSS (WebSocket pour agents enfants)
-```
+Les fichiers Compose de référence sont `DEPLOYMENT/prod/docker-compose.server.yml` (racine) et `DEPLOYMENT/prod/docker-compose.child.yml`
+(surcharge d'un relay enfant : `REPEATER_ID`, `REPEATER_UPSTREAM_URL`, `REPEATER_UPSTREAM_TOKEN`, `RELAY_GROUP_VARS`), et
+`DEPLOYMENT/qualif/docker-compose.*.yml`. Il n'y a ni NATS (`NATS_URL`), ni Caddy, ni `RELAY_PLUGIN_TOKEN` ; le TLS est natif
+(`TLS_CERT`/`TLS_KEY`, plus `ADMIN_TLS=true` si l'API admin est liée à une adresse non loopback). Voir `DEPLOYMENT/prod/README.md`.
 
 ---
 
-### 9.8 Récapitulatif modifications (v3.0.1)
+### 9.9 Récapitulatif modifications (v3.0.1)
 
 | Aspect | Changement |
 |---|---|
 | **Config** | Variables simples (REPEATER_UPSTREAM_URL, REPEATER_UPSTREAM_TOKEN) — plus de YAML |
 | **Topologie** | Arbre strict (un parent max par relay enfant, un seul chemin par hôte) |
 | **Upstream** | Un seul upstream (le parent) — plus de multi-upstream |
-| **Schéma DB** | `relay_routing` : clé simple `hostname` (pas de composite), plus de priority |
+| **Routage** (état) | `relay_routing` : clé simple `hostname` (pas de composite), plus de priority |
 | **Routage** | Lookup simple `hostname` (un seul chemin, pas de sélection multi-chemins) |
 | **Events** | Remontée parent-à-parent, pas de déduplication (un seul chemin) |
 | **Anti-cycle** | Rejet si `REPEATER_ID ∈ relay_chain` |
-| **Auth** | Deux rôles JWT fixés : `relay-child` (enfant ouvre) + `relay-parent` (parent ouvre) ; chaque relay signe ses tokens avec sa JWT_SECRET_KEY |
+| **Auth** | Deux rôles JWT fixés : `relay` (dit « relay-child », enfant ouvre) + `relay-parent` (parent ouvre) ; chaque relay signe ses tokens avec sa JWT_SECRET_KEY |
 | **Suppression** | REPEATER_UPSTREAMS_FILE, seen-set, event_id dedup, priority, multi-upstream |
+
+
+### CLI d'administration : `RELAY_API_URL` en liste (#165)
+
+`RELAY_API_URL` accepte une liste d'adresses séparées par des virgules (une par instance du relay). Une
+lecture (GET) passe à l'adresse suivante sur tout échec de transport ; une écriture n'est retentée sur
+une autre adresse que si l'échec a eu lieu AVANT l'écriture de la requête (connexion refusée, DNS, TLS) :
+une requête partie peut avoir été appliquée et n'est jamais rejouée ailleurs. `relays add --url` prend
+une liste séparée par des virgules (corps `urls`).
+
+
+## 10. Actif/passif : cycle de vie d'une instance (#163)
+
+Plusieurs instances d'un même relay partagent `STATE_DIR` ; **une seule** est maître (elle ouvre les ports et écrit l'état), les autres attendent. Une racine n'est jamais active en plusieurs exemplaires : on passe à l'échelle par l'arbre de relays.
+
+**Démarrage** (`internal/server.RunInstance`) : 1. configuration et **certificats TLS validés avant tout** (un certificat invalide ne devient même pas candidat : aucun `relay.lock` créé) ; 2. boucle de verrou : tant qu'il n'est pas maître, le processus n'ouvre **aucun port** (7770, 7771, 7772), ne charge pas l'état, ne lance ni lien montant, ni dialer push, ni hooks, et n'écrit **rien** dans `STATE_DIR` hors `relay.lock` ; 3. promu : battement et contrôles du verrou démarrent, l'état est chargé (rejeu refusé, cf. STATE_SPEC) puis `Build` ; 4. les ports ne s'ouvrent qu'après promotion **et** chargement de l'état ; `BeforeWrite` est branché sur `CheckOwnership`. Un échec de `Build` (état invalide, rejeu) supprime le propre `relay.lock` de l'instance et sort avec le code 1.
+
+**Perte du verrou** (identité changée, verrou supprimé, auto-retrait) : arrêt du processus, pas de rétrogradation en mémoire. Dans l'ordre : hooks et liens annulés (**sans vidage de la file** : aucune action n'est exécutée au nom d'un ancien maître), listeners fermés, **toutes les WebSockets fermées en `1001 Going Away`** (jamais `4001`, qui interdit la reconnexion : les minions et les relays rebouclent sur leur liste d'adresses, #165/#166), aucune écriture d'état, code de sortie **75**. La policy de redémarrage du Compose relance l'instance en secondaire. Les appels REST du plugin en cours pendant la bascule **échouent** (le plugin ne rejoue pas, #168).
+
+**Arrêt propre** (SIGTERM / SIGINT) : WebSockets fermées en 1001, ports fermés, file des hooks vidée (bornée), état fermé, puis **suppression de `relay.lock`** : un secondaire reprend aussitôt. Exigence : reprise **< 10 s** (cohérent avec `STOP_MAX_S` de l'infra) ; elle se compose d'un cycle de contrôle du secondaire (≤ 5 s), de la pause du candidat (1-2 s) et du chargement de l'état — mesurée par QA entre 3,3 et 4,0 s (rapports #163b). Après un crash ou `kill -9` le fichier `relay.lock` n'est pas relâché : le secondaire attend sa péremption (5 min sans battement, `MasterStale`, `lock/params.go:46-55`). Le protocole du verrou ne change pas.
+
+**Observabilité** : `/health` (maître seul) ajoute `role` et `instance_id`. Fichier de statut **local** `RELAY_STATUS_FILE` (défaut `/run/secagent/status.json`, `0600`, refusé s'il est dans `STATE_DIR`) : rôle (`secondary` / `candidate` / `master` / `lost`), `instance_id`, état (`waiting`, `loading`, `ready`, `failed`, `lost`), compteur de battement, horodatages du dernier battement réussi (maître) ou du dernier contrôle (secondaire) tirés du verrou lui-même, périodes du verrou ; aucun secret. `secagent-server status --local` le lit sans ouvrir de port ni appeler l'API : code **0** pour un maître dont le dernier battement a moins de 2 × la période de battement ou un secondaire dont le dernier contrôle a moins de 3 × la période de contrôle ; non nul si le fichier est absent, trop ancien (processus figé), `failed` ou `lost`. C'est le healthcheck du conteneur.
+
+| Code de sortie | Sens |
+|---|---|
+| 0 | arrêt demandé (SIGTERM/SIGINT) |
+| 1 | démarrage refusé (configuration, certificat, état invalide, rejeu) ou erreur serveur |
+| 75 | verrou maître perdu : relancer (en secondaire) |
+
+**Mode lecture seule visible (#163)** : une écriture refusée parce que l'instance n'a pas de garde confirmée (`no write guard`), a perdu le verrou (`lock lost`) ou ne peut pas le confirmer (`ownership not confirmed`) répond `503 {"error":"state_read_only","reason":…}`, journalisé une fois par minute. `/api/admin/status`, `secagent-server server status` et `status --local` exposent `state_mode` (`read_write` / `read_only`), le rôle, l'`instance_id`, le `write_seq` et le dernier battement.

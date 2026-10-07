@@ -19,15 +19,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: GO/go.work
           cache-dependency-path: GO/go.sum
 
       - name: Build
         working-directory: GO
+        run: go build ./...
+
+      # Le serveur est pur Go depuis #160 (plus de SQLite) : la compilation sans CGO doit rester verte.
+      - name: Build sans CGO
+        working-directory: GO
+        env:
+          CGO_ENABLED: "0"
         run: go build ./...
 
       # Tests bloquants : aucun contournement. -race exige CGO (actif sur ubuntu-latest).
@@ -47,9 +54,9 @@ jobs:
     # Bloquant : golangci-lint analyse tout le module (golangci-lint v2.14.0).
     # 0 issue mesuree par qa sur #144 avant activation.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: GO/go.work
           cache-dependency-path: GO/go.sum
@@ -67,7 +74,7 @@ jobs:
           echo "gofmt : aucun fichier non-conforme."
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7.0.1
         with:
           version: v2.14.0
           working-directory: GO
@@ -76,28 +83,36 @@ jobs:
   ansible-inventory:
     name: Inventaire Ansible
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     # Bloquant. Valide la sortie reelle du binaire secagent-inventory avec le vrai
-    # `ansible-inventory --list` (plugin `script`). ANSIBLE_E2E=1 rend le test OBLIGATOIRE :
-    # ansible-inventory introuvable => echec (jamais de skip silencieux). Le job « Build + tests Go »
-    # n'installe pas Ansible : les tests TestAnsible* s'y skippent (ANSIBLE_E2E absent).
+    # `ansible-inventory --list` (plugin `script`). Les tests Ansible sont OPT-IN : ils ne s'executent que si
+    # ANSIBLE_E2E=1 (jamais selon la presence d'ansible sur le PATH : le runner « Build + tests Go » a
+    # ansible-playbook mais pas httpx et les SKIPPE, ANSIBLE_E2E absent). ANSIBLE_E2E=1 les rend OBLIGATOIRES :
+    # outil ou httpx introuvable => echec explicite (jamais de skip silencieux).
     # ansible-core est epingle strictement dans .github/ci/requirements-ansible.txt
     # (cle de cache pip) ; Python 3.12 est supporte par ansible-core 2.21 (controleur).
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: .github/ci/requirements-ansible.txt
 
-      - name: Installer ansible-core (version epinglee)
+      # Tout est installe dans un venv jetable du job (jamais dans le Python du systeme) : ansible-core et httpx
+      # (requis par le plugin de connexion relay.py) epingles dans requirements-ansible.txt ; ansible-playbook,
+      # ansible-inventory et python3 (interpreteur des modules cote cible) viennent de ce venv.
+      - name: Installer ansible-core et httpx (venv, versions epinglees)
         run: |
-          python -m pip install -r .github/ci/requirements-ansible.txt
-          ansible-inventory --version
+          python -m venv "$RUNNER_TEMP/ansible-venv"
+          "$RUNNER_TEMP/ansible-venv/bin/python" -m pip install -r .github/ci/requirements-ansible.txt
+          echo "$RUNNER_TEMP/ansible-venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/ansible-venv/bin/ansible-inventory" --version
+          "$RUNNER_TEMP/ansible-venv/bin/ansible-playbook" --version
+          "$RUNNER_TEMP/ansible-venv/bin/python" -c "import httpx; print('httpx', httpx.__version__)"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: GO/go.work
           cache-dependency-path: GO/go.sum
@@ -113,8 +128,342 @@ jobs:
         # qu'au moins un test « Ansible » ait reellement PASSE.
         run: |
           set -o pipefail
-          go test -race -run 'Ansible' -v ./cmd/secagent-server/internal/integration/... -timeout 300s | tee ansible-test.log
+          go test -race -run 'Ansible' -v ./cmd/secagent-server/internal/integration/... -timeout 600s | tee ansible-test.log
           if ! grep -qE '^--- PASS: .*Ansible' ansible-test.log; then
             echo "::error::Aucun test Ansible execute et passe (absent ou skippe) : le job ne valide rien."
             exit 1
           fi
+          # Aucun skip silencieux : ANSIBLE_E2E=1 rend tout test Ansible obligatoire.
+          if grep -qE '^\s*--- SKIP: .*Ansible' ansible-test.log; then
+            echo "::error::Un test Ansible a ete SKIPPE (ANSIBLE_E2E=1 interdit les skips)."
+            grep -E '^\s*--- SKIP: .*Ansible' ansible-test.log
+            exit 1
+          fi
+          # #171 D : chacun des scenarios async/poll doit avoir reellement PASSE (noms exacts des tests).
+          for t in TestAnsibleAsync_D1_ TestAnsibleAsync_D2_ TestAnsibleAsync_D3_JobSurvives TestAnsibleAsync_D3_PollInFlight TestAnsibleAsync_D4_; do
+            if ! grep -qE "^--- PASS: ${t}" ansible-test.log; then
+              echo "::error::Test ${t}* absent ou non passe (#171 D) : le job ne prouve pas l'async/poll."
+              exit 1
+            fi
+          done
+
+  # ---- Conteneurs et Compose (#174 M4/M5) ---------------------------------------------------------
+  docker-compose-checks:
+    name: Dockerfiles + Compose (rendu, port admin, anti-NATS)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      # Bloquant : un Dockerfile casse est detecte au push, pas au tag.
+      - name: Build serveur (sans push)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: GO
+          file: GO/Dockerfile
+          push: false
+          cache-from: type=gha,scope=secagent-server
+      - name: Build minion (sans push)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: GO
+          file: GO/Dockerfile.agent
+          push: false
+          cache-from: type=gha,scope=secagent-minion
+
+      # Un push ne fait QUE des tests : ni login registre, ni push d'image, ni packages: write dans ce fichier.
+      - name: Garde-fou - aucune publication dans ci.yml
+        run: python3 scripts/ci/check_no_publish.py .github/workflows/ci.yml
+
+      - name: Autotest du controle de rendu
+        run: |
+          python3 scripts/ci/check_compose_selftest.py
+          python3 scripts/ci/test_shared_storage_hosts.py
+          python3 scripts/ci/check_no_publish_selftest.py
+          python3 scripts/ci/check_scripts_selftest.py
+          bash scripts/ci/chain_verify_images_selftest.sh
+          bash scripts/ci/failover_guard_selftest.sh
+          python3 scripts/ci/check_scripts.py .github/workflows/*.yml
+
+      # Variables d'exemple NON secretes : uniquement pour que `docker compose config` puisse interpoler.
+      - name: Rendu et controles de chaque Compose prod et qualif
+        env:
+          SECAGENT_VERSION: v0.0.0
+          STATE_HOST_DIR: /mnt/state
+          TLS_CERT_DIR: /etc/tls
+          QUALIF_TLS_DIR: /etc/tls
+          SECAGENT_IMAGE: ghcr.io/ccoupel/secagent-server:sha-0000000
+          SECAGENT_MINION_IMAGE: ghcr.io/ccoupel/secagent-minion:sha-0000000
+          REPEATER_ID: ci
+          REPEATER_UPSTREAM_URL: https://parent.example:7770
+        run: |
+          set -euo pipefail
+          mkdir -p render
+          touch DEPLOYMENT/prod/prod.env DEPLOYMENT/qualif/qualif.env   # fichiers vides : valeurs jamais lues
+          # Prod : un fichier par role (racine, racine + enfant)
+          docker compose -f DEPLOYMENT/prod/docker-compose.server.yml config --format json > render/prod-root.json
+          docker compose -f DEPLOYMENT/prod/docker-compose.server.yml -f DEPLOYMENT/prod/docker-compose.child.yml config --format json > render/prod-child.json
+          docker compose -f DEPLOYMENT/qualif/docker-compose.server.yml config --format json > render/qualif-server.json
+          docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml config --format json > render/qualif-chain.json
+          docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.remote-tls.yml config --format json > render/qualif-chain-remote.json
+          python3 scripts/ci/check_compose.py --require-memory-limit render/prod-root.json render/prod-child.json render/qualif-server.json render/qualif-chain.json render/qualif-chain-remote.json
+
+      - name: Test negatif — un Compose qui publie 7771 sur toutes les interfaces doit echouer
+        run: |
+          docker compose -f scripts/ci/testdata/bad-admin-port.yml config --format json > render/bad.json
+          if python3 scripts/ci/check_compose.py render/bad.json; then
+            echo "::error::Le controle du port admin a laisse passer un Compose non conforme"; exit 1
+          fi
+          docker compose -f scripts/ci/testdata/good.yml config --format json > render/good.json
+          python3 scripts/ci/check_compose.py render/good.json
+
+      # NATS est retire du projet (#178) : aucune dependance, aucun service, aucune variable.
+      - name: Garde anti-NATS
+        run: |
+          set -u
+          fail=0
+          if grep -rniE 'nats|jetstream' DEPLOYMENT/prod DEPLOYMENT/qualif/docker-compose.server.yml; then fail=1; fi
+          if grep -rniE 'RELAY_INSECURE_TLS|DATABASE_URL|caddy|^[[:space:]]*build:' --include='*.yml' DEPLOYMENT; then fail=1; fi
+          if grep -rniE 'nats|jetstream' DEPLOYMENT/qualif --include='*.yml' --include='*.sh'; then fail=1; fi
+          if grep -niE 'nats|jetstream' GO/go.mod GO/go.sum; then fail=1; fi
+          if grep -rniE 'nats-io|nats\.go|jetstream' GO --include='*.go' --exclude='*_test.go'; then fail=1; fi
+          if [ "$fail" -ne 0 ]; then echo "::error::Reference a NATS reintroduite (#178)"; exit 1; fi
+
+  # ---- Basculement actif/passif en conteneurs (#174 M6) : arret propre, rapide, bloquant -------------
+  # Image construite LOCALEMENT depuis le commit (aucun login, aucun push). Le scenario `docker kill`
+  # (peremption reelle du verrou, ~5-6 min) est dans failover.yml (planifie, manuel et avant release).
+  failover-stop:
+    name: Basculement en conteneurs (arret propre)
+    needs: [docker-compose-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Build de l'image du commit
+        run: docker build -t secagent-server:ci -f GO/Dockerfile GO
+      - name: Preparation (certificats et secrets JETABLES, etat initial)
+        env:
+          SECAGENT_IMAGE: secagent-server:ci
+        run: bash DEPLOYMENT/qualif/failover-test.sh setup-ci
+      - name: Arret propre du maitre
+        env:
+          SECAGENT_IMAGE: secagent-server:ci
+          QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
+        run: bash DEPLOYMENT/qualif/failover-test.sh run stop
+      - name: Journaux et nettoyage
+        if: always()
+        env:
+          SECAGENT_IMAGE: secagent-server:ci
+          QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
+        run: |
+          docker compose -p secagent-qualif -f DEPLOYMENT/qualif/docker-compose.server.yml logs --tail=80 || true
+          bash DEPLOYMENT/qualif/failover-test.sh teardown || true
+
+  # ---- Chaine de relais en conteneurs (#188), sur chaque push : racine A/P + enfant pull + 2 minions ----------
+  # Image serveur et minion construites LOCALEMENT depuis le commit (aucun login, aucun push). Uniquement
+  # l'arret propre (le `kill` de 5-6 min est dans failover.yml).
+  chain-containers:
+    name: Chaine en conteneurs (amorcage, smoke, bascule)
+    needs: [docker-compose-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SECAGENT_IMAGE: secagent-server:ci
+      SECAGENT_MINION_IMAGE: secagent-minion:ci
+      INVENTORY_BIN: ${{ github.workspace }}/GO/secagent-inventory
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: GO/go.work
+          cache-dependency-path: GO/go.sum
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: .github/ci/requirements-ansible.txt
+      - name: Poste de controle Ansible (venv, ansible-core + httpx epingles, secagent-inventory)
+        run: |
+          python -m venv "$RUNNER_TEMP/ansible-venv"
+          "$RUNNER_TEMP/ansible-venv/bin/python" -m pip install -r .github/ci/requirements-ansible.txt
+          echo "$RUNNER_TEMP/ansible-venv/bin" >> "$GITHUB_PATH"
+          cd GO && CGO_ENABLED=0 go build -trimpath -o secagent-inventory ./cmd/secagent-inventory
+      - name: Images serveur et minion du commit (locales, sans push)
+        run: |
+          docker build -t secagent-server:ci -f GO/Dockerfile GO
+          docker build -t secagent-minion:ci -f GO/Dockerfile.agent GO
+      - name: PKI de test et secrets jetables
+        run: bash DEPLOYMENT/qualif/chain-test.sh ci-prepare
+      - name: Amorcage de la chaine
+        run: bash DEPLOYMENT/qualif/chain-test.sh bootstrap
+      - name: Smoke (relais, minions, inventaire, ansible ping)
+        run: bash DEPLOYMENT/qualif/chain-test.sh smoke
+      - name: Bascule de la racine (arret propre) puis smoke
+        run: bash DEPLOYMENT/qualif/chain-test.sh failover
+      - name: Journaux et nettoyage
+        if: always()
+        run: |
+          bash DEPLOYMENT/qualif/chain-test.sh logs || true
+          bash DEPLOYMENT/qualif/chain-test.sh down || true
+
+  # ---- Repetition a vide de la release (#174 L3) : AUCUNE publication, digest factice -------------------------
+  release-dryrun:
+    name: Repetition a vide de l'archive Compose
+    needs: [docker-compose-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Archive avec digest factice (meme script que release.yml)
+        run: |
+          set -euo pipefail
+          FAKE="sha256:$(printf '0%.0s' $(seq 64))"
+          bash scripts/ci/build_compose_archive.sh v0.0.0 0.0.0 "$FAKE" dist
+          bash scripts/ci/build_compose_archive.sh v0.0.0 0.0.0 "$FAKE" dist2   # reproductibilite de l'archive
+          cmp dist/secagent-compose-0.0.0.tar.gz dist2/secagent-compose-0.0.0.tar.gz
+          (cd dist && sha256sum ./* > SHA256SUMS-0.0.0.txt && sha256sum -c SHA256SUMS-0.0.0.txt)
+      - name: Le contenu de l'archive est valide (rendu Compose et controles)
+        env:
+          STATE_HOST_DIR: /mnt/state
+          TLS_CERT_DIR: /etc/tls
+          REPEATER_ID: ci
+          REPEATER_UPSTREAM_URL: https://parent.example:7770
+        run: |
+          set -euo pipefail
+          mkdir x && tar -xzf dist/secagent-compose-0.0.0.tar.gz -C x
+          cd x/secagent-compose-0.0.0
+          touch prod.env
+          grep -E 'image: ghcr.io/ccoupel/secagent-server:v0.0.0@sha256:[0-9a-f]{64}$' docker-compose.server.yml
+          docker compose --env-file .env.example -f docker-compose.server.yml config --format json > r.json
+          docker compose --env-file .env.example -f docker-compose.server.yml -f docker-compose.child.yml config --format json > c.json
+          python3 tools/check_compose.py --require-memory-limit --require-digest r.json c.json
+      - name: Tests negatifs - l'archive est refusee avec latest ou NATS
+        run: |
+          set -u
+          FAKE="sha256:$(printf '0%.0s' $(seq 64))"
+          cp -r DEPLOYMENT/prod bad-latest && printf 'x-bad:\n  image: nginx:latest\n' >> bad-latest/docker-compose.server.yml
+          if STAGE_DIR=s1 SRC_DIR=bad-latest bash scripts/ci/build_compose_archive.sh v0.0.0 0.0.0 "$FAKE" o1; then echo "::error::latest accepte"; exit 1; fi
+          cp -r DEPLOYMENT/prod bad-nats && printf '# nats\n' >> bad-nats/docker-compose.server.yml
+          if STAGE_DIR=s2 SRC_DIR=bad-nats bash scripts/ci/build_compose_archive.sh v0.0.0 0.0.0 "$FAKE" o2; then echo "::error::NATS accepte"; exit 1; fi
+          if bash scripts/ci/build_compose_archive.sh v0.0.0 0.0.0 sha256:abc o3; then echo "::error::digest invalide accepte"; exit 1; fi
+          echo "refus attendus : OK"
+
+  # ---- Reproductibilite des images (#174 M1) : 2 builds locaux du meme commit, comparaison des digests --------
+  # Informatif : un ecart est un ::warning:: documente (cause probable : `apk` du minion), pas un echec.
+  reproducibility:
+    name: Reproductibilite ${{ matrix.image }}
+    needs: [docker-compose-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {image: secagent-server, dockerfile: Dockerfile}
+          - {image: secagent-minion, dockerfile: Dockerfile.agent}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Deux builds, comparaison des digests (aucun push)
+        env:
+          IMAGE: ${{ matrix.image }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          for n in 1 2; do
+            docker buildx build --provenance=false --sbom=false --no-cache \
+              --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+              -f "GO/${DOCKERFILE}" \
+              --output "type=oci,dest=build$n.tar,rewrite-timestamp=true" GO
+            mkdir "o$n" && tar -xf "build$n.tar" -C "o$n"
+            python3 -c "import json;print(json.load(open('o$n/index.json'))['manifests'][0]['digest'])" > "d$n"
+          done
+          echo "build1=$(cat d1) build2=$(cat d2)" | tee -a "$GITHUB_STEP_SUMMARY"
+          if cmp -s d1 d2; then
+            echo "Reproductible : meme digest." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::${IMAGE} : builds NON reproductibles ($(cat d1) != $(cat d2)). A documenter (cause) avant de passer en erreur."
+            for n in 1 2; do echo "couches build$n :"; python3 scripts/ci/oci_layers.py "o$n"; done
+          fi
+
+  # ---- Sauvegarde / restauration de l'etat et de RSA_MASTER_KEY en conteneurs (#170 L4) ----------------------
+  backup-restore-containers:
+    name: Sauvegarde et restauration (etat + RSA_MASTER_KEY)
+    needs: [docker-compose-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SECAGENT_IMAGE: secagent-server:ci
+      SECAGENT_MINION_IMAGE: secagent-minion:ci
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Images serveur et minion du commit (locales, sans push)
+        run: |
+          docker build -t secagent-server:ci -f GO/Dockerfile GO
+          docker build -t secagent-minion:ci -f GO/Dockerfile.agent GO
+      - name: PKI de test, secrets jetables, amorcage
+        run: |
+          bash DEPLOYMENT/qualif/chain-test.sh ci-prepare
+          bash DEPLOYMENT/qualif/chain-test.sh bootstrap
+      - name: Sinistre et restauration
+        run: bash DEPLOYMENT/qualif/chain-test.sh backup-restore
+      - name: Journaux et nettoyage
+        if: always()
+        run: |
+          bash DEPLOYMENT/qualif/chain-test.sh logs || true
+          bash DEPLOYMENT/qualif/chain-test.sh down || true
+
+  # ---- Artefact d'images pour la qualif distante (sans registre) : docker save + docker load ----------------
+  # Les images du commit sont construites (memes Dockerfiles, flags deterministes), exportees par `docker save` et
+  # televersees comme ARTEFACT du run (7 jours), avec le binaire secagent-inventory du poste de controle Ansible.
+  # AUCUN login registre, AUCUN push, aucune permission packages: write. Sur l'hote : `chain-test.sh load-images`.
+  images-artifact:
+    name: Artefact d'images (docker save) et secagent-inventory
+    if: github.event_name == 'push'
+    needs: [docker-compose-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: GO/go.work
+          cache-dependency-path: GO/go.sum
+      - name: Construire, exporter, empreintes
+        run: |
+          set -euo pipefail
+          SHA12="${GITHUB_SHA::12}"
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          mkdir -p out
+          docker build --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" -t "secagent-server:ci-${SHA12}" -f GO/Dockerfile GO
+          docker build --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" -t "secagent-minion:ci-${SHA12}" -f GO/Dockerfile.agent GO
+          docker save "secagent-server:ci-${SHA12}" | gzip -n > "out/secagent-server-ci-${SHA12}.tar.gz"
+          docker save "secagent-minion:ci-${SHA12}" | gzip -n > "out/secagent-minion-ci-${SHA12}.tar.gz"
+          (cd GO && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w" -o ../out/secagent-inventory ./cmd/secagent-inventory)
+          {
+            echo "SECAGENT_IMAGE=secagent-server:ci-${SHA12}"
+            echo "SECAGENT_MINION_IMAGE=secagent-minion:ci-${SHA12}"
+            echo "SECAGENT_PULL_POLICY=never"
+          } > out/images.env
+          # Empreintes STABLES des images (sha256 des couches RootFS.Layers ; l'ID varie selon le magasin containerd) :
+          # non secrets, verifiees par `chain-test.sh load-images` puis avant chaque demarrage (meme calcul que image_fp).
+          fp() { docker image inspect --format '{{json .RootFS.Layers}}' "$1" | sha256sum | cut -d' ' -f1; }
+          {
+            echo "secagent-server:ci-${SHA12} $(fp "secagent-server:ci-${SHA12}")"
+            echo "secagent-minion:ci-${SHA12} $(fp "secagent-minion:ci-${SHA12}")"
+          } > out/images.ids
+          (cd out && sha256sum ./* > SHA256SUMS && cat SHA256SUMS)
+          {
+            echo "empreinte couches serveur : $(fp "secagent-server:ci-${SHA12}")"
+            echo "empreinte couches minion  : $(fp "secagent-minion:ci-${SHA12}")"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          chmod +x out/secagent-inventory
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: secagent-images-${{ github.sha }}
+          path: out/
+          retention-days: 7
+          if-no-files-found: error

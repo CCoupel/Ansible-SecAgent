@@ -107,6 +107,8 @@ func (e *Executor) Run(ctx context.Context, req ExecRequest) ExecResult {
 	// Note : la commande provient du relay server authentifié (JWT + WSS).
 	// Migration vers exec.CommandContext direct recommandée en v2 (CRITIQUE #3 roadmap).
 	cmd := exec.CommandContext(runCtx, "/bin/sh", "-c", req.Cmd)
+	// Allow-listed environment only (#186): never the minion's secrets.
+	cmd.Env = TaskEnv(hostEnv())
 	// Placer le subprocess dans son propre groupe de processus (Unix) afin de pouvoir
 	// tuer l'arbre entier (grandchildren, e.g. `sh -c 'sleep 60; echo x'`) lors du
 	// timeout ou de l'annulation de contexte. Noop sur Windows.

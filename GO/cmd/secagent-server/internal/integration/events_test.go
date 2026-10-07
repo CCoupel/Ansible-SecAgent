@@ -78,7 +78,8 @@ func linkPush(t *testing.T, parent, child *node) {
 type fakeChild struct {
 	t      *testing.T
 	conn   *websocket.Conn
-	closed chan error // the error that ended the reader (a *websocket.CloseError for a close frame)
+	closed chan error    // the error that ended the reader (a *websocket.CloseError for a close frame)
+	acks   chan struct{} // one token per topology_ack received after the handshake (see snapshotAcked)
 }
 
 func newFakeChild(t *testing.T, parent *node, id string, declared ...[]string) *fakeChild {
@@ -98,7 +99,7 @@ func newFakeChildWithVars(t *testing.T, parent *node, id string, helloVars map[s
 		t.Fatalf("fake child %s: %v", id, err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	f := &fakeChild{t: t, conn: conn, closed: make(chan error, 1)}
+	f := &fakeChild{t: t, conn: conn, closed: make(chan error, 1), acks: make(chan struct{}, 256)}
 	hello := map[string]any{"type": "relay_hello", "relay_id": id, "node_type": "relay", "mode": "pull", "version": "3.0", "ancestors": []string{}}
 	if helloVars != nil {
 		hello["group_vars"] = helloVars
@@ -114,9 +115,19 @@ func newFakeChildWithVars(t *testing.T, parent *node, id string, helloVars map[s
 	// keep reading so that pings are answered and the link stays up; remember how it ended
 	go func() {
 		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
+			_, raw, err := conn.ReadMessage()
+			if err != nil {
 				f.closed <- err
 				return
+			}
+			var m struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(raw, &m) == nil && m.Type == "topology_ack" {
+				select {
+				case f.acks <- struct{}{}:
+				default:
+				}
 			}
 		}
 	}()
@@ -155,6 +166,25 @@ func (f *fakeChild) snapshot(relays, agents []map[string]any) {
 		agents = []map[string]any{}
 	}
 	f.send(map[string]any{"type": "topology_snapshot", "relays": relays, "agents": agents})
+}
+
+// snapshotAcked sends a topology_snapshot and waits until the parent either acknowledges it (true) or
+// ends the link (false: the close is then still available to waitClosed). Writing only AFTER the previous
+// snapshot was answered means nothing is ever written into a link the parent has already closed: such a
+// write makes the parent's kernel answer with a TCP reset that can destroy the close frame before it is read.
+func (f *fakeChild) snapshotAcked() bool {
+	f.t.Helper()
+	f.send(map[string]any{"type": "topology_snapshot", "relays": []any{}, "agents": []any{}})
+	select {
+	case <-f.acks:
+		return true
+	case err := <-f.closed:
+		f.closed <- err // keep it for waitClosed
+		return false
+	case <-time.After(waitLimit):
+		f.t.Fatal("the parent neither acknowledged the snapshot nor ended the link")
+		return false
+	}
 }
 
 // waitClosed waits for the parent to end the link and returns the close code (0 if it was not a close frame).
@@ -243,8 +273,11 @@ func TestEvents_PropagateUpWithExactRelayChain(t *testing.T) {
 		root: "UP ev-host status=connected chain=leaf,mid origin=leaf enrolled=",
 	}
 	for n, line := range want {
-		if got := n.hookLines(); len(got) != 1 || got[0] != line {
-			t.Errorf("%s hook lines = %q, want exactly %q (local event: empty chain; received: origin first, sender last)", n.id, got, line)
+		// enrolling the host (connectMinion: the real token + challenge flow) is itself a host.new that
+		// climbs the tree: it comes first, with an enrollment timestamp; the host.up is the exact line
+		got := n.hookLines()
+		if len(got) != 2 || !strings.HasPrefix(got[0], "NEW ev-host status=disconnected ") || got[1] != line {
+			t.Errorf("%s hook lines = %q, want a NEW (enrollment) then exactly %q (local event: empty chain; received: origin first, sender last)", n.id, got, line)
 		}
 	}
 	if !root.hasHost("ev-host") {
@@ -253,6 +286,7 @@ func TestEvents_PropagateUpWithExactRelayChain(t *testing.T) {
 
 	_ = m.conn.Close() // the machine goes away
 	waitFor(t, "root's hook ran for host.down", func() bool { return root.hookHas("DOWN ev-host") })
+	waitFor(t, "mid's hook ran for host.down", func() bool { return mid.hookHas("DOWN ev-host") }) // the event reaches mid BEFORE root, but its hook runs asynchronously
 	if got := root.hookLines(); got[len(got)-1] != "DOWN ev-host status=disconnected chain=leaf,mid origin=leaf enrolled=" {
 		t.Errorf("root host.down hook = %q", got)
 	}
@@ -263,6 +297,7 @@ func TestEvents_PropagateUpWithExactRelayChain(t *testing.T) {
 	// host.new: a REAL enrollment on the leaf
 	enroll(t, leaf, "enrolled-host")
 	waitFor(t, "root's hook ran for host.new", func() bool { return root.hookHas("NEW enrolled-host") })
+	waitFor(t, "mid's hook ran for host.new", func() bool { return mid.hookHas("NEW enrolled-host") })
 	for n, chain := range map[*node]string{root: "leaf,mid", mid: "leaf"} {
 		found := ""
 		for _, l := range n.hookLines() {
@@ -280,6 +315,12 @@ func TestEvents_PropagateUpWithExactRelayChain(t *testing.T) {
 		t.Log("host is down: exec must not succeed") // the host disconnected above
 	}
 	connectMinion(t, leaf, "ev-host-2")
+	// connectMinion returns once the WebSocket upgrade is done, NOT once the leaf registered the agent
+	// connection; and the root's inventory lists the host as soon as its enrollment (host.new) arrived. Neither
+	// proves that the host can be reached: exec = 503 host_not_found under load. The host.up event is emitted
+	// after the leaf registered the connection and the root records its route before running the hook, so the
+	// root's UP hook is the observable "the host is reachable through the chain".
+	waitFor(t, "root's hook ran for host.up of ev-host-2 (the route is learned)", func() bool { return root.hookHas("UP ev-host-2") })
 	waitFor(t, "root routes ev-host-2", func() bool { return root.hasHost("ev-host-2") })
 	if r := root.exec("ev-host-2", execBody("whoami")); r.Code != http.StatusOK {
 		t.Fatalf("exec through the event-learned route = %d %v", r.Code, r.Body)
@@ -362,9 +403,7 @@ func TestEvents_InvalidHooksConfigIsRejectedWholeAndPreviousKept(t *testing.T) {
 
 	// at start-up: an invalid file means NO hook at all
 	bad := startNode(t, nodeSpec{ID: "n2", Hooks: invalid})
-	if !bad.logs.has("hooks config parse error") {
-		t.Errorf("the start-up refusal must be logged:\n%s", bad.logs.String())
-	}
+	bad.logs.expectLog(t, "hooks config parse error", "the start-up refusal must be logged")
 	connectMinion(t, bad, "x1")
 	bad.setHooks(hooksV("OK", "")(bad.hookOut)) // valid again: proves the earlier event ran no hook
 	bad.reloadHooks()
@@ -502,12 +541,17 @@ func TestEvents_HostConflictClimbsWithoutStorm(t *testing.T) {
 	root := startNode(t, nodeSpec{ID: "root", Hooks: standardHooks})
 	mid := startNode(t, nodeSpec{ID: "mid", ParentURL: root.wssURL(), ParentToken: root.registerChild("mid")})
 	waitFor(t, "mid linked", func() bool { return mid.upstreamState() == "connected" })
-	leafA := startNode(t, nodeSpec{ID: "leafA", ParentURL: mid.wssURL(), ParentToken: mid.registerChild("leafA")})
-	leafB := startNode(t, nodeSpec{ID: "leafB", ParentURL: mid.wssURL(), ParentToken: mid.registerChild("leafB")})
+	// the leaves enroll the host while unlinked: the enrollment host.new events (real, but racing the
+	// claims this test counts exactly) have nowhere to go; then they are linked (see linkTo)
+	leafA := startNode(t, nodeSpec{ID: "leafA"})
+	leafB := startNode(t, nodeSpec{ID: "leafB"})
+	tokA, tokB := leafA.enrollAgent("twin"), leafB.enrollAgent("twin")
+	leafA.linkTo(mid)
+	leafB.linkTo(mid)
 	waitFor(t, "leaves linked", func() bool { return leafA.upstreamState() == "connected" && leafB.upstreamState() == "connected" })
 
-	connectMinion(t, leafA, "twin")
-	connectMinion(t, leafB, "twin")
+	connectMinionWithToken(t, leafA, "twin", tokA)
+	connectMinionWithToken(t, leafB, "twin", tokB)
 	// mid detects the change of owner in BOTH directions (leafA→leafB, then leafB→leafA) and reports
 	// each ONCE; both travel up and run the root's hook: exactly 2 lines, one per direction, and
 	// no more however many agent_list rounds follow

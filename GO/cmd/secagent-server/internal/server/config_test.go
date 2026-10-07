@@ -2,6 +2,9 @@ package server
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"secagent-server/cmd/secagent-server/internal/tlsca"
 	"strings"
 	"testing"
 )
@@ -10,7 +13,10 @@ func setServerEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("JWT_SECRET_KEY", "s")
 	t.Setenv("ADMIN_TOKEN", "a")
-	for _, k := range []string{EnvAPIAddr, EnvAdminAddr, EnvWSAddr, "NATS_URL", "DATABASE_URL", "LOG_LEVEL",
+	t.Setenv("TLS_DISABLE", "true")
+	t.Setenv("ADMIN_INSECURE_HTTP", "true")
+	t.Setenv("ADMIN_INSECURE_HTTP_ACK", AdminInsecureHTTPAckValue) // these tests are not about the admin exposure
+	for _, k := range []string{EnvAPIAddr, EnvAdminAddr, EnvWSAddr, "DATABASE_URL", "STATE_DIR", "STATE_MAX_BYTES", "RELAY_SINGLE_INSTANCE", "RELAY_STATUS_FILE", "LOG_LEVEL",
 		"REPEATER_ID", "REPEATER_UPSTREAM_URL", "REPEATER_UPSTREAM_TOKEN"} {
 		t.Setenv(k, "")
 	}
@@ -25,7 +31,7 @@ func TestConfigFromEnv_DefaultsAreTheHistoricalPorts(t *testing.T) {
 	if cfg.APIAddr != ":7770" || cfg.AdminAddr != ":7771" || cfg.WSAddr != ":7772" {
 		t.Errorf("addresses = %q %q %q, want :7770 :7771 :7772", cfg.APIAddr, cfg.AdminAddr, cfg.WSAddr)
 	}
-	if cfg.NATSURL != "nats://localhost:4222" || cfg.DatabaseURL != "sqlite:///./relay.db" || cfg.LogLevel != "INFO" {
+	if cfg.StateDir != "/data" || cfg.LogLevel != "INFO" {
 		t.Errorf("defaults = %+v", cfg)
 	}
 	if cfg.Repeater != nil {
@@ -122,5 +128,117 @@ func TestConfigFromEnv_GroupVars(t *testing.T) {
 		if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "RELAY_GROUP_VARS") {
 			t.Errorf("%s: err = %v, want a start-up error naming RELAY_GROUP_VARS", name, err)
 		}
+	}
+}
+
+// #177: an invalid TRUSTED_PROXY_CIDRS refuses to start, in ConfigFromEnv and in Build.
+func TestConfig_InvalidTrustedProxyCIDRsRefusesToStart(t *testing.T) {
+	t.Setenv("JWT_SECRET_KEY", "s")
+	t.Setenv("ADMIN_TOKEN", "a")
+	t.Setenv("TLS_DISABLE", "true")
+	t.Setenv("ADMIN_INSECURE_HTTP", "true")
+	t.Setenv("ADMIN_INSECURE_HTTP_ACK", AdminInsecureHTTPAckValue) // these tests are not about the admin exposure
+	t.Setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8,not-a-cidr")
+	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "TRUSTED_PROXY_CIDRS") {
+		t.Fatalf("ConfigFromEnv error = %v, want a TRUSTED_PROXY_CIDRS error", err)
+	}
+	if _, err := Build(Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites, TrustedProxyCIDRs: "10.0.0.0/99"}); err == nil {
+		t.Fatal("Build must refuse an invalid CIDR")
+	}
+	t.Setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8, 192.168.0.0/16")
+	cfg, err := ConfigFromEnv()
+	if err != nil || cfg.TrustedProxyCIDRs == "" {
+		t.Fatalf("valid list: (%+v, %v)", cfg, err)
+	}
+}
+
+// #177b: TRUSTED_PROXY_CIDRS with a /0 range refuses to start (fail closed), in ConfigFromEnv and Build.
+func TestConfig_TrustedProxyCIDRsPrefixZeroRefusesToStart(t *testing.T) {
+	for _, bad := range []string{"0.0.0.0/0", "::/0", "10.0.0.0/8,0.0.0.0/0"} {
+		t.Setenv("JWT_SECRET_KEY", "s")
+		t.Setenv("ADMIN_TOKEN", "a")
+		t.Setenv("TLS_DISABLE", "true")
+		t.Setenv("ADMIN_INSECURE_HTTP", "true")
+		t.Setenv("ADMIN_INSECURE_HTTP_ACK", AdminInsecureHTTPAckValue)
+		t.Setenv("TRUSTED_PROXY_CIDRS", bad)
+		if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "TRUSTED_PROXY_CIDRS") {
+			t.Errorf("ConfigFromEnv(%q) error = %v, want a TRUSTED_PROXY_CIDRS error", bad, err)
+		}
+		if _, err := Build(Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites, TrustedProxyCIDRs: bad}); err == nil {
+			t.Errorf("Build(%q) must refuse a /0 range", bad)
+		}
+	}
+}
+
+// #160: DATABASE_URL (SQLite) is an ERROR, not a warning: ignoring it would let the operator
+// believe a database is still in use. STATE_DIR / STATE_MAX_BYTES are read and validated.
+func TestConfigFromEnv_StateSettings(t *testing.T) {
+	setServerEnv(t)
+	t.Setenv("DATABASE_URL", "sqlite:////data/relay.db")
+	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "DATABASE_URL is no longer supported") {
+		t.Fatalf("DATABASE_URL set: %v", err)
+	} else if !errors.Is(err, ErrDatabaseURLRemoved) {
+		t.Errorf("not ErrDatabaseURLRemoved: %v", err)
+	}
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("STATE_DIR", "/srv/relay-state")
+	t.Setenv("STATE_MAX_BYTES", "1048576")
+	cfg, err := ConfigFromEnv()
+	if err != nil || cfg.StateDir != "/srv/relay-state" || cfg.StateMaxBytes != 1048576 {
+		t.Fatalf("cfg = %+v %v", cfg, err)
+	}
+	if cfg.WriteGuard != nil || cfg.InsecureTestState {
+		t.Error("the environment can never set the write guard nor the insecure test mode")
+	}
+	t.Setenv("STATE_MAX_BYTES", "lots")
+	if _, err := ConfigFromEnv(); err == nil {
+		t.Error("an invalid STATE_MAX_BYTES must be refused")
+	}
+}
+
+// RELAY_SINGLE_INSTANCE (the transitional opt-in of #160) is gone: the lock is always on. The variable
+// is ignored with a warning, whatever its value, and no Config field reflects it.
+func TestConfigFromEnv_SingleInstanceIsObsoleteAndIgnored(t *testing.T) {
+	setServerEnv(t)
+	for _, v := range []string{"true", "false", "1", "garbage"} {
+		t.Setenv("RELAY_SINGLE_INSTANCE", v)
+		if _, err := ConfigFromEnv(); err != nil {
+			t.Errorf("RELAY_SINGLE_INSTANCE=%q must be ignored, got %v", v, err)
+		}
+	}
+}
+
+// The local status file must stay out of the shared STATE_DIR.
+func TestConfigFromEnv_StatusFileMustBeOutsideStateDir(t *testing.T) {
+	setServerEnv(t)
+	dir := t.TempDir()
+	t.Setenv("STATE_DIR", dir)
+	t.Setenv("RELAY_STATUS_FILE", filepath.Join(dir, "status.json"))
+	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "outside STATE_DIR") {
+		t.Fatalf("status file inside STATE_DIR must be refused, got %v", err)
+	}
+	t.Setenv("RELAY_STATUS_FILE", filepath.Join(t.TempDir(), "status.json"))
+	cfg, err := ConfigFromEnv()
+	if err != nil || cfg.StatusFile == "" {
+		t.Fatalf("outside is accepted: %v %q", err, cfg.StatusFile)
+	}
+}
+
+func TestConfigFromEnv_CAFile(t *testing.T) {
+	setServerEnv(t)
+	if cfg, err := ConfigFromEnv(); err != nil || cfg.CAFile != "" {
+		t.Fatalf("unset: %+v %v", cfg.CAFile, err)
+	}
+	bad := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(bad, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REPEATER_CA_FILE", bad)
+	if _, err := ConfigFromEnv(); !errors.Is(err, tlsca.ErrInvalidCAFile) {
+		t.Fatalf("an unusable CA file must refuse the start, got %v", err)
+	}
+	t.Setenv("REPEATER_CA_FILE", filepath.Join(t.TempDir(), "absent.pem"))
+	if _, err := ConfigFromEnv(); !errors.Is(err, tlsca.ErrInvalidCAFile) {
+		t.Fatalf("a missing CA file must refuse the start, got %v", err)
 	}
 }

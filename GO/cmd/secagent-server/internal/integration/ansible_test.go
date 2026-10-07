@@ -3,9 +3,9 @@ package integration
 // End-to-end check of the Ansible inventory: the real secagent-inventory binary, driven by the real
 // `ansible-inventory` (script inventory plugin), against a real node tree of the harness.
 //
-// CI convention (shared with the infra job): the test reads ANSIBLE_E2E. When `ansible-inventory`
-// is not on PATH it SKIPS, unless ANSIBLE_E2E=1 — then it FAILS (the Ansible CI job is mandatory).
-// The "Build + tests Go" job has no Ansible and simply skips it.
+// CI convention (shared with the infra job): the Ansible tests are OPT-IN through ANSIBLE_E2E=1 (see
+// requireAnsibleE2E). Without it they SKIP whatever is on the PATH; with it a missing tool FAILS (the
+// "Inventaire Ansible" job sets it and is mandatory). The "Build + tests Go" job does not set it.
 
 import (
 	"bytes"
@@ -25,12 +25,10 @@ import (
 
 func ansibleInventoryTool(t *testing.T) string {
 	t.Helper()
+	requireAnsibleE2E(t)
 	path, err := exec.LookPath("ansible-inventory")
 	if err != nil {
-		if os.Getenv("ANSIBLE_E2E") == "1" {
-			t.Fatalf("ANSIBLE_E2E=1 but ansible-inventory is not on PATH: %v", err)
-		}
-		t.Skip("ansible-inventory not found: install ansible-core (set ANSIBLE_E2E=1 to make this a failure)")
+		t.Fatalf("ANSIBLE_E2E=1 but ansible-inventory is not on PATH: %v (install .github/ci/requirements-ansible.txt in a venv and put its bin first on the PATH)", err)
 	}
 	return path
 }

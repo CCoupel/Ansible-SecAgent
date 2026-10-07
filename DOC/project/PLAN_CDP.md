@@ -1,5 +1,7 @@
 # PLAN CDP — Workflow Ansible-SecAgent
 
+> **ARCHIVE HISTORIQUE** — plan d'une phase passée, conservé pour mémoire ; ne reflète plus l'architecture v3.0.3 (état fichier, TLS natif, actif/passif, plus de NATS/SQLite/Caddy). Références vivantes : `DOC/common/ARCHITECTURE.md`, `DOC/server/STATE_SPEC.md`.
+
 Date : 2026-03-03
 Role : Chef de Projet (CDP) — orchestration team sans code
 

@@ -53,9 +53,7 @@ func TestRefusal_LoopIsPermanent(t *testing.T) {
 			if relay1.upstreamState() != "connected" {
 				t.Error("a refused looping child must not disturb the rest of the tree")
 			}
-			if !relay1.logs.has("loop") {
-				t.Errorf("the parent must log the loop refusal:\n%s", relay1.logs.String())
-			}
+			relay1.logs.expectLog(t, "loop", "the parent must log the loop refusal")
 		})
 	}
 }

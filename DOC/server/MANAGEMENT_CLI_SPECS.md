@@ -1,5 +1,14 @@
 # Spécifications — Management CLI (Phase 6)
 
+> **Document de conception historique (Phase 6, CLI Python `relay`).** La CLI réelle est `secagent-server` (GO, cobra,
+> `GO/cmd/secagent-server/internal/cli`) ; les exemples `relay …` ci-dessous sont des maquettes de conception.
+> Commandes réelles (v3.0.3) : `minions` (list, get, set-state, suspend, resume, revoke, authorize, vars get/set/delete),
+> `tokens` (create, list, revoke, delete, purge), `relays` (list, add, remove, status), `security` (keys status/rotate,
+> tokens list, blacklist list/purge), `hooks` (status, log), `inventory list`, `server` (status, stats), `status --local`,
+> `state` (init, verify, restore). Il n'existe **pas** de `minions refresh`, de login/refresh de jeton ni de composant NATS :
+> l'authentification se fait par jeton admin (`ADMIN_TOKEN`), sans renouvellement automatique côté CLI.
+> Voir `DOC/server/SERVER_SPEC.md`.
+
 ## Vue d'ensemble
 
 CLI de management pour administrer les minions (agents) et l'inventaire Ansible dans Ansible-SecAgent.
@@ -18,7 +27,7 @@ CLI de management pour administrer les minions (agents) et l'inventaire Ansible 
 **Authentification** :
 - File local : `~/.config/ansiblerelay/credentials.json` (chmod 600)
 - Format : `{ "server": "https://relay.example.com", "token": "<JWT>", "expires_at": "2026-03-15T...Z" }`
-- Token refresh : automatique si `expires_at < now + 5min`
+- Pas de renouvellement automatique de jeton (le refresh de jeton est supprimé en v3.0.3 : jeton à re-émettre)
 
 ---
 
@@ -140,13 +149,7 @@ relay minions authorize <hostname> [OPTIONS]
   # ✅ Public key authorized for qualif-04
   # Hostname can now enroll using POST /api/register
 
-# Refresh minion facts
-relay minions refresh <hostname>
-  # Output:
-  # ⏳ Refreshing facts for qualif-01...
-  # ✅ Facts refreshed (2 seconds)
-  # - OS version updated
-  # - Uptime updated
+# (la commande `relay minions refresh` n'existe pas : retirée)
 
 # Forget minion (remove from cache, not DB)
 relay minions forget <hostname>
@@ -330,7 +333,6 @@ relay health
   # Server: https://relay.example.com
   # Status: ✅ healthy
   # Database: ✅ ok
-  # NATS: ✅ ok
   # Last sync: 2s ago
 ```
 
@@ -417,7 +419,7 @@ minions:
 | Aspect | Mesure |
 |--------|--------|
 | Credentials | Fichier local `~/.config/ansiblerelay/credentials.json` (chmod 600) |
-| Token refresh | Auto si expires_at < now + 5min |
+| Renouvellement de jeton | Aucun (supprimé en v3.0.3) |
 | Token masking | Affichage masqué dans output (3d7a...9f2c) |
 | TLS | Obligatoire par défaut (--no-verify-tls = dev only) |
 | Input validation | YAML parsing, regex pour hostnames, SQL injection protection |
@@ -493,7 +495,6 @@ $ relay health
 Server: https://relay.example.com
 Status: ✅ healthy
 Database: ✅ ok
-NATS: ✅ ok
 Last sync: 2s ago
 ```
 
@@ -501,7 +502,7 @@ Last sync: 2s ago
 
 ## Dépendances
 
-- **Phase 4** : Helm chart, Kubernetes cluster
+- **Phase 4** : déploiement Docker Compose actif/passif (Kubernetes/Helm retirés)
 - **Phase 5** : Monitoring/alerting infrastructure
 - **Backend ready** : DB schema (minions + inventory + audit logs)
 - **Auth system** : JWT generation/validation (routes_register.py)

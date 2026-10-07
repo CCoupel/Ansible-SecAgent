@@ -406,7 +406,6 @@ func TestCLI_ServerStatus_ServerRunning(t *testing.T) {
 			mustEncode(t, w, map[string]interface{}{
 				"status":  "ok",
 				"agents":  3,
-				"nats":    true,
 				"version": "1.0",
 			})
 			return

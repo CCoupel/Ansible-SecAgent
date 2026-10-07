@@ -1,3 +1,5 @@
+> **Historique** : ce document est une archive. Le jeton sous `/tmp/secagent_token.jwt` est **déprécié** (#191) : le défaut du plugin est `/etc/ansible/secagent_plugin.jwt`, fichier en 0600 appartenant à l'utilisateur courant (voir `DOC/plugins/PLUGINS_SPEC.md`).
+
 # Corrections — Tests des plugins Ansible
 
 ## Problème identifié

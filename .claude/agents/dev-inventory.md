@@ -22,7 +22,7 @@ Tu développes le binaire GO `secagent-inventory` — binaire standalone appelé
 - Authentification HTTP : header Authorization Bearer (plugin tokens)
 - Flags CLI GO : --list, --host <hostname>, --only-connected
 - TLS : vérification certificat, CA custom configurable
-- Variables d'environnement : RELAY_SERVER_URL, RELAY_PLUGIN_TOKEN, RELAY_CA_CERT
+- Variables d'environnement : `RELAY_SERVER_URL` (URL ou liste d'URL séparées par des virgules), `RELAY_TOKEN` (jeton plugin `secagent_plg_…`), `RELAY_CA_BUNDLE`, `RELAY_SCOPE`, `RELAY_ONLY_CONNECTED` (`RELAY_PLUGIN_TOKEN` et `RELAY_CA_CERT` n'existent pas). Côté plugin Python, le jeton se lit dans un fichier 0600 (`secagent_token_file` / `RELAY_TOKEN_FILE`) ; `secagent-inventory` reçoit `RELAY_TOKEN` à l'exécution depuis ce fichier, sans l'exporter durablement
 
 ## Architecture cible
 ```

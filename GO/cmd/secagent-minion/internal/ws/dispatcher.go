@@ -21,16 +21,23 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"secagent-server/cmd/secagent-minion/internal/enrollment"
+	"secagent-server/internal/endpoints"
 )
 
 const (
@@ -108,6 +115,7 @@ type ReconnectManager struct {
 	baseDelay float64
 	maxDelay  float64
 	attempt   int
+	cycles    int // cycles ré-enrôlement → 401 consécutifs sans connexion réussie
 }
 
 // NewReconnectManager crée un ReconnectManager avec baseDelay et maxDelay en secondes.
@@ -125,9 +133,26 @@ func (r *ReconnectManager) NextDelay() time.Duration {
 	return time.Duration(delay * float64(time.Second))
 }
 
-// Reset remet le compteur à zéro après une connexion réussie.
+// Cycle donne le délai à attendre avant de relancer un cycle « ré-enrôlement réussi → WS 401 » :
+// 0 pour le premier cycle après une connexion qui fonctionnait (reconnexion immédiate avec le
+// nouveau JWT), puis base, 2×base… plafonné à maxDelay si le serveur continue de répondre 401.
+func (r *ReconnectManager) Cycle() time.Duration {
+	n := r.cycles
+	r.cycles++
+	if n == 0 {
+		return 0
+	}
+	delay := r.baseDelay * math.Pow(2, float64(n-1))
+	if delay > r.maxDelay {
+		delay = r.maxDelay
+	}
+	return time.Duration(delay * float64(time.Second))
+}
+
+// Reset remet les compteurs à zéro après une connexion réussie.
 func (r *ReconnectManager) Reset() {
 	r.attempt = 0
+	r.cycles = 0
 }
 
 // ShouldReconnect retourne false si le code de fermeture indique une révocation.
@@ -150,8 +175,12 @@ type ReEnroller interface {
 
 // ConnConfig regroupe les paramètres de connexion WebSocket.
 type ConnConfig struct {
-	// ServerURL est l'URL WSS du relay server (wss://relay.example.com/ws/agent).
+	// ServerURL est l'URL WSS du relay server (wss://relay.example.com/ws/agent). Valeur unique,
+	// ignorée si Endpoints est défini.
 	ServerURL string
+	// Endpoints est la liste des adresses WSS (RELAY_WS_URL en liste), appariées par position avec
+	// celles de EnrollConfig.Rotor : essayées par endpoints.DialFirst, dernière bonne en tête.
+	Endpoints *endpoints.Rotor
 	// JWT est le token d'authentification Bearer.
 	JWT string
 	// CABundle est le chemin vers un CA bundle PEM custom (vide = store système).
@@ -159,6 +188,9 @@ type ConnConfig struct {
 	// Insecure désactive la vérification TLS (tests uniquement).
 	Insecure bool
 }
+
+// wsAttemptTimeout borne la connexion + la poignée de main WebSocket sur UNE adresse.
+const wsAttemptTimeout = 20 * time.Second
 
 // EnrollConfig regroupe les paramètres nécessaires au ré-enrôlement sur 401.
 // Stocké dans le Dispatcher pour être utilisé dans la boucle de reconnexion.
@@ -174,10 +206,14 @@ type EnrollConfig struct {
 	// EnrollmentToken est le token d'enrollment (RELAY_ENROLLMENT_TOKEN) — requis Phase 10.
 	// JAMAIS loggé en clair.
 	EnrollmentToken string
+	// CABundle est le chemin vers un CA bundle PEM custom (vide = store système).
+	CABundle string
+	// Rotor, quand il est défini, remplace RegisterURL : adresses des serveurs (URL de base),
+	// appariées par position avec ConnConfig.Endpoints (même instance). Le ré-enrôlement ne change
+	// d'adresse que si la connexion échoue avant l'envoi.
+	Rotor *endpoints.Rotor
 	// Insecure désactive la vérification TLS (tests uniquement).
 	Insecure bool
-	// MaxRetries est le nombre max de tentatives de ré-enrôlement avant abandon (défaut: 3).
-	MaxRetries int
 }
 
 // --- Dispatcher ---
@@ -194,7 +230,71 @@ type Dispatcher struct {
 	// jwtMu protège l'accès concurrent au JWT courant (rotation rekey).
 	jwtMu sync.RWMutex
 	jwt   string
+
+	// wait dort delay ou jusqu'à l'annulation de ctx (injectable : les tests n'attendent pas).
+	wait func(ctx context.Context, delay time.Duration) error
+	// reconnectBase / reconnectMax bornent le backoff en secondes (0 = 1 s → 60 s).
+	reconnectBase, reconnectMax float64
+	// connected est vrai quand la dernière connexion a abouti (handshake WS réussi).
+	connected atomic.Bool
+
+	// wsRotor ordonne les adresses WS ; enrollRotor (EnrollConfig.Rotor) celles d'enrôlement. Les
+	// deux listes sont appariées par position : la dernière bonne instance est partagée.
+	wsRotor *endpoints.Rotor
+	// attemptTimeout borne connexion + poignée de main sur une adresse (0 = wsAttemptTimeout).
+	attemptTimeout time.Duration
 }
+
+// permanentError marque une erreur de ré-enrôlement qui ne se corrige pas en réessayant (token
+// d'enrôlement refusé : 403, ou aucune configuration d'enrôlement) : le minion s'arrête.
+type permanentError struct {
+	err  error
+	code int // exit status of the minion (0 = ExitEnrollmentRefused)
+}
+
+func (e *permanentError) Error() string { return e.err.Error() }
+func (e *permanentError) Unwrap() error { return e.err }
+
+// Exit statuses of the minion after a PERMANENT stop, so that the service manager does not restart
+// it in a loop (systemd: RestartPreventExitStatus=77 78). sysexits.h values.
+const (
+	// ExitRevoked: the server revoked this agent (WebSocket close 4001).
+	ExitRevoked = 77 // EX_NOPERM
+	// ExitEnrollmentRefused: the enrollment token is invalid, expired or consumed (HTTP 403), or
+	// re-enrollment is impossible (no enrollment configuration / token).
+	ExitEnrollmentRefused = 78 // EX_CONFIG
+)
+
+// ExitCode returns the process exit status for the error that ended Dispatcher.Run: 77 after a
+// revocation, 78 after a permanent enrollment refusal, 1 for anything else.
+func ExitCode(err error) int {
+	var pe *permanentError
+	if errors.As(err, &pe) {
+		if pe.code != 0 {
+			return pe.code
+		}
+		return ExitEnrollmentRefused
+	}
+	return 1
+}
+
+func sleepCtx(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return ctx.Err()
+	}
+	t := time.NewTimer(delay)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// ConsecutiveAuthFailuresAlert est le nombre de cycles consécutifs sans connexion réussie à
+// partir duquel le minion journalise une erreur explicite (il continue d'essayer, avec backoff).
+const ConsecutiveAuthFailuresAlert = 5
 
 // NewDispatcher crée un Dispatcher avec le handler fourni.
 // maxConcurrent = 0 → utilise MaxConcurrentTasks (constante, défaut 10).
@@ -203,21 +303,33 @@ func NewDispatcher(cfg ConnConfig, handler MessageHandler, maxConcurrent ...int)
 	if len(maxConcurrent) > 0 && maxConcurrent[0] > 0 {
 		max = maxConcurrent[0]
 	}
-	return &Dispatcher{
+	d := &Dispatcher{
 		cfg:           cfg,
 		handler:       handler,
 		tasks:         make(map[string]context.CancelFunc),
 		maxConcurrent: max,
 		jwt:           cfg.JWT,
+		wsRotor:       cfg.Endpoints,
+	}
+	if d.wsRotor == nil && cfg.ServerURL != "" {
+		// valeur unique (compatibilité) : liste d'une adresse
+		if u, err := url.Parse(cfg.ServerURL); err == nil {
+			d.wsRotor, _ = endpoints.NewRotor([]*url.URL{u}, endpoints.Backoff{})
+		}
+	}
+	return d
+}
+
+// syncPair propage la dernière bonne instance d'une liste à l'autre (appariement par position).
+func syncPair(from, to *endpoints.Rotor) {
+	if from != nil && to != nil && from.Len() == to.Len() {
+		to.Success(from.Head())
 	}
 }
 
 // WithEnrollConfig attache la configuration de ré-enrôlement au dispatcher.
 // Doit être appelé avant Run() pour activer le ré-enrôlement sur 401.
 func (d *Dispatcher) WithEnrollConfig(ec EnrollConfig) *Dispatcher {
-	if ec.MaxRetries <= 0 {
-		ec.MaxRetries = 3
-	}
 	d.enrollCfg = ec
 	return d
 }
@@ -237,63 +349,108 @@ func (d *Dispatcher) updateJWT(token string) {
 }
 
 // Run ouvre la connexion WebSocket et entre dans la boucle de lecture.
-// Tourne jusqu'à ce que ctx soit annulé ou que la connexion soit révoquée (4001).
+// Tourne jusqu'à ce que ctx soit annulé, que la connexion soit révoquée (4001) ou qu'une erreur
+// permanente survienne.
 //
-// Gestion du 401 (§22 ARCHITECTURE.md — Phase 3) :
-//   - HTTP 401 sur upgrade WS → ré-enrôlement complet (si EnrollConfig configurée)
-//   - HTTP 403 sur re-enrôlement → log + abandon (pas de boucle infinie)
-//   - Après ré-enrôlement réussi, le backoff est réinitialisé
+// Gestion du 401 (§22 ARCHITECTURE.md) :
+//   - HTTP 401 sur l'upgrade WS → ré-enrôlement complet (si EnrollConfig configurée) puis
+//     reconnexion avec le nouveau JWT ;
+//   - HTTP 403 au ré-enrôlement (token d'enrôlement invalide, expiré ou consommé) → arrêt
+//     explicite, pas de boucle ;
+//   - tout autre échec du ré-enrôlement (400 transitoire, réseau, 5xx) → nouvel essai avec
+//     backoff exponentiel 1 s → 60 s, sans abandon ;
+//   - backoff aussi entre deux cycles « ré-enrôlement réussi → WS encore en 401 » (le premier
+//     cycle après une connexion qui fonctionnait est immédiat), remis à zéro à la première
+//     connexion WS réussie ; [ERROR] explicite à partir de 5 cycles consécutifs ;
+//   - fermeture 4001 (révocation) → arrêt, ni reconnexion ni ré-enrôlement.
 func (d *Dispatcher) Run(ctx context.Context) error {
-	reconnect := NewReconnectManager(1.0, 60.0)
+	base, max := d.reconnectBase, d.reconnectMax
+	if base <= 0 {
+		base = 1.0
+	}
+	if max <= 0 {
+		max = 60.0
+	}
+	reconnect := NewReconnectManager(base, max)
+	wait := d.wait
+	if wait == nil {
+		wait = sleepCtx
+	}
+	authFailures := 0 // cycles consécutifs sans connexion WS réussie, côté authentification
 
 	for {
+		d.connected.Store(false)
 		err := d.connect(ctx, reconnect)
 		if err == nil {
 			// Connexion fermée proprement via ctx
 			return nil
 		}
+		if d.connected.Load() {
+			authFailures = 0 // le WS a fonctionné : on repart de zéro
+		}
 
 		// Vérification révocation (code WS 4001)
 		var closeErr *websocket.CloseError
 		if isClose(err, &closeErr) && !reconnect.ShouldReconnect(closeErr.Code) {
-			return fmt.Errorf("ws: agent revoked by server (code %d)", closeErr.Code)
+			return &permanentError{err: fmt.Errorf("ws: agent revoked by server (code %d)", closeErr.Code), code: ExitRevoked}
 		}
 
 		// Gestion du 401 : ré-enrôlement automatique
 		if isHTTP401(err) {
-			if newJWT, reenrollErr := d.handleUnauthorized(ctx); reenrollErr != nil {
-				return fmt.Errorf("ws: re-enrollment failed: %w", reenrollErr)
-			} else {
-				d.updateJWT(newJWT)
-				reconnect.Reset()
-				log.Printf("[SECURITY] Re-enrollment after JWT rejection (401) — reconnecting")
-				continue // reconnexion immédiate avec le nouveau JWT
+			authFailures++
+			if authFailures >= ConsecutiveAuthFailuresAlert {
+				log.Printf("[ERROR] %d consecutive authentication cycles without a working WebSocket (JWT refused after re-enrollment) — still retrying with backoff; check the server and the minion enrollment", authFailures)
 			}
+			newJWT, reenrollErr := d.handleUnauthorized(ctx)
+			var perm *permanentError
+			switch {
+			case errors.As(reenrollErr, &perm):
+				return fmt.Errorf("ws: re-enrollment failed: %w", reenrollErr)
+			case reenrollErr != nil:
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				delay := reconnect.NextDelay()
+				log.Printf("[WARN] Re-enrollment failed: %v — retrying in %s", reenrollErr, delay)
+				if werr := wait(ctx, delay); werr != nil {
+					return werr
+				}
+				continue
+			}
+			d.updateJWT(newJWT)
+			log.Printf("[SECURITY] Re-enrollment after JWT rejection (401) — reconnecting")
+			// pas de reconnect.Reset() ici : seul un handshake WS réussi remet le backoff à zéro
+			if delay := reconnect.Cycle(); delay > 0 {
+				log.Printf("[WS] Re-enrolled but the server still rejects the JWT — waiting %s before the next cycle", delay)
+				if werr := wait(ctx, delay); werr != nil {
+					return werr
+				}
+			}
+			continue
 		}
 
 		delay := reconnect.NextDelay()
 		log.Printf("[WS] Connection lost: %v — reconnecting in %s", err, delay)
 
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(delay):
+		if werr := wait(ctx, delay); werr != nil {
+			return werr
 		}
 	}
 }
 
-// handleUnauthorized gère le ré-enrôlement complet après un 401 WS.
-// Supprime le JWT local, appelle POST /api/register, sauvegarde le nouveau JWT.
-// Retourne une erreur permanente si le serveur répond 403 (clef non autorisée).
+// handleUnauthorized tente UN ré-enrôlement complet après un 401 WS : supprime le JWT local
+// invalide, rejoue le challenge-response (clef privée existante, hostname configuré, token
+// d'enrôlement) via enrollment, persiste le nouveau JWT et le retourne.
+// Erreur *permanentError : pas de configuration d'enrôlement, ou 403 (token d'enrôlement
+// invalide, expiré ou consommé). Toute autre erreur est corrigible : l'appelant réessaie.
+// Rien de secret n'est journalisé (ni JWT, ni token, ni challenge).
 func (d *Dispatcher) handleUnauthorized(ctx context.Context) (string, error) {
 	ec := d.enrollCfg
-	if ec.RegisterURL == "" || ec.PrivateKey == nil {
-		return "", fmt.Errorf("401 received but no enrollment config — cannot re-enroll")
+	if (ec.RegisterURL == "" && ec.Rotor == nil) || ec.PrivateKey == nil {
+		return "", &permanentError{err: fmt.Errorf("401 received but no enrollment config — cannot re-enroll")}
 	}
-
-	maxRetries := ec.MaxRetries
-	if maxRetries <= 0 {
-		maxRetries = 3
+	if ec.EnrollmentToken == "" {
+		return "", &permanentError{err: fmt.Errorf("401 received but RELAY_ENROLLMENT_TOKEN is not set — cannot re-enroll")}
 	}
 
 	// Supprimer le JWT local invalide
@@ -305,35 +462,22 @@ func (d *Dispatcher) handleUnauthorized(ctx context.Context) (string, error) {
 
 	pubPEM, err := publicKeyPEMFromPrivate(ec.PrivateKey)
 	if err != nil {
-		return "", fmt.Errorf("re-enrollment: compute public key: %w", err)
+		return "", &permanentError{err: fmt.Errorf("re-enrollment: compute public key: %w", err)}
 	}
 
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		enrollCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		newJWT, enrollErr := reEnrollOnce(enrollCtx, ec, pubPEM)
-		cancel()
-
-		if enrollErr == nil {
-			return newJWT, nil
-		}
-
-		// 403 : clef non autorisée — pas la peine de boucler
-		if isForbiddenErr(enrollErr) {
-			log.Printf("[SECURITY] enrollment refused (403) — agent key not authorized, stopping")
-			return "", fmt.Errorf("enrollment refused by server (403): %w", enrollErr)
-		}
-
-		log.Printf("[WARN] Re-enrollment attempt %d/%d failed: %v", attempt, maxRetries, enrollErr)
-		if attempt < maxRetries {
-			select {
-			case <-ctx.Done():
-				return "", ctx.Err()
-			case <-time.After(time.Duration(attempt) * 5 * time.Second):
-			}
-		}
+	enrollCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	newJWT, enrollErr := reEnrollOnce(enrollCtx, ec, pubPEM)
+	if enrollErr == nil {
+		syncPair(ec.Rotor, d.wsRotor) // the instance that enrolled us is the first one the WS tries
+		return newJWT, nil
 	}
-
-	return "", fmt.Errorf("re-enrollment failed after %d attempts", maxRetries)
+	// 403 : token d'enrôlement refusé — inutile de boucler
+	if isForbiddenErr(enrollErr) {
+		log.Printf("[SECURITY] enrollment refused (403) — enrollment token invalid, expired or already used, stopping")
+		return "", &permanentError{err: fmt.Errorf("enrollment refused by server (403): %w", enrollErr)}
+	}
+	return "", enrollErr
 }
 
 // connect établit une connexion WSS et entre dans la boucle de lecture.
@@ -343,33 +487,120 @@ func (d *Dispatcher) connect(ctx context.Context, reconnect *ReconnectManager) e
 		return fmt.Errorf("ws: build TLS config: %w", err)
 	}
 
-	dialer := websocket.Dialer{
-		TLSClientConfig:  tlsCfg,
-		HandshakeTimeout: 15 * time.Second,
+	if d.wsRotor == nil {
+		return errors.New("ws: no server address configured")
 	}
-
-	headers := http.Header{}
-	headers.Set("Authorization", "Bearer "+d.currentJWT())
-
-	conn, resp, err := dialer.DialContext(ctx, d.cfg.ServerURL, headers)
+	jwt := d.currentJWT()
+	attempt := d.attemptTimeout
+	if attempt <= 0 {
+		attempt = wsAttemptTimeout
+	}
+	conn, u, err := endpoints.DialFirst(ctx, d.wsRotor, attempt,
+		func(actx context.Context, u *url.URL) (*websocket.Conn, error) {
+			return d.dialOne(actx, u, tlsCfg, jwt)
+		})
 	if err != nil {
-		// Détecter le 401 HTTP lors du handshake WS
+		var hs *httpStatusError
+		if errors.Is(err, endpoints.ErrAfterSend) && !errors.As(err, &hs) {
+			// the handshake was sent and failed (cut, silence): no other address in this round
+			// (the request is not replayed), but the next round must not start on the same
+			// silent address. A 401/403 answer is a verdict, not a silent host: no rotation.
+			if i, ok := endpoints.AfterSendIndex(err); ok {
+				d.wsRotor.Rotate(i)
+			}
+		}
+		return err
+	}
+	syncPair(d.wsRotor, d.enrollCfg.Rotor)
+	return d.serve(ctx, conn, u.Host, reconnect)
+}
+
+// dialOne opens ONE WebSocket on u. The Upgrade request is written by gorilla itself, so the
+// connection wrapper calls endpoints.MarkSent right before the first application byte: a timeout
+// or cut after that point is an "after send" failure and DialFirst will not try another address.
+// TLS (wss) is done here so that its own writes (ClientHello) do NOT count as "sent".
+func (d *Dispatcher) dialOne(ctx context.Context, u *url.URL, tlsCfg *tls.Config, jwt string) (*websocket.Conn, error) {
+	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second}
+	nd := &net.Dialer{}
+	switch u.Scheme {
+	case "wss":
+		dialer.NetDialTLSContext = func(c context.Context, network, addr string) (net.Conn, error) {
+			raw, err := nd.DialContext(c, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			cfg := tlsCfg.Clone()
+			if cfg.ServerName == "" {
+				cfg.ServerName = u.Hostname()
+			}
+			tc := tls.Client(raw, cfg)
+			if err := tc.HandshakeContext(c); err != nil {
+				_ = raw.Close()
+				return nil, err
+			}
+			return &markingConn{Conn: tc, ctx: c}, nil
+		}
+	default:
+		dialer.NetDialContext = func(c context.Context, network, addr string) (net.Conn, error) {
+			raw, err := nd.DialContext(c, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			return &markingConn{Conn: raw, ctx: c}, nil
+		}
+	}
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+jwt)
+	conn, resp, err := dialer.DialContext(ctx, u.String(), headers)
+	if err != nil {
+		// Détecter le 401/403 HTTP lors du handshake WS
 		if resp != nil && resp.StatusCode == http.StatusUnauthorized {
-			return &httpStatusError{code: http.StatusUnauthorized, msg: "ws handshake rejected (401 Unauthorized)"}
+			return nil, &httpStatusError{code: http.StatusUnauthorized, msg: "ws handshake rejected (401 Unauthorized)"}
 		}
 		if resp != nil && resp.StatusCode == http.StatusForbidden {
-			return &httpStatusError{code: http.StatusForbidden, msg: "ws handshake rejected (403 Forbidden)"}
+			return nil, &httpStatusError{code: http.StatusForbidden, msg: "ws handshake rejected (403 Forbidden)"}
 		}
-		return fmt.Errorf("ws: dial %s: %w", d.cfg.ServerURL, err)
+		return nil, fmt.Errorf("ws: dial %s: %w", u.Host, err)
 	}
+	return conn, nil
+}
+
+// markingConn marks the attempt as "request sent" at the first write on the established
+// (and, for wss, TLS-secured) connection: that write is the HTTP Upgrade request.
+type markingConn struct {
+	net.Conn
+	ctx  context.Context
+	once sync.Once
+}
+
+func (m *markingConn) Write(p []byte) (int, error) {
+	m.once.Do(func() { endpoints.MarkSent(m.ctx) })
+	return m.Conn.Write(p)
+}
+
+// serve runs the read loop of an established connection.
+func (d *Dispatcher) serve(ctx context.Context, conn *websocket.Conn, host string, reconnect *ReconnectManager) error {
 	defer func() {
 		if err := conn.Close(); err != nil {
 			slog.Debug("[WS] close connection", "err", err)
 		}
 	}()
 
+	// Arrêt demandé (SIGTERM → ctx annulé) : fermer la socket débloque la lecture ci-dessous,
+	// sinon un minion connecté ne s'arrêterait qu'à la perte de la connexion.
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stopWatch:
+		}
+	}()
+
 	reconnect.Reset()
-	log.Printf("[WS] Connected to %s", d.cfg.ServerURL)
+	d.connected.Store(true)
+	log.Printf("[WS] Connected to %s", host)
 
 	// Heartbeat : répond automatiquement aux pings du serveur avec un pong.
 	// gorilla/websocket envoie les pongs via le handler enregistré.
@@ -399,6 +630,9 @@ func (d *Dispatcher) connect(ctx context.Context, reconnect *ReconnectManager) e
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil // arrêt demandé, pas une perte de connexion
+			}
 			return err
 		}
 
@@ -585,14 +819,15 @@ func isForbiddenErr(err error) bool {
 	if ok := asHTTPStatusError(err, &e); ok {
 		return e.code == http.StatusForbidden
 	}
-	return false
+	return enrollment.IsForbidden(err)
 }
 
 func asHTTPStatusError(err error, target **httpStatusError) bool {
 	if err == nil {
 		return false
 	}
-	e, ok := err.(*httpStatusError)
+	var e *httpStatusError
+	ok := errors.As(err, &e) // DialFirst wraps handshake verdicts in an after-send error
 	if ok && target != nil {
 		*target = e
 	}
@@ -600,7 +835,7 @@ func asHTTPStatusError(err error, target **httpStatusError) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Enrollment helpers (évite import circulaire en copiant les signatures)
+// Enrollment helpers (délégation à internal/enrollment, seule implémentation du protocole)
 // ---------------------------------------------------------------------------
 
 // decryptAndSaveToken déchiffre un token_encrypted RSA-OAEP et le persiste.

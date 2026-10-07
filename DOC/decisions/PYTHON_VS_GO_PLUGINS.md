@@ -36,7 +36,7 @@ Ansible **NE SUPPORTE PAS** les plugins GO nativement. Les alternatives sont :
 
 **Deux cas de figure** :
 
-#### 1. Connection Plugin (`connection_plugins/secagent.py`)
+#### 1. Connection Plugin (`connection_plugins/relay.py`)
 
 - **Status** : OBLIGATOIRE en Python (Phase 3, #35)
 - **Raison** : Pas d'alternative. L'API `exec_command()`, `put_file()`, `fetch_file()` n'existe que en Python
@@ -60,19 +60,19 @@ Ansible **NE SUPPORTE PAS** les plugins GO nativement. Les alternatives sont :
 | `secagent-server` | GO | 7 | ✅ Complète | Décision de réécriture v2 |
 | `secagent-minion` | GO | 8 | ✅ Complète | Décision de réécriture v2 |
 | `secagent-inventory` | GO | 9 | ✅ Complète | Binaire standalone (alternative à plugin) |
-| `connection_plugins/secagent.py` | Python | 3 | ✅ Complète | **Contrainte Ansible** : ConnectionBase Python uniquement |
+| `connection_plugins/relay.py` | Python | 3 | ✅ Complète | **Contrainte Ansible** : ConnectionBase Python uniquement |
 | `inventory_plugins/secagent_inventory.py` | Python | 3 #36 | ⏸ OBSOLÈTE | Remplacé par `secagent-inventory` (GO) |
 
 ## Implications
 
 ### Pour le déploiement
 
-- Le **container Ansible** inclut :
-  - ✅ `secagent.py` (connection plugin, Python)
+- Le **poste de contrôle Ansible** (plus de conteneur dédié, #188) utilise :
+  - ✅ `relay.py` (connection plugin, Python)
   - ✅ `secagent-inventory` (binaire GO)
   - ✅ `ansible.cfg` pointe sur binaire GO pour l'inventaire
 
-- Le **Dockerfile.ansible** installe :
+- Le **Dockerfile.ansible** (**supprimé en v3.0.3**, #188 ; aucune image Ansible n'est publiée : en qualif le poste de contrôle est le poste qui lance `DEPLOYMENT/qualif/chain-test.sh`) installait :
   - Python 3.11 + ansible-core (pour connection plugin API)
   - GO secagent-inventory binaire (copié depuis build GO)
 
@@ -98,7 +98,7 @@ Ansible **NE SUPPORTE PAS** les plugins GO nativement. Les alternatives sont :
 - `DOC/plugins/PLUGINS_SPEC.md` §1 : constraint Ansible expliquée
 - `DOC/inventory/INVENTORY_SPEC.md` : specs secagent-inventory binary
 - `GO/cmd/inventory/main.go` : implémentation binaire
-- `PYTHON/ansible_plugins/connection_plugins/secagent.py` : plugin connection
+- `PYTHON/ansible_plugins/connection_plugins/relay.py` : plugin connection
 
 ---
 

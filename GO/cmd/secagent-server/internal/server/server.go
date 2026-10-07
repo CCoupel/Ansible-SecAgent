@@ -8,17 +8,22 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"secagent-server/cmd/secagent-server/internal/tlsca"
 	"sync"
+	"syscall"
 	"time"
 
-	"secagent-server/cmd/secagent-server/internal/broker"
+	"secagent-server/cmd/secagent-server/internal/actionlog"
 	"secagent-server/cmd/secagent-server/internal/config"
 	"secagent-server/cmd/secagent-server/internal/forward"
 	"secagent-server/cmd/secagent-server/internal/handlers"
 	"secagent-server/cmd/secagent-server/internal/hooks"
+	"secagent-server/cmd/secagent-server/internal/lock"
 	"secagent-server/cmd/secagent-server/internal/logsafe"
 	"secagent-server/cmd/secagent-server/internal/proxy"
 	"secagent-server/cmd/secagent-server/internal/repeater"
+	"secagent-server/cmd/secagent-server/internal/state"
 	"secagent-server/cmd/secagent-server/internal/storage"
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
@@ -33,8 +38,8 @@ type Node struct {
 	cfg Config
 
 	store       *storage.Store
-	natsClient  *broker.Client
 	dispatcher  *hooks.Dispatcher
+	journal     *actionlog.Journal
 	hooksPath   string
 	dispatchCtx context.Context
 	cancel      context.CancelFunc
@@ -49,13 +54,24 @@ type Node struct {
 	apiHandler, adminHandler, wsHandler http.Handler
 	apiRoutes, adminRoutes, wsRoutes    []string
 	apiSrv, adminSrv, wsSrv             *http.Server
+	certs                               *certStore // nil: plain HTTP (TLS_DISABLE=true)
 
 	closeOnce sync.Once
 	ready     chan struct{}
-	apiAddr   string // effective addresses once listening
-	adminAddr string
-	wsAddr    string
-	addrMu    sync.Mutex
+
+	// abort is closed by Abort (loss of the lock): Run then stops at once, without graceful
+	// shutdown and without draining the hooks queue.
+	abort      chan struct{}
+	abortOnce  sync.Once
+	abortDone  chan struct{} // closed when Abort has finished closing everything
+	instMu     sync.Mutex
+	instRole   string
+	instID     string
+	lockStatus func() lock.Status
+	apiAddr    string // effective addresses once listening
+	adminAddr  string
+	wsAddr     string
+	addrMu     sync.Mutex
 }
 
 // Build wires every component in the production order (store, JWT secrets, hooks, revocation and
@@ -63,33 +79,85 @@ type Node struct {
 // On error everything already opened is released.
 func Build(cfg Config) (node *Node, err error) {
 	logsafe.Install() // one log call = one line, whatever a peer or a legacy row put in a value
-	n := &Node{cfg: cfg, ready: make(chan struct{})}
+	n := &Node{cfg: cfg, ready: make(chan struct{}), abort: make(chan struct{}), abortDone: make(chan struct{})}
 	defer func() {
 		if err != nil {
 			n.Close()
 		}
 	}()
 
+	// TLS first (#175): a missing, partial or invalid certificate pair refuses the start before
+	// anything else is opened (unless the explicit test-only TLS_DISABLE=true).
+	if err := n.prepareTLS(); err != nil {
+		return nil, err
+	}
+
 	repeaterCfg := cfg.Repeater
 	log.Printf("[INIT] Ansible-SecAgent GO Server v1.0")
-	log.Printf("[INIT] NATS_URL: %s", cfg.NATSURL)
-	log.Printf("[INIT] DATABASE_URL: %s", cfg.DatabaseURL)
+	if os.Getenv("NATS_URL") != "" {
+		// NATS was never on the dispatch path (WebSocket direct): ignoring the variable has no
+		// functional effect, so this is a warning, not an error (unlike DATABASE_URL, #160).
+		log.Printf("[WARN] NATS_URL is obsolete and ignored (NATS removed in v3.0.3)")
+	}
+	log.Printf("[INIT] STATE_DIR: %s", cfg.StateDir)
 	log.Printf("[INIT] LOG_LEVEL: %s", cfg.LogLevel)
 	if repeaterCfg != nil {
-		log.Printf("[INIT] Repeater child mode: REPEATER_ID=%s upstream=%s", repeaterCfg.ID, repeaterCfg.UpstreamURL)
+		log.Printf("[INIT] Repeater child mode: REPEATER_ID=%q upstream=%s", repeaterCfg.ID, repeaterCfg.UpstreamURL)
 	}
+
+	// X-Forwarded-For is trusted only behind these proxies (#177); invalid CIDR = no start.
+	proxies, perr := handlers.ParseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs)
+	if perr != nil {
+		return nil, perr
+	}
+	handlers.SetTrustedProxies(proxies)
 
 	// Bootstrap secrets from the Config (init() read the same values from the environment).
 	handlers.ConfigureServer(cfg.JWTSecret, cfg.AdminToken)
 
-	// Initialize storage (SQLite)
-	log.Println("[INIT] Initializing SQLite database...")
-	store, err := storage.NewStore(cfg.DatabaseURL)
+	// Load the state file BEFORE anything else: a missing state refuses to start (never created
+	// here), an invalid or tampered one too. Without a write guard the instance is read-only.
+	log.Println("[INIT] Loading the state file...")
+	stateDir := cfg.StateDir
+	if stateDir == "" {
+		stateDir = state.DefaultStateDir
+	}
+	masterKey := os.Getenv("RSA_MASTER_KEY")
+	writeGuard := cfg.WriteGuard // the lock identity check (RunInstance); nil = read-only
+	store, err := storage.Open(state.Options{
+		Dir:       stateDir,
+		MaxBytes:  cfg.StateMaxBytes,
+		MasterKey: masterKey,
+		// clear secrets are accepted only by the explicit test seam, and never with a master key
+		InsecureTestMode: cfg.InsecureTestState && masterKey == "",
+		BeforeWrite:      writeGuard,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize database: %w", err)
+		return nil, fmt.Errorf("failed to load the state: %w", err)
 	}
 	n.store = store
-	log.Println("[OK] Database initialized")
+	// Anti-replay (#163): a state older than what the previous master published in relay.lock is a
+	// replayed copy (or a fallback on an older .prev): fail closed.
+	if seq := store.WriteSeq(); cfg.minWriteSeq > 0 && seq < cfg.minWriteSeq {
+		log.Printf("[SECURITY WARNING] the state file has write_seq %d, below the %d published by the previous master in relay.lock: an older copy of relay.state was put back (or relay.state is missing and relay.state.prev is older): refusing to start", seq, cfg.minWriteSeq)
+		return nil, fmt.Errorf("%w: write_seq %d < %d", ErrStateReplayed, seq, cfg.minWriteSeq)
+	}
+	if cfg.onStateWrite != nil {
+		store.SetOnWrite(cfg.onStateWrite)
+		cfg.onStateWrite(store.WriteSeq())
+	}
+	if writeGuard == nil {
+		log.Println("[WARN] no write guard connected: the state is READ-ONLY until this instance is the confirmed master (#163)")
+	}
+	log.Println("[OK] State loaded")
+	// Agents revoked before the persistent flag existed (#193): their blacklisted JTI is the only trace;
+	// flag them now (one write, none when there is nothing to repair). Non-fatal: the blacklist still
+	// protects them until it expires.
+	if writeGuard != nil {
+		if _, err := store.RepairRevokedFlags(context.Background()); err != nil {
+			log.Printf("[WARN] revoked flags repair: %v", err)
+		}
+	}
 
 	// Inject store into admin handlers
 	handlers.SetAdminStore(store)
@@ -113,29 +181,24 @@ func Build(cfg Config) (node *Node, err error) {
 	// Inject JWT secrets getter into WS handler for dual-key validation
 	ws.SetJWTSecretsFunc(handlers.GetServerJWTSecrets)
 
+	// Revocation / token-replacement check of /ws/agent (#169, fail closed without it).
+	ws.SetAgentJTICheckFunc(agentJTICheck(store))
+
 	// Inject rekey function into WS handler (used when agent connects with previous key)
 	ws.SetRekeyFunc(handlers.RekeyAgent)
 
-	// Initialize NATS client (optional — server starts without NATS in degraded mode)
-	log.Println("[INIT] Connecting to NATS JetStream...")
-	natsClient, nerr := broker.NewClient(cfg.NATSURL)
-	if nerr != nil {
-		log.Printf("[WARN] NATS unavailable, running in degraded mode: %v", nerr)
-		natsClient = nil
-	} else {
-		log.Println("[OK] NATS connected")
-	}
-	n.natsClient = natsClient
-
-	// Wire NATS health check into admin status handler
-	handlers.NATSHealthCheck = func() bool {
-		return natsClient != nil && natsClient.IsConnected()
-	}
-
 	// Initialize hooks dispatcher (async event delivery)
 	n.dispatchCtx, n.cancel = context.WithCancel(context.Background())
+	// Periodic purge of the expired blacklist entries (bounds the state file; the write guard applies).
+	n.startPurge(cfg.PurgeInterval)
 	dispatchCtx := n.dispatchCtx
-	dispatcher := hooks.NewDispatcher(store, 1000)
+	journal, jerr := actionlog.Open(actionlog.Options{Path: actionlog.PathFromEnv(state.DirFromEnv())})
+	if jerr != nil {
+		return nil, fmt.Errorf("failed to prepare the action journal: %w", jerr)
+	}
+	n.journal = journal
+	handlers.SetActionJournal(journal)
+	dispatcher := hooks.NewDispatcher(journal, hooks.QueueSizeFromEnv())
 	dispatcher.Start(dispatchCtx)
 	hooks.GlobalDispatcher = dispatcher
 	n.dispatcher = dispatcher
@@ -152,9 +215,9 @@ func Build(cfg Config) (node *Node, err error) {
 	}
 
 	// Wire DispatchFunc into ws package (avoids import cycle ws→hooks)
-	ws.DispatchFunc = func(event, hostname, status, enrolledAt string) {
+	ws.SetDispatchFunc(func(event, hostname, status, enrolledAt string) {
 		dispatcher.Dispatch(event, hostname, status, enrolledAt)
-	}
+	})
 	log.Println("[OK] Hooks dispatcher started")
 
 	// Wire relay routing/status update functions into ws package (avoids import cycle ws→storage)
@@ -211,7 +274,7 @@ func Build(cfg Config) (node *Node, err error) {
 		}
 	})
 	// Tasks sent down by our parent: resolve the next hop (live agent first, then relay_routing).
-	forwarder := &forward.Forwarder{NextHop: store.GetNextHopForHostname}
+	forwarder := &forward.Forwarder{NextHop: store.GetNextHopForHostname, Suspended: handlers.AgentSuspended}
 	upOpts := repeater.Options{
 		GroupVars:       cfg.GroupVars,
 		DirectAgents:    directAgents,
@@ -225,6 +288,12 @@ func Build(cfg Config) (node *Node, err error) {
 		WouldLoop: ws.RelayWouldLoop,
 		Serve:     ws.ServeDialedRelay,
 	}
+	// Custom CA for the outbound links (#147): replaces the system roots; unusable = no start.
+	outboundTLS, caErr := tlsca.Load(cfg.CAFile)
+	if caErr != nil {
+		return nil, caErr
+	}
+	upOpts.TLSConfig, dialerOpts.TLSConfig = outboundTLS, outboundTLS
 	if cfg.Tune != nil { // test seam: durations only, applied before anything is created
 		cfg.Tune(&upOpts, &dialerOpts)
 	}
@@ -295,8 +364,8 @@ func Build(cfg Config) (node *Node, err error) {
 	// Push mode (#140): the parent dials its push children (relay_nodes.mode=push).
 	n.dialers = repeater.NewDialerManager(dispatchCtx, dialerOpts)
 	handlers.SetRelayPushHooks(
-		func(relayID, url, token string) error {
-			return n.dialers.Start(repeater.DialTarget{RelayID: relayID, URL: url, Token: token})
+		func(relayID string, urls []string, token string) error {
+			return n.dialers.Start(repeater.DialTarget{RelayID: relayID, URLs: urls, Token: token})
 		},
 		n.dialers.Stop,
 	)
@@ -305,6 +374,7 @@ func Build(cfg Config) (node *Node, err error) {
 	// Link status (#154): /health "degraded" and the admin status "links".
 	n.healthLinks = n.linksStatus
 	handlers.SetLinkStatusFunc(func() interface{} { return n.linksStatus() })
+	handlers.SetInstanceStatusFunc(n.StatusFields)
 
 	n.buildRouters()
 	return n, nil
@@ -333,16 +403,16 @@ func (n *Node) ReloadHooks() {
 	n.dispatcher.SetConfig(cfg)
 }
 
-// Close releases everything Build opened (dialers and repeater client, hooks dispatcher, NATS,
+// Close releases everything Build opened (dialers and repeater client, hooks dispatcher,
 // store). It is idempotent and also called by Run on exit.
 func (n *Node) Close() {
 	n.closeOnce.Do(func() {
 		if n.cancel != nil {
 			n.cancel()
 		}
-		if n.natsClient != nil {
-			if err := n.natsClient.Close(); err != nil {
-				log.Printf("natsClient.Close: %v", err)
+		if n.journal != nil {
+			if err := n.journal.Close(); err != nil {
+				log.Printf("action journal close: %v", err)
 			}
 		}
 		if n.store != nil {
@@ -377,6 +447,12 @@ func (n *Node) Addrs() (api, admin, wsAddr string) {
 // shuts down gracefully and releases the node. It returns nil on a requested shutdown.
 func (n *Node) Run(ctx context.Context) error {
 	defer n.Close()
+	select {
+	case <-n.abort: // the lock was lost before we served anything
+		<-n.abortDone
+		return ErrLockLost
+	default:
+	}
 
 	type srvSpec struct {
 		name  string
@@ -384,11 +460,29 @@ func (n *Node) Run(ctx context.Context) error {
 		ln    net.Listener
 		addr  string
 		label string // address shown in the log: the configured one, or the injected listener's
+		tls   bool
 	}
 	specs := []*srvSpec{
 		{name: "API server", srv: n.apiSrv, ln: n.cfg.APIListener, addr: n.cfg.apiAddr()},
 		{name: "Admin server", srv: n.adminSrv, ln: n.cfg.AdminListener, addr: n.cfg.adminAddr()},
 		{name: "WebSocket server", srv: n.wsSrv, ln: n.cfg.WSListener, addr: n.cfg.wsAddr()},
+	}
+	if n.cfg.Listen != nil { // test seam: bound now (after the promotion), not before
+		for i, name := range []string{"api", "admin", "ws"} {
+			ln, err := n.cfg.Listen(name)
+			if err != nil {
+				for _, o := range specs {
+					if o.ln != nil {
+						_ = o.ln.Close()
+					}
+				}
+				return fmt.Errorf("failed to start all servers: listen %s: %w", name, err)
+			}
+			specs[i].ln = ln
+		}
+	}
+	for i, s := range specs {
+		s.tls = n.applyTLS(s.srv, i == 1)
 	}
 	// Bind first: a port conflict fails here, before anything is served.
 	for _, s := range specs {
@@ -411,11 +505,39 @@ func (n *Node) Run(ctx context.Context) error {
 		s.srv.Addr = s.ln.Addr().String()
 	}
 
+	// Hot reload of the certificate pair: polling of the files' content, and SIGHUP.
+	stopTLSWatch := make(chan struct{})
+	defer close(stopTLSWatch)
+	if n.certs != nil {
+		go n.certs.watch(n.cfg.TLSReloadInterval, stopTLSWatch)
+		hup := make(chan os.Signal, 1)
+		signal.Notify(hup, syscall.SIGHUP)
+		defer signal.Stop(hup)
+		go func() {
+			for {
+				select {
+				case <-hup:
+					log.Printf("[INIT] SIGHUP received: reloading the TLS certificate")
+					n.certs.reload(true)
+				case <-stopTLSWatch:
+					return
+				}
+			}
+		}()
+	}
+
 	errCh := make(chan error, len(specs))
 	for _, s := range specs {
 		go func() {
-			log.Printf("[LISTEN] %s starting on %s", s.name, s.label)
-			if err := s.srv.Serve(s.ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			var err error
+			if s.tls {
+				log.Printf("[LISTEN] %s starting on %s (TLS)", s.name, s.label)
+				err = s.srv.ServeTLS(s.ln, "", "") // certificate from TLSConfig.GetCertificate
+			} else {
+				log.Printf("[LISTEN] %s starting on %s", s.name, s.label)
+				err = s.srv.Serve(s.ln)
+			}
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errCh <- fmt.Errorf("%s error: %w", s.name, err)
 			}
 		}()
@@ -440,12 +562,63 @@ func (n *Node) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 	case runErr = <-errCh:
+	case <-n.abort:
+		// the lock is lost: nothing graceful, nothing that could act on behalf of a master that is
+		// no longer one (Abort already closed the listeners, the links and stopped the hooks)
+		<-n.abortDone // the process must not exit before the close frames are out
+		log.Println("[SHUTDOWN] aborted: the master lock was lost")
+		return ErrLockLost
 	}
 
 	log.Println("[SHUTDOWN] Shutting down servers...")
+	ws.CloseAllLinks(1001, "server shutting down") // Going Away: peers reconnect (never 4001)
 	n.shutdownServers()
+	if runErr == nil && n.dispatcher != nil { // clean stop: flush the hooks queue (bounded), then count what is left
+		drained := make(chan int64, 1)
+		go func() { drained <- n.dispatcher.Drain(hooks.DefaultDrainTimeout) }()
+		select {
+		case left := <-drained:
+			if left > 0 {
+				log.Printf("[SHUTDOWN] hooks: %d event(s) still pending after %s — they are lost", left, hooks.DefaultDrainTimeout)
+			}
+		case <-n.abort: // the lock was lost during the drain: stop executing actions at once
+			<-n.abortDone
+			log.Println("[SHUTDOWN] aborted during the hooks drain: the master lock was lost")
+			return ErrLockLost
+		}
+	}
 	log.Println("[OK] Shutdown complete")
 	return runErr
+}
+
+// Abort stops the node IMMEDIATELY after the loss of the master lock (#163): the hooks dispatcher
+// and every link maker are cancelled first (no action may run on behalf of a former master), the
+// three listeners are closed, and every WebSocket gets the close code 1001 (Going Away) so that
+// minions and relays reconnect to the new master (4001 would forbid it). There is no graceful
+// phase and no drain. Idempotent and safe to call before Run (Run then returns ErrLockLost).
+func (n *Node) Abort() {
+	n.abortOnce.Do(func() {
+		close(n.abort)
+		if n.cancel != nil {
+			n.cancel() // dispatcher (queued events are dropped, not run), dialers, pull client, purge
+		}
+		for _, s := range []*http.Server{n.apiSrv, n.adminSrv, n.wsSrv} {
+			if s != nil {
+				_ = s.Close() // closes the listeners and the plain connections now
+			}
+		}
+		closed := ws.CloseAllLinks(1001, "master lock lost")
+		log.Printf("[SHUTDOWN] lock lost: listeners closed, %d WebSocket link(s) closed with 1001", closed)
+		close(n.abortDone)
+	})
+	<-n.abortDone // a second caller waits for the first to finish
+}
+
+// SetInstance records the role and instance id shown by /health.
+func (n *Node) SetInstance(role, id string) {
+	n.instMu.Lock()
+	n.instRole, n.instID = role, id
+	n.instMu.Unlock()
 }
 
 func (n *Node) shutdownServers() {
@@ -460,4 +633,30 @@ func (n *Node) shutdownServers() {
 			log.Printf("%s server shutdown error: %v", s.name, err)
 		}
 	}
+}
+
+// startPurge runs the periodic purge of the expired blacklist entries until the node is closed.
+// A purge only writes when something expired, and goes through the write guard like any write.
+func (n *Node) startPurge(every time.Duration) {
+	if every <= 0 {
+		every = time.Hour
+	}
+	ctx := n.dispatchCtx
+	if ctx == nil {
+		return
+	}
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if _, err := n.store.PurgeExpiredBlacklist(ctx); err != nil && !errors.Is(err, storage.ErrReadOnly) {
+					log.Printf("[WARN] blacklist purge: %v", err)
+				}
+			}
+		}
+	}()
 }

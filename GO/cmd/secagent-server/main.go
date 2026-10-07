@@ -28,7 +28,7 @@ func isCLIMode() bool {
 	}
 	// Known CLI top-level commands
 	switch first {
-	case "minions", "security", "inventory", "server", "tokens", "hooks", "relays", "help", "completion":
+	case "minions", "security", "inventory", "server", "tokens", "hooks", "relays", "state", "status", "help", "completion":
 		return true
 	}
 	return false
@@ -41,31 +41,29 @@ func main() {
 		return
 	}
 
-	// environment → Config → build → run → exit code
+	// environment → Config → lock loop → build → run → exit code (internal/server.RunInstance)
 	cfg, err := server.ConfigFromEnv()
 	if err != nil {
 		log.Fatal(err)
 	}
-	node, err := server.Build(cfg)
-	if err != nil {
-		log.Fatal(err)
-	}
 
-	// SIGHUP → hot-reload hooks config
+	// SIGTERM / SIGINT → graceful shutdown, then the lock is released
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	// SIGHUP → hot-reload hooks config (the node exists once this instance is the master)
 	sighup := make(chan os.Signal, 1)
 	signal.Notify(sighup, syscall.SIGHUP)
 	go func() {
 		for range sighup {
-			node.ReloadHooks()
+			server.ReloadHooksOfCurrentNode()
 		}
 	}()
 
-	// SIGTERM / SIGINT → graceful shutdown
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
-
-	if err := node.Run(ctx); err != nil {
-		stop()
-		log.Fatal(err)
+	code, err := server.RunInstance(ctx, cfg)
+	if err != nil {
+		log.Print(err)
 	}
+	stop()
+	os.Exit(code)
 }

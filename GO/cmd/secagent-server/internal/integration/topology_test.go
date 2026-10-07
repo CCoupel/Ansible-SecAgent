@@ -162,7 +162,7 @@ func TestTopology_SnapshotBurstIsRateLimited(t *testing.T) {
 	root := startNode(t, nodeSpec{ID: "root"})
 	f := newFakeChild(t, root, "burst")
 	for i := 0; i < 60; i++ { // far above the limit (40 per minute); the parent closes the link at some point
-		if err := f.conn.WriteJSON(map[string]any{"type": "topology_snapshot", "relays": []any{}, "agents": []any{}}); err != nil {
+		if !f.snapshotAcked() {
 			break
 		}
 	}

@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -23,6 +25,11 @@ import (
 // agents and descendants: it must not be restarted by a liveness probe).
 func (n *Node) handleHealth(w http.ResponseWriter, r *http.Request) {
 	body := map[string]interface{}{"status": "ok", "timestamp": time.Now().Unix()}
+	n.instMu.Lock()
+	if n.instRole != "" {
+		body["role"], body["instance_id"] = n.instRole, n.instID
+	}
+	n.instMu.Unlock()
 	if n.healthLinks != nil {
 		if l := n.healthLinks(); !l.Empty() {
 			body["degraded"] = l.Degraded
@@ -153,12 +160,17 @@ func startPushDialers(st *storage.Store, mgr pushStarter) {
 		if n.Mode != "push" {
 			continue
 		}
-		token, terr := handlers.OpenPushToken(n.TokenHash)
+		token, terr := handlers.OpenPushToken(n.RelayID, n.TokenSecret)
 		if terr != nil {
 			log.Printf("[WARN] push relay %q skipped: %v", n.RelayID, terr)
 			continue
 		}
-		if serr := mgr.Start(repeater.DialTarget{RelayID: n.RelayID, URL: n.URL, Token: token}); serr != nil {
+		if serr := mgr.Start(repeater.DialTarget{RelayID: n.RelayID, URLs: n.URLs, Token: token}); serr != nil {
+			if errors.Is(serr, repeater.ErrForbiddenTarget) {
+				// the row predates the guard or was written around the API: never dialed
+				log.Printf("[SECURITY WARNING] push relay %q not dialed: a stored address is forbidden (%v)", n.RelayID, serr)
+				continue
+			}
 			log.Printf("[WARN] push relay %q skipped: %v", n.RelayID, serr)
 			continue
 		}
@@ -172,5 +184,39 @@ func queueUpstream(ch chan<- repeater.Event, ev repeater.Event) {
 	case ch <- ev:
 	default:
 		log.Printf("[REPEATER] upstream event queue full, event %s dropped", ev.Event)
+	}
+}
+
+// agentJTICheck builds the /ws/agent handshake check (#169, SECURITY.md §4/§5) on top of the
+// store. A token is refused when its JTI is blacklisted (revoked agent), when the agent is
+// unknown, or when its JTI is no longer the agent's current one (replaced by a re-enrollment, a
+// refresh or a rekey). A token validated with the PREVIOUS JWT secret (rotation grace period)
+// legitimately carries an older JTI: it only has to be non-blacklisted. Any store error refuses
+// the connection (fail closed).
+func agentJTICheck(store *storage.Store) func(hostname, jti string, usedPrevious bool) error {
+	return func(hostname, jti string, usedPrevious bool) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		revoked, err := store.IsJTIBlacklisted(ctx, jti)
+		if err != nil {
+			return fmt.Errorf("blacklist_check_failed: %w", err)
+		}
+		if revoked {
+			return fmt.Errorf("token_revoked")
+		}
+		agent, err := store.GetAgent(ctx, hostname)
+		if err != nil {
+			return fmt.Errorf("agent_lookup_failed: %w", err)
+		}
+		if agent == nil {
+			return fmt.Errorf("unknown_agent")
+		}
+		if agent.Revoked { // the persistent revocation does not depend on the blacklist retention (#193)
+			return fmt.Errorf("token_revoked")
+		}
+		if !usedPrevious && agent.TokenJTI != jti {
+			return fmt.Errorf("token_replaced")
+		}
+		return nil
 	}
 }

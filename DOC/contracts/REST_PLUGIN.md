@@ -2,7 +2,7 @@
 
 > Interface entre les plugins Ansible (connection plugin, inventory plugin, secagent-inventory binary)
 > et le secagent-server.
-> Endpoint : HTTPS :7770 (via Caddy)
+> Endpoint : HTTPS :7770 (TLS natif v3.0.3)
 > Sources : `DOC/plugins/PLUGINS_SPEC.md` · `DOC/inventory/INVENTORY_SPEC.md` · `DOC/server/SERVER_SPEC.md` §3
 
 ---
@@ -21,11 +21,17 @@ secagent-server tokens create --role plugin --description "ansible-control-prod"
   --allowed-ips "192.168.1.10/32" --allowed-hostname-pattern "ansible-control-[0-9]+"
 ```
 
-Validation serveur à chaque requête :
-1. Token hash vérifié contre table `plugin_tokens`
-2. IP source vérifiée contre `allowed_ips` (CIDR)
-3. Header `X-Relay-Client-Host` vérifié contre `allowed_hostname_pattern` (regexp Go ancrée `^(?:pattern)$`, si configuré)
-4. Token non révoqué (`revoked = 0`)
+C'est une chaîne **opaque** `secagent_plg_` + 64 caractères hexadécimaux (**pas un JWT**), affichée une seule fois à la création ; le serveur n'en conserve que l'empreinte SHA-256, dans le fichier d'état (il n'y a plus de table `plugin_tokens`). Sans `--expires`, le jeton n'expire pas (défaut `never`).
+
+Validation serveur à chaque requête (`handlers/plugin_auth.go` `requirePluginAuth`) :
+1. Empreinte SHA-256 du jeton recherchée dans l'état (`403 token_not_found` si absente ; `401 missing_authorization` sans en-tête `Bearer`)
+2. Jeton non révoqué (`403 token_revoked`)
+3. Jeton non expiré (`403 token_expired`)
+4. IP source vérifiée contre `allowed_ips` (CIDR, si configuré ; `403 ip_not_allowed`). `X-Forwarded-For` n'est pris en compte que derrière un proxy de confiance (`TRUSTED_PROXY_CIDRS`)
+5. Header `X-Relay-Client-Host` vérifié contre `allowed_hostname_pattern` (regexp Go ancrée `^(?:pattern)$`, si configuré ; `403 hostname_not_allowed`)
+6. `last_used_at` / `last_used_ip` mis à jour en mémoire (audit approximatif, persisté avec la prochaine écriture de l'état)
+
+Un `ADMIN_TOKEN` n'est **pas** accepté sur ces routes (il l'est sur le port admin 7771, voir `REST_ADMIN.md`).
 
 Header optionnel pour le binding hostname (utile derrière NAT) :
 ```http
@@ -108,8 +114,8 @@ Les agents `disconnected` sont inclus par défaut. Ansible les marquera `UNREACH
 | HTTP | Signification |
 |---|---|
 | `400` | Paramètre `relay` mal formé (voir format `relayIDShape` : `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`) |
-| `401` | Token invalide ou révoqué |
-| `403` | IP source non autorisée ou hostname non autorisé |
+| `401` | `missing_authorization` : en-tête `Authorization: Bearer` absent ou vide |
+| `403` | Jeton inconnu (`token_not_found`), révoqué (`token_revoked`), expiré (`token_expired`), IP source non autorisée (`ip_not_allowed`) ou hostname non autorisé (`hostname_not_allowed`) ; un `ADMIN_TOKEN` donne aussi `403 token_not_found` ici |
 
 ---
 
@@ -170,11 +176,13 @@ Content-Type: application/json
 | HTTP | Corps JSON | Exception Ansible |
 |---|---|---|
 | `503` | `{"error": "agent_offline"}` | `AnsibleConnectionError` (UNREACHABLE) |
+| `503` | `{"error": "agent_suspended"}` | `AnsibleConnectionError` (agent suspendu par l'admin, #173) |
+| `503` | `{"error": "agent_state_unavailable"}` | `AnsibleConnectionError` (état de suspension illisible, fail closed) |
 | `504` | `{"error": "timeout"}` | `AnsibleConnectionError` (timeout) |
 | `500` | `{"error": "agent_disconnected"}` | `AnsibleConnectionError` |
-| `429` | `{"error": "agent_busy"}` | `AnsibleConnectionError` |
-| `401` | `{"error": "unauthorized"}` | `AnsibleAuthenticationFailure` |
-| `403` | `{"error": "forbidden"}` | `AnsibleAuthenticationFailure` |
+| `429` | `{"error": "agent_busy"}` | `AnsibleConnectionError` (le serveur sait produire ce code, mais le minion Go signale « busy » par `rc: -1` / `stderr: "agent_busy"` dans un résultat ordinaire : voir `WEBSOCKET.md` §6) |
+| `401` | `{"error": "missing_authorization"}` | `AnsibleAuthenticationFailure` |
+| `403` | `{"error": "token_not_found" \| "token_revoked" \| "token_expired" \| "ip_not_allowed" \| "hostname_not_allowed"}` | `AnsibleAuthenticationFailure` |
 
 ---
 
@@ -266,13 +274,18 @@ Content-Type: application/json
 
 ### Variables d'environnement
 
+Binaire `secagent-inventory` (`cmd/secagent-inventory/main.go:529-535`) :
+
 | Variable | Défaut | Description |
 |---|---|---|
-| `RELAY_SERVER_URL` | `https://localhost:7770` | URL du secagent-server |
-| `RELAY_TOKEN` | — | PLUGIN_TOKEN (Bearer) |
+| `RELAY_SERVER_URL` | `https://localhost:7770` | URL du secagent-server (liste d'adresses séparées par des virgules, voir `INVENTORY_SPEC.md` §3b) |
+| `RELAY_TOKEN` | — | PLUGIN_TOKEN (Bearer), lu **directement** dans la variable |
 | `RELAY_CA_BUNDLE` | — | CA custom (certificat auto-signé) |
-| `RELAY_INSECURE_TLS` | `false` | Désactiver vérif TLS (tests uniquement) |
+| `RELAY_INSECURE_TLS` | `false` | Désactiver vérif TLS (tests uniquement ; vers un serveur non-bouclage, exige aussi `RELAY_INSECURE_TLS_ACK=i-understand-the-risk`) |
 | `RELAY_ONLY_CONNECTED` | `false` | Filtrer inventaire sur agents connectés |
+| `RELAY_SCOPE` | — | Limiter l'inventaire à la descendance d'un relay |
+
+Plugin de connexion Ansible (`SECAGENT-PYTHON/ansible_plugins/connection_plugins/relay.py`) : le jeton n'est **pas** lu dans une variable mais dans un **fichier** — `RELAY_TOKEN_FILE` (option `secagent_token_file`) ; les autres variables sont `RELAY_SERVER_URL` (liste d'adresses acceptée), `RELAY_CA_BUNDLE`, `RELAY_TIMEOUT` (30 s) et `RELAY_CONNECT_TIMEOUT` (5 s). Il n'existe pas de variable `RELAY_PLUGIN_TOKEN`.
 
 ### Variables hôte Ansible (`host_vars/my-host.yml`)
 

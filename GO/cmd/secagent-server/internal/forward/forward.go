@@ -24,6 +24,9 @@ const (
 	ErrRouteLookup  = "route_lookup_failed"
 	ErrTimeout      = "timeout"
 	ErrDispatch     = "dispatch_failed"
+	// Suspension of a directly connected agent (#173): the refusal travels up to the plugin.
+	ErrAgentSuspended        = "agent_suspended"
+	ErrAgentStateUnavailable = "agent_state_unavailable"
 )
 
 const (
@@ -36,6 +39,10 @@ const (
 type Forwarder struct {
 	// NextHop returns the direct child relay routing hostname ("" when unrouted).
 	NextHop func(hostname string) (string, error)
+	// Suspended reports whether a directly connected agent is suspended on this node (#173).
+	// An error refuses the task (fail closed). A nil function disables the check: test seam only,
+	// the server always wires it.
+	Suspended func(hostname string) (bool, error)
 }
 
 // Handle processes one task message from the parent (raw JSON) and replies with a task_result.
@@ -57,7 +64,7 @@ func (f *Forwarder) Handle(ctx context.Context, raw json.RawMessage, reply func(
 
 func send(reply func(v any) error, m ws.RelayMessage) {
 	if err := reply(m); err != nil {
-		log.Printf("[FORWARD] reply failed: task_id=%s err=%v", m.TaskID, err)
+		log.Printf("[FORWARD] reply failed: task_id=%q err=%v", m.TaskID, err)
 	}
 }
 
@@ -70,6 +77,17 @@ func (f *Forwarder) run(ctx context.Context, m ws.RelayMessage) ws.RelayMessage 
 
 	// 1. directly connected agent
 	if _, err := ws.GetConnection(m.Hostname); err == nil {
+		if f.Suspended != nil {
+			suspended, err := f.Suspended(m.Hostname)
+			if err != nil {
+				log.Printf("[SECURITY WARNING] forwarded task refused: suspension state of %q unavailable: %v task_id=%q", m.Hostname, err, m.TaskID)
+				return ws.RelayMessage{Error: ErrAgentStateUnavailable}
+			}
+			if suspended {
+				log.Printf("[SECURITY WARNING] forwarded task refused: agent %q is suspended task_id=%q", m.Hostname, m.TaskID)
+				return ws.RelayMessage{Error: ErrAgentSuspended}
+			}
+		}
 		return runLocal(ctx, m)
 	}
 
@@ -78,7 +96,7 @@ func (f *Forwarder) run(ctx context.Context, m ws.RelayMessage) ws.RelayMessage 
 	if f.NextHop != nil {
 		var err error
 		if hop, err = f.NextHop(m.Hostname); err != nil {
-			log.Printf("[FORWARD] route lookup failed: host=%s err=%v", m.Hostname, err)
+			log.Printf("[FORWARD] route lookup failed: host=%q err=%v", m.Hostname, err)
 			return ws.RelayMessage{Error: ErrRouteLookup}
 		}
 	}
@@ -88,7 +106,7 @@ func (f *Forwarder) run(ctx context.Context, m ws.RelayMessage) ws.RelayMessage 
 	if !ws.IsRelayConnected(hop) {
 		return ws.RelayMessage{Error: ErrRelayOffline}
 	}
-	log.Printf("[FORWARD] task_id=%s host=%s next_hop=%s type=%s", m.TaskID, m.Hostname, hop, m.Type)
+	log.Printf("[FORWARD] task_id=%q host=%q next_hop=%q type=%q", m.TaskID, m.Hostname, hop, m.Type)
 	ch, err := ws.DispatchToRelay(hop, m)
 	if err != nil {
 		return ws.RelayMessage{Error: ErrDispatch}

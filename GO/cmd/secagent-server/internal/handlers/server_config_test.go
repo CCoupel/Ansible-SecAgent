@@ -11,11 +11,18 @@ import (
 // initStore creates a fresh in-memory store for server_config tests.
 func initStore(t *testing.T) *storage.Store {
 	t.Helper()
-	s, err := storage.NewStore(":memory:")
+	s, err := storage.OpenTemp()
 	if err != nil {
 		t.Fatalf("initStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	// OpenTemp starts from an initialized state (`state init` created the keys): drop them to
+	// exercise the first-boot generation of InitServerState.
+	for _, k := range []string{"rsa_key_current", "jwt_secret_current"} {
+		if err := s.ConfigDelete(context.Background(), k); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return s
 }
 

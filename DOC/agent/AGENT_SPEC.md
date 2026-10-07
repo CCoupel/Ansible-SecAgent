@@ -21,13 +21,14 @@ Ansible Control Node ──REST──▶ Relay Server ◀──WSS── secagen
 ### Blocs internes (GO)
 
 ```
-GO/cmd/agent/
+GO/cmd/secagent-minion/
 ├── main.go                     — point d'entrée, chargement config + keypair
 ├── internal/enrollment/
 │   ├── keys.go                 — génération RSA-4096, sérialisation PEM, stockage 0600
-│   └── enroll.go               — POST /api/register, challenge OAEP, decrypt JWT
+│   ├── enrollment.go           — POST /api/register, challenge OAEP, decrypt JWT
+│   └── reenroll.go             — ré-enrôlement (401) et déchiffrement du rekey
 ├── internal/ws/
-│   └── dispatcher.go           — connexion WSS, backoff, sémaphore concurrence, code 4001
+│   └── dispatcher.go           — connexion WSS, backoff, sémaphore concurrence, code 4001 (exit 77), codes de sortie 77/78
 ├── internal/executor/
 │   └── executor.go             — subprocess, 5MB buffer, become stdin masqué
 ├── internal/registry/
@@ -57,16 +58,16 @@ GO/cmd/agent/
 
 ```
 1. Génère RSA-4096 si absent → stocke à RELAY_PRIVATE_KEY (mode 0600)
-2. POST /api/register {hostname, pubkey_pem, enrollment_token}
-3. Server répond : {challenge: OAEP(nonce, agent_pubkey)}
-4. Agent déchiffre nonce → répond : {response: OAEP(nonce+token, server_pubkey)}
-5. Server valide → répond : {jwt: OAEP(jwt, agent_pubkey)}
+2. POST /api/register {hostname, public_key_pem, enrollment_token}
+3. Server répond : {challenge: OAEP(nonce, agent_pubkey), server_public_key_pem}
+4. Agent déchiffre nonce → POST /api/register {hostname, public_key_pem, enrollment_token, challenge_response: OAEP(nonce+token, server_pubkey)}
+5. Server valide → répond : {token_encrypted / jwt_encrypted: OAEP(jwt, agent_pubkey), server_public_key_pem}
 6. Agent déchiffre JWT → stocke à RELAY_JWT_PATH
 7. Ouvre WSS /ws/agent avec Authorization: Bearer <JWT>
 ```
 
-**Sur 403 :** token invalide ou expiré → log + retry selon politique backoff.
-**Sur 401 après rotation clefs :** ré-enrollment automatique.
+**Sur 403 :** token invalide, expiré ou déjà consommé → refus permanent, aucun retry, sortie avec le code 78.
+**Sur 401 à l'upgrade WebSocket (JWT rejeté, par ex. après rotation des clefs) :** ré-enrollment automatique. Autre échec (réseau, 5xx) : retry avec backoff.
 
 ---
 
@@ -171,23 +172,49 @@ Envoyé immédiatement après démarrage du subprocess, avant tout stdout.
 
 ## 6. Codes de fermeture WebSocket
 
-| Code | Signification | Comportement **obligatoire** |
+| Code | Émis par le serveur | Comportement **obligatoire** |
 |---|---|---|
-| `4001` | Token révoqué | **Arrêt définitif — NE PAS reconnecter** |
-| `4002` | Token expiré | Refresh token → reconnecter |
-| `4003` | Re-enrollment requis | Ré-enrollment complet → reconnecter |
-| `1001` / réseau | Restart / coupure | Backoff exponentiel : 1s→2s→4s→…→60s max |
+| `4001` | Oui (révocation admin) | **Arrêt définitif — NE PAS reconnecter** (code de sortie 77) |
+| `4000` | Oui (agent supprimé par l'admin) | Reconnexion avec backoff |
+| `1001` / réseau | Oui (arrêt propre du serveur, perte du verrou) / coupure | Backoff exponentiel : 1s→2s→4s→…→60s max |
+
+Tout code autre que `4001` provoque une reconnexion (`ShouldReconnect`, `internal/ws/dispatcher.go:159`). `4002` est défini côté serveur mais jamais émis ; `4003` et `4004` n'existent pas. Un JWT expiré ou invalide est refusé par un **HTTP 401** à l'upgrade WebSocket, ce qui déclenche le ré-enrôlement (§12). Voir `DOC/contracts/WEBSOCKET.md` §5.
 
 ---
 
-## 7. Gestion de la concurrence
+## 7. Codes de sortie du processus
+
+L'agent quitte avec un code de sortie distinctif dans les cas critiques (enrôlement/révocation) :
+
+| Code | Cause | Comportement container/systemd |
+|---|---|---|
+| 0 | Shutdown propre (coupure de WS normale) | Redémarrage par policy |
+| 1 | Erreur générique ou état critique | Redémarrage par policy |
+| 77 | **Agent révoqué** (token JTI blacklisté, close 4001) | **NE PAS redémarrer** — état terminal, l'opérateur doit intervenir |
+| 78 | **Enrôlement refusé définitivement** (403 persistant, enrollment_token expiré/invalide) | **NE PAS redémarrer** — état terminal, l'opérateur doit créer un nouveau jeton d'enrôlement |
+
+**Configuration systemd recommandée** (pour éviter les redémarrages inutiles) :
+```ini
+Restart=on-failure
+RestartSec=30s
+StartLimitIntervalSec=600
+StartLimitBurst=5
+RestartPreventExitStatus=77 78
+```
+
+Avec cette config, l'unité s'arrête définitivement (passe en état `failed`) après 5 redémarrages en 10 min, ou immédiatement si le code est 77/78, forçant l'intervention manuelle.
+
+---
+
+## 8. Gestion de la concurrence
 
 ```
-MAX_CONCURRENT_TASKS = 10  (configurable via RELAY_MAX_TASKS)
+MAX_CONCURRENT_TASKS = 10  (variable d'environnement MAX_CONCURRENT_TASKS ; entier > 0, sinon 10)
 
 Si dépassé → répondre immédiatement :
-  { "task_id": "...", "type": "result", "rc": -1, "error": "agent_busy" }
-  → HTTP 429 retourné au plugin Ansible
+  { "task_id": "...", "type": "result", "rc": -1, "stdout": "", "stderr": "agent_busy", "truncated": false }
+  → relayé à l'appelant comme un résultat ordinaire (le serveur ne traduit en HTTP 429
+    qu'un résultat portant `error: "agent_busy"`, que le minion Go n'émet pas)
 
 Un subprocess par tâche (jamais de thread pool).
 Isolation complète par task_id.
@@ -271,10 +298,10 @@ if stdinData != nil {
 | Situation | Comportement agent |
 |---|---|
 | Timeout tâche | `SIGTERM` subprocess → `rc: -15` |
-| Agent busy | `rc: -1, error: "agent_busy"` immédiat |
+| Agent busy | `rc: -1, stderr: "agent_busy"` immédiat |
 | Fichier > 500KB | `rc: 1, error: "payload_too_large"` |
 | WS close 4001 | Arrêt définitif |
-| WS close 4002/4003 | Ré-enrollment puis reconnexion |
+| HTTP 401 à l'upgrade WS | Ré-enrollment puis reconnexion |
 | Réseau coupé | Backoff expo (1s→60s) |
 
 ---
@@ -283,17 +310,55 @@ if stdinData != nil {
 
 | Variable | Défaut | Description |
 |---|---|---|
-| `RELAY_SERVER_URL` | `wss://localhost:7772/ws/agent` | URL WSS du relay server |
-| `RELAY_API_URL` | `https://localhost:7770` | URL HTTPS pour enrollment |
+| `RELAY_SERVER_URL` | `https://localhost:7770` | URL(s) HTTPS du relay server pour l'API d'enrollment — liste séparée par virgules pour failover (ex: `https://relay1:7770,https://relay2:7770`). Appairé par position avec `RELAY_WS_URL` (mêmes longueurs imposées) |
+| `RELAY_WS_URL` | `wss://localhost:7772/ws/agent` | URL(s) WSS du relay server pour le WebSocket agent — liste séparée par virgules, pairées par position avec `RELAY_SERVER_URL` (ex: 2 serveurs = 2 WS URLs : `wss://relay1:7772/ws/agent,wss://relay2:7772/ws/agent`) |
 | `RELAY_PRIVATE_KEY` | `/etc/secagent-minion/id_rsa` | Chemin clef privée RSA-4096 |
 | `RELAY_JWT_PATH` | `/etc/secagent-minion/token.jwt` | Chemin token JWT |
-| `RELAY_MAX_TASKS` | `10` | Tâches simultanées max |
-| `RELAY_STDOUT_MAX` | `5242880` | Buffer stdout max (5MB) |
+| `RELAY_ENROLLMENT_TOKEN` | — (obligatoire tant que le minion n'a pas de JWT) | Jeton d'enrôlement `secagent_enr_…` ; jamais journalisé. Absent et pas de JWT → arrêt avec le code 78 |
+| `RELAY_AGENT_HOSTNAME` | `os.Hostname()` | Hostname déclaré à l'enrôlement |
+| `RELAY_CA_BUNDLE` | système | Bundle CA PEM personnalisé pour vérifier le serveur |
+| `RELAY_ASYNC_DIR` | `/var/lib/secagent-minion/async` | Répertoire du registre des tâches async |
+| `MAX_CONCURRENT_TASKS` | `10` | Tâches simultanées max (entier > 0) |
 | `RELAY_INSECURE_TLS` | `false` | Désactiver vérif TLS (tests uniquement) |
+
+Il n'existe pas de variable pour la taille du buffer stdout : la limite de 5 MiB est une constante (`executor.StdoutBufferMax`). Le minion n'a pas de fichier de configuration : uniquement des variables d'environnement (`loadConfig`, `main.go:398`).
 
 ---
 
-## 12. Déploiement systemd
+## 11b. Environnement des tâches (liste blanche)
+
+Les tâches Ansible **ne reçoivent PAS** l'environnement complet du minion. Une liste blanche stricte prévient les fuites de secrets :
+
+**Variables **toujours interdites**:**
+- `RELAY_*` (tous) : enrollment token, JWT, clefs, URLs
+- Suffixes `*_TOKEN`, `*_KEY`, `*_SECRET`, `*_PASSWORD`, `*_PASS` (defense in depth)
+
+**Variables **autorisées**:**
+- `PATH`, `HOME`, `TZ`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`
+- Préfixe `LC_*` (locale settings)
+- **Aucune autre** — pas de variables utilisateur custom directement
+
+**Mécanisme :**
+- Ansible utilise `environment:` dans les playbooks → les variables sont écrites dans la command-line (`VAR=value cmd`), interprétées par le shell, pas passées via l'environnement du processus
+- `become_pass` voyage en `stdin`, jamais en environnement
+- Cette isolation empêche une playbook d'accéder aux secrets de la minion (enrollment token, JWT, etc.)
+
+---
+
+## 12. Ré-enrôlement et reconnexa
+
+Le minion gère automatiquement le ré-enrôlement en cas de token JWT expiré ou révoqué :
+
+1. **HTTP 401 à l'upgrade WebSocket** (JWT expiré, invalide ou rejeté) → le JWT local est supprimé, appel à `POST /api/register` (enrollment, avec `RELAY_ENROLLMENT_TOKEN`) → nouveau JWT → reconnexion WS. Aucun code de fermeture WebSocket ne déclenche un ré-enrôlement
+2. **Message `rekey`** → le minion déchiffre `token_encrypted`, remplace son JWT et garde la connexion ouverte (pas de ré-enrôlement)
+3. **Échec corrigible d'enrôlement** (réseau, 400, 5xx, coupure après envoi de la requête) → nouveau tour après un backoff exponentiel : **1 s → 2 s → 4 s → … → 60 s max**, en passant à l'adresse suivante de `RELAY_SERVER_URL`
+   - Un jeton à usage unique n'est jamais rejoué sur une autre adresse une fois la requête partie
+   - Si le serveur accepte le ré-enrôlement mais refuse encore le JWT à l'upgrade, un message `[ERROR] N consecutive authentication cycles without a working WebSocket…` est journalisé et le minion continue avec backoff
+4. **HTTP 403 à l'enrôlement** (jeton invalide, expiré ou déjà consommé) ou **absence de `RELAY_ENROLLMENT_TOKEN`** → **refus permanent, aucun retry** : sortie avec le code **78**. **NE PAS redémarrer** (voir codes sortie §7) ; l'opérateur crée un nouveau jeton d'enrôlement
+
+---
+
+## 13. Déploiement systemd
 
 ```ini
 # /etc/systemd/system/secagent-minion.service
@@ -308,8 +373,9 @@ Group=secagent-minion
 ExecStart=/usr/local/bin/secagent-minion
 Restart=on-failure
 RestartSec=5s
-Environment=RELAY_SERVER_URL=wss://relay.example.com/ws/agent
-Environment=RELAY_API_URL=https://relay.example.com
+Environment=RELAY_SERVER_URL=https://relay.example.com:7770
+Environment=RELAY_WS_URL=wss://relay.example.com:7772/ws/agent
+RestartPreventExitStatus=77 78
 EnvironmentFile=-/etc/secagent-minion/env
 
 [Install]

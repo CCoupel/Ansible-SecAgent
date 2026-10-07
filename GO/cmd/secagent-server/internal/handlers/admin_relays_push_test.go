@@ -25,9 +25,9 @@ func setPushHooks(t *testing.T) *pushCalls {
 		t.Setenv("RSA_MASTER_KEY", "unit-test-master-key") // push registration fails closed without it
 	}
 	c := &pushCalls{}
-	SetRelayPushHooks(func(relayID, url, token string) error {
+	SetRelayPushHooks(func(relayID string, urls []string, token string) error {
 		c.mu.Lock()
-		c.started = append(c.started, relayID+"|"+url+"|"+token)
+		c.started = append(c.started, relayID+"|"+strings.Join(urls, ",")+"|"+token)
 		c.mu.Unlock()
 		return nil
 	}, func(relayID string) {
@@ -118,21 +118,26 @@ func TestPushRelay_TokenEncryptedAtRestWithMasterKey(t *testing.T) {
 	if err != nil || node == nil {
 		t.Fatalf("node: %v %v", node, err)
 	}
-	if strings.Contains(node.TokenHash, "child-signed-jwt") || !strings.HasPrefix(node.TokenHash, "enc:") {
-		t.Errorf("token not encrypted at rest: %q", node.TokenHash)
+	if strings.Contains(node.TokenSecret, "child-signed-jwt") || !strings.HasPrefix(node.TokenSecret, "enc:") || node.TokenHash != "" {
+		t.Errorf("token not encrypted at rest (token_secret=%q token_hash=%q)", node.TokenSecret, node.TokenHash)
 	}
-	got, err := OpenPushToken(node.TokenHash)
+	got, err := OpenPushToken("dmz1", node.TokenSecret)
 	if err != nil || got != "child-signed-jwt" {
 		t.Errorf("OpenPushToken = %q, %v", got, err)
 	}
 	// encrypted row without the master key must fail closed, not return garbage
 	t.Setenv("RSA_MASTER_KEY", "")
-	if _, err := OpenPushToken(node.TokenHash); err == nil {
+	if _, err := OpenPushToken("dmz1", node.TokenSecret); err == nil {
 		t.Error("expected an error when the master key is missing")
 	}
-	// legacy plaintext rows still open
-	if got, err := OpenPushToken("legacy-token"); err != nil || got != "legacy-token" {
-		t.Errorf("legacy = %q %v", got, err)
+	// bound to its relay: the same sealed value does not open for another relay
+	t.Setenv("RSA_MASTER_KEY", "unit-test-master-key")
+	if _, err := OpenPushToken("dmz2", node.TokenSecret); err == nil {
+		t.Error("a sealed token must not open for another relay (AAD)")
+	}
+	// a value that is not sealed is refused: the state never holds one
+	if _, err := OpenPushToken("dmz1", "legacy-token"); err == nil {
+		t.Error("a clear token must be refused")
 	}
 }
 
@@ -196,37 +201,123 @@ func TestPushRelay_RefusedWithoutMasterKey(t *testing.T) {
 
 func TestPushToken_SealOpenRoundTripWrongKeyAndTamper(t *testing.T) {
 	t.Setenv("RSA_MASTER_KEY", "key-one")
-	sealed, err := SealPushToken("secret-jwt")
+	sealed, err := SealPushToken("dmz1", "secret-jwt")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(sealed, "secret-jwt") || !strings.HasPrefix(sealed, "enc:") {
 		t.Fatalf("not sealed: %q", sealed)
 	}
-	if got, err := OpenPushToken(sealed); err != nil || got != "secret-jwt" {
+	if got, err := OpenPushToken("dmz1", sealed); err != nil || got != "secret-jwt" {
 		t.Fatalf("round trip = %q %v", got, err)
 	}
 	// two seals of the same token differ (random nonce)
-	if again, _ := SealPushToken("secret-jwt"); again == sealed {
+	if again, _ := SealPushToken("dmz1", "secret-jwt"); again == sealed {
 		t.Error("sealing must be randomized")
 	}
 	// altered ciphertext is rejected (GCM authentication)
 	b := []byte(sealed)
 	b[len(b)-3] ^= 0x01
-	if got, err := OpenPushToken(string(b)); err == nil {
+	if got, err := OpenPushToken("dmz1", string(b)); err == nil {
 		t.Errorf("tampered data accepted: %q", got)
 	}
 	// wrong key
 	t.Setenv("RSA_MASTER_KEY", "key-two")
-	if got, err := OpenPushToken(sealed); err == nil {
+	if got, err := OpenPushToken("dmz1", sealed); err == nil {
 		t.Errorf("wrong key accepted: %q", got)
 	}
 	// missing key
 	t.Setenv("RSA_MASTER_KEY", "")
-	if _, err := OpenPushToken(sealed); err == nil {
+	if _, err := OpenPushToken("dmz1", sealed); err == nil {
 		t.Error("missing key must fail")
 	}
-	if _, err := SealPushToken("x"); !errors.Is(err, ErrPushTokenKeyMissing) {
+	if _, err := SealPushToken("dmz1", "x"); !errors.Is(err, ErrPushTokenKeyMissing) {
 		t.Errorf("seal without key: %v", err)
+	}
+}
+
+func createPushBody(t *testing.T, body map[string]interface{}) *httptest.ResponseRecorder {
+	t.Helper()
+	return doAdminRelayRequest(t, AdminCreateRelay, "POST", "/api/admin/relays", body)
+}
+
+func TestPushRelay_UrlsListIsStoredAndDialedInOrder(t *testing.T) {
+	useFreshStores(t)
+	calls := setPushHooks(t)
+	rr := createPushBody(t, map[string]interface{}{"relay_id": "dmz1", "mode": "push", "token": "tok",
+		"urls": []string{"wss://a.example.com:7772", "wss://b.example.com:7772"}})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	calls.mu.Lock()
+	if len(calls.started) != 1 || calls.started[0] != "dmz1|wss://a.example.com:7772,wss://b.example.com:7772|tok" {
+		t.Errorf("started = %v", calls.started)
+	}
+	calls.mu.Unlock()
+	node, err := adminStore.GetRelayNode("dmz1")
+	if err != nil || node == nil || len(node.URLs) != 2 || node.URLs[1] != "wss://b.example.com:7772" {
+		t.Fatalf("stored node = %+v, %v", node, err)
+	}
+}
+
+func TestPushRelay_LegacyUrlStillAccepted(t *testing.T) {
+	useFreshStores(t)
+	setPushHooks(t)
+	if rr := createPush(t, "dmz1", "wss://a.example.com:7772", "tok"); rr.Code != http.StatusCreated {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	node, _ := adminStore.GetRelayNode("dmz1")
+	if node == nil || len(node.URLs) != 1 || node.URLs[0] != "wss://a.example.com:7772" {
+		t.Fatalf("stored node = %+v", node)
+	}
+}
+
+func TestPushRelay_UrlAndUrlsTogetherAreRefused(t *testing.T) {
+	useFreshStores(t)
+	calls := setPushHooks(t)
+	rr := createPushBody(t, map[string]interface{}{"relay_id": "dmz1", "mode": "push", "token": "tok",
+		"url": "wss://a.example.com:7772", "urls": []string{"wss://b.example.com:7772"}})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400", rr.Code)
+	}
+	if len(calls.started) != 0 {
+		t.Errorf("no dialer for a refused request: %v", calls.started)
+	}
+}
+
+func TestPushRelay_OneForbiddenAddressRefusesTheWholeList(t *testing.T) {
+	useFreshStores(t)
+	calls := setPushHooks(t)
+	for name, list := range map[string][]string{
+		"metadata":   {"wss://a.example.com:7772", "wss://169.254.169.254:7772"},
+		"loopback":   {"wss://127.0.0.1:7772", "wss://a.example.com:7772"},
+		"localhost":  {"wss://a.example.com:7772", "wss://localhost:7772"},
+		"bad scheme": {"wss://a.example.com:7772", "ws://b.example.com:7772"},
+		"userinfo":   {"wss://a.example.com:7772", "wss://alice:hunter2@b.example.com:7772"},
+	} {
+		rr := createPushBody(t, map[string]interface{}{"relay_id": "dmz1", "mode": "push", "token": "tok", "urls": list})
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", name, rr.Code)
+		}
+		body := rr.Body.String()
+		if strings.Contains(body, "169.254") || strings.Contains(body, "hunter2") || strings.Contains(body, "alice") {
+			t.Errorf("%s: an address is echoed: %s", name, body)
+		}
+	}
+	if n, _ := adminStore.GetRelayNode("dmz1"); n != nil {
+		t.Error("a refused list must not be stored")
+	}
+	if len(calls.started) != 0 {
+		t.Errorf("no dialer must start: %v", calls.started)
+	}
+}
+
+func TestPushRelay_PrivateRangeAddressesAreAccepted(t *testing.T) {
+	useFreshStores(t)
+	setPushHooks(t)
+	rr := createPushBody(t, map[string]interface{}{"relay_id": "dmz1", "mode": "push", "token": "tok",
+		"urls": []string{"wss://10.1.2.3:7772", "wss://192.168.1.218:7772"}})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("RFC1918 targets must be accepted: %d %s", rr.Code, rr.Body.String())
 	}
 }

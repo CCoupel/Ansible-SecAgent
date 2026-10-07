@@ -7,17 +7,18 @@ package integration
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -26,19 +27,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 
-	"secagent-server/cmd/secagent-server/internal/crypto"
-	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/state"
 )
 
-const waitLimit = 30 * time.Second // generous: only reached on failure, avoids flakes on a loaded CI runner
+// waitLimit is only ever reached on failure (every wait polls every 5 ms), so it costs nothing when
+// green. Each node is a separate process: on a machine at load average 40+ (QA, shared runners) a
+// process start / reconnection alone can stall for more than 30 s.
+const waitLimit = 60 * time.Second
 
 func waitFor(t *testing.T, what string, fn func() bool) {
 	t.Helper()
@@ -80,6 +84,24 @@ func (s *syncBuf) count(sub string) int { return strings.Count(plain(s.String())
 
 func (s *syncBuf) has(sub string) bool { return s.count(sub) > 0 }
 
+// expectLog asserts that sub shows up in the log (bounded wait). The node is a separate process:
+// its log reaches this buffer through a pipe, ASYNCHRONOUSLY, so a line written by the server
+// BEFORE it answered (HTTP status, close frame) may not be in the buffer yet when the test
+// observes that answer — never assert a log with has() right after waiting for something else.
+func (s *syncBuf) expectLog(t *testing.T, sub, why string) {
+	t.Helper()
+	deadline := time.Now().Add(waitLimit)
+	for time.Now().Before(deadline) {
+		if s.has(sub) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !s.has(sub) {
+		t.Errorf("%s (no %q after %s):\n%s", why, sub, waitLimit, s.String())
+	}
+}
+
 type nodeSpec struct {
 	ID          string
 	ParentURL   string // pull: this node dials its parent (wss://…)
@@ -97,12 +119,18 @@ type node struct {
 	adminTok  string
 	jwtSecret string
 	env       []string // environment of the node process (restart reuses it)
+	stateDir  string   // STATE_DIR of the node
 	hooksPath string   // RELAY_HOOKS_CONFIG of the node
 	hookOut   string   // file the hooks' file-actions append to
 	logs      *syncBuf
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
 	plugin    string
+
+	statusPath   string         // RELAY_STATUS_FILE of this instance (local, outside STATE_DIR)
+	pendingReady chan nodeReady // of a secondary: receives the addresses once it is promoted
+	exited       chan struct{}  // closed when the current process ended
+	exitCode     int            // its exit code (valid once exited is closed)
 }
 
 // ── shared test material: TLS certificate and RSA key ────────────────────────
@@ -195,21 +223,39 @@ func tlsClientConfig() *tls.Config {
 	return &tls.Config{RootCAs: tlsPool, MinVersion: tls.VersionTLS12}
 }
 
-// seedDatabase pre-creates the node's database with its RSA key (encrypted like in production).
-func seedDatabase(t *testing.T, dbPath, masterKey string) {
+var (
+	stateTplMu sync.Mutex
+	stateTpl   = map[string]string{}
+)
+
+// seedState creates the node's state like `secagent-server state init` does (RSA key and JWT secret
+// encrypted with the node's master key). The RSA-2048 generation is done once per master key.
+func seedState(t *testing.T, dir, masterKey string) {
 	t.Helper()
-	st, err := storage.NewStore(dbPath)
+	stateTplMu.Lock()
+	tpl, ok := stateTpl[masterKey]
+	if !ok {
+		d, err := os.MkdirTemp("", "secagent-itest-state-*")
+		if err != nil {
+			stateTplMu.Unlock()
+			t.Fatal(err)
+		}
+		if err := state.Init(state.InitOptions{Dir: d, MasterKey: masterKey, RSABits: 2048}); err != nil {
+			stateTplMu.Unlock()
+			t.Fatal(err)
+		}
+		tpl = filepath.Join(d, state.StateFile)
+		stateTpl[masterKey] = tpl
+	}
+	stateTplMu.Unlock()
+	data, err := os.ReadFile(tpl)
 	if err != nil {
 		t.Fatal(err)
 	}
-	enc, err := crypto.EncryptAESGCM(rsaKeyPEM, masterKey)
-	if err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.ConfigSet(context.Background(), "rsa_key_current", "enc:"+enc); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Close(); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, state.StateFile), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -219,6 +265,17 @@ func startNode(t *testing.T, spec nodeSpec) *node {
 	n := prepareNode(t, spec)
 	n.launch(nil)
 	t.Cleanup(n.stop)
+	t.Cleanup(func() { // registered last = runs first: a failed test keeps the node's life-cycle lines
+		if t.Failed() {
+			var keep []string
+			for _, l := range strings.Split(n.logs.String(), "\n") {
+				if strings.Contains(l, "lock") || strings.Contains(l, "SHUTDOWN") || strings.Contains(l, "SECURITY") || strings.Contains(l, "INIT") || strings.Contains(l, "ERROR") {
+					keep = append(keep, l)
+				}
+			}
+			t.Logf("life-cycle lines of node %s:\n%s", n.id, strings.Join(keep, "\n"))
+		}
+	})
 	return n
 }
 
@@ -230,7 +287,8 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 	}
 	n := &node{t: t, id: spec.ID, adminTok: "admin-" + spec.ID + "-secret-token", jwtSecret: "jwt-signing-secret-of-" + spec.ID + "-0123456789", logs: &syncBuf{}}
 	masterKey := "integration-master-key-" + spec.ID
-	dbPath := filepath.Join(t.TempDir(), "relay.db")
+	stateDir := filepath.Join(t.TempDir(), "state")
+	n.stateDir = stateDir
 	n.hooksPath = filepath.Join(t.TempDir(), "hooks.json")
 	n.hookOut = filepath.Join(t.TempDir(), "hooks.out")
 	if spec.Hooks != nil {
@@ -238,18 +296,22 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 			t.Fatal(err)
 		}
 	}
-	seedDatabase(t, dbPath, masterKey)
+	seedState(t, stateDir, masterKey)
 
+	n.statusPath = filepath.Join(t.TempDir(), "status.json")
 	n.env = append(append(os.Environ(),
 		envNodeProcess+"=1",
+		"TLS_DISABLE=true",       // the harness wraps the listeners in TLS itself (injected listeners)
+		"ADMIN_ADDR=127.0.0.1:0", // loopback: the admin port is not under test here (#175b); the listener is injected anyway
 		envNodeCert+"="+certPath, envNodeKey+"="+keyPath,
 		"SSL_CERT_FILE="+certPath, // the node trusts the test certificate: real TLS verification
 		"ADMIN_TOKEN="+n.adminTok,
 		"JWT_SECRET_KEY="+n.jwtSecret,
 		"RSA_MASTER_KEY="+masterKey,
-		"DATABASE_URL=sqlite:///"+dbPath,
-		"NATS_URL=nats://127.0.0.1:1",     // unreachable: degraded mode, like production without NATS
+		"STATE_DIR="+stateDir,
+		"RELAY_ACTION_LOG="+filepath.Join(filepath.Dir(stateDir), "actions.log"),
 		"RELAY_HOOKS_CONFIG="+n.hooksPath, // absent unless spec.Hooks: 0 hooks active
+		"RELAY_STATUS_FILE="+n.statusPath, // local health file, outside STATE_DIR
 		"REPEATER_ID="+spec.ID,
 		"REPEATER_UPSTREAM_URL="+spec.ParentURL,
 		"REPEATER_UPSTREAM_TOKEN="+spec.ParentToken,
@@ -257,25 +319,176 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 	return n
 }
 
-// dbScalar runs a read-only query on the node's database file and returns its first column.
-func (n *node) dbScalar(query string) string {
+// statePayload returns the permanent data of the node as written in its relay.state (the file is
+// read-only for the test: the node is its single writer). Volatile data (routing, relay status,
+// last_seen) is never in it.
+func (n *node) statePayload() map[string]json.RawMessage {
 	n.t.Helper()
-	path := ""
-	for _, e := range n.env {
-		if strings.HasPrefix(e, "DATABASE_URL=sqlite:///") {
-			path = strings.TrimPrefix(e, "DATABASE_URL=sqlite:///")
-		}
-	}
-	db, err := sql.Open("sqlite3", path)
+	raw, err := os.ReadFile(filepath.Join(n.stateDir, state.StateFile))
 	if err != nil {
 		n.t.Fatal(err)
 	}
-	defer func() { _ = db.Close() }()
-	var v sql.NullString
-	if err := db.QueryRow(query).Scan(&v); err != nil {
-		n.t.Fatalf("%s: %v", query, err)
+	var env struct {
+		Payload map[string]json.RawMessage `json:"payload"`
 	}
-	return v.String
+	if err := json.Unmarshal(raw, &env); err != nil {
+		n.t.Fatalf("relay.state of %s: %v", n.id, err)
+	}
+	return env.Payload
+}
+
+// stateSection decodes one section (e.g. "relay_nodes", "agents") of the state file.
+func (n *node) stateSection(name string) map[string]map[string]any {
+	n.t.Helper()
+	out := map[string]map[string]any{}
+	if raw, ok := n.statePayload()[name]; ok {
+		if err := json.Unmarshal(raw, &out); err != nil {
+			n.t.Fatalf("state section %s: %v", name, err)
+		}
+	}
+	return out
+}
+
+// agentKey is the RSA key every harness minion enrolls with.
+var (
+	agentKeyOnce sync.Once
+	agentKey     *rsa.PrivateKey
+	agentKeyPEM  string
+)
+
+var agentKeyErr error
+
+func harnessAgentKeyErr() (*rsa.PrivateKey, string, error) {
+	agentKeyOnce.Do(func() {
+		// 4096 bits like a real minion: a JWT does not fit in an RSA-OAEP block of a 2048-bit key
+		k, err := rsa.GenerateKey(rand.Reader, 4096)
+		if err != nil {
+			agentKeyErr = err
+			return
+		}
+		der, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
+		agentKey, agentKeyPEM = k, string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	})
+	return agentKey, agentKeyPEM, agentKeyErr
+}
+
+// enrollAgent enrolls host through the REAL flow (admin pre-authorization of its key, then
+// POST /api/register) and returns the JWT the server issued: /ws/agent refuses a token whose agent
+// is unknown or whose JTI is not the current one (#169), and the server signs with the secret of
+// its state.
+func (n *node) enrollAgent(host string) string {
+	n.t.Helper()
+	tok, err := n.enrollAgentErr(host)
+	if err != nil {
+		n.t.Fatal(err)
+	}
+	return tok
+}
+
+// enrollAgentErr is enrollAgent for goroutines other than the test's (it never calls t.Fatal).
+func (n *node) enrollAgentErr(host string) (string, error) {
+	key, pubPEM, err := harnessAgentKeyErr()
+	if err != nil {
+		return "", err
+	}
+	// 1. the operator creates a one-shot enrollment token bound to this hostname (#192c: there is no
+	// tokenless enrollment any more)
+	code, raw, err := n.callErr("POST", n.adminURL(), "/api/admin/tokens", n.adminTok,
+		map[string]any{"role": "enrollment", "hostname_pattern": regexp.QuoteMeta(host), "created_by": "harness"})
+	if err != nil || code >= 300 {
+		return "", fmt.Errorf("enrollment token for %s on %s: %d %s %v", host, n.id, code, raw, err)
+	}
+	var tok struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(raw, &tok); err != nil || tok.Token == "" {
+		return "", fmt.Errorf("enrollment token response of %s: %v %s", host, err, raw)
+	}
+	// 2. step 1: the server answers with a nonce encrypted with the agent's public key
+	code, raw, err = n.callErr("POST", n.apiURL(), "/api/register", "",
+		map[string]any{"hostname": host, "public_key_pem": pubPEM, "enrollment_token": tok.Token})
+	if err != nil || code != http.StatusOK {
+		return "", fmt.Errorf("register step 1 of %s on %s: %d %s %v", host, n.id, code, raw, err)
+	}
+	var ch struct {
+		Challenge       string `json:"challenge"`
+		ServerPublicKey string `json:"server_public_key_pem"`
+	}
+	if err := json.Unmarshal(raw, &ch); err != nil || ch.Challenge == "" || ch.ServerPublicKey == "" {
+		return "", fmt.Errorf("register step 1 response of %s: %v %s", host, err, raw)
+	}
+	ctBytes, err := base64.StdEncoding.DecodeString(ch.Challenge)
+	if err != nil {
+		return "", err
+	}
+	nonce, err := rsa.DecryptOAEP(sha256.New(), nil, key, ctBytes, nil)
+	if err != nil {
+		return "", fmt.Errorf("decrypt the challenge of %s: %w", host, err)
+	}
+	// 3. step 2: prove possession of the private key: OAEP(nonce + token, server public key)
+	block, _ := pem.Decode([]byte(ch.ServerPublicKey))
+	if block == nil {
+		return "", fmt.Errorf("server public key of %s: no PEM block", host)
+	}
+	pubAny, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	serverPub, ok := pubAny.(*rsa.PublicKey)
+	if !ok {
+		return "", fmt.Errorf("server public key of %s is not RSA", host)
+	}
+	resp2, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, serverPub, append(append([]byte{}, nonce...), []byte(tok.Token)...), nil)
+	if err != nil {
+		return "", err
+	}
+	code, raw, err = n.callErr("POST", n.apiURL(), "/api/register", "",
+		map[string]any{"hostname": host, "public_key_pem": pubPEM, "enrollment_token": tok.Token,
+			"challenge_response": base64.StdEncoding.EncodeToString(resp2)})
+	if err != nil || code != http.StatusOK {
+		return "", fmt.Errorf("register step 2 of %s on %s: %d %s %v", host, n.id, code, raw, err)
+	}
+	var resp struct {
+		TokenEncrypted string `json:"token_encrypted"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil || resp.TokenEncrypted == "" {
+		return "", fmt.Errorf("register response of %s: %v %s", host, err, raw)
+	}
+	ct, err := base64.StdEncoding.DecodeString(resp.TokenEncrypted)
+	if err != nil {
+		return "", err
+	}
+	jwtRaw, err := rsa.DecryptOAEP(sha256.New(), nil, key, ct, nil)
+	if err != nil {
+		return "", fmt.Errorf("decrypt the token of %s: %w", host, err)
+	}
+	return string(jwtRaw), nil
+}
+
+// callErr is callOn for goroutines other than the test's.
+func (n *node) callErr(method, base, path, bearer string, body any) (int, []byte, error) {
+	var rd io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, base+path, rd)
+	if err != nil {
+		return 0, nil, err
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, out, nil
 }
 
 // setEnv sets (or replaces) one environment variable of the node for its NEXT start / restart.
@@ -322,6 +535,37 @@ func (n *node) runExpectingExit() (code int, output string) {
 
 // launch starts the node process with n.env (+ extra) and waits until it serves.
 func (n *node) launch(extra []string) {
+	n.t.Helper()
+	ready, _ := n.startProcess(extra)
+	select {
+	case n.ready = <-ready:
+	case <-n.exited:
+		n.t.Fatalf("node %s exited with code %d before serving; logs:\n%s", n.id, n.exitCode, n.logs.String())
+	case <-time.After(waitLimit):
+		_ = n.cmd.Process.Kill()
+		n.t.Fatalf("node %s did not start; logs:\n%s", n.id, n.logs.String())
+	}
+}
+
+// launchSecondary starts an instance that is expected to WAIT for the lock (no port): it returns once
+// the process runs its lock loop.
+func (n *node) launchSecondary(extra []string) {
+	n.t.Helper()
+	ready, started := n.startProcess(extra)
+	n.pendingReady = ready
+	select {
+	case <-started:
+	case <-n.exited:
+		n.t.Fatalf("instance %s exited with code %d; logs:\n%s", n.id, n.exitCode, n.logs.String())
+	case <-time.After(waitLimit):
+		_ = n.cmd.Process.Kill()
+		n.t.Fatalf("instance %s did not start; logs:\n%s", n.id, n.logs.String())
+	}
+}
+
+// startProcess runs the child; ready receives the serving addresses (once promoted), started is
+// closed at the first line the child prints (its lock loop is about to run).
+func (n *node) startProcess(extra []string) (ready chan nodeReady, started chan struct{}) {
 	t := n.t
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestNodeProcess$", "-test.v")
@@ -339,12 +583,22 @@ func (n *node) launch(extra []string) {
 		t.Fatal(err)
 	}
 	n.cmd, n.stdin = cmd, stdin
-	ready := make(chan nodeReady, 1)
+	n.exited = make(chan struct{})
+	exited := n.exited
+	ready = make(chan nodeReady, 1)
+	started = make(chan struct{})
+	scanDone := make(chan struct{})
 	go func() {
+		defer close(scanDone)
 		sc := bufio.NewScanner(stdout)
-		sent := false
+		sent, startedSent := false, false
 		for sc.Scan() {
 			line := sc.Text()
+			if line == startedMarker && !startedSent {
+				startedSent = true
+				close(started)
+				continue
+			}
 			if strings.HasPrefix(line, readyMarker) && !sent {
 				var r nodeReady
 				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, readyMarker)), &r); err == nil {
@@ -356,12 +610,35 @@ func (n *node) launch(extra []string) {
 			_, _ = n.logs.Write([]byte(line + "\n"))
 		}
 	}()
+	go func() {
+		<-scanDone // every read of the pipe is done before Wait closes it
+		_ = cmd.Wait()
+		n.exitCode = cmd.ProcessState.ExitCode()
+		close(exited)
+	}()
+	return ready, started
+}
+
+// waitExit waits for the process to end by itself and returns its exit code.
+func (n *node) waitExit(d time.Duration) (code int, ok bool) {
 	select {
-	case n.ready = <-ready:
-	case <-time.After(waitLimit):
-		_ = cmd.Process.Kill()
-		t.Fatalf("node %s did not start; logs:\n%s", n.id, n.logs.String())
+	case <-n.exited:
+		return n.exitCode, true
+	case <-time.After(d):
+		return 0, false
 	}
+}
+
+// sibling is a SECOND instance of the same node: same identity, secrets, configuration and the SAME
+// STATE_DIR (shared storage), its own logs, local status file and process.
+func (n *node) sibling() *node {
+	s := *n
+	s.logs = &syncBuf{}
+	s.cmd, s.stdin, s.exited, s.exitCode, s.ready = nil, nil, nil, 0, nodeReady{}
+	s.env = append([]string(nil), n.env...)
+	s.statusPath = filepath.Join(n.t.TempDir(), "status.json")
+	s.setEnv("RELAY_STATUS_FILE", s.statusPath)
+	return &s
 }
 
 // restart stops the node and starts it again on the SAME database file, the same identity, secrets,
@@ -373,18 +650,42 @@ func (n *node) restart() {
 	n.launch([]string{"NODE_API_ADDR=" + prev.API, "NODE_ADMIN_ADDR=" + prev.Admin, "NODE_WS_ADDR=" + prev.WS})
 }
 
+// kill9 stops the node like a crash (SIGKILL, no graceful shutdown) and restarts it on its previous
+// addresses and its persistent state. The crashed master leaves its lock behind: the new process
+// waits for it to go stale (the fast calibration of the children: a few seconds).
+func (n *node) kill9() {
+	n.t.Helper()
+	prev := n.ready
+	n.killNow()
+	n.launch([]string{"NODE_API_ADDR=" + prev.API, "NODE_ADMIN_ADDR=" + prev.Admin, "NODE_WS_ADDR=" + prev.WS})
+}
+
+// killNow SIGKILLs the process and waits for it to be gone (no restart).
+func (n *node) killNow() {
+	n.t.Helper()
+	if n.cmd == nil || n.cmd.Process == nil {
+		n.t.Fatal("kill: node not running")
+	}
+	_ = n.cmd.Process.Kill()
+	<-n.exited
+	_ = n.stdin.Close()
+	n.cmd = nil
+}
+
+// freeze / thaw: SIGSTOP / SIGCONT (a frozen process: VM pause, storage stall).
+func (n *node) freeze() { n.t.Helper(); _ = n.cmd.Process.Signal(syscall.SIGSTOP) }
+func (n *node) thaw()   { n.t.Helper(); _ = n.cmd.Process.Signal(syscall.SIGCONT) }
+
 func (n *node) stop() {
 	if n.cmd == nil || n.cmd.Process == nil {
 		return
 	}
 	_ = n.stdin.Close()
-	done := make(chan struct{})
-	go func() { _ = n.cmd.Wait(); close(done) }()
 	select {
-	case <-done:
+	case <-n.exited:
 	case <-time.After(40 * time.Second):
 		_ = n.cmd.Process.Kill()
-		<-done
+		<-n.exited
 	}
 	n.cmd = nil
 }
@@ -659,6 +960,22 @@ type minion struct {
 	mu   sync.Mutex
 	got  []map[string]any
 	conn *websocket.Conn
+	// closed receives the error that ended the read loop (a *websocket.CloseError for a close frame)
+	closed chan error
+}
+
+// closeCode waits for the link to end and returns the close code the server sent (-1: no close frame).
+func (m *minion) closeCode(d time.Duration) (int, bool) {
+	select {
+	case err := <-m.closed:
+		var ce *websocket.CloseError
+		if errors.As(err, &ce) {
+			return ce.Code, true
+		}
+		return -1, true
+	case <-time.After(d):
+		return 0, false
+	}
 }
 
 func (m *minion) received() []map[string]any {
@@ -670,13 +987,12 @@ func (m *minion) received() []map[string]any {
 // connectMinion opens a real /ws/agent link signed with the node's secret and answers tasks.
 func connectMinion(t *testing.T, n *node, host string) *minion {
 	t.Helper()
-	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": host, "role": "agent", "jti": "agent-" + host,
-		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
-	}).SignedString([]byte(n.jwtSecret))
-	if err != nil {
-		t.Fatal(err)
-	}
+	return connectMinionWithToken(t, n, host, n.enrollAgent(host))
+}
+
+// connectMinionWithToken opens the /ws/agent link of an already enrolled agent.
+func connectMinionWithToken(t *testing.T, n *node, host, tok string) *minion {
+	t.Helper()
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+tok)
 	d := websocket.Dialer{TLSClientConfig: tlsClientConfig(), HandshakeTimeout: 5 * time.Second}
@@ -684,12 +1000,13 @@ func connectMinion(t *testing.T, n *node, host string) *minion {
 	if err != nil {
 		t.Fatalf("minion %s dial %s: %v (resp %v)", host, n.id, err, resp)
 	}
-	m := &minion{host: host, conn: conn}
+	m := &minion{host: host, conn: conn, closed: make(chan error, 1)}
 	t.Cleanup(func() { _ = conn.Close() })
 	go func() {
 		for {
 			var msg map[string]any
 			if err := conn.ReadJSON(&msg); err != nil {
+				m.closed <- err
 				return
 			}
 			m.mu.Lock()
@@ -718,4 +1035,28 @@ func allLogs(nodes ...*node) string {
 		sb.WriteString("=== " + n.id + " ===\n" + n.logs.String())
 	}
 	return sb.String()
+}
+
+// awaitPromotion waits for a secondary (launchSecondary) to be promoted and serving.
+func (n *node) awaitPromotion(d time.Duration) bool {
+	select {
+	case r := <-n.pendingReady:
+		n.ready = r
+		return true
+	case <-n.exited:
+		return false
+	case <-time.After(d):
+		return false
+	}
+}
+
+// linkTo gives a node that was started WITHOUT a parent its pull parent (restart on its own address and
+// state). Enrolling an agent is a real host.new event that climbs to the root and moves routes: a test
+// that counts conflicts between relays enrolls its agents while the relay is still unlinked (the
+// events have nowhere to go), then links it.
+func (n *node) linkTo(parent *node) {
+	n.t.Helper()
+	n.setEnv("REPEATER_UPSTREAM_URL", parent.wssURL())
+	n.setEnv("REPEATER_UPSTREAM_TOKEN", parent.registerChild(n.id))
+	n.restart()
 }

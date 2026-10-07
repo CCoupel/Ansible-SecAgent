@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -12,15 +13,23 @@ import (
 // process at a time; tests using it must not run in parallel.
 func startNode(t *testing.T, mutate func(*Config)) (n *Node, api, admin, wsAddr string) {
 	t.Helper()
+	n, api, admin, wsAddr, _, _ = startNodeCtl(t, mutate)
+	return
+}
+
+// startNodeCtl is startNode plus the way to stop Run (cancel) and its result (done); the cleanup
+// still cancels and waits.
+func startNodeCtl(t *testing.T, mutate func(*Config)) (n *Node, api, admin, wsAddr string, cancel context.CancelFunc, done chan error) {
+	t.Helper()
 	t.Setenv("JWT_SECRET_KEY", "node-test-secret")
 	t.Setenv("ADMIN_TOKEN", "node-test-admin")
 	t.Setenv("RSA_MASTER_KEY", "node-test-master-key")
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent-hooks.json")
+	t.Setenv("RELAY_ACTION_LOG", t.TempDir()+"/actions.log") // hook journal (#161): never /data in tests
 	cfg := Config{
-		JWTSecret: "node-test-secret", AdminToken: "node-test-admin",
-		NATSURL:     "nats://127.0.0.1:1", // unreachable: degraded mode, like production without NATS
-		DatabaseURL: ":memory:",
-		LogLevel:    "INFO",
+		TLSDisable: true, JWTSecret: "node-test-secret", AdminToken: "node-test-admin",
+		StateDir: testStateDir(t), InsecureTestState: true, WriteGuard: allowWrites,
+		LogLevel: "INFO",
 	}
 	for _, p := range []*net.Listener{&cfg.APIListener, &cfg.AdminListener, &cfg.WSListener} {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -37,13 +46,14 @@ func startNode(t *testing.T, mutate func(*Config)) (n *Node, api, admin, wsAddr 
 		t.Fatalf("Build: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- node.Run(ctx) }()
+	done = make(chan error, 1)
+	finished := make(chan error, 1)
+	go func() { e := node.Run(ctx); finished <- e; done <- e }()
 	t.Cleanup(func() {
 		cancel()
 		select {
-		case err := <-done:
-			if err != nil {
+		case err := <-finished:
+			if err != nil && !errors.Is(err, ErrLockLost) {
 				t.Errorf("Run returned %v", err)
 			}
 		case <-time.After(35 * time.Second):
@@ -52,11 +62,11 @@ func startNode(t *testing.T, mutate func(*Config)) (n *Node, api, admin, wsAddr 
 	})
 	select {
 	case <-node.Ready():
-	case err := <-done:
+	case err := <-finished:
 		t.Fatalf("node stopped before being ready: %v", err)
 	case <-time.After(10 * time.Second):
 		t.Fatal("node not ready")
 	}
 	a, ad, w := node.Addrs()
-	return node, a, ad, w
+	return node, a, ad, w, cancel, done
 }

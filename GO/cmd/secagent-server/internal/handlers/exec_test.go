@@ -53,15 +53,6 @@ func newExecRequest(method, path, hostname string, body io.Reader) *http.Request
 	return req
 }
 
-// newTaskIDRequest creates a test HTTP request with the task_id path value set
-func newTaskIDRequest(method, path, taskID string) *http.Request {
-	req := httptest.NewRequest(method, path, nil)
-	if taskID != "" {
-		req.SetPathValue("task_id", taskID)
-	}
-	return req
-}
-
 // ========================================================================
 // ExecCommand
 // ========================================================================
@@ -397,49 +388,6 @@ func TestFetchFileOfflineAgent(t *testing.T) {
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503, got %d", w.Code)
-	}
-}
-
-// ========================================================================
-// AsyncStatus
-// ========================================================================
-
-func TestAsyncStatusNotFound(t *testing.T) {
-	httpReq := newTaskIDRequest("GET", "/api/async_status/non-existent-task-id", "non-existent-task-id")
-	w := httptest.NewRecorder()
-
-	AsyncStatus(w, httpReq)
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("expected 404, got %d", w.Code)
-	}
-}
-
-func TestAsyncStatusCompleted(t *testing.T) {
-	taskID := "test-task-123"
-	result := map[string]interface{}{
-		"rc":        0,
-		"stdout":    "hello world",
-		"stderr":    "",
-		"truncated": false,
-	}
-
-	StoreResult(taskID, result)
-
-	httpReq := newTaskIDRequest("GET", "/api/async_status/"+taskID, taskID)
-	w := httptest.NewRecorder()
-
-	AsyncStatus(w, httpReq)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
-	}
-
-	var resp map[string]interface{}
-	mustUnmarshal(t, w.Body.Bytes(), &resp)
-
-	if resp["status"] != "finished" {
-		t.Errorf("expected status=finished, got %v", resp["status"])
 	}
 }
 
