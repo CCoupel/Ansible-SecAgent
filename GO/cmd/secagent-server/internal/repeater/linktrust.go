@@ -268,7 +268,17 @@ func (m *LinkTrust) HandleFrame(raw []byte) (FrameResult, error) {
 	if err != nil {
 		var le *auth.LinkError
 		if errors.As(err, &le) && le.Code == auth.LinkErrMsgSeq {
-			return res, nil // benign: state already applied
+			// not an error for the link, nothing is persisted, the link stays open: equal seq =
+			// idempotent re-send on reconnection (INFO), lower seq = replay of an older state (WARNING)
+			var s struct {
+				Seq uint64 `json:"seq"`
+			}
+			if json.Unmarshal(raw, &s) == nil && s.Seq == m.trust.LastSeq {
+				log.Printf("[LINK] %s seq=%d already applied: no-op", env.Type, s.Seq)
+			} else {
+				log.Printf("[WARNING] link trust: %s replay refused (seq older than the last accepted %d)", env.Type, m.trust.LastSeq)
+			}
+			return res, nil
 		}
 		log.Printf("[SECURITY WARNING] link trust: %s frame refused (%s): trust unchanged", env.Type, sanitizeText(err.Error()))
 		return res, err
@@ -350,6 +360,7 @@ func (m *LinkTrust) applyRevocations(raw []byte) (FrameResult, error) {
 			return res, err
 		}
 		seq, resync = s.Seq, true
+		log.Printf("[LINK] link_revocations seq=%d already applied: only entries not yet blacklisted are added", seq)
 		_, entries, _ = parseRevocationEntries(raw)
 	}
 	now := time.Now()
