@@ -237,13 +237,13 @@ Content-Type: application/json
 
 #### Jetons de lien `relay-child` / `relay-parent` (v3.0.4, [BREAKING] #141/#146)
 
-Émis **uniquement par la racine** (nœud sans `REPEATER_UPSTREAM_URL`), signés Ed25519 (`alg=EdDSA`) par la clé racine. Corps : `{"role":"relay-child"|"relay-parent", "sub":"<relay_id du présentateur>", "aud":"<relay_id du vérificateur>", "expires_at":"...", "description":"..."}`.
+Émis **uniquement par la racine** (nœud sans parent : ni `REPEATER_UPSTREAM_URL`, ni ancre de confiance `REPEATER_ROOT_ID` / `REPEATER_ROOT_LINK_KEY_FILE` / `link_trust` — un enfant en mode push n'a pas d'`UPSTREAM_URL` mais est ancré), signés Ed25519 (`alg=EdDSA`) par la clé racine. Corps : `{"role":"relay-child"|"relay-parent", "sub":"<relay_id du présentateur>", "aud":"<relay_id du vérificateur>", "expires_at":"...", "description":"..."}`.
 
 - `relay-child` (lien **pull**, l'enfant ouvre) : `sub` = enfant X, `aud` = parent P.
 - `relay-parent` (lien **push**, le parent ouvre) : `sub` = parent P, `aud` = enfant X.
 - `sub` et `aud` : obligatoires, forme `relay_id` (`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`), différents (`400 missing_sub`, `missing_aud`, `invalid_sub`, `invalid_aud`, `sub_equals_aud`).
 - `iss` = `relay_id` de la racine ; `kid` = empreinte de la clé racine (`auth.LinkKID`) ; `jti` unique ; format exact dans `auth/linkjwt.go` (`SignLinkToken`).
-- **`409 {"error":"not_root"}`** sur un nœud qui a un parent (`REPEATER_UPSTREAM_URL` défini) ; **`503 {"error":"master_key_required"}`** sans `RSA_MASTER_KEY` (la clé privée n'est jamais stockée en clair ; aucun jeton n'est émis).
+- **`409 {"error":"not_root"}`** sur un nœud qui a un parent (`REPEATER_UPSTREAM_URL` défini, ou ancre de confiance épinglée) ; **`503 {"error":"master_key_required"}`** sans `RSA_MASTER_KEY` (la clé privée n'est jamais stockée en clair ; aucun jeton n'est émis).
 - La clé de signature est générée **paresseusement** au premier appel de mint (ou de `GET /api/admin/link/pubkey`), chiffrée `enc:` dans `server_config.link_signing_key_current`.
 - Le rôle `relay` (HS256, v3.0.3) n'existe plus ; un `relay-parent` n'est plus minté par l'enfant.
 
