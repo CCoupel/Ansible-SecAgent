@@ -37,8 +37,8 @@ func guardedDial(ctx context.Context, network, addr string) (net.Conn, error) {
 	if ip := net.ParseIP(h); ip != nil {
 		ips = []net.IP{ip}
 	} else {
-		if !allow && (h == "localhost" || strings.HasSuffix(strings.TrimSuffix(h, "."), ".localhost")) {
-			return nil, dialErr(addr, fmt.Errorf("%w: localhost", ErrForbiddenTarget))
+		if !allow && !currentPolicy().AllowsLoopback() && (h == "localhost" || strings.HasSuffix(strings.TrimSuffix(h, "."), ".localhost")) {
+			return nil, dialErr(addr, fmt.Errorf("%w: localhost (category=%s)", ErrForbiddenTarget, CategoryLoopback))
 		}
 		if !allow && nonCanonicalNumericHost(h) {
 			return nil, dialErr(addr, fmt.Errorf("%w: numeric host that is not a canonical IP address", ErrForbiddenTarget))
@@ -61,8 +61,8 @@ func guardedDial(ctx context.Context, network, addr string) (net.Conn, error) {
 	var lastErr error
 	for _, ip := range ips {
 		if !allow {
-			if why := internalReason(ip); why != "" {
-				lastErr = fmt.Errorf("%w: the name resolves to a %s address", ErrForbiddenTarget, why)
+			if cat, why := currentPolicy().refusal(ip); cat != "" {
+				lastErr = fmt.Errorf("%w: the name resolves to a %s address (category=%s)", ErrForbiddenTarget, why, cat)
 				continue
 			}
 		}
@@ -88,8 +88,12 @@ func rejectInternalSocket(address string) error {
 	if err != nil {
 		return fmt.Errorf("%w: unreadable socket address", ErrForbiddenTarget)
 	}
-	if ip := net.ParseIP(ipStr); ip == nil || internalReason(ip) != "" {
-		return fmt.Errorf("%w: the connection would reach an internal address", ErrForbiddenTarget)
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return fmt.Errorf("%w: unreadable socket address", ErrForbiddenTarget)
+	}
+	if cat := currentPolicy().Category(ip); cat != "" {
+		return fmt.Errorf("%w: the connection would reach a forbidden address (category=%s)", ErrForbiddenTarget, cat)
 	}
 	return nil
 }

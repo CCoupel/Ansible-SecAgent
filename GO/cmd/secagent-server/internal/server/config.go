@@ -212,6 +212,10 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, &InvalidRepeaterConfigError{Err: err}
 	}
 	cfg.Repeater = rep
+	// Dial policy of the outgoing relay links (#151): any invalid value refuses to start.
+	if err := repeater.ConfigureDialPolicyFromEnv(os.Getenv); err != nil {
+		return Config{}, err
+	}
 	gv, err := config.LoadGroupVars()
 	if err != nil {
 		return Config{}, fmt.Errorf("%s: %w", config.EnvRelayGroupVars, err)

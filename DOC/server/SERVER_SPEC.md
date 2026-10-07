@@ -577,6 +577,22 @@ POST /api/admin/relays
 # (les plages RFC1918 sont acceptées). Une adresse refusée refuse toute la liste (400, l'adresse n'est
 # jamais répétée dans l'erreur). Réponses et liste : `urls` (+ `url` = première adresse, compat).
 
+# Politique de dial configurable (#151, lue une fois au démarrage, tout changement = redémarrage ; toute valeur
+# invalide refuse le démarrage). Règle appliquée à CHAQUE IP résolue et à l'IP effectivement dialée (donc aussi
+# contre le DNS rebinding), à l'enregistrement, au démarrage des dialers et à chaque reconnexion, dans cet ordre :
+#   1. interdits intégrés, jamais levables : lien-local, métadonnées cloud (169.254.169.254, fd00:ec2::254,
+#      100.100.100.200, 192.0.0.192, 168.63.129.16), non spécifiée, 0.0.0.0/8, multicast, broadcast  -> "builtin"
+#   2. loopback, sauf REPEATER_DIAL_ALLOW_LOOPBACK=true (booléen strict, défaut false ; [SECURITY WARNING] au
+#      démarrage ; développement et CI seulement)                                                    -> "loopback"
+#   3. adresse dans REPEATER_DIAL_DENY_CIDRS (CIDR séparés par des virgules)                          -> "deny"
+#   4. REPEATER_DIAL_ALLOW_CIDRS non vide et adresse hors liste                                       -> "not_allowed"
+#   5. sinon acceptée (RFC 1918 et CGNAT restent acceptés par défaut).
+# deny l'emporte ; ALLOW ne lève jamais un interdit intégré ; avec ALLOW non vide ET ALLOW_LOOPBACK=true la
+# loopback doit aussi figurer dans ALLOW. IPv4 mappée en IPv6 jugée comme l'IPv4. Syntaxe : CIDR canonique
+# (pas de bits d'hôte), "/0" interdit, pas d'entrée vide ni de doublon ni d'espace, 256 entrées max par liste.
+# Le refus (400 à l'enregistrement, [SECURITY WARNING] au démarrage) donne le relay_id et la catégorie
+# (builtin|loopback|deny|not_allowed), jamais l'adresse ni le jeton. Les redirections HTTP 3xx ne sont jamais suivies.
+
 # Revoke a relay (#153) : blacklist du JTI + drapeau revoked + close 4010 du lien actif
 POST /api/admin/relays/{id}/revoke
 → 200 { "revoked": true, "blacklisted": true, "legacy_token": false, "disconnected": true }
