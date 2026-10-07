@@ -36,8 +36,8 @@ var specCounters *specCountersImpl
 // specAdmit registers a task like the exec handlers do. Today: RegisterFuture. L2 changes the
 // signature (typed admission errors): dev-relay adapts this ONE function in the wiring file.
 var specAdmit = func(taskID, host string) error {
-	RegisterFuture(taskID, host)
-	return nil
+	_, err := RegisterFuture(taskID, host)
+	return err
 }
 
 type accounting struct {

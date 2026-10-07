@@ -540,8 +540,8 @@ func TestGetPendingTaskCount(t *testing.T) {
 		t.Errorf("expected 0 pending tasks, got %d", n)
 	}
 
-	RegisterFuture("task-a", "host-a")
-	RegisterFuture("task-b", "host-a")
+	_, _ = RegisterFuture("task-a", "host-a")
+	_, _ = RegisterFuture("task-b", "host-a")
 
 	if n := GetPendingTaskCount(); n != 2 {
 		t.Errorf("expected 2 pending tasks, got %d", n)
