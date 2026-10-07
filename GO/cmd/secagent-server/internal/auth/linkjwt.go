@@ -234,6 +234,9 @@ func VerifyLinkToken(trust LinkTrust, tokenStr string, want LinkWant, now time.T
 	if c.Audience != want.LocalID {
 		return nil, linkErr(LinkErrAudience, true, nil)
 	}
+	if c.Subject == c.Audience { // a relay never presents a token to itself (self-signed shape, R4)
+		return nil, linkErr(LinkErrClaims, true, errors.New("sub equals aud"))
+	}
 	switch {
 	case c.Role == RoleRelayLegacy:
 		return nil, linkErr(LinkErrLegacyRole, true, nil)

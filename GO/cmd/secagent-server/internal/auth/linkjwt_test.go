@@ -315,3 +315,13 @@ func TestLinkJWT_LinkKeys(t *testing.T) {
 }
 
 var _ crypto.Signer = ed25519.PrivateKey(nil)
+
+func TestLinkJWT_SubEqualToAudIsRefused(t *testing.T) {
+	f := newLinkFixture(t)
+	kid := LinkKID(f.pub)
+	c := goodClaims(f.now)
+	c["sub"], c["aud"] = "parent", "parent"
+	tok := forge(t, jwt.SigningMethodEdDSA, f.priv, kid, c)
+	_, err := VerifyLinkToken(f.trust(), tok, LinkWant{LocalID: "parent", RootID: "root", Role: RoleRelayChild}, f.now)
+	wantCode(t, err, LinkErrClaims, true)
+}
