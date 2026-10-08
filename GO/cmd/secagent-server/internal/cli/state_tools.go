@@ -263,3 +263,127 @@ func init() {
 	stateRestoreCmd.Flags().BoolVar(&stateRestoreForce, "i-know-no-instance-is-running", false, "pass over a relay.lock that is not proven stale (orphan lock): [SECURITY WARNING], journaled")
 	stateCmd.AddCommand(stateVerifyCmd, stateRestoreCmd)
 }
+
+// ── state link-trust reset (v3.0.4) ──────────────────────────────────────────
+
+// ExitRefused: the reset is refused for a reason that is not the lock (root node, state from .prev,
+// confirmation missing).
+const ExitRefused = 9
+
+var (
+	stateLTResetDir string
+	stateLTResetYes bool
+	stateLTStdinTTY = func() bool { // tests replace it
+		fi, err := os.Stdin.Stat()
+		return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	}
+)
+
+var stateLinkTrustCmd = &cobra.Command{
+	Use:   "link-trust",
+	Short: "Operations on the link trust anchor of a non-root relay (offline)",
+}
+
+var stateLinkTrustResetCmd = &cobra.Command{
+	Use:   "reset",
+	Short: "Clear the persisted link trust anchor of a NON-ROOT relay (stopped node only)",
+	Long: `Clears ONLY the persisted trust anchor (link_trust: root id, current and previous root public key,
+last accepted sequence number) of a non-root relay, so that the next start accepts the anchor given by
+REPEATER_ROOT_ID + REPEATER_ROOT_LINK_KEY_FILE. Use it to re-pin a relay that missed a key rotation, or
+after a re-root. Without an anchor a relay refuses every incoming link (fail closed).
+
+It touches nothing else: not the agents, the link tokens, the blacklist, nor any key.
+
+Safety:
+  - offline: refuses when an instance holds a fresh relay.lock (same rule as 'state restore'; the
+    override flag exists for an orphan lock on frozen storage only);
+  - needs RSA_MASTER_KEY (or RSA_MASTER_KEY_FILE): the HMAC of the state is verified before and recomputed
+    after; relay.state is rewritten atomically with a higher write_seq;
+  - refuses on a ROOT (a node that holds a link signing key has no anchor to reset);
+  - the exact verified relay.state is first copied to relay.state.linktrust-reset.<UTC timestamp>.bak
+    (0600, fsync): if the backup fails, nothing is modified;
+  - asks for confirmation (type "reset"); non-interactive use requires --yes;
+  - logs "[SECURITY WARNING] link trust anchor reset" and appends the intervention (no key) to
+    state-restore.log.
+
+Nothing to clear is not an error (idempotent: nothing is written).
+
+Exit codes: those of 'state verify', plus 8 (an instance is alive) and 9 (refused: root, state not
+from relay.state, no confirmation).`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dir := stateLTResetDir
+		if dir == "" {
+			dir = state.DirFromEnv()
+		}
+		masterKey, mkErr := masterKeyFromEnv()
+		if mkErr != nil {
+			return mkErr
+		}
+		if masterKey == "" {
+			return &ExitError{Code: ExitNoMasterKey, Msg: "RSA_MASTER_KEY is not set: it is required (the HMAC key of the state derives from it)"}
+		}
+		out := cmd.OutOrStdout()
+		// 1. verify and look before asking anything (also catches a wrong key, a root, a missing anchor)
+		now := stateRestoreNowFunc
+		probe, err := state.PeekLinkTrust(dir, masterKey, nil)
+		if err != nil {
+			return linkTrustResetError(err, "")
+		}
+		if !probe.Present {
+			_, _ = fmt.Fprintln(out, "no link trust anchor is persisted in this state: nothing to reset (nothing written)")
+			return nil
+		}
+		// 2. no instance may hold a fresh lock
+		overridden, err := checkNoActiveInstance(cmd, dir)
+		if err != nil {
+			return err
+		}
+		_ = overridden
+		// 3. confirmation
+		_, _ = fmt.Fprintf(out, "This will CLEAR the link trust anchor of this relay (root %q, kid %s, previous %s, seq %d) in %s.\n",
+			probe.RootID, orNone(probe.CurrentKID), orNone(probe.PreviousKID), probe.Seq, dir)
+		_, _ = fmt.Fprintln(out, "Until a new anchor is given (REPEATER_ROOT_ID + REPEATER_ROOT_LINK_KEY_FILE) this relay refuses every incoming link. A backup is written first.")
+		if !stateLTResetYes {
+			if !stateLTStdinTTY() {
+				return &ExitError{Code: ExitRefused, Msg: "reset refused, nothing modified: confirmation required (pass --yes in non-interactive use)"}
+			}
+			_, _ = fmt.Fprint(out, `Type "reset" to continue: `)
+			var answer string
+			_, _ = fmt.Fscanln(cmd.InOrStdin(), &answer)
+			if strings.TrimSpace(answer) != "reset" {
+				return &ExitError{Code: ExitRefused, Msg: "reset cancelled, nothing modified"}
+			}
+		}
+		res, err := state.ResetLinkTrust(state.LinkTrustResetOptions{Dir: dir, MasterKey: masterKey, Now: now})
+		if err != nil {
+			if res == nil {
+				return linkTrustResetError(err, "reset failed, relay.state not modified: ")
+			}
+			slog.Warn("state link-trust reset", "error", err)
+		}
+		_, _ = fmt.Fprintf(out, "link trust anchor cleared in %s (write_seq %d -> %d)\n", dir, res.SeqBefore, res.SeqAfter)
+		_, _ = fmt.Fprintf(out, "previous relay.state saved as %s\n", res.BackupFile)
+		_, _ = fmt.Fprintln(out, "Start the relay with REPEATER_ROOT_ID and REPEATER_ROOT_LINK_KEY_FILE: it will pin the new anchor.")
+		return err
+	},
+}
+
+// linkTrustResetError maps the errors of ResetLinkTrust / PeekLinkTrust to exit codes.
+func linkTrustResetError(err error, prefix string) error {
+	switch {
+	case errors.Is(err, state.ErrResetOnRoot), errors.Is(err, state.ErrResetFromPrev):
+		return &ExitError{Code: ExitRefused, Msg: prefix + "refused, nothing modified: " + err.Error()}
+	default:
+		code, why := verifyExit(err)
+		return &ExitError{Code: code, Msg: prefix + why}
+	}
+}
+
+func init() {
+	stateLinkTrustResetCmd.Flags().StringVar(&stateLTResetDir, "state-dir", "", "state directory (default $STATE_DIR, else /data)")
+	stateLinkTrustResetCmd.Flags().BoolVar(&stateLTResetYes, "yes", false, "confirm without prompting (required in non-interactive use)")
+	stateLinkTrustResetCmd.Flags().BoolVar(&stateRestoreForce, "i-know-no-instance-is-running", false, "pass over a relay.lock that is not proven stale (orphan lock): [SECURITY WARNING]")
+	stateLinkTrustCmd.AddCommand(stateLinkTrustResetCmd)
+	stateCmd.AddCommand(stateLinkTrustCmd)
+}
