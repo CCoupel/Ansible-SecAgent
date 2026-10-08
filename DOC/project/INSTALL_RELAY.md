@@ -54,10 +54,19 @@ srv tokens create --role relay-child --sub dmz1 --aud <relay_id du parent direct
 - `tokens create` de rôle `relay-*` n'existe que sur la **racine** : `409 not_root` ailleurs, `503 master_key_required` sans
   `RSA_MASTER_KEY`.
 
-> `relays add` n'est **pas requis** en mode pull : un enfant muni d'un jeton valide se lie sans déclaration préalable. **Mise en
-> garde** : un relay *déclaré mais jamais connecté* s'affiche `CONFIRMED=true` avec un `kid` vide (`<nil>`) dans
-> `keys link-status` ; le garde de `retire-link-previous` ne l'attend donc pas (cf. #215). Ne déclarez que des enfants qui se
-> connecteront, ou retirez la déclaration d'un enfant abandonné avant une rotation (`relays remove <uuid>` exige de le révoquer d'abord : `DEPLOYMENT.md`, « Supprimer un relay »).
+> `relays add` n'est **pas requis** en mode pull : un enfant muni d'un jeton valide se lie sans déclaration préalable.
+> **Attention à un relay déclaré mais jamais connecté** (comportement rejoué en test) :
+> - **hors rotation**, `keys link-status` l'affiche `CONFIRMED=true` avec un `kid` vide (`<nil>`) : affichage trompeur, sans
+>   effet (suivi : #234, trois états prévus, **non livré**) ;
+> - **pendant une rotation**, il passe à `CONFIRMED=false` et **`keys retire-link-previous` répond `409 rotation_unconfirmed`**
+>   tant qu'il reste déclaré : le garde n'est pas contourné. Un enfant déclaré puis abandonné bloque donc la fermeture de la
+>   fenêtre de rotation (seul `--force` passe outre, avec un `[SECURITY WARNING]`) ;
+> - procédure pour un enfant abandonné : le **révoquer par l'API REST** (`POST /api/admin/relays/<uuid>/revoke`, UUID et non
+>   `relay_id` ; il n'existe pas de sous-commande CLI, suivi #233 ; voir `DEPLOYMENT.md`, « Révoquer un relay enfant »), puis
+>   `srv relays remove <uuid>` (sans révocation préalable : `409 relay_not_revoked`), puis `retire-link-previous`. La
+>   révocation seule ne suffit pas : tant que le relay est déclaré, le retrait reste refusé.
+>
+> Ne déclarez donc que des enfants qui se connecteront.
 
 Remettez à l'hôte de l'enfant : le **jeton**, `root-link.pub` (non secret) et le **`root_id`** affiché par `keys link-pubkey`
 (= le `REPEATER_ID` de la racine).
