@@ -42,7 +42,7 @@ L'agent (`secagent-minion`) se configure par variables d'environnement
 `GET /api/inventory` exige un jeton **plugin**. Voir [DEPLOYMENT/README.md](./DEPLOYMENT/README.md)
 pour un guide complet.
 
-## Structure du Projet v3.0.3
+## Structure du Projet v3.0.4
 
 ```
 ansible-secagent/
@@ -94,11 +94,11 @@ ansible-secagent/
 
 ## Concept
 
-### Flux d'Exécution v3.0.3
+### Flux d'Exécution v3.0.4
 
 ```
 ┌─────────────┐        ┌──────────────┐        ┌──────────────┐
-│   Ansible   │        │  Relay v3.0.3│        │  Relay Agent │
+│   Ansible   │        │  Relay v3.0.4│        │  Relay Agent │
 │  Control    │───────▶│  Server      │◀──────▶│  (Minion)    │
 │  Machine    │        │  (GO, TLS)   │        │  (GO)        │
 └─────────────┘        └──────────────┘        └──────────────┘
@@ -128,7 +128,7 @@ ansible-secagent/
 | **Scaling** | N connexions SSH | 1 WebSocket par agent |
 | **NAT Friendly** | Difficile | Natif (agents derrière NAT) |
 
-## Stack Technique v3.0.3
+## Stack Technique v3.0.4
 
 - **Agent (secagent-minion)** : GO, gorilla/websocket, subprocess, RSA-4096, JWT
 - **Serveur (secagent-server)** : GO, net/http natif, TLS natif, état fichier (STATE_DIR), verrou actif/passif
