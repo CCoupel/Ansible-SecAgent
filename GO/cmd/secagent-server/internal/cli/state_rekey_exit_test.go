@@ -24,7 +24,6 @@ func TestRekeyError_MapsEveryRefusalToItsDocumentedExitCode(t *testing.T) {
 		{state.ErrRekeySameKey, ExitRefused},
 		{state.ErrRekeyNoNewKey, ExitRefused},
 		{state.ErrRekeyUncovered, ExitRefused},
-		{state.ErrRekeySchema, ExitRefused},
 		{state.ErrRekeyFromPrev, ExitRefused},
 	} {
 		err := rekeyError(tc.err, "state rekey: ")

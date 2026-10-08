@@ -29,3 +29,4 @@
 | GO/cmd/secagent-server/internal/state/rekey_integrity_test.go | unit | secagent-server | `state rekey` : état réécrit authentique mais faux ⇒ rollback, schéma 1 refusé, sauvegarde non durable ⇒ arrêt | regression | |
 | GO/cmd/secagent-server/internal/cli/state_rekey_exit_test.go | unit | secagent-server | `state rekey` : code de sortie 10 (vérification) / 11 (clé < 32 octets) / 9 | regression | |
 | GO/cmd/secagent-server/internal/integration/rekey_binary_slow_test.go | integration | secagent-server | binaire réel : `state rekey` racine+non-racine, rollback par `state restore`, clé ≥ 32 octets (31 refusée code 11 / 32 acceptée), CLI `keys` contre de vrais nœuds | regression | slow |
+| GO/cmd/secagent-server/internal/cli/state_rekey_v1_migrated_test.go | unit | secagent-server | `state rekey` sur un état schéma 1 réel : migré en v2, message à l'opérateur, relay.state.v1.bak identique, 0600 | regression | |

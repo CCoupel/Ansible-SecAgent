@@ -119,32 +119,10 @@ func TestRekey_TheForgingSeamAloneDoesNotFailAHonestRewrite(t *testing.T) {
 	}
 }
 
-// A schema 1 state must be migrated by a v3.0.4 start first: refused, nothing written, no backup. Mutant: the
-// refusal removed.
-func TestRekey_RefusesASchemaOneStateAndWritesNothing(t *testing.T) {
-	dir, _ := rekeyState(t)
-	oldOpts := Options{MasterKey: rekeyOld}
-	c, _ := oldOpts.codec()
-	p := openPayload(t, dir, rekeyOld)
-	// a real v1 file knows nothing of the v2 link data
-	delete(p.ServerConfig, ConfigLinkSigningKeyCurrent)
-	delete(p.ServerConfig, ConfigLinkSigningKeyPrevious)
-	v1 := v1File(t, c, &p, 9)
-	if err := os.WriteFile(filepath.Join(dir, StateFile), v1, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	files := listDir(t, dir)
-	res, err := Rekey(rekeyOpts(dir))
-	if !errors.Is(err, ErrRekeySchema) || res != nil {
-		t.Fatalf("res=%+v err=%v, want ErrRekeySchema", res, err)
-	}
-	if !bytes.Equal(v1, mustFile(t, filepath.Join(dir, StateFile))) {
-		t.Error("relay.state must be untouched")
-	}
-	if got := listDir(t, dir); len(got) != len(files) {
-		t.Errorf("files changed: %v -> %v", files, got)
-	}
-}
+// (The refusal of a schema 1 state that this file used to test no longer exists: `state rekey` migrates a
+// v1 state to v2 in the same atomic write. Its tests — v1.bak identical to the original, schema 2 under the
+// new key, v3.0.3 refuses the result, backup/verification failure leaves the v1 usable, link data in a v1
+// refused — are in rekey_v1_test.go; the CLI output in cli/state_rekey_v1_migrated_test.go.)
 
 // failSyncDirFS fails the first SyncDir: the backup is written but not proven durable.
 type failSyncDirFS struct {
@@ -177,5 +155,34 @@ func TestRekey_ABackupThatIsNotDurableStopsTheRekey(t *testing.T) {
 	}
 	if fs.calls != 1 {
 		t.Errorf("SyncDir called %d times: nothing may go on after the failure", fs.calls)
+	}
+}
+
+// noV1BackupFS fails the creation of relay.state.v1.bak(.tmp) only: the rekey backup itself works.
+type noV1BackupFS struct{ OSFS }
+
+func (f noV1BackupFS) CreateExclusive(name string, perm os.FileMode) (File, error) {
+	if strings.HasPrefix(filepath.Base(name), V1BackupFile) {
+		return nil, errors.New("disk full (injected)")
+	}
+	return f.OSFS.CreateExclusive(name, perm)
+}
+
+// "No v1 backup, no migration": when relay.state.v1.bak cannot be written, the v1 relay.state is not replaced
+// (the rollback to v3.0.3 would be impossible). Mutant: the error of writeV1BackupData ignored.
+func TestRekey_SchemaV1_WithoutTheV1BackupModifiesNothing(t *testing.T) {
+	dir := t.TempDir()
+	v1 := seedV1Keyed(t, dir, rekeyOld)
+	o := rekeyOpts(dir)
+	o.FS = noV1BackupFS{}
+	res, err := Rekey(o)
+	if err == nil || !strings.Contains(err.Error(), "v1 backup failed") {
+		t.Fatalf("res=%+v err=%v, want a 'v1 backup failed' error", res, err)
+	}
+	if !bytes.Equal(v1, mustFile(t, filepath.Join(dir, StateFile))) {
+		t.Error("relay.state must still be the original v1 file")
+	}
+	if _, serr := os.Stat(filepath.Join(dir, V1BackupFile)); serr == nil {
+		t.Error("a partial relay.state.v1.bak was left")
 	}
 }
