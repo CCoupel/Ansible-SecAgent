@@ -183,7 +183,8 @@ Il n'y a **plus de SQL** (SQLite retiré en v3.0.3, #159/#160). Les données per
 | `authorized_keys` | hostname, `public_key_pem`, `approved_at`, `approved_by` — écrite par l'enrôlement (`EnrollAgent`) et par `POST /api/admin/authorize` ; **n'est plus consultée par `/api/register`** (#192c) |
 | `enrollment_tokens` | id, `token_hash` (SHA-256), `hostname_pattern`, `reusable`, `use_count`, `expires_at`, `created_by` |
 | `plugin_tokens` | id, `token_hash`, `description`, `role`, `allowed_ips`, `allowed_hostname_pattern`, `expires_at`, `revoked`, `last_used_at/ip` |
-| `relay_parent_tokens` | id, `jti`, `parent_id`, `expires_at`, `revoked_at` (jamais le token) |
+| `link_tokens` (v3.0.4, schéma 2) | registre des jetons de lien émis par la racine : id, `jti`, `role` (`relay-child`\|`relay-parent`), `sub`, `aud`, `kid`, `expires_at`, `revoked_at` (jamais le jeton ni son hash) — voir `STATE_SPEC.md` |
+| `relay_parent_tokens` | hérité de la v3.0.3 (jetons `relay-parent` signés par l'enfant) : id, `jti`, `parent_id`, `expires_at`, `revoked_at` ; en v3.0.4 les jetons de lien sont enregistrés dans `link_tokens` |
 | `blacklist` | `jti`, `hostname`, `revoked_at`, `reason`, `expires_at` (purge automatique) |
 | `relay_nodes` | configuration d'un relay enfant : `relay_id`, `urls`, `mode` (pull/push), `jti`, `token_exp`, `revoked`, `group_vars`, `token_hash`/`token_secret` (secret chiffré `enc:`) |
 | `server_config` | secrets chiffrés : `jwt_secret_current`, `jwt_secret_previous`, `key_rotation_deadline`, clefs RSA du serveur |
@@ -804,7 +805,7 @@ le routage (`relay_routing` : clé simple `hostname`, `relay_id`, `hop_type` age
 **Notes** :
 - Le champ `token_hash` d'un relay pull stocke le SHA-256 du JWT complet (pas du JTI) ; le token d'un relay push est dans `token_secret` (chiffré).
 - Relais antérieurs à #153 (sans `jti`) : `revoked` = true suffit pour refuser ; un `DELETE` d'un tel relais ne peut pas blacklister de JTI inexistant (contrainte : révoquer avant de supprimer)
-- `relay_parent_tokens` : jamais le token en clair persisté ; métadonnées uniquement pour audit et gestion du cycle de vie
+- `link_tokens` (et `relay_parent_tokens`, hérité v3.0.3) : jamais le jeton en clair persisté ; métadonnées uniquement pour audit et gestion du cycle de vie
 
 ---
 
