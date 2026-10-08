@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -427,5 +428,42 @@ func TestLinkKeys_PubkeyRotateRetire(t *testing.T) {
 	}
 	if code, e := call(AdminLinkRetire, "POST", "/api/admin/link/keys/retire-previous", map[string]bool{}); code != http.StatusConflict || e["error"] != "no_previous_key" {
 		t.Errorf("retire twice: %d %v", code, e)
+	}
+}
+
+// "Confirmed" means the relay reports the CURRENT kid; the reported seq is informative (unsigned). A
+// stale kid is never confirmed whatever its seq, a relay that reports nothing is not confirmed, and the
+// right kid with seq 0 (a relay deployed after the rotation) is.
+func TestLinkKeys_ConfirmationIsTheReportedKidNotTheSeq(t *testing.T) {
+	useFreshStores(t)
+	m := useLinkRoot(t)
+	_, _ = m.PublicInfo()
+	_, newKID, _, err := m.Rotate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = newKID
+	st, _ := m.Status()
+	cur, prev := st.CurrentKID, st.PreviousKID
+	m.Known = func() []string { return []string{"silent", "stale", "fresh"} }
+	m.States = func() map[string]link.ConfirmedState {
+		return map[string]link.ConfirmedState{
+			"stale": {Seq: 999, KID: prev}, // old kid, huge seq: not confirmed
+			"fresh": {Seq: 0, KID: cur},    // anchored on the new key after the rotation: confirmed
+		}
+	}
+	st, err = m.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, r := range st.Relays {
+		got[r.RelayID] = r.Confirmed
+	}
+	if got["stale"] || got["silent"] || !got["fresh"] {
+		t.Errorf("confirmed = %v, want only fresh", got)
+	}
+	if _, un, err := m.Retire(context.Background(), false); !errors.Is(err, link.ErrUnconfirmed) || len(un) != 2 {
+		t.Errorf("retire with stale/silent relays: %v %v", err, un)
 	}
 }
