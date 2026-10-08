@@ -8,6 +8,7 @@ FAIL=0
 mk() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$T/$1"; chmod +x "$T/$1"; }
 mk good "secagent-server version 3.0.4"; mk dev "secagent-server version dev"; mk other "secagent-server version 3.0.40"
 mk garbage "usage: something else"
+mk minion "secagent-minion version 3.0.4"; mk minion_dev "secagent-minion version dev"
 expect() { local want="$1" what="$2"; shift 2; "$@" >/dev/null 2>&1; local rc=$?
   local good=0
   if [ "$want" = ok ]; then [ $rc -eq 0 ] && good=1; else [ $rc -ne 0 ] && good=1; fi
@@ -18,4 +19,9 @@ expect ko "prefixe de version (3.0.40) refuse" bash "$A" 3.0.4 "$T/other"
 expect ko "sortie inattendue refusee" bash "$A" 3.0.4 "$T/garbage"
 expect ko "commande absente refusee" bash "$A" 3.0.4 "$T/absent"
 expect ko "sans commande" bash "$A" 3.0.4
+expect ok "minion : version attendue (COMPONENT=secagent-minion)" env COMPONENT=secagent-minion bash "$A" 3.0.4 "$T/minion"
+expect ko "minion : binaire en version dev refuse" env COMPONENT=secagent-minion bash "$A" 3.0.4 "$T/minion_dev"
+expect ko "un binaire minion n'est pas accepte comme serveur (composant par defaut)" bash "$A" 3.0.4 "$T/minion"
+expect ko "un binaire serveur n'est pas accepte comme minion" env COMPONENT=secagent-minion bash "$A" 3.0.4 "$T/good"
+expect ko "composant inconnu refuse" env COMPONENT=autre bash "$A" 3.0.4 "$T/good"
 exit $FAIL

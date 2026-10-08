@@ -15,9 +15,13 @@ RUN go mod download
 # Copy source code
 COPY . .
 
+# Version shown by `secagent-minion --version` (symbol main.Version of the minion): `dev` by default (local and CI
+# builds), the release passes `--build-arg VERSION=X.Y.Z` (release.yml). Constant per tag: the build stays deterministic.
+ARG VERSION=dev
+
 # Build the agent binary — no CGO (no sqlite in agent)
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -buildvcs=false -ldflags="-s -w" -o secagent-minion ./cmd/secagent-minion
+    go build -trimpath -buildvcs=false -ldflags="-s -w -X main.Version=${VERSION}" -o secagent-minion ./cmd/secagent-minion
 
 # Runtime stage — minimal Alpine
 FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc

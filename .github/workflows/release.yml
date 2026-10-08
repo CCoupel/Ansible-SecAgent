@@ -159,6 +159,13 @@ jobs:
           else
             echo "::warning::Dockerfile du tag sans ARG VERSION : version non injectee (tag anterieur a v3.0.4)"
           fi
+          # Image MINION du tag : meme controle avant toute publication (--version traverse l'entrypoint sans effet de bord).
+          docker build --build-arg VERSION="$VERSION" -t secagent-minion:ci -f GO/Dockerfile.agent GO
+          if grep -q '^ARG VERSION=' GO/Dockerfile.agent && [ -f GO/cmd/secagent-minion/args.go ]; then
+            COMPONENT=secagent-minion bash scripts/ci/assert_version.sh "$VERSION" docker run --rm secagent-minion:ci
+          else
+            echo "::warning::Dockerfile.agent du tag sans ARG VERSION : version du minion non injectee (tag anterieur a v3.0.4)"
+          fi
       - name: Preparation
         run: bash DEPLOYMENT/qualif/failover-test.sh setup-ci
       - name: Arret propre
@@ -228,8 +235,7 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Version affichee par `secagent-server --version` (verifiee par le job failover avant toute publication) ;
-          # inoffensif pour GO/Dockerfile.agent, qui n'a pas de variable de version.
+          # Version affichee par `--version` du serveur ET du minion (verifiee par le job failover avant toute publication).
           build-args: |
             VERSION=${{ needs.prepare.outputs.version }}
           outputs: type=image,push=true,rewrite-timestamp=true
@@ -359,15 +365,18 @@ jobs:
           mkdir -p dist
           cd GO
           # server : pur Go, sans CGO (l'état du relay est un fichier, plus de SQLite : #160), comme GO/Dockerfile
-          # Seul le serveur porte une variable de version (cli.Version) ; le minion et l'inventory n'en ont pas
-          # (aucun --version) : leur version est le nom du fichier et SHA256SUMS.
+          # Serveur (cli.Version) et minion (main.Version) portent leur version ; l'inventory n'a pas de --version :
+          # sa version est le nom du fichier et SHA256SUMS.
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w -X secagent-server/cmd/secagent-server/internal/cli.Version=${VERSION}" -o "../dist/secagent-server-${VERSION}-linux-amd64" ./cmd/secagent-server
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w" -o "../dist/secagent-minion-${VERSION}-linux-amd64" ./cmd/secagent-minion
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w -X main.Version=${VERSION}" -o "../dist/secagent-minion-${VERSION}-linux-amd64" ./cmd/secagent-minion
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w" -o "../dist/secagent-inventory-${VERSION}-linux-amd64" ./cmd/secagent-inventory
           cd ..
           # Le binaire publie annonce la version du tag (le runner est linux/amd64) ; tag anterieur a v3.0.4 : ignore.
           if [ -f scripts/ci/assert_version.sh ] && grep -q 'var Version' GO/cmd/secagent-server/internal/cli/root.go; then
             bash scripts/ci/assert_version.sh "$VERSION" "dist/secagent-server-${VERSION}-linux-amd64"
+          fi
+          if [ -f scripts/ci/assert_version.sh ] && [ -f GO/cmd/secagent-minion/args.go ]; then
+            COMPONENT=secagent-minion bash scripts/ci/assert_version.sh "$VERSION" "dist/secagent-minion-${VERSION}-linux-amd64"
           fi
           cd dist
           sha256sum ./* > "SHA256SUMS-${VERSION}.txt"
