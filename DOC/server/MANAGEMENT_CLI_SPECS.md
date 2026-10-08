@@ -388,14 +388,14 @@ Commande **hors ligne** (ouvre `STATE_DIR` directement) qui fait la rotation de 
 | `--yes` | confirme sans invite ; **obligatoire** hors terminal interactif |
 | `--i-know-no-instance-is-running` | passe outre un `relay.lock` orphelin (stockage figé) ; `[SECURITY WARNING]` |
 
-Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écriture : `relay.state.rekey.<UTC>.bak` (0600, **lisible avec l'ancienne clé** : à détruire une fois la nouvelle clé en service). Après l'écriture : relecture avec la nouvelle clé et comparaison des clairs ; échec = original remis en place.
+Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écriture : `relay.state.rekey.<UTC>.bak` (0600, **lisible avec l'ancienne clé** : à détruire une fois la nouvelle clé en service). Un état encore en schéma 1 est accepté et migré en schéma 2 par la même écriture (`relay.state.v1.bak` = copie de l'original, en plus de la sauvegarde `rekey`). Après l'écriture : relecture avec la nouvelle clé et comparaison des clairs ; échec = original remis en place.
 
 | Code | Signification |
 |---|---|
 | 0 | clé maître remplacée |
 | 2-6 | idem `state verify` (ancienne clé incorrecte, état falsifié, invariant, clé absente…) |
 | 8 | `relay.lock` frais (ou apparu pendant la commande) : une instance est active, état intact |
-| 9 | refusé, rien n'est modifié : nouvelle clé absente ou identique à l'ancienne, champ `enc:` non couvert, état de schéma 1 ou issu de `relay.state.prev`, confirmation absente (`--yes` manquant) ou réponse ≠ `rekey` |
+| 9 | refusé, rien n'est modifié : nouvelle clé absente ou identique à l'ancienne, champ `enc:` non couvert, état issu de `relay.state.prev`, confirmation absente (`--yes` manquant) ou réponse ≠ `rekey` |
 | 10 | vérification après écriture échouée (l'original a été remis en place, sauf message contraire) |
 | 11 | nouvelle clé de moins de 32 octets, rien n'est modifié (l'ancienne clé n'est pas contrôlée) |
 
