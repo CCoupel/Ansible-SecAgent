@@ -39,6 +39,7 @@ const (
 	specMutPrevAlwaysOK       specMutant = "previous-kid-always-accepted"
 	specMutSeqIgnored         specMutant = "seq-not-verified"
 	specMutIssIgnored         specMutant = "iss-not-verified"
+	specMutIatIgnored         specMutant = "iat-not-verified"
 	specKidLen                           = 12
 	specLegacyRoleRelay                  = "relay"
 	specRoleChild                        = "relay-child"
@@ -90,7 +91,7 @@ func specKeysPayload(newCur, prev ed25519.PublicKey, seq uint64) []byte {
 // specOracle builds the reference implementation, optionally mutated.
 func specOracle(m specMutant) *specLinkImpl {
 	impl := &specLinkImpl{KidOf: specRefKid, Code: func(err error) string {
-		for _, c := range []string{"jwt_missing_kid", "jwt_unknown_kid", "jwt_missing_aud", "jwt_wrong_aud", "jwt_wrong_issuer"} {
+		for _, c := range []string{"jwt_missing_kid", "jwt_unknown_kid", "jwt_missing_aud", "jwt_wrong_aud", "jwt_wrong_issuer", "link_claims_invalid"} {
 			if strings.Contains(err.Error(), c) {
 				return c
 			}
@@ -124,6 +125,9 @@ func specOracle(m specMutant) *specLinkImpl {
 		})
 		if err != nil {
 			return true, err
+		}
+		if iat, err := claims.GetIssuedAt(); m != specMutIatIgnored && (err != nil || iat == nil || iat.After(now.Add(60*time.Second))) {
+			return true, errors.New("link_claims_invalid")
 		}
 		if claims["exp"] == nil {
 			return true, errors.New("exp_required")
@@ -445,6 +449,21 @@ func specLinkCases() []specCase {
 			tok := specForge(t, jwt.SigningMethodEdDSA, root.priv, impl.KidOf(root.pub), c)
 			return specRefuseWithCode(impl, specVerdict{specLinkTrust{Current: root.pub}, tok, childWant}, "jwt_wrong_issuer")
 		}},
+		// ── issued-at in the future (QA R2): a token claiming to be minted later than "now + 60 s" is refused ──
+		{"refuse_issued_in_the_future", func(t *testing.T, impl *specLinkImpl) string {
+			root := specNewKey(t)
+			c := specBaseClaims("j13e")
+			c["iat"] = time.Now().Add(10 * time.Minute).Unix()
+			tok := specForge(t, jwt.SigningMethodEdDSA, root.priv, impl.KidOf(root.pub), c)
+			return specRefuseWithCode(impl, specVerdict{specLinkTrust{Current: root.pub}, tok, childWant}, "link_claims_invalid")
+		}},
+		{"accept_issued_within_the_clock_skew_leeway", func(t *testing.T, impl *specLinkImpl) string {
+			root := specNewKey(t)
+			c := specBaseClaims("j13f")
+			c["iat"] = time.Now().Add(30 * time.Second).Unix()
+			tok := specForge(t, jwt.SigningMethodEdDSA, root.priv, impl.KidOf(root.pub), c)
+			return specAccept(impl, specVerdict{specLinkTrust{Current: root.pub}, tok, childWant})
+		}},
 		// ── test 4: role ──
 		{"refuse_relay_child_presented_as_parent", func(t *testing.T, impl *specLinkImpl) string {
 			root := specNewKey(t)
@@ -728,6 +747,7 @@ func TestSpecLink_MutantsAreKilled(t *testing.T) {
 	}{
 		{specMutAudIgnored, []string{"refuse_token_presented_to_another_relay_aud_mismatch", "refuse_absent_aud"}},
 		{specMutPrevAlwaysOK, []string{"refuse_previous_key_after_retire_link_previous"}},
+		{specMutIatIgnored, []string{"refuse_issued_in_the_future"}},
 		{specMutIssIgnored, []string{"refuse_issuer_other_than_the_configured_root", "refuse_absent_issuer"}},
 		{specMutSeqIgnored, []string{"link_revocations_seq_equal_or_lower_is_refused", "link_keys_replayed_seq_is_refused"}},
 	} {

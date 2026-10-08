@@ -52,7 +52,7 @@ jobs:
   slow-tests:
     name: Tests lents (tag slow, 3 000 agents)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -67,9 +67,14 @@ jobs:
           JWT_SECRET_KEY: test
           ADMIN_TOKEN: test
         run: |
-          go test -race -tags slow -run 'TestBurst_3000EventsAreAllExecutedAndJournaled' ./cmd/secagent-server/internal/hooks/ -timeout 600s
+          # UN `go test` par test lourd, en SEQUENCE : chacun lance des centaines d'enrolements RSA + 3 000 liens TLS ;
+          # lances ensemble (t.Parallel) ils se volaient le CPU (runner 4 vCPU) et les clients d'enrolement
+          # expiraient (R1 de la QA v3.0.4). Aucun de ces tests n'appelle plus parallel(t).
+          go test -race -tags slow -run '^TestBurst_3000EventsAreAllExecutedAndJournaled$' ./cmd/secagent-server/internal/hooks/ -timeout 600s
+          go test -race -tags slow -run '^TestHooksBurst_3000AgentsReconnectingAllRunTheirHook$' ./cmd/secagent-server/internal/integration/ -timeout 900s
           # le test de charge compile lui-meme son noeud SANS -race (go test -c) : le RSS d'un noeud -race est sans signification
-          go test -race -tags slow -run 'TestHooksBurst_3000AgentsReconnectingAllRunTheirHook|TestTaskLimits_Load3000|TestExec_AnAnswerLonger' ./cmd/secagent-server/internal/integration/ -timeout 1200s
+          go test -race -tags slow -run '^TestTaskLimits_Load3000AgentsNominalThenSaturation$' ./cmd/secagent-server/internal/integration/ -timeout 900s
+          go test -race -tags slow -run '^TestExec_AnAnswerLongerThanTheAPIWriteTimeoutArrivesIntact$' ./cmd/secagent-server/internal/integration/ -timeout 300s
 
   lint:
     name: Lint Go

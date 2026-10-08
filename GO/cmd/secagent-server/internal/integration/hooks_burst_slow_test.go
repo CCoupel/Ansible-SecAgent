@@ -22,7 +22,6 @@ func TestHooksBurst_3000AgentsReconnectingAllRunTheirHook(t *testing.T) {
 	if testing.Short() {
 		t.Skip("burst test")
 	}
-	parallel(t)
 	const agents = 3000
 	n := startNode(t, nodeSpec{ID: "burst", Hooks: func(out string) string {
 		return `{"hooks":[{"event":"host.up","actions":[{"type":"file","path":"` + out + `","append":"up {{hostname}}\n"}]}]}`

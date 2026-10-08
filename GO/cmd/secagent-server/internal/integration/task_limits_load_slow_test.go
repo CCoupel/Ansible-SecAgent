@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,7 +29,7 @@ func buildPlainNodeBinary(t *testing.T) string {
 	t.Helper()
 	goBin, err := exec.LookPath("go")
 	if err != nil {
-		goBin = filepath.Join(runtime.GOROOT(), "bin", "go")
+		t.Fatalf("the go tool is needed to build the node binary without -race: %v", err)
 	}
 	out := filepath.Join(t.TempDir(), "integration-plain.test")
 	cmd := exec.Command(goBin, "test", "-c", "-o", out, ".")
@@ -123,7 +122,6 @@ func TestTaskLimits_Load3000AgentsNominalThenSaturation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("load test")
 	}
-	parallel(t)
 	const agents, forks, saturating = 3000, 200, 1000
 	n := startNode(t, nodeSpec{ID: "load", NodeBinary: buildPlainNodeBinary(t)}) // DEFAULT limits: that is the point; node built without -race
 	rss := startRSSSampler(t, n.cmd.Process.Pid)

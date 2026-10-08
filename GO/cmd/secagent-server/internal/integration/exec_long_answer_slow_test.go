@@ -18,7 +18,6 @@ import (
 )
 
 func TestExec_AnAnswerLongerThanTheAPIWriteTimeoutArrivesIntact(t *testing.T) {
-	parallel(t)
 	n := startNode(t, nodeSpec{ID: "root"})
 	m := heldMinions(t, n, "slow-host")["slow-host"]
 

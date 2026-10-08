@@ -22,3 +22,5 @@
 | GO/cmd/secagent-server/internal/integration/hooks_burst_slow_test.go | integration | secagent-server | #183 3 000 agents se reconnectent (tag de build `slow`, job CI slow-tests) | feature | slow |
 | GO/cmd/secagent-server/internal/integration/task_limits_load_slow_test.go | integration | secagent-server | #179 charge 3 000 agents (tag de build `slow`, job CI slow-tests) | feature | slow |
 | GO/cmd/secagent-server/internal/integration/exec_long_answer_slow_test.go | integration | secagent-server | #179 régression : la réponse d'un exec > 15 s (WriteTimeout API) arrive intacte (« bad record MAC » sinon) | regression | slow |
+| GO/cmd/secagent-server/internal/ws/qa_gaps_test.go | unit | secagent-server | QA v3.0.4 R2 : refund stdout après coupe UTF-8, plafond global du budget abaissé, fenêtre/éviction/refus au hello du quota #156, garde « hôte local ET routé » #180 | regression | |
+| GO/cmd/secagent-server/internal/integration/suspension_three_levels_test.go | integration | secagent-server | QA v3.0.4 R2 : #180 drapeau de suspension sur 3 niveaux restauré après redémarrage de la racine | regression | |
