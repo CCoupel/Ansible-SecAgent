@@ -338,6 +338,50 @@ relay health
 
 ---
 
+### 6. Commandes réelles v3.0.4 : `keys` et `state link-trust reset`
+
+> Les exemples ci-dessus sont des maquettes historiques ; cette section décrit la CLI réelle `secagent-server` (sources : `cli/keys.go`, `cli/state_tools.go`, `handlers/admin_link.go`, `state/linktrust_reset.go`). Détail du modèle : `DOC/security/SECURITY.md` §7, `DOC/server/STATE_SPEC.md`.
+
+#### `secagent-server keys …` — clé de signature des liens (racine, via l'API admin)
+
+Toutes les sous-commandes passent par l'API admin (`ADMIN_TOKEN`, `RELAY_API_URL`) et répondent `409 not_root` sur un relay qui a un parent ou une ancre épinglée, `503 master_key_required` sans `RSA_MASTER_KEY` (`cli/keys.go:15-17`, `handlers/admin_link.go:36-52`). La clé privée n'est jamais affichée ni exportée.
+
+| Commande | Effet | Route | Erreurs notables |
+|---|---|---|---|
+| `keys link-pubkey` | écrit sur stdout la clé **publique** PEM (`PUBLIC KEY`) à épingler sur les enfants (`REPEATER_ROOT_LINK_KEY_FILE`) ; `root_id=… kid=…` sur stderr ; génère la clé si elle n'existe pas encore | `GET /api/admin/link/pubkey` | `cli/keys.go:40-58` |
+| `keys rotate-link` | la clé courante devient `previous`, nouvelle courante, `link_keys` poussé aux enfants ; affiche `current`, `previous`, `seq` | `POST /api/admin/link/keys/rotate` | `409 previous_key_not_retired` si une rotation est déjà ouverte (`handlers/admin_link.go:43-44`) |
+| `keys retire-link-previous [--force]` | ferme la fenêtre de double acceptation ; les jetons signés par l'ancienne clé sont ensuite refusés | `POST /api/admin/link/keys/retire-previous` `{"force":bool}` | `409 rotation_unconfirmed` + liste `unconfirmed` tant que des relays n'ont pas confirmé (`handlers/admin_link.go:221-225`) ; `409 no_previous_key` (`:45-46`) ; `--force` passe outre, `[SECURITY WARNING]` côté serveur, la CLI affiche les relays non confirmés |
+| `keys link-status` | `root_id`, `seq`, `kid` courant/précédent, puis tableau `RELAY / LINK_SEQ / KID / CONFIRMED` | `GET /api/admin/link/status` | `cli/keys.go:101-120` |
+
+Codes de sortie de ces commandes (`cli/client.go:188-209`, `cli/keys.go:25-32`) : `0` succès ; `1` toute erreur HTTP (dont 409 et 503, message `Error: <code> (HTTP <n>)` sur stderr) ou `401/403` (`unauthorized — check ADMIN_TOKEN`) ; `2` sur `404`. Il n'y a pas de code de sortie dédié à `rotation_unconfirmed`.
+
+#### `secagent-server state link-trust reset [--state-dir D] [--yes] [--i-know-no-instance-is-running]`
+
+Commande **hors ligne** (elle ouvre `STATE_DIR` directement, pas l'API) qui efface **uniquement** l'ancre de confiance persistée (`link_trust`) d'un relay **non racine** arrêté, pour le ré-épingler après une rotation manquée ou une re-racine. Exige `RSA_MASTER_KEY` (ou `_FILE`). Spécification complète, garde de verrou et sauvegarde : `STATE_SPEC.md` § `state link-trust reset`.
+
+| Option | Rôle |
+|---|---|
+| `--state-dir` | répertoire d'état (défaut `$STATE_DIR`, sinon `/data`) |
+| `--yes` | confirme sans invite ; **obligatoire** hors terminal interactif |
+| `--i-know-no-instance-is-running` | passe outre un `relay.lock` orphelin (stockage figé) ; `[SECURITY WARNING]` |
+
+Sans `--yes` en terminal, la commande demande de taper `reset`. Avant toute écriture : copie de `relay.state` dans `relay.state.linktrust-reset.<UTC>.bak` (0600) ; si elle échoue, rien n'est modifié. Une ligne est ajoutée à `state-restore.log` (`source: link-trust-reset`).
+
+| Code | Signification | Preuve |
+|---|---|---|
+| 0 | ancre effacée, ou rien à effacer (aucune écriture) | `cli/state_tools.go:341-345` |
+| 2 | HMAC invalide / clé maître incorrecte / `sha256` falsifié | `:25,53,55` |
+| 3 | `schema_version` inconnue | `:26,51` |
+| 4 | invariant violé | `:27,59` |
+| 5 | fichier illisible, absent ou pas un état | `:28,61` |
+| 6 | `RSA_MASTER_KEY` absente | `:29,331` |
+| 8 | `relay.lock` frais : une instance est active (aussi si un nœud démarre pendant la commande : abandon, état intact, sauvegarde conservée) | `:31,213,375` |
+| 9 | refusé, rien n'est modifié : nœud **racine** (clé de signature de lien présente), état issu de `relay.state.prev`, confirmation absente en mode non interactif (`--yes` manquant) ou réponse différente de `reset` | `:276-278,359,365,389-394` |
+
+Le code 7 (`--min-write-seq`) n'existe que pour `state verify` / `state restore`.
+
+---
+
 ## Global Options
 
 ```bash
