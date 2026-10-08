@@ -208,10 +208,9 @@ func ResolveFuturesForHostname(hostname string, errorMsg string) {
 	taskHostMu.RUnlock()
 
 	for _, taskID := range taskIDs {
-		tasksMu.RLock()
-		resultChan, exists := pendingTasks[taskID]
-		tasksMu.RUnlock()
-
+		// Free the slot BEFORE the waiter is woken: a client that receives the answer must find its slot
+		// already released (otherwise its next request can be refused with a transient 429).
+		resultChan, exists := finishTask(taskID)
 		if exists {
 			select {
 			case resultChan <- Message{TaskID: taskID, Error: errorMsg}:
@@ -221,21 +220,28 @@ func ResolveFuturesForHostname(hostname string, errorMsg string) {
 			log.Printf("Future resolved with error on disconnect: task_id=%q error=%s hostname=%q",
 				taskID, errorMsg, hostname)
 		}
-
-		// Cleanup
-		tasksMu.Lock()
-		delete(pendingTasks, taskID)
-		tasksMu.Unlock()
-
-		buffersMu.Lock()
-		delete(stdoutBuffers, taskID)
-		buffersMu.Unlock()
-
-		taskHostMu.Lock()
-		delete(taskHostnames, taskID)
-		taskHostMu.Unlock()
-		releaseTask(taskID)
 	}
+}
+
+// finishTask ends the bookkeeping of an agent task in the order that makes its answer safe to deliver:
+// it takes the result channel out of the pending table, drops the stdout buffer and the host mapping,
+// and RELEASES the admission slot. The caller delivers the answer only afterwards, so whoever receives
+// it can immediately start another task without being refused for a slot that was about to be freed.
+func finishTask(taskID string) (resultChan chan Message, exists bool) {
+	tasksMu.Lock()
+	resultChan, exists = pendingTasks[taskID]
+	delete(pendingTasks, taskID)
+	tasksMu.Unlock()
+
+	buffersMu.Lock()
+	delete(stdoutBuffers, taskID)
+	buffersMu.Unlock()
+
+	taskHostMu.Lock()
+	delete(taskHostnames, taskID)
+	taskHostMu.Unlock()
+	releaseTask(taskID)
+	return resultChan, exists
 }
 
 // SendToAgent sends a JSON message to a connected agent over its WebSocket
@@ -311,10 +317,8 @@ func HandleMessage(msg Message, hostname string) {
 			msg.Stdout = accumulatedStdout
 		}
 
-		tasksMu.RLock()
-		resultChan, exists := pendingTasks[taskID]
-		tasksMu.RUnlock()
-
+		// the slot is released BEFORE the result is delivered (see finishTask)
+		resultChan, exists := finishTask(taskID)
 		if exists {
 			select {
 			case resultChan <- msg:
@@ -325,20 +329,6 @@ func HandleMessage(msg Message, hostname string) {
 		} else {
 			log.Printf("Result received but no pending future: task_id=%q hostname=%q", taskID, hostname)
 		}
-
-		// Cleanup
-		tasksMu.Lock()
-		delete(pendingTasks, taskID)
-		tasksMu.Unlock()
-
-		buffersMu.Lock()
-		delete(stdoutBuffers, taskID)
-		buffersMu.Unlock()
-
-		taskHostMu.Lock()
-		delete(taskHostnames, taskID)
-		taskHostMu.Unlock()
-		releaseTask(taskID)
 
 	default:
 		log.Printf("Unknown WS message type: type=%q task_id=%q hostname=%q", msgType, taskID, hostname)
