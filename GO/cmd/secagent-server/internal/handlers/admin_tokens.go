@@ -24,7 +24,7 @@ import (
 // ========================================================================
 
 // TokenCreateRequest is the body for POST /api/admin/tokens.
-// The "role" field determines whether an enrollment, plugin or relay-parent token is created.
+// The "role" field determines whether an enrollment, plugin, relay-child or relay-parent token is created.
 type TokenCreateRequest struct {
 	Role                   string `json:"role"`                               // "enrollment", "plugin" or "relay-parent"
 	HostnamePattern        string `json:"hostname_pattern,omitempty"`         // enrollment only

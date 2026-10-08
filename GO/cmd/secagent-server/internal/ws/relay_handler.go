@@ -1,7 +1,8 @@
 // Phase 12 — relay_handler.go
 // WebSocket handler for /ws/relay — mode pull.
 //
-// Relays connect here with a JWT (role=relay) and announce their agents.
+// Relays connect here with a link token (Ed25519, role relay-child / relay-parent, signed by the root)
+// and announce their agents.
 // The proxy then dispatches tasks to the relay via this connection.
 //
 // Close codes (relay-specific, #148):
@@ -1119,7 +1120,7 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 // RelayHandler manages WebSocket connections from downstream relays (/ws/relay).
 //
 // Flow:
-//  1. Validate JWT → must have role=relay
+//  1. Verify the link token (auth.VerifyLinkToken): relay-child (pull) or relay-parent (push)
 //  2. Extract relay_id from "sub" claim
 //  3. Upgrade HTTP → WebSocket
 //  4. Register relay connection and update DB status

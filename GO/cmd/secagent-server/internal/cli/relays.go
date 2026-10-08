@@ -91,15 +91,26 @@ var (
 
 var relaysAddCmd = &cobra.Command{
 	Use:   "add",
-	Short: "Register a new relay node",
-	Long: `Register a new relay node on the proxy.
+	Short: "Declare a child relay (pull) or register a push link",
+	Long: `Declare a child relay on this node.
+
+Pull mode (default): the child opens the link to this node. NOTHING is minted or returned here (v3.0.4):
+this only declares the expected child. Its link token is minted on the ROOT relay:
+  secagent-server tokens create --role relay-child --sub <child relay_id> --aud <relay_id of this node>
+and given to the child (REPEATER_UPSTREAM_TOKEN or REPEATER_UPSTREAM_TOKEN_FILE).
+
+Push mode: this node opens the link to the child (wss:// URL). --token is the relay-parent link token,
+minted on the ROOT relay for this node:
+  secagent-server tokens create --role relay-parent --sub <relay_id of this node> --aud <child relay_id>
+It is stored sealed under RSA_MASTER_KEY (503 without it) and never shown again. The child must be
+anchored on the root key (REPEATER_ROOT_ID + REPEATER_ROOT_LINK_KEY_FILE).
 
 Examples:
-  # Pull mode: relay connects to this proxy (JWT token returned)
+  # Pull mode: declare the child (then mint its relay-child token on the root)
   secagent-server relays add --id dmz1 --description "Zone DMZ1"
 
-  # Push mode: proxy initiates connections to the relay
-  secagent-server relays add --id dmz2 --mode push --url https://dmz2:7770 --token "secagent_relay_..." --description "Zone DMZ2"`,
+  # Push mode: this node initiates the connection to the child
+  secagent-server relays add --id dmz2 --mode push --url wss://dmz2:7772 --token "<relay-parent link token>" --description "Zone DMZ2"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(addRelayID) == "" {
 			return fmt.Errorf("--id is required")
@@ -160,17 +171,15 @@ Examples:
 			} else if url, ok := m["url"].(string); ok && url != "" {
 				tp.printf("url\t%v\n", url)
 			}
-			// Pull mode: show JWT token (one-time)
-			if jwt, ok := m["jwt_token"].(string); ok && jwt != "" {
-				if err := tp.flush(); err != nil {
-					return err
-				}
-				_, _ = fmt.Println()
-				_, _ = fmt.Println("JWT Token (shown once — store it securely on the relay):")
-				_, _ = fmt.Println(jwt)
-				return nil
+			if err := tp.flush(); err != nil {
+				return err
 			}
-			return tp.flush()
+			// v3.0.4: a declaration never returns a token. Say where the link token comes from.
+			if m["mode"] == "pull" {
+				_, _ = fmt.Println()
+				_, _ = fmt.Printf("No token was issued. Mint the link token of this child on the ROOT relay:\n  secagent-server tokens create --role relay-child --sub %v --aud <relay_id of this node>\n", m["relay_id"])
+			}
+			return nil
 		})
 	},
 }
@@ -178,8 +187,8 @@ Examples:
 func init() {
 	relaysAddCmd.Flags().StringVar(&addRelayID, "id", "", "Relay unique ID (required)")
 	relaysAddCmd.Flags().StringVar(&addRelayMode, "mode", "pull", "Connection mode: pull (relay→proxy) or push (proxy→relay)")
-	relaysAddCmd.Flags().StringVar(&addRelayURL, "url", "", "Relay base URL (push mode only)")
-	relaysAddCmd.Flags().StringVar(&addRelayToken, "token", "", "Bearer token to authenticate to the relay (push mode only)")
+	relaysAddCmd.Flags().StringVar(&addRelayURL, "url", "", "wss:// URL of the child relay (push mode only; comma separated list accepted)")
+	relaysAddCmd.Flags().StringVar(&addRelayToken, "token", "", "relay-parent link token minted on the root for this node (push mode only; stored sealed)")
 	relaysAddCmd.Flags().StringVar(&addRelayDescription, "description", "", "Human-readable description")
 }
 
