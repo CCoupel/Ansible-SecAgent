@@ -17,6 +17,7 @@ import (
 
 	"secagent-server/cmd/secagent-server/internal/lock"
 	"secagent-server/cmd/secagent-server/internal/state"
+	"secagent-server/internal/secretenv"
 )
 
 // Exit codes of `state verify` / `state restore` (documented, usable in scripts).
@@ -433,4 +434,143 @@ func lockUnchangedGuard(dir string, overridden bool) func() error {
 		}
 		return nil
 	}
+}
+
+// ── state rekey (v3.0.4) ─────────────────────────────────────────────────────
+
+// ExitRekeyVerify: the rewritten state failed its verification (the original was put back, or the
+// message says how to restore it).
+const ExitRekeyVerify = 10
+
+var (
+	stateRekeyDir string
+	stateRekeyYes bool
+	// stateRekeyAfterProbe is a test seam, called after the lock probe and before the replacement.
+	stateRekeyAfterProbe func()
+)
+
+var stateRekeyCmd = &cobra.Command{
+	Use:   "rekey",
+	Short: "Rotate RSA_MASTER_KEY: re-encrypt the whole state with a new master key (stopped node only)",
+	Long: `Offline rotation of the master key. Every encrypted field of relay.state (the server_config secrets,
+including the link signing keys, and the token_secret of push relays) is opened with the CURRENT key and
+sealed again with the NEW key (fresh nonce, same field binding), and the HMAC of the file is recomputed.
+
+This rotates the key that protects the state AT REST, not the secrets themselves: JWT_SECRET_KEY, the JWT
+secrets, the agent RSA key and the link signing keys keep their value, so issued tokens (agents, link
+tokens) stay valid.
+
+Keys never go on the command line (they would show in 'ps'):
+  current key  RSA_MASTER_KEY  or RSA_MASTER_KEY_FILE
+  new key      NEW_RSA_MASTER_KEY  or NEW_RSA_MASTER_KEY_FILE
+(giving both the variable and the _FILE of one key is refused; a key file must be a regular file, mode 0600,
+not a symbolic link).
+
+Safety:
+  - offline: refuses when an instance holds a fresh relay.lock (same rule as 'state restore'); the lock is
+    checked again just before relay.state is replaced;
+  - the exact verified relay.state is first copied to relay.state.rekey.<UTC timestamp>.bak (0600, fsync):
+    if the backup fails, nothing is modified. That copy is readable with the OLD key: protect it, then
+    destroy it (and relay.state.prev) once the new key is in service;
+  - the result is re-opened with the new key and every cleartext is compared with the original; on any
+    failure the original relay.state is put back;
+  - asks for confirmation (type "rekey"); non-interactive use requires --yes;
+  - logs "[SECURITY WARNING] master key rekeyed" and appends the intervention (no key) to state-restore.log.
+
+Active/passive: stop BOTH nodes, run it once on the shared STATE_DIR, then start both with the new key. A
+node started with the old key refuses the state (fail closed).
+
+Exit codes: those of 'state verify', plus 8 (an instance is alive), 9 (refused: same or missing new key,
+unknown encrypted field, schema 1, no confirmation) and 10 (post-write verification failed).`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dir := stateRekeyDir
+		if dir == "" {
+			dir = state.DirFromEnv()
+		}
+		oldKey, err := masterKeyFromEnv()
+		if err != nil {
+			return err
+		}
+		if oldKey == "" {
+			return &ExitError{Code: ExitNoMasterKey, Msg: "RSA_MASTER_KEY is not set: the current master key is required (RSA_MASTER_KEY or RSA_MASTER_KEY_FILE)"}
+		}
+		newKey, err := secretenv.Get("NEW_RSA_MASTER_KEY")
+		if err != nil {
+			return err
+		}
+		if newKey == "" {
+			return &ExitError{Code: ExitRefused, Msg: "rekey refused, nothing modified: the new master key is not set (NEW_RSA_MASTER_KEY or NEW_RSA_MASTER_KEY_FILE; never as an argument)"}
+		}
+		if newKey == oldKey {
+			return &ExitError{Code: ExitRefused, Msg: "rekey refused, nothing modified: " + state.ErrRekeySameKey.Error()}
+		}
+		out := cmd.OutOrStdout()
+		// 1. verify with the current key before asking anything (wrong key, tampered file, schema…)
+		if _, verr := state.VerifyFile(filepath.Join(dir, state.StateFile), state.VerifyOptions{MasterKey: oldKey}); verr != nil {
+			return rekeyError(verr, "")
+		}
+		// 2. no instance may hold a fresh lock
+		overridden, err := checkNoActiveInstance(cmd, dir)
+		if err != nil {
+			return err
+		}
+		guard := lockUnchangedGuard(dir, overridden)
+		if stateRekeyAfterProbe != nil {
+			stateRekeyAfterProbe()
+		}
+		// 3. confirmation
+		_, _ = fmt.Fprintf(out, "This will RE-ENCRYPT the whole state in %s with the new master key (the JWT secrets and signing keys keep their value).\n", dir)
+		_, _ = fmt.Fprintln(out, "A backup readable with the OLD key is written first. Every node must then be started with the new key.")
+		if !stateRekeyYes {
+			if !stateLTStdinTTY() {
+				return &ExitError{Code: ExitRefused, Msg: "rekey refused, nothing modified: confirmation required (pass --yes in non-interactive use)"}
+			}
+			_, _ = fmt.Fprint(out, `Type "rekey" to continue: `)
+			var answer string
+			_, _ = fmt.Fscanln(cmd.InOrStdin(), &answer)
+			if strings.TrimSpace(answer) != "rekey" {
+				return &ExitError{Code: ExitRefused, Msg: "rekey cancelled, nothing modified"}
+			}
+		}
+		res, err := state.Rekey(state.RekeyOptions{Dir: dir, OldKey: oldKey, NewKey: newKey, Now: stateRestoreNowFunc, BeforeRename: guard})
+		if err != nil {
+			if errors.Is(err, state.ErrInstanceAppeared) {
+				bak := ""
+				if res != nil {
+					bak = " (the backup " + res.BackupFile + " was kept)"
+				}
+				return &ExitError{Code: ExitInstanceAlive, Msg: "rekey refused, relay.state NOT modified" + bak + ": " + err.Error()}
+			}
+			if res == nil || res.Restored || errors.Is(err, state.ErrRekeyVerify) {
+				return rekeyError(err, "rekey failed: ")
+			}
+			slog.Warn("state rekey", "error", err) // done, but the journal could not be written
+		}
+		_, _ = fmt.Fprintf(out, "master key rotated in %s: %d encrypted fields re-encrypted (write_seq %d -> %d)\n", dir, res.Fields, res.SeqBefore, res.SeqAfter)
+		_, _ = fmt.Fprintf(out, "previous relay.state saved as %s: it is readable with the OLD key, protect it and destroy it (and relay.state.prev) once the new key is in service\n", res.BackupFile)
+		_, _ = fmt.Fprintln(out, "Start EVERY node with the new key (RSA_MASTER_KEY / RSA_MASTER_KEY_FILE); a node started with the old key refuses the state.")
+		return err
+	},
+}
+
+// rekeyError maps the errors of Rekey to exit codes.
+func rekeyError(err error, prefix string) error {
+	switch {
+	case errors.Is(err, state.ErrRekeyVerify):
+		return &ExitError{Code: ExitRekeyVerify, Msg: prefix + err.Error()}
+	case errors.Is(err, state.ErrRekeySameKey), errors.Is(err, state.ErrRekeyNoNewKey), errors.Is(err, state.ErrRekeyUncovered),
+		errors.Is(err, state.ErrRekeySchema), errors.Is(err, state.ErrRekeyFromPrev):
+		return &ExitError{Code: ExitRefused, Msg: prefix + "refused, nothing modified: " + err.Error()}
+	default:
+		code, why := verifyExit(err)
+		return &ExitError{Code: code, Msg: prefix + why}
+	}
+}
+
+func init() {
+	stateRekeyCmd.Flags().StringVar(&stateRekeyDir, "state-dir", "", "state directory (default $STATE_DIR, else /data)")
+	stateRekeyCmd.Flags().BoolVar(&stateRekeyYes, "yes", false, "confirm without prompting (required in non-interactive use)")
+	stateRekeyCmd.Flags().BoolVar(&stateRestoreForce, "i-know-no-instance-is-running", false, "pass over a relay.lock that is not proven stale (orphan lock): [SECURITY WARNING]")
+	stateCmd.AddCommand(stateRekeyCmd)
 }

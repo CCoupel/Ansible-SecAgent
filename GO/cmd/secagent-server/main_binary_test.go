@@ -28,6 +28,7 @@ func TestBinary_CLICommandsDoNotStartAServer(t *testing.T) {
 		{[]string{"keys", "link-status", "--help"}, "link-status", false},
 		{[]string{"keys", "rotate-link", "--help"}, "rotate-link", false},
 		{[]string{"state", "link-trust", "reset", "--help"}, "reset", false},
+		{[]string{"state", "rekey", "--help"}, "NEW_RSA_MASTER_KEY", false},
 		{[]string{"tokens", "create", "--help"}, "relay-child", false},
 		{[]string{"--help"}, "Usage", false},
 		{[]string{"-h"}, "Usage", false},
