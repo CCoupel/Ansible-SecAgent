@@ -5,7 +5,7 @@
 > Commandes réelles (v3.0.3) : `minions` (list, get, set-state, suspend, resume, revoke, authorize, vars get/set/delete),
 > `tokens` (create, list, revoke, delete, purge), `relays` (list, add, remove, status), `security` (keys status/rotate,
 > tokens list, blacklist list/purge), `hooks` (status, log), `inventory list`, `server` (status, stats), `status --local`,
-> `state` (init, verify, restore, link-trust reset). Il n'existe **pas** de `minions refresh`, de login/refresh de jeton ni de composant NATS :
+> `state` (init, verify, restore, link-trust reset, rekey). Il n'existe **pas** de `minions refresh`, de login/refresh de jeton ni de composant NATS :
 > l'authentification se fait par jeton admin (`ADMIN_TOKEN`), sans renouvellement automatique côté CLI.
 > Voir `DOC/server/SERVER_SPEC.md`.
 
@@ -377,6 +377,26 @@ Sans `--yes` en terminal, la commande demande de taper `reset`. Avant toute écr
 | 6 | `RSA_MASTER_KEY` absente | `:29,331` |
 | 8 | `relay.lock` frais : une instance est active (aussi si un nœud démarre pendant la commande : abandon, état intact, sauvegarde conservée) | `:31,213,375` |
 | 9 | refusé, rien n'est modifié : nœud **racine** (clé de signature de lien présente), état issu de `relay.state.prev`, confirmation absente en mode non interactif (`--yes` manquant) ou réponse différente de `reset` | `:276-278,359,365,389-394` |
+
+#### `secagent-server state rekey [--state-dir D] [--yes] [--i-know-no-instance-is-running]`
+
+Commande **hors ligne** (ouvre `STATE_DIR` directement) qui fait la rotation de `RSA_MASTER_KEY` : rechiffre **tous** les champs `enc:` de `relay.state` avec une nouvelle clé maître et recalcule le HMAC. Les deux clés passent par l'environnement, **jamais** en argument : `RSA_MASTER_KEY` / `RSA_MASTER_KEY_FILE` (actuelle) et `NEW_RSA_MASTER_KEY` / `NEW_RSA_MASTER_KEY_FILE` (nouvelle ; fichier 0600). Ne change ni `JWT_SECRET_KEY` ni les clés de signature. Détail, ordre des opérations et procédure actif/passif : `STATE_SPEC.md` (§ `state rekey`) et `SECURITY.md` §11.
+
+| Option | Rôle |
+|---|---|
+| `--state-dir` | répertoire d'état (défaut `$STATE_DIR`, sinon `/data`) |
+| `--yes` | confirme sans invite ; **obligatoire** hors terminal interactif |
+| `--i-know-no-instance-is-running` | passe outre un `relay.lock` orphelin (stockage figé) ; `[SECURITY WARNING]` |
+
+Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écriture : `relay.state.rekey.<UTC>.bak` (0600, **lisible avec l'ancienne clé** : à détruire une fois la nouvelle clé en service). Après l'écriture : relecture avec la nouvelle clé et comparaison des clairs ; échec = original remis en place.
+
+| Code | Signification |
+|---|---|
+| 0 | clé maître remplacée |
+| 2-6 | idem `state verify` (ancienne clé incorrecte, état falsifié, invariant, clé absente…) |
+| 8 | `relay.lock` frais (ou apparu pendant la commande) : une instance est active, état intact |
+| 9 | refusé, rien n'est modifié : nouvelle clé absente ou identique à l'ancienne, champ `enc:` non couvert, état de schéma 1 ou issu de `relay.state.prev`, confirmation absente (`--yes` manquant) ou réponse ≠ `rekey` |
+| 10 | vérification après écriture échouée (l'original a été remis en place, sauf message contraire) |
 
 Le code 7 (`--min-write-seq`) n'existe que pour `state verify` / `state restore`.
 

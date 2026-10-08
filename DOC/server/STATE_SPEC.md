@@ -13,7 +13,8 @@ Remplace SQLite pour les relays : un fichier unique chargé en mémoire, écrit 
 | `relay.state.v1.bak` (v3.0.4) | copie octet pour octet de l'état v1 (ou de `relay.state.prev` si c'est lui qui a été chargé), écrite par le **maître** à la première écriture qui migre v1 → v2, avant toute écriture v2 ; 0600, fichier temporaire + `fsync` + `rename` ; jamais relue par le serveur ; remplacée par un contenu identique si la migration est rejouée, plus aucune sauvegarde une fois le v2 écrit ; **jamais purgée automatiquement** (suppression par l'opérateur, après validation de la v3.0.4) — voir « Migration v1 → v2 » |
 | `relay.state.bak-<UTC>`, `relay.state.prev.bak-<UTC>` | copies de l'état d'avant un `state restore` ; 0600 ; horodatage `AAAAMMJJThhmmssZ` ; jamais relues par le serveur ni purgées automatiquement |
 | `relay.state.linktrust-reset.<UTC>.bak` (v3.0.4) | copie complète de `relay.state` d'avant un `state link-trust reset` ; 0600 ; même horodatage ; jamais relue ni purgée automatiquement ; contient les mêmes secrets chiffrés que l'état — voir `state link-trust reset` |
-| `state-restore.log` | journal des interventions `state restore` et `state link-trust reset` (une ligne JSON par intervention, sans secret ni clé : date, opérateur, source, `write_seq` avant/après, sauvegardes, `lock_override`) ; ouvert en ajout, 0600, sans suivre les liens symboliques ; jamais lu par le serveur ni tourné automatiquement |
+| `relay.state.rekey.<UTC>.bak` (v3.0.4) | copie octet pour octet de `relay.state` d'avant un `state rekey` ; 0600, `fsync`, exclusive, jamais relue par le serveur ; **chiffrée avec l'ANCIENNE clé maître** : à protéger puis détruire une fois la nouvelle clé en service |
+| `state-restore.log` | journal des interventions `state restore`, `state link-trust reset` et `state rekey` (une ligne JSON par intervention, sans secret ni clé : date, opérateur, source, `write_seq` avant/après, sauvegardes, `lock_override`) ; ouvert en ajout, 0600, sans suivre les liens symboliques ; jamais lu par le serveur ni tourné automatiquement |
 
 ## Format
 
@@ -165,6 +166,17 @@ Idempotent : sans `link_trust`, « nothing to reset », code 0, **rien n'est éc
 | 2-7 | idem `state verify` (clé incorrecte, état falsifié, invariant, clé maître absente…) |
 | 8 | `relay.lock` frais : une instance est active |
 | 9 | refusé : racine, état issu de `.prev`, confirmation absente ou refusée |
+
+### `secagent-server state rekey [--state-dir D] [--yes] [--i-know-no-instance-is-running]` (v3.0.4)
+
+Rotation **hors ligne** de `RSA_MASTER_KEY` : réécrit tout l'état avec une nouvelle clé maître. Implémentation : `state/rekey.go` (`Rekey`), commande `cli/state_tools.go`.
+
+- **Clés** : jamais en argument. Actuelle : `RSA_MASTER_KEY` / `RSA_MASTER_KEY_FILE` ; nouvelle : `NEW_RSA_MASTER_KEY` / `NEW_RSA_MASTER_KEY_FILE` (règles de `secretenv` : la variable et son `_FILE` ensemble sont refusés, fichier régulier 0600 non-lien). Nouvelle clé absente, vide ou égale à l'ancienne : refus (code 9, rien n'est modifié) ; aucune règle de robustesse n'existe côté serveur pour `RSA_MASTER_KEY`, la commande n'en invente pas.
+- **Champs rechiffrés** (AAD = nom du champ conservé, nonce neuf à chaque champ) : tous les `server_config` listés dans `secretConfigKeys` (`rsa_key_current/previous`, `jwt_secret_current/previous`, `link_signing_key_current/previous`) et `relay_nodes[].token_secret` (relays push, AAD `relay_nodes/<relay_id>/token_secret`). Une valeur `enc:` trouvée ailleurs fait **refuser** la commande (`ErrRekeyUncovered`). Le HMAC (clé HKDF de la nouvelle clé maître) est recalculé, `write_seq` + 1. Aucune valeur en clair n'est modifiée ; `JWT_SECRET_KEY` et les clés de signature gardent leur valeur (rotation de la clé maître, pas des secrets).
+- **Ordre** : vérification de l'état avec l'ancienne clé (mêmes codes 2 à 6 que `state verify` ; état de schéma 1 ou issu de `relay.state.prev` refusé, code 9) → sonde du verrou (code **8** si `relay.lock` est frais) → confirmation (invite « rekey », ou `--yes` obligatoire hors terminal ; code 9 sinon) → **sauvegarde** `relay.state.rekey.<UTC>.bak` (échec : rien n'est modifié) → remplacement atomique, avec relecture de `relay.lock` juste avant le `rename` (une instance apparue entre-temps : abandon, état intact, sauvegarde conservée, code 8) → **vérification de bout en bout** : relecture avec la nouvelle clé (HMAC, invariants, tous les secrets), refus de l'ancienne clé, comparaison des clairs avec l'original ; si elle échoue, l'original est remis en place atomiquement (code **10** ; si même cela échoue, le message indique comment restaurer la sauvegarde).
+- `relay.state.prev` n'est pas touché (il reste chiffré avec l'ancienne clé : à détruire après la rotation).
+- **Actif/passif** : arrêter les deux nœuds, exécuter la commande une fois sur le `STATE_DIR` partagé, redéployer la nouvelle clé sur tous les candidats, redémarrer. Un nœud démarré avec l'ancienne clé refuse l'état (fail closed).
+- Journal : `[SECURITY WARNING] master key rekeyed` + ligne `"source":"rekey"` dans `state-restore.log` (sans clé ni valeur).
 
 ## Anti-rejeu : garde de `write_seq` (#163)
 

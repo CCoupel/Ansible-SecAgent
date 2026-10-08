@@ -283,7 +283,7 @@ Tous les secrets du serveur sont stockés en DB chiffrés (AES-256-GCM) :
 - **Jetons de lien** (`relay-child` / `relay-parent`) : **plus de clé par relay**. Ils sont signés Ed25519 par la **racine** (nœud sans parent) ; la clé privée vit dans `server_config.link_signing_key_*` de la racine (chiffrée, partagée par la paire actif/passif : un nouveau maître signe avec le même `kid`). Les autres relays n'ont que la **clé publique** de la racine, épinglée au déploiement (`REPEATER_ROOT_LINK_KEY_FILE`, `REPEATER_ROOT_ID`) et persistée dans `link_trust`.
 - **Rotation de la clé racine** : `keys rotate-link` (message `link_keys` signé par l'**ancienne** clé, chaîne vérifiée depuis l'ancre de chaque relay), double acceptation jusqu'à `keys retire-link-previous` (voir §7).
 
-> **⚠️ Surface de risque de `RSA_MASTER_KEY` (v3.0.4, réserve R3 de `DECISION_141.md`)** : en v3.0.3, compromettre `RSA_MASTER_KEY` donnait accès aux secrets JWT des agents et à la clé RSA du serveur. Depuis la v3.0.4 elle donne **aussi** accès à `link_signing_key_current/previous` : **un attaquant qui la détient (avec une copie de `relay.state`) peut forger des jetons de lien valides pour toute la hiérarchie des relays**. Traiter `RSA_MASTER_KEY` comme le secret de plus haute valeur ; **faire une rotation de `RSA_MASTER_KEY` avant la mise en production de v3.0.4** (procédure : « Rotation de `RSA_MASTER_KEY` » en §11 et `DEPLOYMENT.md`), puis `keys rotate-link` si elle est soupçonnée compromise.
+> **⚠️ Surface de risque de `RSA_MASTER_KEY` (v3.0.4, réserve R3 de `DECISION_141.md`)** : en v3.0.3, compromettre `RSA_MASTER_KEY` donnait accès aux secrets JWT des agents et à la clé RSA du serveur. Depuis la v3.0.4 elle donne **aussi** accès à `link_signing_key_current/previous` : **un attaquant qui la détient (avec une copie de `relay.state`) peut forger des jetons de lien valides pour toute la hiérarchie des relays**. Traiter `RSA_MASTER_KEY` comme le secret de plus haute valeur ; **faire une rotation de `RSA_MASTER_KEY` avant la mise en production de v3.0.4** (commande hors ligne `secagent-server state rekey` ; procédure : « Rotation de `RSA_MASTER_KEY` » en §11 et `DEPLOYMENT.md`), puis `keys rotate-link` si elle est soupçonnée compromise.
 
 ---
 
@@ -757,15 +757,21 @@ Un attaquant ayant accès en écriture à `STATE_DIR` peut déposer un `relay.lo
 
 #### Rotation de `RSA_MASTER_KEY`
 
-La rotation de la clé maître exige une **réécriture complète de l'état** (tous les secrets rechiffrés, HMAC recalculé), sinon l'ancien fichier est refusé au démarrage.
+`RSA_MASTER_KEY` chiffre au repos tous les secrets de `relay.state` (AES-256-GCM, lié au champ) et dérive la clé HMAC du fichier ; un état ouvert avec une autre clé est **refusé** au démarrage (`authentication failed: wrong RSA_MASTER_KEY or tampered file`). Un simple redémarrage avec une nouvelle clé **ne rechiffre donc rien** : la rotation passe par la commande hors ligne **`secagent-server state rekey`** (`state/rekey.go`, `cli/state_tools.go`).
 
-**Procédure** :
-1. Sauvegarder `STATE_DIR` préalablement
-2. Arrêter toutes les instances (ou utiliser la bascule actif/passif)
-3. Redémarrer les instances avec la nouvelle clé : elles rechiffrent l'état au 1er démarrage
-4. Monitorer les erreurs de déchiffrement (clé mal propagée)
+**Ce que fait la commande** : ouvre l'état avec l'ancienne clé (HMAC vérifié), déchiffre **chaque** champ `enc:` (les secrets de `server_config` : `rsa_key_*`, `jwt_secret_*`, `link_signing_key_*`, et le `token_secret` des relays en mode push), les rechiffre avec la nouvelle clé (nonce neuf, même liaison au champ), recalcule le HMAC, écrit atomiquement avec un `write_seq` + 1, puis **rouvre** le résultat avec la nouvelle clé et compare tous les clairs à l'original ; en cas d'échec l'original est remis en place (code de sortie 10). Une valeur `enc:` trouvée dans un champ que la commande ne sait pas rechiffrer la **refuse** (rien n'est écrit : elle serait devenue illisible).
 
-Le serveur **ne** redéploiera **jamais** une ancienne clé en cas d'erreur : il s'arrêtera avec un message d'erreur explicite.
+**Ce qu'elle ne fait pas** : c'est une rotation de la **clé maître** (le secret qui protège l'état au repos), **pas** des secrets eux-mêmes. `JWT_SECRET_KEY`, les secrets JWT, la clé RSA du serveur et les clés de signature des liens **gardent leur valeur** : les jetons déjà émis (agents, jetons de lien) restent valides. Si l'ancienne clé maître a pu être exposée avec une copie de `relay.state`, ces secrets sont à considérer comme exposés : faire en plus `keys rotate-link` (puis `retire-link-previous` selon `DEPLOYMENT.md`) et la rotation des secrets JWT.
+
+**Procédure** (aucune clé en argument de ligne de commande, visible dans `ps`) :
+1. Sauvegarder `STATE_DIR` (copie du volume + `secagent-server state verify relay.state`).
+2. **Arrêter tous les nœuds** qui partagent `STATE_DIR` (actif **et** passif) : la commande refuse (code 8) si un `relay.lock` est frais et revérifie le verrou juste avant de remplacer le fichier.
+3. Fournir la clé actuelle (`RSA_MASTER_KEY` ou `RSA_MASTER_KEY_FILE`) et la nouvelle (`NEW_RSA_MASTER_KEY` ou `NEW_RSA_MASTER_KEY_FILE`, fichier régulier 0600 non-lien ; la variable et son `_FILE` ensemble sont refusés), puis lancer **une seule fois** `secagent-server state rekey --yes` (confirmation `rekey` en interactif) sur le `STATE_DIR`. Elle refuse une nouvelle clé vide ou identique à l'ancienne (une relance est donc inoffensive). Aucune règle de robustesse de la clé n'est imposée par le code : choisir une clé aléatoire d'au moins 32 octets (par exemple `openssl rand -base64 48`).
+4. Redéployer la **nouvelle** clé sur **tous** les nœuds candidats, puis les redémarrer. Un nœud qui démarre encore avec l'ancienne clé refuse l'état (fail closed, il ne retombe jamais sur une ancienne copie).
+5. Contrôler : `state verify relay.state` avec la nouvelle clé, puis le démarrage et `status --local`.
+6. **Détruire** les copies lisibles avec l'ancienne clé : `relay.state.rekey.<UTC>.bak` (écrite avant toute modification, 0600), `relay.state.prev` et les sauvegardes de `STATE_DIR` d'avant la rotation. Tant qu'elles existent, l'ancienne clé les ouvre. Les conserver quelques jours est le seul filet de retour arrière (`state restore --from` avec l'**ancienne** clé, puis redéployer l'ancienne clé).
+
+Journal : `[SECURITY WARNING] master key rekeyed` et une ligne `"source":"rekey"` dans `state-restore.log` (nom de la sauvegarde, `write_seq`, opérateur ; jamais une clé ni une valeur).
 
 #### Fichier de jeton du plugin Ansible : `O_NOFOLLOW` ne protège que le dernier composant
 
@@ -804,7 +810,7 @@ Contrairement à `TLS_CERT` / `TLS_KEY` qui sont rechargés à chaud via `GetCer
 | Jeton de lien présenté à un autre relay que son destinataire | `aud` = relay local obligatoire ; `iss` = racine ; `sub ≠ aud` |
 | Relay parent compromis qui injecte sa propre clé racine | `link_keys` signé par l'**ancienne** clé et chaîne vérifiée depuis l'ancre de chaque relay ; `link_trust` inchangé en cas d'échec |
 | Rejeu d'une liste de révocations plus ancienne | `link_revocations.seq` strictement croissant (compteur unique), signature de la clé racine |
-| Compromission de `RSA_MASTER_KEY` | **Désormais : forge de tous les jetons de lien** (encadré §5) ; rotation avant la production, puis `keys rotate-link` |
+| Compromission de `RSA_MASTER_KEY` | **Désormais : forge de tous les jetons de lien** (encadré §5) ; rotation avant la production (`state rekey`, §11 : elle ne change pas les secrets eux-mêmes), puis `keys rotate-link` si la clé a pu fuiter |
 | Relay hors ligne pendant `retire-link-previous` | Refus `rotation_unconfirmed` tant que tous les relays connus n'ont pas confirmé ; `--force` journalise un `[SECURITY WARNING]` ; ré-épinglage par `state link-trust reset` (§7), sans perte des agents |
 | Relay non racine démarré sans ancre | Refus de tout lien entrant (`4010`) ; une ancre en désaccord avec `link_trust` empêche le démarrage |
 | Flood de `topology_snapshot` par reconnexions | Quota **par identité** `relay_id` (40 / 60 s), premier snapshot compté |

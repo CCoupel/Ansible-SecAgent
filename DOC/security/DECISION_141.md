@@ -166,6 +166,8 @@ La keyfunc vérifie `kid ∈ {current, previous}` mais ne vérifie pas `iss == r
 En v3.0.3 : compromis RSA_MASTER_KEY → accès aux JWT secrets agents + clés RSA serveur.  
 En v3.0.4 : **+ accès à `link_signing_key_current/previous`** → forge de tous les jetons de lien EdDSA de toute la hiérarchie relay.
 
+**Mise en œuvre (v3.0.4)** : la rotation se fait par la commande hors ligne `secagent-server state rekey` (`SECURITY.md` §11, `STATE_SPEC.md`).
+
 **Exigence L1f** : SECURITY.md §5 doit documenter ce changement de surface de risque. La procédure de montée de version (§4) doit inclure la rotation de `RSA_MASTER_KEY` comme étape recommandée avant mise en production.
 
 ---
