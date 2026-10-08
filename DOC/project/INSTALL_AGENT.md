@@ -63,7 +63,7 @@ install -d -m 0750 -o secagent-minion -g secagent-minion /var/lib/secagent-minio
 |---|---|---|---|
 | `/etc/secagent-minion/id_rsa` | `RELAY_PRIVATE_KEY` | clé privée RSA-4096, **générée au premier démarrage** si absente | 0600 (créée par le minion) |
 | `/etc/secagent-minion/token.jwt` | `RELAY_JWT_PATH` | JWT courant de l'agent | 0600 (créé par le minion) |
-| `/var/lib/secagent-minion/async/` | `RELAY_ASYNC_DIR` | registre des tâches Ansible `async` (`jobs.json`) | répertoire à créer |
+| `/var/lib/secagent-minion/async/` | `RELAY_ASYNC_DIR` | registre des tâches Ansible `async` (`jobs.json`) | créé par le minion s'il manque (0755) ; le créer à l'avance avec le bon propriétaire reste recommandé |
 
 Le minion crée lui-même les répertoires parents de la clé et du JWT en 0700 (`enrollment/keys.go`,
 `enrollment/enrollment.go`). Les journaux vont sur la sortie standard (journald) : il n'y a pas de fichier `agent.log`.
@@ -84,7 +84,7 @@ srv tokens create --role enrollment --hostname-pattern 'web-[0-9]+' --reusable -
   « JWT d'une heure » en §7. Un jeton à usage unique ou court fait sortir le minion en **code 78** à la première
   reconnexion après expiration de son JWT.
 - Les options complètes : `secagent-server tokens create --help`. `tokens list` (sans jamais montrer le jeton),
-  `tokens revoke <id>`, `tokens delete <id>`, `tokens purge`.
+  `tokens delete <id>` (supprime un jeton d'enrôlement ou plugin), `tokens purge` ; `tokens revoke <id>` ne vaut que pour les jetons `plugin` et de lien (`relay-child`/`relay-parent`), pas pour un jeton d'enrôlement.
 
 ## 5. Configuration (variables d'environnement)
 
@@ -111,9 +111,15 @@ RELAY_WS_URL=wss://relay1.example:7772/ws/agent,wss://relay2.example:7772/ws/age
 
 Il n'existe **ni fichier de configuration, ni variable pour la taille de stdout** (tampon fixe de 5 MiB par tâche).
 L'environnement des tâches Ansible est filtré : les variables `RELAY_*` et les noms en `*_TOKEN`, `*_KEY`, `*_SECRET`,
-`*_PASSWORD` ne leur sont jamais transmis (`AGENT_SPEC.md` §11b).
+`*_PASSWORD`, `*_PASS` ne leur sont jamais transmis (`AGENT_SPEC.md` §11b).
 
 Source de vérité des variables : `secagent-minion --help`.
+
+> **Ce qui a été exécuté, et ce qui ne l'a pas été.** Rejoués (binaires de la release v3.0.4, sans Docker) : `--version`/`--help`,
+> refus des arguments inconnus (code 1), arrêt en code 78 sans jeton, refus de `*_FILE` trop ouvert ou combiné à la
+> variable, refus de longueurs d'adresses différentes, `systemd-analyze verify` de l'unité du §7. **Non exécutés** : le
+> démarrage réel de l'unité sous systemd et les arrêts 77/78 sous systemd ; la sortie en code 0 sur SIGTERM ; le scénario
+> complet 401 → ré-enrôlement → 403 → code 78 contre un vrai serveur (décrit d'après le code et `AGENT_SPEC.md` §12).
 
 ## 6. Secrets par fichier (`*_FILE`)
 
@@ -135,6 +141,8 @@ printf '%s' "$JETON" > /etc/secagent-minion/enrollment.token        # $JETON : l
 Description=Ansible-SecAgent agent
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -146,8 +154,6 @@ Restart=on-failure
 RestartSec=30s
 # 77 = agent révoqué, 78 = enrôlement refusé : arrêts définitifs, ne pas relancer en boucle
 RestartPreventExitStatus=77 78
-StartLimitIntervalSec=600
-StartLimitBurst=5
 
 [Install]
 WantedBy=multi-user.target
@@ -208,7 +214,7 @@ Diagnostics fréquents :
 | Symptôme | Cause probable | Action |
 |---|---|---|
 | `Enrollment cannot succeed (permanent …)` puis sortie 78 | jeton à usage unique consommé/expiré, ou `RELAY_ENROLLMENT_TOKEN` absent | §4 et §7 |
-| refus de démarrer, `longueurs différentes` | `RELAY_SERVER_URL` et `RELAY_WS_URL` n'ont pas le même nombre d'adresses | les aligner |
+| refus de démarrer : « RELAY_SERVER_URL has N address(es) but RELAY_WS_URL has M: … must have the same length » (message en anglais, code 1) | `RELAY_SERVER_URL` et `RELAY_WS_URL` n'ont pas le même nombre d'adresses | les aligner |
 | `x509 …` / certificat inconnu | CA du relay absente du magasin système | `RELAY_CA_BUNDLE=<ca.pem>` ; vérifier que le nom (SAN) du certificat correspond à l'adresse utilisée |
 | connexion refusée sur 7770/7772 | l'instance interrogée est **secondaire** (aucun port ouvert) | lister toutes les adresses du relay actif/passif (§5) |
 | agent sans WebSocket, requête `GET /` | `RELAY_WS_URL` sans `/ws/agent` | ajouter le chemin |
@@ -223,8 +229,8 @@ Côté serveur : `secagent-server minions list` / `get <hostname>`.
 **Mise à jour** : télécharger et vérifier la nouvelle version (§2), puis
 `install -m 0755 … /usr/local/bin/secagent-minion && systemctl restart secagent-minion`. La clé et le JWT sont conservés ;
 si le JWT a plus d'une heure, le redémarrage provoque un ré-enrôlement (§7) : le jeton d'enrôlement doit être valide.
-Les anciens agents (jusqu'à v3.0.3) restent compatibles avec un serveur v3.0.4 : la montée v3.0.3 → v3.0.4 **ne coupe
-pas les agents** (elle coupe les liens relay ↔ relay).
+Les anciens agents (jusqu'à v3.0.3) doivent rester compatibles avec un serveur v3.0.4 : la montée v3.0.3 → v3.0.4 **ne coupe
+pas les agents** (elle coupe les liens relay ↔ relay). *Non exécuté ici* : un agent v3.0.3 réellement connecté à un serveur v3.0.4 (affirmation tirée de `DEPLOYMENT.md`).
 
 **Désinstallation** :
 
