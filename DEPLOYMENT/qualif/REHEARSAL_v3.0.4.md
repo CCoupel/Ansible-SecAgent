@@ -23,7 +23,7 @@
 1. **Annonce** : coupure des liens inter-relays ; les minions restent connectés à leur relay.
 2. **Racine, passif d'abord arrêté** : `docker compose stop secagent-server-b`, monter l'actif (`secagent-server-a`) en v3.0.4 (migration `SchemaVersion` 2, `relay.state.v1.bak` créé), puis le passif. Contrôles : un seul maître, secondaire sans port, `state verify` OK, `relay.state.v1.bak` présent.
 3. **Ancre et jetons, avant la fenêtre** (sur le maître) : `keys link-pubkey > root-link.pub` (relever `root_id=` sur stderr) ; `tokens create --role relay-child --sub dmz1 --aud <root_id> --expires 720h` (affiché une seule fois). Automatisé par `chain-test.sh bootstrap` pour une chaîne neuve ; pour une montée, appeler `link_anchor_prepare` / `link_mint_child` (même fichier).
-4. **Enfant** : pousser la clé dans le volume (`chain-test.sh push-link-key`), écrire le jeton dans `chain/upstream-token`, `chain/child.env` = `REPEATER_ROOT_ID=<root_id>` **sans** `REPEATER_UPSTREAM_TOKEN` (les deux définis = refus de démarrer), puis `docker compose up -d --force-recreate secagent-child` en v3.0.4.
+4. **Enfant** : déposer la clé publique et le jeton dans le volume `${PROJECT}_link` (`link_mint_child` écrit `chain/upstream-token` puis `push_link_key` le dépose en 0400/UID 10001), `chain/child.env` = `REPEATER_ROOT_ID=<root_id>` **sans** `REPEATER_UPSTREAM_TOKEN` (les deux définis = refus de démarrer), puis `docker compose up -d --force-recreate secagent-child` en v3.0.4.
 5. **Contrôles** : `relays list` (dmz1 `connected`), inventaire racine complet (minion-root + minion-child), `smoke`, `hooks`, `negative-ca` ; ancien jeton HS256 refusé (permanent).
 6. Garder les anciens jetons HS256 n'a plus d'intérêt : il n'y a pas de retour arrière.
 
@@ -38,7 +38,7 @@
 | `chain-test.sh link-revoke` | lien fermé en 4010, pas de reconnexion avec le jeton révoqué, rétabli avec un nouveau jeton |
 | Bascule de la racine (`failover`, puis `failover-test.sh run kill`) | nouveau maître avec la même clé (même `kid`), liens rétablis, hooks `host.up` journalisés |
 | `backup-restore` sous v3.0.4 | état v2 restauré, minion déjà enrôlé reconnecté sans ré-enrôlement |
-| `docker inspect` des conteneurs | aucun secret de lien en clair (jeton en `/run/secrets`, mode 0400, UID 10001 : `docker exec secagent-qualif-child stat -c '%a %u' /run/secrets/repeater_upstream_token`) |
+| `docker inspect` des conteneurs | aucun secret de lien en clair (jeton dans le volume `${PROJECT}_link`, mode 0400, UID 10001 : `docker exec secagent-qualif-child stat -c '%a %u' /run/secagent-link/upstream-token` → `400 10001`) |
 
 ## 4. Reprise sur incident (PAS un retour à v3.0.3)
 

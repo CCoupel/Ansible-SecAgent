@@ -1295,7 +1295,7 @@ services:
     restart: unless-stopped
     user: "10001:10001"
     stop_grace_period: 30s              # arrêt propre : relâche relay.lock
-    env_file: [./prod.env]              # JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY (secrets, hors dépôt)
+    secrets: [jwt_secret_key, admin_token, rsa_master_key]   # v3.0.4 : fichiers (*_FILE) appartenant à l'UID 10001, mode 0400, hors dépôt ; uid/gid/mode Compose ignorés hors Swarm (DEPLOYMENT/prod/preflight-secrets.sh)
     environment:
       STATE_DIR: /data                  # stockage partagé (bind mount du partage NFS)
       RELAY_STATUS_FILE: /run/secagent/status.json   # LOCAL (tmpfs), JAMAIS sur le partage
