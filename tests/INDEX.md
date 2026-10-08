@@ -21,3 +21,4 @@
 | GO/cmd/secagent-server/internal/hooks/burst_slow_test.go | unit | secagent-server | #183 rafale de 3 000 événements (tag de build `slow`, job CI slow-tests) | feature | slow |
 | GO/cmd/secagent-server/internal/integration/hooks_burst_slow_test.go | integration | secagent-server | #183 3 000 agents se reconnectent (tag de build `slow`, job CI slow-tests) | feature | slow |
 | GO/cmd/secagent-server/internal/integration/task_limits_load_slow_test.go | integration | secagent-server | #179 charge 3 000 agents (tag de build `slow`, job CI slow-tests) | feature | slow |
+| GO/cmd/secagent-server/internal/integration/exec_long_answer_slow_test.go | integration | secagent-server | #179 régression : la réponse d'un exec > 15 s (WriteTimeout API) arrive intacte (« bad record MAC » sinon) | regression | slow |

@@ -115,6 +115,10 @@ type nodeSpec struct {
 	// (secrets in clear, `state init --insecure-test-mode`): the only way a node can run without a master
 	// key. Used to test what the server must refuse to do without one (mint of link tokens → 503).
 	NoMasterKey bool
+	// NodeBinary is the test binary the node process is started from; empty = this very binary
+	// (os.Args[0], so a -race run gives -race nodes). The load test sets a binary built WITHOUT -race:
+	// the race detector multiplies the memory of a process, which would hide the real RSS.
+	NodeBinary string
 	// Hooks builds the node's hooks configuration (JSON) from the file its file-actions append to;
 	// nil = no hooks file (the node starts with 0 hooks).
 	Hooks func(out string) string
@@ -132,6 +136,7 @@ type node struct {
 	hookOut   string   // file the hooks' file-actions append to
 	logs      *syncBuf
 	cmd       *exec.Cmd
+	bin       string // test binary the node process starts from ("" = os.Args[0])
 	stdin     io.WriteCloser
 	plugin    string
 	root      *node // the root relay of the tree this node belongs to (nil for the root itself)
@@ -300,7 +305,7 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 			root = r.(*node)
 		}
 	}
-	n := &node{t: t, id: spec.ID, adminTok: "admin-" + spec.ID + "-secret-token", jwtSecret: "jwt-signing-secret-of-" + spec.ID + "-0123456789", logs: &syncBuf{}}
+	n := &node{t: t, id: spec.ID, adminTok: "admin-" + spec.ID + "-secret-token", jwtSecret: "jwt-signing-secret-of-" + spec.ID + "-0123456789", logs: &syncBuf{}, bin: spec.NodeBinary}
 	masterKey := "integration-master-key-" + spec.ID
 	stateDir := filepath.Join(t.TempDir(), "state")
 	n.stateDir = stateDir
@@ -558,11 +563,18 @@ func (n *node) setEnv(key, value string) {
 	n.env = append(n.env, key+"="+value)
 }
 
+func (n *node) nodeBin() string {
+	if n.bin != "" {
+		return n.bin
+	}
+	return os.Args[0]
+}
+
 // runExpectingExit starts the node process and returns its exit code and combined output; it is for
 // configurations the server must REFUSE to start with (the process is expected to exit by itself).
 func (n *node) runExpectingExit() (code int, output string) {
 	n.t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestNodeProcess$", "-test.v")
+	cmd := exec.Command(n.nodeBin(), "-test.run=^TestNodeProcess$", "-test.v")
 	cmd.Env = append([]string(nil), n.env...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -624,7 +636,7 @@ func (n *node) launchSecondary(extra []string) {
 func (n *node) startProcess(extra []string) (ready chan nodeReady, started chan struct{}) {
 	t := n.t
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestNodeProcess$", "-test.v")
+	cmd := exec.Command(n.nodeBin(), "-test.run=^TestNodeProcess$", "-test.v")
 	cmd.Env = append(append([]string(nil), n.env...), extra...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

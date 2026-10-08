@@ -68,7 +68,8 @@ jobs:
           ADMIN_TOKEN: test
         run: |
           go test -race -tags slow -run 'TestBurst_3000EventsAreAllExecutedAndJournaled' ./cmd/secagent-server/internal/hooks/ -timeout 600s
-          go test -race -tags slow -run 'TestHooksBurst_3000AgentsReconnectingAllRunTheirHook|TestTaskLimits_Load3000' ./cmd/secagent-server/internal/integration/ -timeout 1200s
+          # le test de charge compile lui-meme son noeud SANS -race (go test -c) : le RSS d'un noeud -race est sans signification
+          go test -race -tags slow -run 'TestHooksBurst_3000AgentsReconnectingAllRunTheirHook|TestTaskLimits_Load3000|TestExec_AnAnswerLonger' ./cmd/secagent-server/internal/integration/ -timeout 1200s
 
   lint:
     name: Lint Go

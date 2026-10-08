@@ -5,9 +5,13 @@
 package integration
 
 import (
+	"debug/buildinfo"
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +21,34 @@ import (
 )
 
 // ── load: 3 000 simulated agents (perf scope) ────────────────────────────────
+
+// buildPlainNodeBinary compiles this very package's test binary WITHOUT -race, in a directory the test
+// removes afterwards, and returns its path: the nodes of the load test run from it. The race detector
+// multiplies the memory of a process several times (shadow memory, vector clocks): a -race node cannot
+// tell whether the 2 GiB criterion is met. The rest of the test run keeps -race.
+func buildPlainNodeBinary(t *testing.T) string {
+	t.Helper()
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		goBin = filepath.Join(runtime.GOROOT(), "bin", "go")
+	}
+	out := filepath.Join(t.TempDir(), "integration-plain.test")
+	cmd := exec.Command(goBin, "test", "-c", "-o", out, ".")
+	cmd.Env = append(os.Environ(), "GOFLAGS=", "CGO_ENABLED=1")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("building the node binary without -race: %v\n%s", err, b)
+	}
+	info, err := buildinfo.ReadFile(out)
+	if err != nil {
+		t.Fatalf("build info of the node binary: %v", err)
+	}
+	for _, s := range info.Settings {
+		if s.Key == "-race" && s.Value == "true" {
+			t.Fatal("the node binary of the load test was built with -race: the RSS criterion would be meaningless")
+		}
+	}
+	return out
+}
 
 // rssSampler records the peak resident set of the node process (a child of the test binary: the
 // harness runs every node as its own OS process, so /proc/<pid>/status is the node and nothing else).
@@ -93,7 +125,7 @@ func TestTaskLimits_Load3000AgentsNominalThenSaturation(t *testing.T) {
 	}
 	parallel(t)
 	const agents, forks, saturating = 3000, 200, 1000
-	n := startNode(t, nodeSpec{ID: "load"}) // DEFAULT limits: that is the point
+	n := startNode(t, nodeSpec{ID: "load", NodeBinary: buildPlainNodeBinary(t)}) // DEFAULT limits: that is the point; node built without -race
 	rss := startRSSSampler(t, n.cmd.Process.Pid)
 	n.pluginToken() // created once, before the concurrent execs (the lazy creation is not goroutine-safe)
 
