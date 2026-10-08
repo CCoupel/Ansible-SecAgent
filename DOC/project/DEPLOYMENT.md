@@ -23,6 +23,7 @@ Ansible-SecAgent v3.0.3 est composé de trois éléments :
 - **Enrollment** : POST /api/register (RSA-4096 + JWT) une seule fois
 - **Exécution** : Subprocess par tâche, isolation complète, max 10 concurrentes (configurable)
 - **Codes de sortie** : 1 = échec (redémarrage par la politique), 77 (revoked - no restart), 78 (enrollment absent/refused - no restart)
+- **Ligne de commande** : le minion démarre **sans argument** (toute sa configuration vient de l'environnement). `--version` (ou `-v`) et `--help` (ou `-h`) répondent sans rien démarrer (code 0) ; **tout autre argument est refusé** (erreur sur stderr, code 1, avant toute initialisation : ni clé générée, ni lecture de secret). Ne pas ajouter d'`command:`/`args:` à un service minion.
 
 **Network** : Host network (agents sur 192.168.1.100-102, relay sur 192.168.1.218)
 
