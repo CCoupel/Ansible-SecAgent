@@ -6,7 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### v3.0.4 — Jetons de lien relay signés par la racine (#141, #146) — en cours
+### Added
+- (future features for next milestone)
+
+---
+
+## [v3.0.4] — 2026-10-08 — Jetons de lien relay signés par la racine (#141, #146)
 
 **⚠️ BREAKING CHANGES — une seule rupture, pas de fenêtre HS256, pas de retour arrière vers v3.0.3**
 
@@ -28,9 +33,6 @@ All notable changes to this project will be documented in this file.
 - **[FIX] Réponse d'`exec` coupée au-delà de 15 s** : le `WriteTimeout` du serveur API (15 s) coupait la réponse de tout `exec` / `upload` / `fetch` bloquant plus long que 15 s (la tâche s'exécutait, le client voyait une connexion rompue, `bad record MAC` en TLS). Présent **depuis la phase 6 (mars 2026) : v1.0.0, v2.0.0 et v3.0.3 sont concernées**. Corrigé : la deadline d'écriture est étendue à `timeout + 35 s` pour ces handlers.
 - **[DOC] Rotation de la clé de lien : mettre à jour `REPEATER_ROOT_LINK_KEY_FILE` de chaque relay non racine AVANT `retire-link-previous`** : après le retrait, l'ancien fichier épinglé n'est plus accepté et le prochain démarrage du relay est refusé (`pinned root link key disagrees with the persisted link_trust`, fail closed). Comportement du code inchangé ; procédure et remède documentés (DEPLOYMENT.md, SECURITY.md §7, DECISION_141.md), scénario `link-rotation` de la qualif corrigé. Même rubrique : durée de vie du JWT d'agent (1 h) et ré-enrôlement après redémarrage d'un relay (code 78 si le jeton d'enrôlement est consommé ou expiré).
 - Ajouts : rotation de la clé racine (`keys rotate-link`, `retire-link-previous`, double acceptation), révocation propagée de proche en proche (`link_revocations`, `link_keys`, `link_state`), `GET /api/admin/link/{pubkey,status}`. Voir `DOC/security/DECISION_141.md`.
-
-### Added
-- (future features for next milestone)
 
 ---
 
