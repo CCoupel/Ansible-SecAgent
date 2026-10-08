@@ -115,6 +115,10 @@ type RestoreOptions struct {
 	// LockOverride records in the journal that the operator passed over a lock that was not proven
 	// stale (the caller already logged the [SECURITY WARNING]).
 	LockOverride bool
+	// BeforeRename (may be nil) is the last check before relay.state is replaced: it re-reads relay.lock
+	// and returns ErrInstanceAppeared when a node took it since the probe. The write is then abandoned
+	// (state untouched, backups kept).
+	BeforeRename func() error
 }
 
 // RestoreResult is what Restore did.
@@ -128,6 +132,10 @@ type RestoreResult struct {
 
 // ErrWriteSeqTooLow: the source is older than the requested minimum.
 var ErrWriteSeqTooLow = errors.New("state: write_seq below the requested minimum")
+
+// ErrInstanceAppeared: relay.lock changed between the probe and the replacement of relay.state, a node
+// is (or was just) alive: the offline operation is abandoned, relay.state is untouched.
+var ErrInstanceAppeared = errors.New("state: relay.lock changed since it was probed: an instance appeared; relay.state was NOT modified")
 
 // Restore replaces relay.state in o.Dir by the file o.From after verifying it with VerifyFile
 // (an inauthentic or invalid source is refused and nothing is modified). The caller has already
@@ -184,7 +192,7 @@ func Restore(o RestoreOptions) (*RestoreResult, error) {
 	}
 
 	// replacement by the engine's atomic write; rotate=false keeps the existing relay.state.prev
-	if err := atomicWrite(o.FS, o.Dir, data, false, nil); err != nil {
+	if err := atomicWrite(o.FS, o.Dir, data, false, o.BeforeRename); err != nil {
 		return nil, err
 	}
 

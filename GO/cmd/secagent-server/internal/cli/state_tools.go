@@ -200,11 +200,18 @@ Exit codes: those of 'state verify', plus 8 when an instance is alive.`,
 			return err
 		}
 		// 3. back up, replace atomically, journal
+		guard := lockUnchangedGuard(dir, overridden)
+		if stateRestoreAfterProbe != nil {
+			stateRestoreAfterProbe() // test seam
+		}
 		res, err := state.Restore(state.RestoreOptions{
 			Dir: dir, From: stateRestoreFrom, MasterKey: masterKey, MinWriteSeq: stateRestoreMinSeq,
-			Now: stateRestoreNowFunc, LockOverride: overridden,
+			Now: stateRestoreNowFunc, LockOverride: overridden, BeforeRename: guard,
 		})
 		if err != nil {
+			if errors.Is(err, state.ErrInstanceAppeared) {
+				return &ExitError{Code: ExitInstanceAlive, Msg: "restore refused, relay.state NOT replaced: " + err.Error()}
+			}
 			if res == nil {
 				code, why := verifyExit(err)
 				return &ExitError{Code: code, Msg: "restore failed, relay.state not replaced: " + why}
@@ -331,7 +338,7 @@ from relay.state, no confirmation).`,
 			return linkTrustResetError(err, "")
 		}
 		if !probe.Present {
-			_, _ = fmt.Fprintln(out, "no link trust anchor is persisted in this state: nothing to reset (nothing written)")
+			_, _ = fmt.Fprintln(out, "no link trust anchor is persisted in this state: nothing to reset (nothing written). This is also the normal case of a ROOT, which has no anchor (and no signing key until its first mint or the first link-pubkey export)")
 			return nil
 		}
 		// 2. no instance may hold a fresh lock
@@ -339,7 +346,10 @@ from relay.state, no confirmation).`,
 		if err != nil {
 			return err
 		}
-		_ = overridden
+		guard := lockUnchangedGuard(dir, overridden)
+		if stateLTAfterProbe != nil {
+			stateLTAfterProbe() // test seam: a node takes the lock between the probe and the replacement
+		}
 		// 3. confirmation
 		_, _ = fmt.Fprintf(out, "This will CLEAR the link trust anchor of this relay (root %q, kid %s, previous %s, seq %d) in %s.\n",
 			probe.RootID, orNone(probe.CurrentKID), orNone(probe.PreviousKID), probe.Seq, dir)
@@ -355,8 +365,15 @@ from relay.state, no confirmation).`,
 				return &ExitError{Code: ExitRefused, Msg: "reset cancelled, nothing modified"}
 			}
 		}
-		res, err := state.ResetLinkTrust(state.LinkTrustResetOptions{Dir: dir, MasterKey: masterKey, Now: now})
+		res, err := state.ResetLinkTrust(state.LinkTrustResetOptions{Dir: dir, MasterKey: masterKey, Now: now, BeforeRename: guard})
 		if err != nil {
+			if errors.Is(err, state.ErrInstanceAppeared) {
+				bak := ""
+				if res != nil {
+					bak = " (the backup " + res.BackupFile + " was kept)"
+				}
+				return &ExitError{Code: ExitInstanceAlive, Msg: "reset refused, relay.state NOT modified" + bak + ": " + err.Error()}
+			}
 			if res == nil {
 				return linkTrustResetError(err, "reset failed, relay.state not modified: ")
 			}
@@ -386,4 +403,34 @@ func init() {
 	stateLinkTrustResetCmd.Flags().BoolVar(&stateRestoreForce, "i-know-no-instance-is-running", false, "pass over a relay.lock that is not proven stale (orphan lock): [SECURITY WARNING]")
 	stateLinkTrustCmd.AddCommand(stateLinkTrustResetCmd)
 	stateCmd.AddCommand(stateLinkTrustCmd)
+}
+
+// stateLTAfterProbe is a test seam, called after the lock probe and before the replacement.
+var stateLTAfterProbe func()
+
+// stateRestoreAfterProbe is the same seam for state restore.
+var stateRestoreAfterProbe func()
+
+// lockUnchangedGuard snapshots relay.lock NOW (right after the probe concluded: absent, or stale and
+// therefore unchanging) and returns the check run just before relay.state is replaced: if the lock
+// appeared or its content changed since, a node is alive (or was just started) and the offline
+// operation is abandoned. With the explicit override (an orphan lock not proven stale) the operator
+// took the responsibility: no guard.
+func lockUnchangedGuard(dir string, overridden bool) func() error {
+	if overridden {
+		return nil
+	}
+	path := filepath.Join(dir, lock.FileName)
+	read := func() ([]byte, bool) {
+		b, err := os.ReadFile(path)
+		return b, err == nil
+	}
+	want, had := read()
+	return func() error {
+		got, has := read()
+		if has != had || string(got) != string(want) {
+			return state.ErrInstanceAppeared
+		}
+		return nil
+	}
 }

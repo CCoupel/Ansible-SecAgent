@@ -168,3 +168,58 @@ func TestStateLinkTrustReset_NoMasterKey(t *testing.T) {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 }
+
+// A node that takes relay.lock between the probe and the replacement: the offline operation is
+// abandoned, relay.state is untouched, the backup is kept (the guard re-reads the lock before the rename).
+func TestStateLinkTrustReset_AbandonsWhenANodeTakesTheLockAfterTheProbe(t *testing.T) {
+	t.Setenv("RSA_MASTER_KEY", toolsKey)
+	fastLockParams(t)
+	dir := anchoredToolsState(t)
+	stateBefore := mustRead(t, filepath.Join(dir, state.StateFile))
+	prevBefore := mustRead(t, filepath.Join(dir, state.PrevFile))
+	stateLTAfterProbe = func() { // the node starts and takes the lock right after the probe concluded "absent"
+		_ = os.WriteFile(filepath.Join(dir, lock.FileName), []byte(`{"instance_id":"late","role":"candidate","beat":1}`), 0o700)
+	}
+	t.Cleanup(func() { stateLTAfterProbe = nil })
+	out, code := execLTReset(t, dir, true, false, "")
+	if code != ExitInstanceAlive || !strings.Contains(out, "NOT modified") || !strings.Contains(out, "backup") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if !bytes.Equal(mustRead(t, filepath.Join(dir, state.StateFile)), stateBefore) || !bytes.Equal(mustRead(t, filepath.Join(dir, state.PrevFile)), prevBefore) {
+		t.Error("relay.state / relay.state.prev must be untouched")
+	}
+	backups := 0
+	for name := range snapshotDir(t, dir) {
+		if strings.Contains(name, "linktrust-reset") && strings.HasSuffix(name, ".bak") {
+			backups++
+		}
+		if strings.HasSuffix(name, ".tmp") {
+			t.Errorf("leftover temporary file %s", name)
+		}
+	}
+	if backups != 1 {
+		t.Errorf("the backup must be kept: %d found", backups)
+	}
+	if e, err := state.Open(state.Options{Dir: dir, MasterKey: toolsKey}); err != nil || e.Snapshot().LinkTrust().IsZero() {
+		t.Errorf("the anchor must still be there: %v", err)
+	}
+}
+
+// The same guard protects 'state restore'.
+func TestStateRestore_AbandonsWhenANodeTakesTheLockAfterTheProbe(t *testing.T) {
+	t.Setenv("RSA_MASTER_KEY", toolsKey)
+	fastLockParams(t)
+	dir := toolsState(t)
+	stateBefore := mustRead(t, filepath.Join(dir, state.StateFile))
+	stateRestoreAfterProbe = func() {
+		_ = os.WriteFile(filepath.Join(dir, lock.FileName), []byte(`{"instance_id":"late","role":"candidate","beat":1}`), 0o700)
+	}
+	t.Cleanup(func() { stateRestoreAfterProbe = nil })
+	out, code := execRestore(t, dir, filepath.Join(dir, state.PrevFile), false)
+	if code != ExitInstanceAlive || !strings.Contains(out, "NOT replaced") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if !bytes.Equal(mustRead(t, filepath.Join(dir, state.StateFile)), stateBefore) {
+		t.Error("relay.state must be untouched")
+	}
+}

@@ -37,6 +37,8 @@ type LinkTrustResetOptions struct {
 	MaxBytes  int64
 	Now       func() time.Time
 	Operator  string // journal (default: the system user)
+	// BeforeRename: last check before the replacement (see RestoreOptions.BeforeRename).
+	BeforeRename func() error
 }
 
 // LinkTrustResetResult is what ResetLinkTrust did. It carries public identifiers only.
@@ -122,7 +124,10 @@ func ResetLinkTrust(o LinkTrustResetOptions) (*LinkTrustResetResult, error) {
 	if int64(len(data)) > o.MaxBytes {
 		return nil, ErrTooLarge
 	}
-	if err := atomicWrite(o.FS, o.Dir, data, true, nil); err != nil {
+	if err := atomicWrite(o.FS, o.Dir, data, true, o.BeforeRename); err != nil {
+		if errors.Is(err, ErrInstanceAppeared) {
+			return res, err // relay.state untouched; the result names the backup that was kept
+		}
 		return nil, err
 	}
 
