@@ -37,6 +37,14 @@ jobs:
           CGO_ENABLED: "0"
         run: go build ./...
 
+      # La version est injectee par -ldflags -X (release.yml, GO/Dockerfile) : ce controle echoue si le chemin du
+      # symbole change (renommage du module ou de la variable), sinon la release publierait `dev`.
+      - name: Version injectable par ldflags (--version)
+        working-directory: GO
+        run: |
+          CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w -X secagent-server/cmd/secagent-server/internal/cli.Version=9.9.9" -o "$RUNNER_TEMP/secagent-server-v" ./cmd/secagent-server
+          bash ../scripts/ci/assert_version.sh 9.9.9 "$RUNNER_TEMP/secagent-server-v"
+
       # Tests bloquants : aucun contournement. -race exige CGO (actif sur ubuntu-latest).
       # -timeout 300s par package : marge x8 sur le package le plus lent (handlers ~37 s en local
       # sous -race), un runner GitHub etant 2 a 3 fois plus lent.
@@ -217,6 +225,7 @@ jobs:
           bash scripts/ci/chain_verify_images_selftest.sh
           bash scripts/ci/failover_guard_selftest.sh
           python3 scripts/ci/check_no_binds_selftest.py
+          bash scripts/ci/assert_version_selftest.sh
           bash scripts/ci/preflight_secrets_selftest.sh
           python3 scripts/ci/check_scripts.py .github/workflows/*.yml
 
