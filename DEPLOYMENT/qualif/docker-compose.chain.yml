@@ -56,9 +56,6 @@ services:
       - path: ./chain/child.env           # REPEATER_ROOT_ID (non secret) ; plus aucun jeton ici
         required: false
     environment: *child-env
-    configs:
-      - source: secagent_hooks            # defini dans docker-compose.server.yml (inclus) : hooks.json de qualif
-        target: /etc/secagent-server/hooks.json
     volumes:
       - child_state:/data
       - type: volume                       # cle publique racine (ancre) + jeton de lien, lecture seule
