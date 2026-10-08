@@ -10,6 +10,10 @@ Remplace SQLite pour les relays : un fichier unique chargé en mémoire, écrit 
 | `relay.state.prev` | génération précédente (lien dur de l'ancien `relay.state`) |
 | `relay.state.tmp` | écriture en cours |
 | `relay.lock` | verrou d'exclusivité du maître (#162) |
+| `relay.state.v1.bak` (v3.0.4) | copie octet pour octet de l'état v1 (ou de `relay.state.prev` si c'est lui qui a été chargé), écrite par le **maître** à la première écriture qui migre v1 → v2, avant toute écriture v2 ; 0600, fichier temporaire + `fsync` + `rename` ; jamais relue par le serveur ; remplacée par un contenu identique si la migration est rejouée, plus aucune sauvegarde une fois le v2 écrit ; **jamais purgée automatiquement** (suppression par l'opérateur, après validation de la v3.0.4) — voir « Migration v1 → v2 » |
+| `relay.state.bak-<UTC>`, `relay.state.prev.bak-<UTC>` | copies de l'état d'avant un `state restore` ; 0600 ; horodatage `AAAAMMJJThhmmssZ` ; jamais relues par le serveur ni purgées automatiquement |
+| `relay.state.linktrust-reset.<UTC>.bak` (v3.0.4) | copie complète de `relay.state` d'avant un `state link-trust reset` ; 0600 ; même horodatage ; jamais relue ni purgée automatiquement ; contient les mêmes secrets chiffrés que l'état — voir `state link-trust reset` |
+| `state-restore.log` | journal des interventions `state restore` et `state link-trust reset` (une ligne JSON par intervention, sans secret ni clé : date, opérateur, source, `write_seq` avant/après, sauvegardes, `lock_override`) ; ouvert en ajout, 0600, sans suivre les liens symboliques ; jamais lu par le serveur ni tourné automatiquement |
 
 ## Format
 
