@@ -354,3 +354,39 @@ func TestLinkJWT_ValidLinkKIDIsStrict(t *testing.T) {
 		}
 	}
 }
+
+func TestLinkJWT_VerifyLinkKeysReplay(t *testing.T) {
+	f := newLinkFixture(t)
+	newPub, newPriv, _ := GenerateLinkKey()
+	_, evil, _ := GenerateLinkKey()
+	rotation, _ := SignLinkKeys(f.priv, newPub, f.pub, 5)
+	closing, _ := SignLinkKeys(newPriv, newPub, nil, 6)
+	open := LinkTrust{Current: newPub, Previous: f.pub, LastSeq: 5}
+	closed := LinkTrust{Current: newPub, LastSeq: 6}
+
+	if seq, err := VerifyLinkKeysReplay(open, rotation); err != nil || seq != 5 {
+		t.Fatalf("authentic rotation replay: %d %v", seq, err)
+	}
+	if seq, err := VerifyLinkKeysReplay(closed, closing); err != nil || seq != 6 {
+		t.Fatalf("authentic closing replay: %d %v", seq, err)
+	}
+	// a relay anchored on the new key with no previous holds nothing able to verify the rotation
+	_, err := VerifyLinkKeysReplay(closed, rotation)
+	wantCode(t, err, LinkErrMsgChain, true)
+	// forged: right keys, wrong signer; the signer announced in the frame is NOT trusted
+	forged, _ := SignLinkKeys(evil, newPub, f.pub, 5)
+	_, err = VerifyLinkKeysReplay(open, forged)
+	wantCode(t, err, LinkErrMsgChain, true)
+	selfSigned, _ := SignLinkKeys(evil, newPub, evil.Public().(ed25519.PublicKey), 5) // previous chosen by the attacker
+	_, err = VerifyLinkKeysReplay(open, selfSigned)
+	wantCode(t, err, LinkErrMsgChain, true)
+	// another current key, tampered seq
+	other, _ := SignLinkKeys(f.priv, f.pub, nil, 5)
+	_, err = VerifyLinkKeysReplay(open, other)
+	wantCode(t, err, LinkErrMsgChain, true)
+	tampered := strings.Replace(string(rotation), `"seq":5`, `"seq":99999`, 1)
+	_, err = VerifyLinkKeysReplay(open, []byte(tampered))
+	wantCode(t, err, LinkErrMsgChain, true)
+	_, err = VerifyLinkKeysReplay(LinkTrust{}, rotation)
+	wantCode(t, err, LinkErrNoTrust, false)
+}

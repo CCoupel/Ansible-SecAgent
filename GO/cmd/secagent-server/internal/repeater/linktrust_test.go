@@ -2,6 +2,7 @@ package repeater
 
 import (
 	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"sync"
@@ -363,13 +364,14 @@ func TestLinkTrust_NoSecretOrKeyInLogs(t *testing.T) {
 	}
 }
 
-// A relay deployed AFTER the rotation is anchored on the new key: the replayed link_keys (signed by the
-// OLD key) cannot be verified, yet it announces the key it already trusts: idempotent, confirmed, no
-// security warning, nothing written.
-func TestLinkTrust_RotationReplayOnAnAlreadyCurrentRelayIsConfirmed(t *testing.T) {
-	root := newLT(t) // the root: first key
+// A relay deployed AFTER the rotation is anchored on the new key: it holds no key able to verify the
+// replayed rotation (signed by the old one). The frame is NOT trusted: ignored without a security
+// warning, not relayed, not remembered, no link_state. The confirmation comes from the verified
+// link_revocations whose seq is authenticated by the current key.
+func TestLinkTrust_RotationReplayOnAnAnchoredOnNewKeyRelayIsIgnoredNotConfirmed(t *testing.T) {
+	root := newLT(t)
 	newPub, newPriv, _ := auth.GenerateLinkKey()
-	frame := root.keys(t, root.priv, newPub, root.pub, 7) // rotation signed by the old key
+	frame := root.keys(t, root.priv, newPub, root.pub, 7) // authentic rotation, signed by the old key
 
 	store, bl := &fakeTrustStore{}, &fakeBlacklist{}
 	m, err := NewLinkTrust(LinkTrustConfig{RootID: "root", Anchor: newPub, Store: store, Blacklist: bl})
@@ -379,30 +381,96 @@ func TestLinkTrust_RotationReplayOnAnAlreadyCurrentRelayIsConfirmed(t *testing.T
 	var fwd [][]byte
 	m.OnForward(func(raw []byte) { fwd = append(fwd, raw) })
 	saves := store.saves
-
 	var buf strings.Builder
 	prevOut, prevFlags := logWriterSwap(&buf)
 	defer logWriterRestore(prevOut, prevFlags)
 
 	res, err := m.HandleFrame(frame)
-	if err != nil || res.Applied || !res.Confirm || res.Seq != 7 || res.KID != auth.LinkKID(newPub) {
+	if err != nil || res.Applied || res.Confirm {
 		t.Fatalf("%+v %v", res, err)
 	}
-	if store.saves != saves || store.rec.Seq != 0 {
-		t.Fatal("an idempotent replay wrote the state")
+	if store.saves != saves || len(fwd) != 0 || len(m.Replay()) != 0 {
+		t.Fatal("an unverifiable replay was written, relayed or remembered")
 	}
 	if strings.Contains(buf.String(), "SECURITY WARNING") {
-		t.Fatalf("no security warning expected: %s", buf.String())
+		t.Fatalf("the nominal case must not raise a security warning: %s", buf.String())
 	}
-	if len(fwd) != 1 || string(fwd[0]) != string(frame) {
-		t.Fatal("the frame must still be relayed to the children")
+	// the confirmation: a verified revocation list at the rotation's seq
+	rev := root.revocations(t, newPriv, 7)
+	res, err = m.HandleFrame(rev)
+	if err != nil || !res.Applied || res.Seq != 7 {
+		t.Fatalf("revocations: %+v %v", res, err)
 	}
-	// tokens of the old key stay refused: nothing was adopted from the unverifiable frame
-	old, _, _ := auth.SignLinkToken(root.priv, "root", "c", "me", auth.RoleRelayChild, time.Hour)
-	if _, err := m.VerifyToken(old, "me", auth.RoleRelayChild, time.Now()); err == nil {
-		t.Fatal("old key accepted")
+}
+
+// R4 (audit): a FORGED link_keys carrying the trusted current key, a garbage signature and a huge seq
+// is never relayed, remembered nor confirmed — during an open rotation (Previous != nil) or not.
+func TestLinkTrust_ForgedKeysReplayIsNeverRelayedRememberedOrConfirmed(t *testing.T) {
+	for _, openRotation := range []bool{false, true} {
+		f := newLT(t)
+		cur, curPriv := f.pub, f.priv
+		if openRotation {
+			newPub, newPriv, _ := auth.GenerateLinkKey()
+			if _, err := f.m.HandleFrame(f.keys(t, f.priv, newPub, f.pub, 1)); err != nil {
+				t.Fatal(err)
+			}
+			cur, curPriv = newPub, newPriv
+			f.fwd, f.rev = nil, nil
+		}
+		_ = curPriv
+		bogus := base64.RawURLEncoding.EncodeToString(make([]byte, 64))
+		for name, frame := range map[string]string{
+			"garbage signature":                   `{"type":"link_keys","current_pub":"` + b64(cur) + `","current_kid":"` + auth.LinkKID(cur) + `","seq":99999,"sig":"` + bogus + `"}`,
+			"garbage signature + chosen previous": `{"type":"link_keys","current_pub":"` + b64(cur) + `","previous_pub":"` + b64(f.pub) + `","seq":99999,"sig":"` + bogus + `"}`,
+			"seq replay with garbage signature":   `{"type":"link_keys","current_pub":"` + b64(cur) + `","seq":1,"sig":"` + bogus + `"}`,
+		} {
+			saves := f.store.saves
+			res, err := f.m.HandleFrame([]byte(frame))
+			if res.Applied || res.Confirm || res.Seq == 99999 {
+				t.Errorf("open=%v %s: accepted: %+v %v", openRotation, name, res, err)
+			}
+			if len(f.fwd) != 0 || f.store.saves != saves {
+				t.Errorf("open=%v %s: relayed or written", openRotation, name)
+			}
+			if rp := f.m.Replay(); len(rp) > 1 || (len(rp) == 1 && strings.Contains(string(rp[0]), "99999")) {
+				t.Errorf("open=%v %s: remembered", openRotation, name)
+			}
+		}
+		if seq, _ := f.m.State(); seq > 1 {
+			t.Errorf("open=%v: seq moved to %d", openRotation, seq)
+		}
 	}
-	_ = newPriv
+}
+
+// An authentic re-send (same rotation, signature of the previous key we trust) is confirmed with OUR
+// authenticated seq, relayed and remembered; a re-send of the closed window too.
+func TestLinkTrust_AuthenticKeysReplayIsConfirmed(t *testing.T) {
+	f := newLT(t)
+	newPub, newPriv, _ := auth.GenerateLinkKey()
+	frame := f.keys(t, f.priv, newPub, f.pub, 4)
+	if _, err := f.m.HandleFrame(frame); err != nil {
+		t.Fatal(err)
+	}
+	f.fwd = nil
+	saves := f.store.saves
+	res, err := f.m.HandleFrame(frame)
+	if err != nil || res.Applied || !res.Confirm || res.Seq != 4 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if f.store.saves != saves || len(f.fwd) != 1 || len(f.m.Replay()) != 1 {
+		t.Fatal("authentic replay: expected relayed + remembered, nothing written")
+	}
+	closeFrame := f.keys(t, newPriv, newPub, nil, 5)
+	if _, err := f.m.HandleFrame(closeFrame); err != nil {
+		t.Fatal(err)
+	}
+	f.fwd = nil
+	if res, err := f.m.HandleFrame(closeFrame); err != nil || !res.Confirm || res.Seq != 5 {
+		t.Fatalf("closed window replay: %+v %v", res, err)
+	}
+	if len(f.m.Replay()) != 0 {
+		t.Fatal("closed window must not be remembered")
+	}
 }
 
 // A really broken chain is still refused with a warning: unknown key, forged signature.
@@ -424,10 +492,5 @@ func TestLinkTrust_BrokenChainIsStillRefused(t *testing.T) {
 	// the announced current key is ours but the frame is garbage: not confirmed either
 	if _, err := f.m.HandleFrame([]byte(`{"type":"link_keys","current_pub":"x","seq":1}`)); err == nil {
 		t.Fatal("malformed frame accepted")
-	}
-	// a frame whose kid contradicts the key is not a confirmation
-	bad := strings.Replace(string(f.keys(t, f.priv, f.pub, nil, 9)), `"current_kid":"`, `"current_kid":"zz`, 1)
-	if res, err := f.m.HandleFrame([]byte(bad)); err == nil && res.Confirm {
-		t.Fatal("kid mismatch confirmed")
 	}
 }

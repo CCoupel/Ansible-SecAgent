@@ -387,7 +387,10 @@ func (m *Manager) Status() (Status, error) {
 	sort.Strings(ids)
 	for _, id := range ids {
 		s := states[id]
-		ok := prev == nil || (s.Seq >= rot && s.KID == st.CurrentKID)
+		// Confirmed = the relay reports the CURRENT kid, i.e. it trusts the new key and verifies the tokens
+		// signed by it. Its reported seq is informational (unsigned): a relay deployed after the
+		// rotation is anchored on the new key and cannot authenticate the rotation's seq.
+		ok := prev == nil || s.KID == st.CurrentKID
 		st.Relays = append(st.Relays, RelayStatus{RelayID: id, LinkSeq: s.Seq, LinkKID: s.KID, Confirmed: ok})
 	}
 	return st, nil

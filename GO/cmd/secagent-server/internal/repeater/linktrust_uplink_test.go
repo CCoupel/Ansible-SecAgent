@@ -45,7 +45,7 @@ func TestUplink_LinkFramesAreVerifiedAppliedAckedAndForwarded(t *testing.T) {
 	if err := conn.WriteMessage(websocket.TextMessage, f.revocations(t, f.priv, 5, "j-other")); err != nil {
 		t.Fatal(err)
 	}
-	st := p.next(t, "link_state")
+	st := nextLinkStateWhere(t, p, seqIs(5))
 	if st["relay_id"] != "dmz1" || st["seq"] != float64(5) || st["current_kid"] != auth.LinkKID(f.pub) {
 		t.Fatalf("link_state = %v", st)
 	}
@@ -100,11 +100,14 @@ func TestUplink_LinkFramesWithoutLinkTrustAreIgnored(t *testing.T) {
 	}
 }
 
-// The confirmation (link_state) is sent for an idempotent rotation replay, with the frame's seq.
-func TestUplink_RotationReplayOnUpToDateRelayIsConfirmedByLinkState(t *testing.T) {
+// A relay anchored on the new key ignores the replayed rotation (unverifiable) and confirms through the
+// verified link_revocations that follows: the link_state carries ITS authenticated seq (8), never the one
+// of the unverified link_keys (7).
+func TestUplink_RotationReplayIsConfirmedByTheVerifiedRevocationsOnly(t *testing.T) {
 	root := newLT(t)
-	newPub, _, _ := auth.GenerateLinkKey()
-	frame := root.keys(t, root.priv, newPub, root.pub, 7)
+	newPub, newPriv, _ := auth.GenerateLinkKey()
+	keysFrame := root.keys(t, root.priv, newPub, root.pub, 7)
+	revFrame := root.revocations(t, newPriv, 8)
 	f := &lt{store: &fakeTrustStore{}, bl: &fakeBlacklist{}}
 	m, err := NewLinkTrust(LinkTrustConfig{RootID: "root", Anchor: newPub, Store: f.store, Blacklist: f.bl})
 	if err != nil {
@@ -116,11 +119,14 @@ func TestUplink_RotationReplayOnUpToDateRelayIsConfirmedByLinkState(t *testing.T
 	startLinkClient(t, p, f, tok)
 	conn := p.conn(t)
 	_ = p.next(t, "topology_snapshot")
-	if err := conn.WriteMessage(websocket.TextMessage, frame); err != nil {
+	if err := conn.WriteMessage(websocket.TextMessage, keysFrame); err != nil {
 		t.Fatal(err)
 	}
-	st := p.next(t, "link_state")
-	if st["seq"] != float64(7) || st["current_kid"] != auth.LinkKID(newPub) || st["relay_id"] != "dmz1" {
+	if err := conn.WriteMessage(websocket.TextMessage, revFrame); err != nil {
+		t.Fatal(err)
+	}
+	st := nextLinkStateWhere(t, p, seqIs(8))
+	if st["seq"] != float64(8) || st["current_kid"] != auth.LinkKID(newPub) || st["relay_id"] != "dmz1" {
 		t.Fatalf("link_state = %v", st)
 	}
 }
@@ -145,12 +151,12 @@ func TestUplink_LinkStatesAreResentAfterEachSnapshot(t *testing.T) {
 	if err := c.Uplink().SendUpstream(json.RawMessage(`{"type":"link_state","relay_id":"relay2","seq":4,"current_kid":"AAAAAAAAAAAAAAAAAAAAAA"}`)); err != nil {
 		t.Fatal(err)
 	}
-	if st := p.next(t, "link_state"); st["relay_id"] != "relay2" {
+	if st := nextLinkStateWhere(t, p, func(m map[string]any) bool { return m["relay_id"] == "relay2" }); st["relay_id"] != "relay2" {
 		t.Fatalf("immediate link_state = %v", st)
 	}
 	topo <- struct{}{} // a new snapshot: the remembered state follows it
 	_ = p.next(t, "topology_snapshot")
-	if st := p.next(t, "link_state"); st["relay_id"] != "relay2" || st["seq"] != float64(4) {
+	if st := nextLinkStateWhere(t, p, func(m map[string]any) bool { return m["relay_id"] == "relay2" }); st["relay_id"] != "relay2" || st["seq"] != float64(4) {
 		t.Fatalf("link_state after the snapshot = %v", st)
 	}
 }
@@ -207,4 +213,36 @@ func TestLinkTrust_OversizedFrameIsRefusedBeforeDecoding(t *testing.T) {
 	// and on the uplink path (nothing sent, no panic)
 	u := NewUplink("dmz1", Options{LinkTrust: f.m})
 	u.handleLinkFrame(nil, big)
+}
+
+// nextLinkStateWhere returns the first link_state matching ok (the relay also reports its own initial
+// state, seq 0, right after the first snapshot).
+func nextLinkStateWhere(t *testing.T, p *mockParent, ok func(map[string]any) bool) map[string]any {
+	t.Helper()
+	for i := 0; i < 20; i++ {
+		if m := p.next(t, "link_state"); ok(m) {
+			return m
+		}
+	}
+	t.Fatal("no matching link_state")
+	return nil
+}
+
+func seqIs(n float64) func(map[string]any) bool {
+	return func(m map[string]any) bool { return m["seq"] == n }
+}
+
+// A relay anchored on the new key reports ITS state (kid it trusts, seq it verified) after the first
+// snapshot, whatever the parent sends: nothing is read from an unverified frame.
+func TestUplink_ReportsItsOwnAuthenticatedStateAfterTheSnapshot(t *testing.T) {
+	f := newLT(t)
+	tok, _, _ := auth.SignLinkToken(f.priv, "root", "dmz1", "central", auth.RoleRelayChild, time.Hour)
+	p := newMockParent(t, "central")
+	startLinkClient(t, p, f, tok)
+	_ = p.conn(t)
+	_ = p.next(t, "topology_snapshot")
+	st := p.next(t, "link_state")
+	if st["relay_id"] != "dmz1" || st["seq"] != float64(0) || st["current_kid"] != auth.LinkKID(f.pub) {
+		t.Fatalf("link_state = %v", st)
+	}
 }

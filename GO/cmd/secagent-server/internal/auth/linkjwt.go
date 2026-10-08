@@ -141,6 +141,57 @@ func ValidLinkKID(s string) bool {
 	return err == nil && len(b) == 16
 }
 
+// VerifyLinkKeysReplay authenticates a link_keys frame that announces EXACTLY the keys this relay already
+// trusts (an idempotent re-send: reconnection, restart of a parent or of this relay). The seq is not
+// compared (it is the very point of a replay), but the signature must verify with a key we ALREADY
+// trust, never with a key taken from the frame:
+//   - a rotation still open (trust.Previous != nil): the frame must announce current == trust.Current
+//     and previous == trust.Previous, signed by trust.Previous (the old current key, S16);
+//   - the window closed (trust.Previous == nil): the frame must announce current == trust.Current and
+//     no previous key, signed by trust.Current.
+//
+// Anything else (including a relay anchored on the NEW key after the window closed, which holds no
+// key able to verify the old rotation) returns a LinkError: the frame is unauthenticated. It returns
+// the authenticated seq of the frame; it never changes the trust.
+func VerifyLinkKeysReplay(trust LinkTrust, msg []byte) (uint64, error) {
+	if len(trust.Current) != ed25519.PublicKeySize {
+		return 0, linkErr(LinkErrNoTrust, false, nil)
+	}
+	if len(msg) > maxLinkMessageLen {
+		return 0, linkErr(LinkErrMsgInvalid, true, errors.New("message too large"))
+	}
+	var m linkKeysMsg
+	if err := json.Unmarshal(msg, &m); err != nil {
+		return 0, linkErr(LinkErrMsgInvalid, true, nil)
+	}
+	cur, err1 := base64.RawURLEncoding.DecodeString(m.CurrentPub)
+	var prev []byte
+	var err2 error
+	if m.PreviousPub != "" {
+		prev, err2 = base64.RawURLEncoding.DecodeString(m.PreviousPub)
+	}
+	sig, err3 := base64.RawURLEncoding.DecodeString(m.Sig)
+	if err1 != nil || err2 != nil || err3 != nil || len(sig) != ed25519.SignatureSize {
+		return 0, linkErr(LinkErrMsgInvalid, true, nil)
+	}
+	if !trust.Current.Equal(ed25519.PublicKey(cur)) {
+		return 0, linkErr(LinkErrMsgChain, true, nil)
+	}
+	signer := trust.Current
+	if trust.Previous != nil {
+		if !trust.Previous.Equal(ed25519.PublicKey(prev)) {
+			return 0, linkErr(LinkErrMsgChain, true, nil)
+		}
+		signer = trust.Previous
+	} else if len(prev) != 0 {
+		return 0, linkErr(LinkErrMsgChain, true, nil)
+	}
+	if !ed25519.Verify(signer, linkKeysSigInput(cur, prev, m.Seq), sig) {
+		return 0, linkErr(LinkErrMsgChain, true, nil)
+	}
+	return m.Seq, nil
+}
+
 func validLinkRole(r string) bool { return r == RoleRelayChild || r == RoleRelayParent }
 
 // SignLinkToken mints a link token signed by the root private key. ttl must be positive.

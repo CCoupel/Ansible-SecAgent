@@ -24,6 +24,11 @@ import (
 	"secagent-server/cmd/secagent-server/internal/auth"
 )
 
+// errUnverifiableKnownKey: a link_keys frame that cannot be authenticated but only repeats the key we
+// already trust. Ignored without a security warning (it is the nominal case of a relay anchored on the
+// new key), and never relayed, remembered nor confirmed.
+var errUnverifiableKnownKey = errors.New("link_keys frame announcing the already trusted key cannot be verified")
+
 // ErrAnchorMismatch: the pinned root key disagrees with the persisted link_trust outside a valid
 // rotation chain, or the root identity differs. The relay must refuse to start.
 var ErrAnchorMismatch = errors.New("pinned root link key disagrees with the persisted link_trust (outside a valid rotation chain)")
@@ -276,6 +281,10 @@ func (m *LinkTrust) HandleFrame(raw []byte) (FrameResult, error) {
 		return FrameResult{Type: env.Type}, fmt.Errorf("link frame: unsupported type %q", sanitizeText(env.Type))
 	}
 	if err != nil {
+		if errors.Is(err, errUnverifiableKnownKey) {
+			log.Printf("[LINK] link_keys ignored: announces the key already trusted but cannot be verified (nothing relayed, remembered or confirmed)")
+			return res, nil
+		}
 		var le *auth.LinkError
 		if errors.As(err, &le) && le.Code == auth.LinkErrMsgSeq {
 			// not an error for the link, nothing is persisted, the link stays open: equal seq =
@@ -308,21 +317,28 @@ func (m *LinkTrust) applyKeys(raw []byte) (FrameResult, error) {
 	res := FrameResult{Type: "link_keys", Seq: m.trust.LastSeq, KID: auth.LinkKID(m.trust.Current)}
 	nt, err := auth.ApplyLinkKeys(m.trust, raw)
 	if err != nil {
-		// A frame that announces the key we ALREADY trust as current changes nothing, whatever signed
-		// it (a relay deployed after the rotation is anchored on the new key and cannot verify the
-		// frame, signed by the old one): an idempotent replay, not a broken chain. Nothing is written
-		// and nothing is adopted; the relay confirms its state (link_state) and relays the frame.
-		if seq, ok := m.alreadyCurrent(raw); ok {
-			if seq > res.Seq {
-				res.Seq = seq
-			}
+		// A re-send of the keys we ALREADY trust is accepted only when its signature verifies with a key
+		// we already trust (auth.VerifyLinkKeysReplay: Previous for an open rotation, Current once the
+		// window is closed): authenticated, idempotent, nothing written. The seq confirmed afterwards is
+		// ours (authenticated), never the one read in the frame.
+		if _, verr := auth.VerifyLinkKeysReplay(m.trust, raw); verr == nil {
 			res.Confirm = true
 			if m.trust.Previous != nil {
 				m.keys = append([]byte(nil), raw...)
+			} else {
+				m.keys = nil
 			}
-			log.Printf("[LINK] link_keys already on the trusted current key (kid=%s): confirmed, nothing written", res.KID)
+			log.Printf("[LINK] link_keys re-sent and verified (kid=%s): confirmed, nothing written", res.KID)
 			m.fanOut(raw)
 			return res, nil
+		}
+		var le *auth.LinkError
+		if errors.As(err, &le) && le.Code == auth.LinkErrMsgChain && m.announcesCurrent(raw) {
+			// Cannot be verified (e.g. a relay anchored on the NEW key, which holds no key able to verify
+			// the rotation signed by the old one) and announces what we already trust: ignored, NOT
+			// relayed, NOT remembered, NOT confirmed. Our confirmation comes from the verified
+			// link_revocations that follows, whose seq is authenticated by the current key.
+			return res, errUnverifiableKnownKey
 		}
 		return res, err
 	}
@@ -344,21 +360,16 @@ func (m *LinkTrust) applyKeys(raw []byte) (FrameResult, error) {
 	return res, nil
 }
 
-// alreadyCurrent reports whether a link_keys frame announces exactly the key we trust as current (and
-// is well formed), with its seq.
-func (m *LinkTrust) alreadyCurrent(raw []byte) (seq uint64, ok bool) {
+// announcesCurrent reports whether a link_keys frame announces the key we already trust as current.
+func (m *LinkTrust) announcesCurrent(raw []byte) bool {
 	var k struct {
 		CurrentPub string `json:"current_pub"`
 		CurrentKID string `json:"current_kid"`
-		Seq        uint64 `json:"seq"`
 	}
 	if json.Unmarshal(raw, &k) != nil || k.CurrentPub != b64(m.trust.Current) {
-		return 0, false
+		return false
 	}
-	if k.CurrentKID != "" && k.CurrentKID != auth.LinkKID(m.trust.Current) {
-		return 0, false
-	}
-	return k.Seq, true
+	return k.CurrentKID == "" || k.CurrentKID == auth.LinkKID(m.trust.Current)
 }
 
 func (m *LinkTrust) applyRevocations(raw []byte) (FrameResult, error) {

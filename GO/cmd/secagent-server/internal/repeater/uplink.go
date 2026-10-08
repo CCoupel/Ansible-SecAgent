@@ -436,6 +436,20 @@ func (u *Uplink) rememberLinkState(relayID string, frame []byte) {
 // resendLinkStates re-sends the remembered link_state frames: called right after a topology_snapshot,
 // which is what makes the sender (and the relays below it) known to the parent.
 func (u *Uplink) resendLinkStates(conn *websocket.Conn) {
+	// Our own state, as WE authenticated it (never read from a frame): the kid we trust as current and
+	// the last seq we verified. A relay deployed after a rotation never receives a verifiable link_keys;
+	// this is how it tells the root it trusts the current key.
+	if lt := u.opts.LinkTrust; lt != nil && lt.Anchored() {
+		seq, kid := lt.State()
+		if frame, err := json.Marshal(struct {
+			Type       string `json:"type"`
+			RelayID    string `json:"relay_id"`
+			Seq        uint64 `json:"seq"`
+			CurrentKID string `json:"current_kid"`
+		}{"link_state", u.id, seq, kid}); err == nil {
+			u.rememberLinkState(u.id, frame)
+		}
+	}
 	u.mu.Lock()
 	frames := make([]json.RawMessage, 0, len(u.states))
 	for _, f := range u.states {
