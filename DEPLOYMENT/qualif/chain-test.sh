@@ -58,6 +58,21 @@ write_secret() { # $1 fichier relatif a chain/, valeur lue sur stdin : jamais af
 extract() { grep -oE "$1" | tail -1; }   # extrait un jeton de la sortie du CLI sans l'afficher
 need() { [ -n "${!1:-}" ] || fail "variable $1 obligatoire"; }
 
+# Diagnostic des conteneurs du projet qui ne sont pas sains (appele par fail() : la CI montre la vraie cause d'un
+# healthcheck qui ne passe jamais). UNIQUEMENT l'etat (jamais `docker inspect` complet : Config.Env contient
+# JWT_SECRET_KEY / ADMIN_TOKEN / RSA_MASTER_KEY de qualif.env) et la fin des logs (les valeurs de secrets n'y figurent pas).
+diag_unhealthy() {
+  local c st
+  echo "== DIAGNOSTIC (projet $PROJECT) ==" >&2
+  for c in $(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}}' 2>/dev/null); do
+    st="$(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} err={{.State.Error}}' "$c" 2>/dev/null)" || continue
+    echo "-- $c : $st" >&2
+    case "$st" in *"health=healthy"*) ;; *) docker logs --tail=40 "$c" 2>&1 | sed 's/^/   | /' >&2 ;; esac
+  done
+}
+# Sourcer failover-test.sh a defini fail() ; on l'enrichit sans changer son contrat (message + exit 1).
+fail() { echo "ECHEC: $*" >&2; diag_unhealthy || true; exit 1; }
+
 # Pousse tls.crt/tls.key/ca.crt de QUALIF_TLS_DIR dans le volume `$SECAGENT_TLS_VOLUME` de l'hote Docker (distant ou
 # non) via un conteneur ephemere (flux tar sur stdin, image alpine epinglee) : TLS_MODE=volume requis.
 push_tls() {
