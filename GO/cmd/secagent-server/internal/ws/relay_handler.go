@@ -1200,7 +1200,13 @@ func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) error {
 	var loopErr error
 	for {
 		var msg RelayMessage
-		if err := conn.ReadJSON(&msg); err != nil {
+		if err := readRelayMessage(conn, &msg); err != nil {
+			if errors.Is(err, errLinkFrameTooLarge) {
+				log.Printf("[SECURITY WARNING] link frame refused: relay_id=%q: %v", relayID, err)
+				closeWithRejection(conn, &relayRejection{code: WSRelayCloseRetry, reason: "link frame too large"})
+				loopErr = err
+				break
+			}
 			if isNormalClose(err) {
 				log.Printf("Relay WS closed: relay_id=%q", relayID)
 			} else {

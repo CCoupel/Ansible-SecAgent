@@ -311,3 +311,56 @@ func relayJTIRevoked(jti string) (bool, error) {
 	}
 	return fn(jti)
 }
+
+// Size limits by message type on /ws/relay, checked on the raw bytes BEFORE the decoding (the generic
+// read limit, 10 MiB, still applies to every other type).
+const (
+	maxLinkKeysFrame        = 1 << 20 // link_keys, link_revocations
+	maxLinkStateFrame       = 512     // link_state
+	linkTypeProbeBytes      = 256
+	errLinkFrameTooLargeMsg = "link frame exceeds its size limit"
+)
+
+var errLinkFrameTooLarge = errors.New(errLinkFrameTooLargeMsg)
+
+// linkFrameLimit returns the size limit of the message type found in raw, 0 when it has no specific limit.
+func linkFrameLimit(raw []byte) int {
+	var t struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &t) != nil {
+		// a huge or malformed frame: decode only the head, the type is among the first keys of our senders
+		head := raw
+		if len(head) > linkTypeProbeBytes {
+			head = head[:linkTypeProbeBytes]
+		}
+		for _, name := range []string{MsgLinkKeys, MsgLinkRevocations, MsgLinkState} {
+			if bytesContains(head, []byte(`"`+name+`"`)) {
+				t.Type = name
+				break
+			}
+		}
+	}
+	switch t.Type {
+	case MsgLinkKeys, MsgLinkRevocations:
+		return maxLinkKeysFrame
+	case MsgLinkState:
+		return maxLinkStateFrame
+	}
+	return 0
+}
+
+func bytesContains(b, sub []byte) bool { return strings.Contains(string(b), string(sub)) }
+
+// readRelayMessage reads one text message and decodes it into msg; link_* frames larger than their
+// limit are refused (errLinkFrameTooLarge) before any decoding.
+func readRelayMessage(conn *websocket.Conn, msg *RelayMessage) error {
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		return err
+	}
+	if lim := linkFrameLimit(raw); lim > 0 && len(raw) > lim {
+		return errLinkFrameTooLarge
+	}
+	return json.Unmarshal(raw, msg)
+}
