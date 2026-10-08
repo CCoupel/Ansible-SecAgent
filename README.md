@@ -159,8 +159,9 @@ Voir [DOC/security/SECURITY.md](./DOC/security/SECURITY.md) pour le modèle comp
 - ✅ **Phase 14** : Stabilité v3.0.2-3.0.3 (event propagation, group vars, topologie dynamique)
   - ✅ v3.0.2 : Événements origin-first, inventory hiérarchique, group vars validés
   - ✅ v3.0.3 : État fichier (retiré NATS), TLS natif, Compose multi-hôtes, verrou HA
+  - ⏳ v3.0.4 : jetons de lien signés par la racine, ancre épinglée, rotation/révocation, `state rekey` (fusionnée, tag non posé)
 
-**Version actuelle : v3.0.3** — GO rewrite 100%, state file HA
+**Dernière version publiée : v3.0.3** — GO rewrite 100%, state file HA. **v3.0.4** (jetons de lien EdDSA signés par la racine, `state rekey`, limites de concurrence) est fusionnée dans `main` mais pas encore publiée : voir `docs/releases/v3.0.4.md`.
 
 ## Contacts & Support
 

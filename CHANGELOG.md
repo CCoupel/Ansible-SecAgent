@@ -6,11 +6,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### v3.0.4 — Jetons de lien relay signés par la racine (#141, #146) — en cours
+### Added
+- (future features for next milestone)
+
+---
+
+## [v3.0.4] — 2026-10-08 — Jetons de lien relay signés par la racine (#141, #146)
 
 **⚠️ BREAKING CHANGES — une seule rupture, pas de fenêtre HS256, pas de retour arrière vers v3.0.3**
 
-- **[BREAKING] Rôle `relay` supprimé** : `/ws/relay` n'accepte plus que les rôles `relay-child` (lien pull) et `relay-parent` (lien push), jetons **JWT Ed25519 (`alg=EdDSA`)** avec `iss` (racine), `sub`, `aud`, `kid`, `jti`, `exp`. Tout jeton HS256 (`relay`, ancien `relay-parent`) est refusé (`link_role_legacy` / `link_alg_not_allowed`). Les jetons `agent`, `plugin`, `enrollment` et admin ne changent pas : **les agents restent connectés**.
+- **[BREAKING] Rôle `relay` supprimé (#146)** : `/ws/relay` n'accepte plus que les rôles `relay-child` (lien pull) et `relay-parent` (lien push), jetons **JWT Ed25519 (`alg=EdDSA`)** avec `iss` (racine), `sub`, `aud`, `kid`, `jti`, `exp`. Tout jeton HS256 (`relay`, ancien `relay-parent`) est refusé (`link_role_legacy` / `link_alg_not_allowed`). Les jetons `agent`, `plugin`, `enrollment` et admin ne changent pas : **les agents restent connectés**.
 - **[BREAKING] Les jetons de lien sont émis par la racine** (`tokens create --role relay-child|relay-parent --sub X --aud Y`, `POST /api/admin/tokens`) : `409 not_root` sur un nœud qui a un parent, `503 master_key_required` sans `RSA_MASTER_KEY`. Un `relay-parent` n'est **plus minté par l'enfant**.
 - **[BREAKING] `POST /api/admin/relays` en mode pull ne minte ni ne renvoie plus de jeton** (`jwt_token` supprimé) : le jeton `relay-child` est minté sur la racine et configuré sur l'enfant (`REPEATER_UPSTREAM_TOKEN`).
 - **[BREAKING] mineur : le binaire `secagent-server` refuse tout argument inconnu** : le mode serveur est l'invocation **sans argument** (l'environnement pilote tout) ; tout argument (commande mal tapée comme `kyes`, drapeau historique ignoré comme `-d` ou `--config`) est confié à la CLI cobra, qui répond par une erreur (`unknown command` / `unknown flag`) et un code de sortie 1, au lieu de démarrer un serveur. `--help`, `-h` et `--version` répondent sans rien démarrer. Les commandes de premier niveau (dont `keys`, absente de l'ancienne liste figée et qui démarrait donc un serveur) viennent désormais de la racine cobra. Aucun Dockerfile, Compose, healthcheck ni script du dépôt ne passe d'argument au démarrage du serveur (seuls `status --local` et les commandes d'administration en passent).
@@ -25,16 +30,16 @@ All notable changes to this project will be documented in this file.
 - **`secagent-server state link-trust reset` (#141)** : commande hors ligne qui efface uniquement l'ancre de confiance persistée d'un relay non racine, pour le ré-épingler après une rotation de clé racine ratée ou une re-racine. Sauvegarde obligatoire (`relay.state.linktrust-reset.<horodatage>.bak`), `--yes` en mode non interactif, refus sur une racine et sur un verrou actif, HMAC recalculé. Voir `STATE_SPEC.md`.
 - **Bornes des trames de lien (#141, audit)** : `link_keys` / `link_revocations` ≤ 1 Mio, `link_state` ≤ 512 octets (4012 `link frame too large` côté parent), `kid` de forme stricte (22 caractères base64url), tampon des `link_state` borné (1 par `relay_id`, 1024 au plus).
 - **Limites de concurrence et budget stdout (#179)** : `MAX_TASKS_PER_AGENT` (10), `MAX_TASKS_INFLIGHT` (1000), `MAX_STDOUT_BUFFER_TOTAL` (1 Gio). L'API plugin peut répondre `429 agent_busy` / `429 too_many_tasks` (+ `Retry-After`) et `503 memory_budget_exhausted` à l'admission d'`exec`, `upload` et `fetch` ; le plugin Ansible les remonte en `AnsibleConnectionFailure` explicite, sans rejeu. Voir `DOC/contracts/REST_PLUGIN.md` §3. **Plafond effectif** : chaque tâche réserve 5 Mio à l'admission, donc `MAX_STDOUT_BUFFER_TOTAL` (1 Gio par défaut) limite à **204 tâches simultanées** par relay (au-delà : `503 memory_budget_exhausted` + `Retry-After`) ; `MAX_TASKS_INFLIGHT=1000` n'est atteignable que si le budget augmente (`DEPLOYMENT.md`, dimensionnement pour `forks` 300-400).
-- **[FIX] Réponse d'`exec` coupée au-delà de 15 s** : le `WriteTimeout` du serveur API (15 s) coupait la réponse de tout `exec` / `upload` / `fetch` bloquant plus long que 15 s (la tâche s'exécutait, le client voyait une connexion rompue, `bad record MAC` en TLS). Présent **depuis la phase 6 (mars 2026) : v1.0.0, v2.0.0 et v3.0.3 sont concernées**. Corrigé : la deadline d'écriture est étendue à `timeout + 35 s` pour ces handlers.
+- **[FIX] Réponse d'`exec` coupée au-delà de 15 s** : le `WriteTimeout` du serveur API (15 s) coupait la réponse de tout `exec` / `upload` / `fetch` bloquant plus long que 15 s (la tâche s'exécutait, le client voyait une connexion rompue, `bad record MAC` en TLS). Présent **depuis le commit `a32bb1a` du 2026-03-06 : v1.0.0, v2.0.0 et v3.0.3 sont concernées**. Corrigé : la deadline d'écriture est étendue à `timeout + 35 s` pour ces handlers.
 - **[DOC] Rotation de la clé de lien : mettre à jour `REPEATER_ROOT_LINK_KEY_FILE` de chaque relay non racine AVANT `retire-link-previous`** : après le retrait, l'ancien fichier épinglé n'est plus accepté et le prochain démarrage du relay est refusé (`pinned root link key disagrees with the persisted link_trust`, fail closed). Comportement du code inchangé ; procédure et remède documentés (DEPLOYMENT.md, SECURITY.md §7, DECISION_141.md), scénario `link-rotation` de la qualif corrigé. Même rubrique : durée de vie du JWT d'agent (1 h) et ré-enrôlement après redémarrage d'un relay (code 78 si le jeton d'enrôlement est consommé ou expiré).
 - Ajouts : rotation de la clé racine (`keys rotate-link`, `retire-link-previous`, double acceptation), révocation propagée de proche en proche (`link_revocations`, `link_keys`, `link_state`), `GET /api/admin/link/{pubkey,status}`. Voir `DOC/security/DECISION_141.md`.
-
-### Added
-- (future features for next milestone)
+- **#189 — révocation d'un agent sans JTI suivi** : le comportement attendu est assuré par le drapeau `revoked` persistant de #193 (v3.0.3) : la révocation le persiste, ferme la WebSocket en 4001 et refuse la reconnexion et le ré-enrôlement (pas de réponse 409). Un test dédié est ajouté (`internal/server/revoked_nojti_test.go`, `7d9193a`).
+- **#152 — `token_hash` des relais** : deux champs distincts, `token_hash` (relais pull, SHA-256 du JWT) et `token_secret` (relais push, chiffré `enc:`), aucun jeton push en clair. Depuis la v3.0.4, `POST /api/admin/relays` en mode pull ne minte plus de jeton et ne stocke aucun `token_hash` : plus aucun code n'alimente `token_hash` pour un nouveau relais pull (le champ reste lu pour les relais existants). `SERVER_SPEC.md` §9.6 était fausse sur ce point ; corrigée (`fabf41a`).
+- **#197 — compléments de qualification de la v3.0.3 (issue restant ouverte)** : démontré en qualification réelle sur le démon Docker distant : hooks `host.up` en réel, certificat CA négatif, chaîne complète et bascule. Reste non vérifié : stockage partagé sur deux hôtes réels (pas de second hôte), `503 memory_budget_exhausted` (il faut au moins 205 tâches simultanées), #196 sur les secrets serveur de la chaîne de qualification (`qualif.env` en variables d'environnement).
 
 ---
 
-## [v3.0.3] — 2026-10-06 — Relay Actif/Passif et État sans SQLite
+## [v3.0.3] — 2026-10-07 — Relay Actif/Passif et État sans SQLite
 
 **⚠️ BREAKING CHANGES — Migration Required**
 
