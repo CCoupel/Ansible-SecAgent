@@ -270,11 +270,16 @@ func (l *loaded) srcName() string {
 // fsync, then rename over the backup (a previous backup of the same migration is replaced by the
 // identical content), then fsync of the directory. Nothing of relay.state is touched: a failure
 // leaves the v1 state intact.
-func writeV1Backup(fs FS, dir, src string, maxBytes int64) (err error) {
+func writeV1Backup(fs FS, dir, src string, maxBytes int64) error {
 	data, err := fs.ReadFileMax(filepath.Join(dir, src), maxBytes)
 	if err != nil {
 		return fmt.Errorf("state: v1 backup: read %s: %w", src, err)
 	}
+	return writeV1BackupData(fs, dir, data)
+}
+
+// writeV1BackupData is writeV1Backup for bytes already read (and verified) by the caller.
+func writeV1BackupData(fs FS, dir string, data []byte) (err error) {
 	bak, tmp := filepath.Join(dir, V1BackupFile), filepath.Join(dir, V1BackupFile+".tmp")
 	if rerr := fs.Remove(tmp); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
 		return fmt.Errorf("state: v1 backup: remove stale temporary file: %w", rerr)

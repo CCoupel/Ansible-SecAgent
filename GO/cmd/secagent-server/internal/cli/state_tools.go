@@ -482,11 +482,14 @@ Safety:
   - asks for confirmation (type "rekey"); non-interactive use requires --yes;
   - logs "[SECURITY WARNING] master key rekeyed" and appends the intervention (no key) to state-restore.log.
 
+A state still in schema_version 1 (v3.0.3, not yet written by a v3.0.4 master) is accepted: it is migrated to
+schema 2 by the same atomic write, after relay.state.v1.bak (copy of the original v1 file) is saved.
+
 Active/passive: stop BOTH nodes, run it once on the shared STATE_DIR, then start both with the new key. A
 node started with the old key refuses the state (fail closed).
 
 Exit codes: those of 'state verify', plus 8 (an instance is alive), 9 (refused: same or missing new key,
-unknown encrypted field, schema 1, no confirmation), 10 (post-write verification failed) and 11 (new key
+unknown encrypted field, no confirmation), 10 (post-write verification failed) and 11 (new key
 shorter than 32 bytes).`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -554,6 +557,9 @@ shorter than 32 bytes).`,
 			slog.Warn("state rekey", "error", err) // done, but the journal could not be written
 		}
 		_, _ = fmt.Fprintf(out, "master key rotated in %s: %d encrypted fields re-encrypted (write_seq %d -> %d)\n", dir, res.Fields, res.SeqBefore, res.SeqAfter)
+		if res.Migrated {
+			_, _ = fmt.Fprintf(out, "the state was schema_version 1: migrated to schema_version %d by this operation; the original v1 file is saved as %s (rollback to v3.0.3 = this file + v3.0.3 binaries + the OLD key)\n", state.SchemaVersion, res.V1BackupFile)
+		}
 		_, _ = fmt.Fprintf(out, "previous relay.state saved as %s: it is readable with the OLD key, protect it and destroy it (and relay.state.prev) once the new key is in service\n", res.BackupFile)
 		_, _ = fmt.Fprintln(out, "Start EVERY node with the new key (RSA_MASTER_KEY / RSA_MASTER_KEY_FILE); a node started with the old key refuses the state.")
 		return err

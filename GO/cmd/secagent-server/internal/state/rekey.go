@@ -36,8 +36,10 @@ var (
 	ErrRekeyKeyTooShort = errors.New("state rekey: the new master key is too short (minimum 32 bytes; generate one with 'openssl rand -base64 48')")
 	// ErrRekeyFromPrev: relay.state is not usable and the state would come from relay.state.prev.
 	ErrRekeyFromPrev = errors.New("state rekey: relay.state is not usable as is (the state comes from relay.state.prev): fix it first, for example with 'state restore'")
-	// ErrRekeySchema: a v1 state must be migrated by a v3.0.4 server start first (migration backup).
-	ErrRekeySchema = errors.New("state rekey: the state is still schema_version 1: start this version once so that it is migrated (relay.state.v1.bak), then rekey")
+	// ErrRekeySchema is no longer returned: a schema 1 state is migrated to 2 by the rekey itself.
+	//
+	// Deprecated: kept declared until the tests that referenced it are updated.
+	ErrRekeySchema = errors.New("state rekey: unsupported schema_version")
 	// ErrRekeyUncovered: an "enc:" value was found where the rekey does not know how to re-encrypt it.
 	// Refusing is the only safe answer (the field would become unreadable after the rotation).
 	ErrRekeyUncovered = errors.New("state rekey: an encrypted value was found in a field the rekey does not cover: nothing modified")
@@ -86,6 +88,9 @@ type RekeyResult struct {
 	SeqAfter   uint64
 	BackupFile string // base name, readable with the OLD key
 	Restored   bool   // the verification failed and the original state was put back
+	// Migrated: the state was schema 1 and is now schema 2 (written by this operation).
+	Migrated     bool
+	V1BackupFile string // relay.state.v1.bak (copy of the original v1 file) when Migrated
 }
 
 // rekeyedFields lists the encrypted fields of a payload: path (for the coverage guard) → value and
@@ -201,7 +206,8 @@ func transformSecrets(p Payload, from, to string) (Payload, int, error) {
 	return p, n, nil
 }
 
-// Rekey rewrites relay.state so that it is encrypted and authenticated by NewKey instead of OldKey.
+// Rekey rewrites relay.state so that it is encrypted and authenticated by NewKey instead of OldKey. A schema 1
+// state is migrated to schema 2 by the same write (relay.state.v1.bak first).
 // Order (nothing is modified before the backup is durable): verify with OldKey, refuse unknown
 // encrypted fields, write the backup of the exact verified file (0600, fsync), build the new file,
 // replace relay.state atomically (guarded by BeforeRename), then re-open it with NewKey and compare
@@ -247,13 +253,15 @@ func Rekey(o RekeyOptions) (*RekeyResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	if env.SchemaVersion < SchemaVersion {
-		return nil, ErrRekeySchema
+	migrate := env.SchemaVersion == 1
+	if migrate && (len(m.LinkTokens) > 0 || !m.LinkTrust.IsZero() ||
+		m.ServerConfig[ConfigLinkSigningKeyCurrent] != "" || m.ServerConfig[ConfigLinkSigningKeyPrevious] != "") {
+		return nil, fmt.Errorf("%w: a schema_version 1 state carries link data (link tokens, trust anchor or signing key)", ErrStructure)
 	}
 	if err := checkRekeyCoverage(&m.Payload); err != nil {
 		return nil, err
 	}
-	res := &RekeyResult{SeqBefore: env.WriteSeq, SeqAfter: env.WriteSeq + 1}
+	res := &RekeyResult{SeqBefore: env.WriteSeq, SeqAfter: env.WriteSeq + 1, Migrated: migrate}
 
 	newPayload, n, err := transformSecrets(m.Payload, o.OldKey, o.NewKey)
 	if err != nil {
@@ -277,6 +285,15 @@ func Rekey(o RekeyOptions) (*RekeyResult, error) {
 		return nil, fmt.Errorf("state rekey: backup not durable, nothing modified: %w", err)
 	}
 	res.BackupFile = backup
+	if migrate {
+		// the v1 → v2 migration happens in this same write: relay.state.v1.bak (the original v1 file, what
+		// a rollback to v3.0.3 restores) is durable BEFORE relay.state becomes v2, like the engine's own
+		// migration; no backup, no rekey
+		if err := writeV1BackupData(o.FS, o.Dir, raw); err != nil {
+			return nil, fmt.Errorf("state rekey: v1 backup failed, nothing modified: %w", err)
+		}
+		res.V1BackupFile = V1BackupFile
+	}
 
 	// 2. replacement (the existing relay.state.prev is kept as is: it is readable with the OLD key only)
 	if err := atomicWrite(o.FS, o.Dir, data, false, o.BeforeRename); err != nil {
@@ -306,7 +323,10 @@ func Rekey(o RekeyOptions) (*RekeyResult, error) {
 			operator = "unknown"
 		}
 	}
-	slog.Warn("[SECURITY WARNING] master key rekeyed", "dir", o.Dir, "backup", backup, "fields", n, "at", now().UTC().Format(time.RFC3339), "operator", operator)
+	if migrate {
+		slog.Info("state migration schema_version 1 -> 2 (done by state rekey)", "backup", V1BackupFile)
+	}
+	slog.Warn("[SECURITY WARNING] master key rekeyed", "dir", o.Dir, "backup", backup, "fields", n, "migrated_from_v1", migrate, "at", now().UTC().Format(time.RFC3339), "operator", operator)
 	if jerr := appendRestoreLog(o.Dir, restoreLogLine{
 		At: now().UTC().Format(time.RFC3339), Operator: operator, Source: "rekey",
 		SeqBefore: res.SeqBefore, SeqAfter: res.SeqAfter, Backup: backup,
@@ -324,9 +344,12 @@ func verifyRekeyed(o RekeyOptions, newC codec, original Payload, now time.Time) 
 	if err != nil {
 		return fmt.Errorf("cannot re-read the new state: %w", err)
 	}
-	m2, _, err := newC.decode(written, now)
+	m2, env2, err := newC.decode(written, now)
 	if err != nil {
 		return fmt.Errorf("the new state does not verify with the new key: %w", err)
+	}
+	if env2.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("the new state has schema_version %d, expected %d", env2.SchemaVersion, SchemaVersion)
 	}
 	oldOpts := Options{MasterKey: o.OldKey}
 	oldC, err := oldOpts.codec()
