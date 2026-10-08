@@ -26,7 +26,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 
 	"secagent-server/cmd/secagent-server/internal/storage"
@@ -54,18 +53,10 @@ func intRelayServer(t *testing.T, store *storage.Store) *httptest.Server {
 	return srv
 }
 
-// intRelayJWT signs a relay JWT accepted by ws.JWTSecretsFunc (set once in TestMain).
+// intRelayJWT signs a relay-child link token accepted by the verifier installed in TestMain.
 func intRelayJWT(t *testing.T, relayID string) string {
 	t.Helper()
-	claims := jwt.MapClaims{
-		"sub": relayID, "role": "relay", "jti": "int-jti-" + relayID,
-		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
-	}
-	raw, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(intJWTSecret))
-	if err != nil {
-		t.Fatalf("sign relay JWT: %v", err)
-	}
-	return raw
+	return signTestLink(relayID, "int-jti-"+relayID)
 }
 
 // intDialRelay dials a /ws/relay connection authenticated with a signed relay JWT.

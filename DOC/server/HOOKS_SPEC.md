@@ -69,6 +69,8 @@ kill -HUP $(pidof secagent-server)
 | `host.new` | Enrollment réussi (phase 2 challenge-response) |
 | `host.up` | Agent WebSocket connecté |
 | `host.down` | Agent WebSocket déconnecté |
+| `host.suspended` | Agent suspendu (`POST /api/admin/minions/{hostname}/suspend`) ; remonte aux ancêtres (#180) |
+| `host.resumed` | Suspension levée (`POST /api/admin/minions/{hostname}/resume`) ; remonte aux ancêtres (#180) |
 | `host.revoked` | Agent révoqué (`/api/admin/revoke/{hostname}`) |
 | `host.deleted` | Agent supprimé (`DELETE /api/admin/minions/{hostname}`) |
 
@@ -236,6 +238,8 @@ Variables inconnues (`{{foo}}`) sont laissées telles quelles.
 | `host.new` | `"disconnected"` | ✅ présent |
 | `host.up` | `"connected"` | absent |
 | `host.down` | `"disconnected"` | absent |
+| `host.suspended` | `"suspended"` | absent |
+| `host.resumed` | `"resumed"` | absent |
 | `host.revoked` | `"revoked"` | absent |
 | `host.deleted` | `"deleted"` | absent |
 

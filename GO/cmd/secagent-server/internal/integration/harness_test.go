@@ -106,7 +106,19 @@ type nodeSpec struct {
 	ID          string
 	ParentURL   string // pull: this node dials its parent (wss://…)
 	ParentToken string
-	Env         []string
+	// Root is the root relay that signs the link tokens of the tree (v3.0.4, #141): a node that has a
+	// parent is anchored on its public key (REPEATER_ROOT_LINK_KEY_FILE). Implied by a ParentToken
+	// minted through registerChild; give it explicitly for a push child (its parent dials in).
+	Root *node
+	Env  []string
+	// NoMasterKey starts the node WITHOUT RSA_MASTER_KEY on a state created in the explicit test mode
+	// (secrets in clear, `state init --insecure-test-mode`): the only way a node can run without a master
+	// key. Used to test what the server must refuse to do without one (mint of link tokens → 503).
+	NoMasterKey bool
+	// NodeBinary is the test binary the node process is started from; empty = this very binary
+	// (os.Args[0], so a -race run gives -race nodes). The load test sets a binary built WITHOUT -race:
+	// the race detector multiplies the memory of a process, which would hide the real RSS.
+	NodeBinary string
 	// Hooks builds the node's hooks configuration (JSON) from the file its file-actions append to;
 	// nil = no hooks file (the node starts with 0 hooks).
 	Hooks func(out string) string
@@ -124,8 +136,10 @@ type node struct {
 	hookOut   string   // file the hooks' file-actions append to
 	logs      *syncBuf
 	cmd       *exec.Cmd
+	bin       string // test binary the node process starts from ("" = os.Args[0])
 	stdin     io.WriteCloser
 	plugin    string
+	root      *node // the root relay of the tree this node belongs to (nil for the root itself)
 
 	statusPath   string         // RELAY_STATUS_FILE of this instance (local, outside STATE_DIR)
 	pendingReady chan nodeReady // of a secondary: receives the addresses once it is promoted
@@ -285,7 +299,13 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 	if err := func() error { sharedOnce.Do(func() { sharedErr = initShared() }); return sharedErr }(); err != nil {
 		t.Fatalf("shared test material: %v", err)
 	}
-	n := &node{t: t, id: spec.ID, adminTok: "admin-" + spec.ID + "-secret-token", jwtSecret: "jwt-signing-secret-of-" + spec.ID + "-0123456789", logs: &syncBuf{}}
+	root := spec.Root
+	if root == nil && spec.ParentToken != "" {
+		if r, ok := tokenRoots.Load(spec.ParentToken); ok {
+			root = r.(*node)
+		}
+	}
+	n := &node{t: t, id: spec.ID, adminTok: "admin-" + spec.ID + "-secret-token", jwtSecret: "jwt-signing-secret-of-" + spec.ID + "-0123456789", logs: &syncBuf{}, bin: spec.NodeBinary}
 	masterKey := "integration-master-key-" + spec.ID
 	stateDir := filepath.Join(t.TempDir(), "state")
 	n.stateDir = stateDir
@@ -296,7 +316,14 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 			t.Fatal(err)
 		}
 	}
-	seedState(t, stateDir, masterKey)
+	if spec.NoMasterKey {
+		if err := state.Init(state.InitOptions{Dir: stateDir, AllowPlaintext: true, RSABits: 2048}); err != nil {
+			t.Fatal(err)
+		}
+		masterKey = ""
+	} else {
+		seedState(t, stateDir, masterKey)
+	}
 
 	n.statusPath = filepath.Join(t.TempDir(), "status.json")
 	n.env = append(append(os.Environ(),
@@ -308,6 +335,7 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 		"ADMIN_TOKEN="+n.adminTok,
 		"JWT_SECRET_KEY="+n.jwtSecret,
 		"RSA_MASTER_KEY="+masterKey,
+		"NODE_INSECURE_STATE="+map[bool]string{true: "1", false: ""}[spec.NoMasterKey],
 		"STATE_DIR="+stateDir,
 		"RELAY_ACTION_LOG="+filepath.Join(filepath.Dir(stateDir), "actions.log"),
 		"RELAY_HOOKS_CONFIG="+n.hooksPath, // absent unless spec.Hooks: 0 hooks active
@@ -316,6 +344,39 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 		"REPEATER_UPSTREAM_URL="+spec.ParentURL,
 		"REPEATER_UPSTREAM_TOKEN="+spec.ParentToken,
 	), spec.Env...)
+	if root != nil {
+		n.anchorTo(root)
+	}
+	return n
+}
+
+// tokenRoots remembers which root signed a link token handed out by registerChild: a node started
+// with that token is anchored on that root.
+var tokenRoots sync.Map
+
+// anchorTo pins the root's public key (REPEATER_ROOT_LINK_KEY_FILE) and identity (REPEATER_ROOT_ID) in
+// the environment of the node: it then verifies the link tokens signed by that root.
+func (n *node) anchorTo(root *node) {
+	n.t.Helper()
+	code, m := root.admin("GET", "/api/admin/link/pubkey", nil)
+	pem, _ := m["current_pub_pem"].(string)
+	if code != http.StatusOK || pem == "" {
+		n.t.Fatalf("root %s link public key: %d %v", root.id, code, m)
+	}
+	path := filepath.Join(n.t.TempDir(), "root_link.pub")
+	if err := os.WriteFile(path, []byte(pem), 0o600); err != nil {
+		n.t.Fatal(err)
+	}
+	n.root = root
+	n.setEnv("REPEATER_ROOT_ID", root.id)
+	n.setEnv("REPEATER_ROOT_LINK_KEY_FILE", path)
+}
+
+// treeRoot is the node that signs the link tokens of the tree n belongs to.
+func (n *node) treeRoot() *node {
+	if n.root != nil {
+		return n.root
+	}
 	return n
 }
 
@@ -502,11 +563,18 @@ func (n *node) setEnv(key, value string) {
 	n.env = append(n.env, key+"="+value)
 }
 
+func (n *node) nodeBin() string {
+	if n.bin != "" {
+		return n.bin
+	}
+	return os.Args[0]
+}
+
 // runExpectingExit starts the node process and returns its exit code and combined output; it is for
 // configurations the server must REFUSE to start with (the process is expected to exit by itself).
 func (n *node) runExpectingExit() (code int, output string) {
 	n.t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestNodeProcess$", "-test.v")
+	cmd := exec.Command(n.nodeBin(), "-test.run=^TestNodeProcess$", "-test.v")
 	cmd.Env = append([]string(nil), n.env...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -568,7 +636,7 @@ func (n *node) launchSecondary(extra []string) {
 func (n *node) startProcess(extra []string) (ready chan nodeReady, started chan struct{}) {
 	t := n.t
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestNodeProcess$", "-test.v")
+	cmd := exec.Command(n.nodeBin(), "-test.run=^TestNodeProcess$", "-test.v")
 	cmd.Env = append(append([]string(nil), n.env...), extra...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -809,23 +877,34 @@ func (n *node) registerChild(childID string) string {
 	return tok
 }
 
-// registerChildWithID also returns the relay's internal id (used by the revoke endpoint).
+// registerChildWithID declares a pull child on this node and returns the relay-child link token the
+// ROOT of the tree minted for it (aud = this node, the verifier), plus the relay's internal id (used by
+// the revoke endpoint). v3.0.4: the declaration itself mints nothing.
 func (n *node) registerChildWithID(childID string) (token, id string) {
 	n.t.Helper()
 	code, m := n.admin("POST", "/api/admin/relays", map[string]any{"relay_id": childID, "mode": "pull"})
 	if code != http.StatusCreated {
 		n.t.Fatalf("register child %s on %s: %d %v", childID, n.id, code, m)
 	}
-	return m["jwt_token"].(string), m["id"].(string)
+	root := n.treeRoot()
+	code, tk := root.admin("POST", "/api/admin/tokens", map[string]any{"role": "relay-child", "sub": childID, "aud": n.id})
+	if code != http.StatusCreated {
+		n.t.Fatalf("mint relay-child %s -> %s on root %s: %d %v", childID, n.id, root.id, code, tk)
+	}
+	token, _ = tk["token"].(string)
+	tokenRoots.Store(token, root)
+	return token, m["id"].(string)
 }
 
-// mintParentToken mints on THIS (child) node a relay-parent token for the parent parentID.
+// mintParentToken returns a relay-parent link token for the parent parentID to present to THIS
+// node (sub = the parent, aud = this node), signed by the root of the tree.
 func (n *node) mintParentToken(parentID string) (token, id string) {
 	n.t.Helper()
 	exp := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
-	code, m := n.admin("POST", "/api/admin/tokens", map[string]any{"role": "relay-parent", "sub": parentID, "expires_at": exp})
+	root := n.treeRoot()
+	code, m := root.admin("POST", "/api/admin/tokens", map[string]any{"role": "relay-parent", "sub": parentID, "aud": n.id, "expires_at": exp})
 	if code != http.StatusCreated {
-		n.t.Fatalf("mint relay-parent token on %s: %d %v", n.id, code, m)
+		n.t.Fatalf("mint relay-parent token for %s on root %s: %d %v", n.id, root.id, code, m)
 	}
 	return m["token"].(string), m["id"].(string)
 }
@@ -1058,5 +1137,6 @@ func (n *node) linkTo(parent *node) {
 	n.t.Helper()
 	n.setEnv("REPEATER_UPSTREAM_URL", parent.wssURL())
 	n.setEnv("REPEATER_UPSTREAM_TOKEN", parent.registerChild(n.id))
+	n.anchorTo(parent.treeRoot())
 	n.restart()
 }

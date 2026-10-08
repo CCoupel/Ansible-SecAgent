@@ -14,24 +14,12 @@ import (
 	"secagent-server/cmd/secagent-server/internal/server"
 )
 
-// isCLIMode returns true when the binary is invoked as a CLI tool.
-// CLI mode is active when the first argument is a known subcommand (not a server flag).
-// Server flags start with "-" or are absent.
+// isCLIMode returns true when the binary is invoked with ANY argument. Server mode is the invocation
+// WITHOUT argument (the environment drives everything). Every argument goes to the cobra CLI, which
+// handles known commands, --help/-h/--version, and rejects the rest with an error and a non-zero
+// exit code: an unknown or mistyped word (e.g. "kyes") never silently starts a server.
 func isCLIMode() bool {
-	if len(os.Args) < 2 {
-		return false
-	}
-	first := os.Args[1]
-	// Server mode flags start with "-" (e.g. -d, --config)
-	if len(first) > 0 && first[0] == '-' {
-		return false
-	}
-	// Known CLI top-level commands
-	switch first {
-	case "minions", "security", "inventory", "server", "tokens", "hooks", "relays", "state", "status", "help", "completion":
-		return true
-	}
-	return false
+	return len(os.Args) >= 2
 }
 
 func main() {

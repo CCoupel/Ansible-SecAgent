@@ -1,7 +1,8 @@
 // Phase 12 — relay_handler.go
 // WebSocket handler for /ws/relay — mode pull.
 //
-// Relays connect here with a JWT (role=relay) and announce their agents.
+// Relays connect here with a link token (Ed25519, role relay-child / relay-parent, signed by the root)
+// and announce their agents.
 // The proxy then dispatches tasks to the relay via this connection.
 //
 // Close codes (relay-specific, #148):
@@ -28,6 +29,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"secagent-server/cmd/secagent-server/internal/auth"
 	"secagent-server/cmd/secagent-server/internal/config"
 )
 
@@ -43,18 +45,18 @@ const (
 
 // RelayConnection represents an active WebSocket connection from a downstream relay.
 type RelayConnection struct {
-	RelayID string
-	IsProxy bool
-	Conn    interface{ WriteJSON(interface{}) error } // *websocket.Conn in production
-	wsConn  *websocket.Conn                           // same connection, for CloseRelay (nil in unit tests)
-	mu      sync.Mutex
+	RelayID  string
+	IsProxy  bool
+	JTI      string                                    // link token id of an accepted (pull) child link: revocation key
+	TokenExp int64                                     // its expiry (unix seconds)
+	Conn     interface{ WriteJSON(interface{}) error } // *websocket.Conn in production
+	wsConn   *websocket.Conn                           // same connection, for CloseRelay (nil in unit tests)
+	mu       sync.Mutex
 
 	// Tree state (#125) — only touched by the connection's read-loop goroutine.
 	descendants  map[string]struct{} // relays declared in the validated topology_snapshot
 	helloDone    bool                // relay_hello accepted: required before topology_snapshot / event_forward
 	snapshotDone bool
-	snapWindow   time.Time // replacement-snapshot rate limit window start
-	snapCount    int
 	reject       *relayRejection // set by a handler to make the read loop close the link
 	evWindow     time.Time       // event_forward rate limit window start
 	evCount      int
@@ -134,6 +136,10 @@ type RelayMessage struct {
 	Stderr    string `json:"stderr,omitempty"`
 	Truncated bool   `json:"truncated,omitempty"`
 
+	// link_state (v3.0.4): last link message applied by RelayID
+	Seq        uint64 `json:"seq,omitempty"`
+	CurrentKID string `json:"current_kid,omitempty"`
+
 	// generic
 	Status    string `json:"status,omitempty"`
 	Error     string `json:"error,omitempty"`
@@ -148,6 +154,9 @@ type RelayAgentInfo struct {
 	// topology_snapshot only
 	RelayID    string   `json:"relay_id,omitempty"`
 	RelayChain []string `json:"relay_chain,omitempty"`
+	// Suspended: the relay holding the agent says it is suspended (#180). Informative for the
+	// ancestors; an old child does not send it (false).
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 // RelayTopoEntry is a descendant relay declared in a topology_snapshot.
@@ -177,7 +186,10 @@ var (
 
 	// task_id → channel receiving task result (for task_forward flow)
 	relayPendingTasks = make(map[string]chan RelayTaskResult)
-	relayTasksMu      sync.RWMutex
+	// task_id → relay the task was dispatched to (#179): only that relay resolves it, and only its
+	// disconnection fails it
+	relayTaskOwner = make(map[string]string)
+	relayTasksMu   sync.RWMutex
 )
 
 // ── Injected functions (avoid ws→storage import cycle) ───────────────────────
@@ -376,9 +388,10 @@ func checkHostConflicts(conn *RelayConnection, relays map[string]struct{}, byRel
 // RouteChainEntry is a host route learned from a topology_snapshot: the declaring relay and
 // the top-down chain from this node's direct child (the peer) down to that relay.
 type RouteChainEntry struct {
-	Hostname string
-	RelayID  string
-	Chain    []string
+	Hostname  string
+	RelayID   string
+	Chain     []string
+	Suspended bool
 }
 
 // HostConflict describes a host whose route changed to a different owner (SECURITY.md §9):
@@ -504,6 +517,24 @@ func detectHostConflict(conn *RelayConnection, hostname string, chain []string) 
 	return &HostConflict{Hostname: hostname, OldRelay: prev, NewRelay: conn.RelayID, RelayChain: chain}
 }
 
+// SetRelayHostSuspendedFunc sets the recorder of the suspension a descendant reported for a host (#180).
+func SetRelayHostSuspendedFunc(fn func(hostname string, suspended bool)) {
+	treeHooksMu.Lock()
+	relayHostSuspendedFn = fn
+	treeHooksMu.Unlock()
+}
+
+var relayHostSuspendedFn func(hostname string, suspended bool)
+
+func recordHostSuspended(hostname string, suspended bool) {
+	treeHooksMu.RLock()
+	fn := relayHostSuspendedFn
+	treeHooksMu.RUnlock()
+	if fn != nil {
+		fn(hostname, suspended)
+	}
+}
+
 func routeChainsHook() func(entries []RouteChainEntry) error {
 	treeHooksMu.RLock()
 	defer treeHooksMu.RUnlock()
@@ -521,6 +552,16 @@ func routeUpsertHook() func(hostname, relayID string, chain []string) error {
 func SetRelayRevokedFunc(fn func(relayID string) (bool, error)) {
 	treeHooksMu.Lock()
 	relayRevokedFn = fn
+	treeHooksMu.Unlock()
+}
+
+// relayTokenSeenFn records the jti/expiry of the link token a pull child connected with.
+var relayTokenSeenFn func(relayID, jti string, exp int64)
+
+// SetRelayTokenSeenFunc sets the recorder of the link token (jti, exp) of a child at its hello.
+func SetRelayTokenSeenFunc(fn func(relayID, jti string, exp int64)) {
+	treeHooksMu.Lock()
+	relayTokenSeenFn = fn
 	treeHooksMu.Unlock()
 }
 
@@ -707,20 +748,27 @@ func IsRelayConnected(relayID string) bool {
 	return ok
 }
 
-// RegisterRelayTaskFuture registers a result channel for a task dispatched to a relay.
-func RegisterRelayTaskFuture(taskID string) chan RelayTaskResult {
+// RegisterRelayTaskFuture is the admission point of a task dispatched to a child relay (#179): counted
+// in the global limit of this node (each hop counts it), refused with a typed error before anything is
+// sent. The slot is released by every path that ends the task.
+func RegisterRelayTaskFuture(taskID string) (chan RelayTaskResult, error) {
+	if err := admitTask(taskID, ""); err != nil {
+		return nil, err
+	}
 	ch := make(chan RelayTaskResult, 1)
 	relayTasksMu.Lock()
 	relayPendingTasks[taskID] = ch
 	relayTasksMu.Unlock()
-	return ch
+	return ch, nil
 }
 
 // UnregisterRelayTaskFuture removes a pending relay task future.
 func UnregisterRelayTaskFuture(taskID string) {
 	relayTasksMu.Lock()
 	delete(relayPendingTasks, taskID)
+	delete(relayTaskOwner, taskID)
 	relayTasksMu.Unlock()
+	releaseTask(taskID)
 }
 
 // DispatchToRelay sends a task_forward message to a connected relay and returns
@@ -731,7 +779,13 @@ func DispatchToRelay(relayID string, msg RelayMessage) (chan RelayTaskResult, er
 		return nil, err
 	}
 
-	ch := RegisterRelayTaskFuture(msg.TaskID)
+	ch, regErr := RegisterRelayTaskFuture(msg.TaskID)
+	if regErr != nil {
+		return nil, regErr
+	}
+	relayTasksMu.Lock()
+	relayTaskOwner[msg.TaskID] = relayID
+	relayTasksMu.Unlock()
 
 	conn.mu.Lock()
 	writeErr := conn.Conn.WriteJSON(msg)
@@ -784,11 +838,14 @@ func unregisterRelayConnection(relayID string) {
 		}
 	}
 
-	// Resolve all pending task futures with disconnect error
+	// Resolve the pending task futures of THIS relay with a disconnect error (a task not owned by any
+	// relay, registered by a test or a legacy caller, is resolved too)
 	relayTasksMu.Lock()
 	var taskIDs []string
 	for id := range relayPendingTasks {
-		taskIDs = append(taskIDs, id)
+		if owner := relayTaskOwner[id]; owner == "" || owner == relayID {
+			taskIDs = append(taskIDs, id)
+		}
 	}
 	relayTasksMu.Unlock()
 
@@ -797,9 +854,11 @@ func unregisterRelayConnection(relayID string) {
 		ch, ok := relayPendingTasks[tid]
 		if ok {
 			delete(relayPendingTasks, tid)
+			delete(relayTaskOwner, tid)
 		}
 		relayTasksMu.Unlock()
 		if ok {
+			releaseTask(tid)
 			select {
 			case ch <- RelayTaskResult{TaskID: tid, Error: "relay_disconnected"}:
 			default:
@@ -810,70 +869,50 @@ func unregisterRelayConnection(relayID string) {
 	log.Printf("Relay disconnected: relay_id=%q", relayID)
 }
 
-// Relay JWT roles accepted on /ws/relay.
-const (
-	relayRoleChild  = "relay"
-	relayRoleParent = "relay-parent"
-)
-
 // relayAuth is the authenticated identity of a /ws/relay upgrade.
 type relayAuth struct {
 	RelayID string // jwt.sub
 	IsProxy bool
-	Role    string // relayRoleChild | relayRoleParent
+	Role    string // auth.RoleRelayChild | auth.RoleRelayParent
 	JTI     string // jwt.jti (revocation key)
+	Exp     int64  // jwt.exp (unix seconds)
 }
 
-// extractRelayAuth validates the JWT of a /ws/relay upgrade and returns the relay id (sub),
-// the is_proxy hint and the role. Accepted roles: "relay" (a child opening a link to us) and
-// "relay-parent" (our parent opening a link to us, push mode #140; token signed by this node).
-// The full role model (relay-child / relay-parent split, #146) is not implemented yet.
-// Fail closed: no verifier, missing/invalid/revoked token, unknown role => refused.
+// extractRelayAuth verifies the link token of a /ws/relay upgrade (v3.0.4, #141/#146) and returns the
+// relay id (sub), the is_proxy hint, the role and the jti. ONLY auth.VerifyLinkToken verifies it:
+// EdDSA, kid in the trusted keys, iss = root, aud = this relay, role relay-child (the peer is our
+// child) or relay-parent (the peer is our parent), not expired, not blacklisted. The legacy HS256
+// roles are gone. Fail closed: no trust, missing/invalid/revoked token => refused; ErrLinkNoTrust
+// is reported separately (the link is closed with 4010, S21).
 func extractRelayAuth(r *http.Request) (relayAuth, error) {
 	authHeader := r.Header.Get("Authorization")
-
-	// Fail closed: without a JWT verifier, no relay is ever authenticated.
-	if JWTSecretsFunc == nil {
-		log.Printf("[SECURITY WARNING] relay connection refused: JWTSecretsFunc is not configured (fail closed)")
-		return relayAuth{}, fmt.Errorf("jwt_not_configured")
-	}
 	if !strings.HasPrefix(authHeader, "Bearer ") {
 		log.Printf("[SECURITY WARNING] relay connection refused: missing bearer token")
 		return relayAuth{}, fmt.Errorf("missing_relay_credentials")
 	}
-	claims, _, valErr := ExtractJWTClaims(authHeader)
-	if valErr != nil {
-		log.Printf("[SECURITY WARNING] relay connection refused: invalid JWT: %v", valErr)
-		return relayAuth{}, fmt.Errorf("jwt_invalid: %w", valErr)
+	claims, err := verifyLinkBearer(authHeader)
+	if err != nil {
+		if errors.Is(err, ErrLinkNoTrust) {
+			log.Printf("[SECURITY WARNING] relay connection refused: this relay has no link trust anchor (link_trust_missing)")
+			return relayAuth{}, err
+		}
+		log.Printf("[SECURITY WARNING] relay connection refused: link token invalid: %v", err)
+		return relayAuth{}, fmt.Errorf("link_token_invalid: %w", err)
 	}
-	role, _ := claims["role"].(string)
-	if role != relayRoleChild && role != relayRoleParent {
-		log.Printf("[SECURITY WARNING] relay connection refused: wrong JWT role %q", role)
-		return relayAuth{}, fmt.Errorf("jwt_wrong_role: got %q, want %s or %s", role, relayRoleChild, relayRoleParent)
-	}
-	sub, _ := claims["sub"].(string)
-	if sub == "" {
-		log.Printf("[SECURITY WARNING] relay connection refused: JWT without sub")
-		return relayAuth{}, fmt.Errorf("jwt_missing_sub")
-	}
+	sub := claims.Subject
 	// The subject becomes the relay identity (logs, environment, hook files, Ansible groups): a
 	// token whose sub is not a well-formed relay_id is refused, whoever signed it. Never echoed.
 	if !relayIDShape.MatchString(sub) {
 		log.Printf("[SECURITY WARNING] relay connection refused: JWT sub is not a valid relay_id (length %d)", len(sub))
 		return relayAuth{}, fmt.Errorf("jwt_invalid_sub")
 	}
-	// Revocation: a revoked token must not reconnect (SECURITY.md §7).
-	jti, _ := claims["jti"].(string)
-	if jti == "" {
-		log.Printf("[SECURITY WARNING] relay connection refused: JWT without jti (relay_id=%q)", sub)
-		return relayAuth{}, fmt.Errorf("jwt_missing_jti")
-	}
+	jti := claims.JTI
 	if err := checkRelayJTI(jti); err != nil {
 		log.Printf("[SECURITY WARNING] relay connection refused: relay_id=%q jti=%q: %v", sub, jti, err)
 		return relayAuth{}, err
 	}
-	// A revoked relay (flagged in relay_nodes) is refused even if its JTI is unknown (legacy token).
-	if role == relayRoleChild {
+	// A revoked relay (flagged in relay_nodes) is refused even if its JTI is unknown.
+	if claims.Role == auth.RoleRelayChild {
 		if err := checkRelayRevoked(sub); err != nil {
 			log.Printf("[SECURITY WARNING] relay connection refused: relay_id=%q: %v", sub, err)
 			return relayAuth{}, err
@@ -881,7 +920,7 @@ func extractRelayAuth(r *http.Request) (relayAuth, error) {
 	}
 	// is_proxy hint from query param (relay sets this when it is itself a proxy)
 	ip := r.URL.Query().Get("is_proxy") == "true"
-	return relayAuth{RelayID: sub, IsProxy: ip, Role: role, JTI: jti}, nil
+	return relayAuth{RelayID: sub, IsProxy: ip, Role: claims.Role, JTI: jti, Exp: claims.ExpiresAt.Unix()}, nil
 }
 
 // handleRelayMessage dispatches an incoming relay message to the appropriate handler.
@@ -892,6 +931,12 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		// The announced identity must be the authenticated one.
 		if msg.RelayID != conn.RelayID {
 			rejectPermanent(conn, "relay_hello relay_id does not match jwt.sub")
+			return
+		}
+		// An identity that spent its snapshot quota is refused at the handshake, before any snapshot (#156).
+		if snapshotQuotaExhausted(conn.RelayID, time.Now()) {
+			logSnapshotQuota(conn.RelayID)
+			reject(conn, "topology_snapshot rate limit exceeded")
 			return
 		}
 		// Structural loop check (also enforced at upgrade time).
@@ -912,6 +957,16 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		// Auto-registration in relay_nodes (idempotent).
 		if err := registerRelayNode(conn.RelayID); err != nil {
 			log.Printf("relay_hello: auto-register error: relay_id=%q err=%v", conn.RelayID, err)
+		}
+		// The link token is minted by the root: this node learns its jti at the first connection, which
+		// is what lets `relays revoke` cut this child locally when the root is unreachable.
+		if conn.JTI != "" {
+			treeHooksMu.RLock()
+			seen := relayTokenSeenFn
+			treeHooksMu.RUnlock()
+			if seen != nil {
+				seen(conn.RelayID, conn.JTI, conn.TokenExp)
+			}
 		}
 		conn.helloDone = true
 		if msg.GroupVars != nil {
@@ -936,6 +991,10 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		conn.mu.Unlock()
 		log.Printf("relay_hello ack: relay_id=%q version=%q is_proxy=%v node_type=%q",
 			conn.RelayID, msg.Version, conn.IsProxy, msg.NodeType)
+		sendLinkSync(conn) // link_keys (open rotation) then link_revocations (full list): SERVER_SPEC §9.2.1
+
+	case MsgLinkState:
+		handleLinkState(conn, msg)
 
 	case "topology_snapshot":
 		handleTopologySnapshot(conn, msg)
@@ -1006,9 +1065,19 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 		relayTasksMu.Lock()
 		ch, ok := relayPendingTasks[msg.TaskID]
 		if ok {
+			if owner := relayTaskOwner[msg.TaskID]; owner != "" && owner != conn.RelayID {
+				// a relay can only answer the tasks dispatched to it
+				relayTasksMu.Unlock()
+				log.Printf("[SECURITY WARNING] task_result ignored: task_id=%q was not dispatched to relay_id=%q", msg.TaskID, conn.RelayID)
+				return
+			}
 			delete(relayPendingTasks, msg.TaskID)
+			delete(relayTaskOwner, msg.TaskID)
 		}
 		relayTasksMu.Unlock()
+		if ok {
+			releaseTask(msg.TaskID)
+		}
 
 		if ok {
 			res := RelayTaskResult{
@@ -1051,21 +1120,34 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 // RelayHandler manages WebSocket connections from downstream relays (/ws/relay).
 //
 // Flow:
-//  1. Validate JWT → must have role=relay
+//  1. Verify the link token (auth.VerifyLinkToken): relay-child (pull) or relay-parent (push)
 //  2. Extract relay_id from "sub" claim
 //  3. Upgrade HTTP → WebSocket
 //  4. Register relay connection and update DB status
 //  5. Message loop (relay_hello, agent_list, task_result, heartbeat)
 //  6. On disconnect: cleanup routing, resolve pending task futures
 func RelayHandler(w http.ResponseWriter, r *http.Request) {
-	auth, err := extractRelayAuth(r)
+	ra, err := extractRelayAuth(r)
 	if err != nil {
 		log.Printf("Relay WS auth rejected: %v", err)
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		if errors.Is(err, ErrLinkNoTrust) {
+			// S21: no trust anchor — upgrade, then the permanent close 4010 with an explicit reason.
+			if c, uerr := upgrader.Upgrade(w, r, nil); uerr == nil {
+				closeWithRejection(c, &relayRejection{code: WSRelayCloseRevoked, reason: auth.LinkErrNoTrust})
+				_ = c.Close()
+			}
+			return
+		}
+		body := `{"error":"unauthorized"}`
+		var le *auth.LinkError
+		if errors.As(err, &le) {
+			body = `{"error":"` + le.Code + `"}`
+		}
+		http.Error(w, body, http.StatusUnauthorized)
 		return
 	}
 
-	relayID, isProxy := auth.RelayID, auth.IsProxy
+	relayID, isProxy := ra.RelayID, ra.IsProxy
 	conn, upgradeErr := upgrader.Upgrade(w, r, nil)
 	if upgradeErr != nil {
 		log.Printf("Relay WebSocket upgrade failed: relay_id=%q err=%v", relayID, upgradeErr)
@@ -1073,15 +1155,17 @@ func RelayHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Our PARENT opened this link (push mode, #140): we are the child side of the handshake.
-	if auth.Role == relayRoleParent {
-		serveParentLink(r.Context(), conn, relayID, auth.JTI)
+	if ra.Role == auth.RoleRelayParent {
+		serveParentLink(r.Context(), conn, relayID, ra.JTI)
 		return
 	}
 
 	relayConn := &RelayConnection{
-		RelayID: relayID,
-		IsProxy: isProxy,
-		Conn:    conn,
+		RelayID:  relayID,
+		IsProxy:  isProxy,
+		JTI:      ra.JTI,
+		TokenExp: ra.Exp,
+		Conn:     conn,
 	}
 
 	// Structural loop refusal, independent of what the peer sends afterwards.
@@ -1106,6 +1190,9 @@ func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) error {
 	conn.SetReadLimit(maxRelayMessageSize())
 
 	registerRelayConnection(relayConn)
+	if relayConn.helloDone { // dialed (push): the handshake is already done, sync the link frames now
+		sendLinkSync(relayConn)
+	}
 
 	defer func() {
 		// Descendants declared by this relay are unreachable once it is gone.
@@ -1136,7 +1223,13 @@ func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) error {
 	var loopErr error
 	for {
 		var msg RelayMessage
-		if err := conn.ReadJSON(&msg); err != nil {
+		if err := readRelayMessage(conn, &msg); err != nil {
+			if errors.Is(err, errLinkFrameTooLarge) {
+				log.Printf("[SECURITY WARNING] link frame refused: relay_id=%q: %v", relayID, err)
+				closeWithRejection(conn, &relayRejection{code: WSRelayCloseRetry, reason: "link frame too large"})
+				loopErr = err
+				break
+			}
 			if isNormalClose(err) {
 				log.Printf("Relay WS closed: relay_id=%q", relayID)
 			} else {
@@ -1371,6 +1464,9 @@ func isNormalClose(err error) bool {
 
 // resetRelayState clears all relay global state (used in tests).
 func resetRelayState() {
+	snapQuotaMu.Lock()
+	snapQuotas = map[string]*snapQuota{}
+	snapQuotaMu.Unlock()
 	descOwnerMu.Lock()
 	for k := range descendantOwner {
 		delete(descendantOwner, k)
@@ -1384,10 +1480,16 @@ func resetRelayState() {
 	relayConnsMu.Unlock()
 
 	relayTasksMu.Lock()
+	ids := make([]string, 0, len(relayPendingTasks))
 	for k := range relayPendingTasks {
+		ids = append(ids, k)
 		delete(relayPendingTasks, k)
 	}
+	relayTaskOwner = make(map[string]string)
 	relayTasksMu.Unlock()
+	for _, k := range ids {
+		releaseTask(k)
+	}
 }
 
 // validateSnapshot checks a topology_snapshot sent by the child conn.RelayID and
@@ -1478,19 +1580,12 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 		return
 	}
 	replacing := conn.snapshotDone
-	if replacing {
-		// A later snapshot REPLACES the subtree atomically (late-joining relays, lost links), but
-		// is rate limited per link: every replacement rewrites routing.
-		now := time.Now()
-		if now.Sub(conn.snapWindow) >= snapshotReplaceWindow {
-			conn.snapWindow, conn.snapCount = now, 0
-		}
-		conn.snapCount++
-		if conn.snapCount > snapshotReplaceLimit {
-			log.Printf("[SECURITY WARNING] topology_snapshot rate limit exceeded: relay_id=%q (> %d per %s)", conn.RelayID, snapshotReplaceLimit, snapshotReplaceWindow)
-			reject(conn, "topology_snapshot rate limit exceeded")
-			return
-		}
+	// Every snapshot (the first of a link included) counts in the quota of the IDENTITY: each one rewrites
+	// routing, and a reconnection must not reset the counter (#156). Refused before any processing.
+	if !allowSnapshot(conn.RelayID, time.Now()) {
+		logSnapshotQuota(conn.RelayID)
+		reject(conn, "topology_snapshot rate limit exceeded")
+		return
 	}
 	relays, byRelay, err := validateSnapshot(conn, msg)
 	if err != nil {
@@ -1575,7 +1670,7 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	if fn := routeChainsHook(); fn != nil {
 		var entries []RouteChainEntry
 		for _, a := range msg.Agents {
-			entries = append(entries, RouteChainEntry{Hostname: a.Hostname, RelayID: a.RelayID, Chain: a.RelayChain})
+			entries = append(entries, RouteChainEntry{Hostname: a.Hostname, RelayID: a.RelayID, Chain: a.RelayChain, Suspended: a.Suspended})
 		}
 		if cerr := fn(entries); cerr != nil {
 			log.Printf("topology_snapshot: route chains: relay=%q err=%v", conn.RelayID, cerr)
@@ -1643,7 +1738,7 @@ func handleEventForward(conn *RelayConnection, msg RelayMessage) {
 	// then forwarded to our own parent (the uplink appends our id). A received event is never
 	// handed back to the sender.
 	switch msg.Event {
-	case "host.up", "host.down", "host.new":
+	case "host.up", "host.down", "host.new", "host.suspended", "host.resumed":
 		dispatchEventLocal(msg)
 	}
 	forwardEventUpstream(msg)
@@ -1691,7 +1786,7 @@ var hostnameShape = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-
 // eventShapeError returns why an event_forward must be refused, "" when well formed.
 func eventShapeError(m RelayMessage) string {
 	switch m.Event {
-	case "host.up", "host.down", "host.new", "host.conflict":
+	case "host.up", "host.down", "host.new", "host.conflict", "host.suspended", "host.resumed":
 	case "relay.updated":
 		// a relay announces its Ansible group vars (#139): relay id + origin-first chain + vars
 		if !relayIDShape.MatchString(m.RelayID) {
@@ -1724,6 +1819,13 @@ func eventShapeError(m RelayMessage) string {
 			if _, err := time.Parse(time.RFC3339, m.EnrolledAt); err != nil {
 				return "invalid enrolled_at"
 			}
+		}
+	case "host.suspended", "host.resumed":
+		if m.Status != "" && m.Status != "suspended" && m.Status != "resumed" {
+			return "invalid status"
+		}
+		if m.EnrolledAt != "" {
+			return "enrolled_at only belongs to host.new"
 		}
 	case "host.conflict":
 		for _, id := range []string{m.OldRelay, m.NewRelay} {
@@ -1784,6 +1886,27 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 				return false
 			}
 		}
+		return true
+	case "host.suspended", "host.resumed":
+		// Same rule as host.down: a child only reports on a host of its OWN subtree, never on a host
+		// connected here nor routed through another peer. The flag is informative: it is never used to
+		// refuse a task (the relay holding the agent decides).
+		if _, err := GetConnection(msg.Hostname); err == nil {
+			log.Printf("[SECURITY WARNING] event_forward %s refused: relay_id=%q hostname=%q is connected locally", msg.Event, conn.RelayID, msg.Hostname)
+			return false
+		}
+		prev, err := lookupHostRoute(msg.Hostname)
+		if err != nil || prev == "" {
+			log.Printf("[SECURITY WARNING] event_forward %s refused: relay_id=%q hostname=%q has no route", msg.Event, conn.RelayID, msg.Hostname)
+			return false
+		}
+		if prev != conn.RelayID {
+			if _, mine := conn.descendants[prev]; !mine {
+				log.Printf("[SECURITY WARNING] event_forward %s refused: relay_id=%q hostname=%q is routed through another relay", msg.Event, conn.RelayID, msg.Hostname)
+				return false
+			}
+		}
+		recordHostSuspended(msg.Hostname, msg.Event == "host.suspended")
 		return true
 	case "host.conflict":
 		emitConflict(HostConflict{Hostname: msg.Hostname, OldRelay: msg.OldRelay, NewRelay: msg.NewRelay, RelayChain: chain}, true)

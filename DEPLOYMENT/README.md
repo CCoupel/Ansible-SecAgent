@@ -184,7 +184,9 @@ Stockage non testé avec `prod/tools/test_shared_storage.py` = non supporté.
 ```bash
 cd DEPLOYMENT/prod
 cp .env.example .env            # SECAGENT_VERSION, STATE_HOST_DIR, TLS_CERT_DIR, ADMIN_PUBLISH_ADDR...
-cp prod.env.example prod.env    # JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY (mode 0600, hors dépôt)
+# Secrets : un fichier par secret dans ./secrets (jwt_secret_key, admin_token, rsa_master_key), hors dépôt, PROPRIÉTAIRE UID 10001,
+# mode 0400 (Compose ignore uid/gid/mode) : voir prod.env.example, puis ./preflight-secrets.sh AVANT `docker compose up`
+# (v3.0.4, #196 : plus de secret en variable d'environnement)
 ```
 
 `STATE_DIR`, `ADMIN_ADDR=0.0.0.0:7771` (dans le conteneur), `ADMIN_TLS=true` et les chemins TLS sont fixés par

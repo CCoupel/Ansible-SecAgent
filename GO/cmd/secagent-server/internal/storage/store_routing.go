@@ -18,6 +18,9 @@ type RelayRoute struct {
 	HopType    string   // "relay"
 	RelayChain []string // top-down path from this node's direct child to RelayID
 	UpdatedAt  int64
+	// Suspended is what the relay holding the agent reported (informative, #180): this node never
+	// refuses a task on the strength of it.
+	Suspended bool
 }
 
 // NextHop returns the direct child relay a task for this host is sent to.
@@ -75,16 +78,25 @@ func (s *Store) BulkUpsertRelayRouting(relayID string, hostnames []string) error
 	}
 	now := time.Now().UTC().Unix()
 	s.mu.Lock()
+	var old []string
 	for h, r := range s.routes {
 		if r.RelayID == relayID {
 			delete(s.routes, h)
+			old = append(old, h)
 		}
 	}
+	kept := make(map[string]struct{}, len(hostnames))
 	for _, h := range hostnames {
 		if h == "" {
 			continue
 		}
+		kept[h] = struct{}{}
 		s.routes[h] = RelayRoute{Hostname: h, RelayID: relayID, HopType: HopTypeRelay, RelayChain: []string{relayID}, UpdatedAt: now}
+	}
+	for _, h := range old { // the flag of a host that stays survives the periodic agent_list
+		if _, still := kept[h]; !still {
+			delete(s.remoteSuspended, h)
+		}
 	}
 	s.mu.Unlock()
 	return nil
@@ -96,6 +108,7 @@ func (s *Store) DeleteRelayRoutingByRelay(relayID string) error {
 	for h, r := range s.routes {
 		if r.RelayID == relayID {
 			delete(s.routes, h)
+			delete(s.remoteSuspended, h)
 		}
 	}
 	s.mu.Unlock()
@@ -168,6 +181,9 @@ type RouteChain struct {
 	Hostname string
 	RelayID  string
 	Chain    []string
+	// Suspended is the flag carried by the snapshot (the child's snapshot is authoritative: an agent
+	// absent from the flag is not suspended; a child that does not know the field sends false).
+	Suspended bool
 }
 
 // SetRelayRouteChains updates the chains of existing routes (all or none: memory, one lock).
@@ -179,8 +195,32 @@ func (s *Store) SetRelayRouteChains(entries []RouteChain) error {
 			r.RelayChain = append([]string(nil), e.Chain...)
 			s.routes[e.Hostname] = r
 		}
+		if e.Suspended {
+			s.remoteSuspended[e.Hostname] = true
+		} else {
+			delete(s.remoteSuspended, e.Hostname)
+		}
 	}
 	return nil
+}
+
+// SetRemoteSuspended records the suspension of a host below this node, as reported by the relay that
+// holds it (event host.suspended / host.resumed). Informative only (#180).
+func (s *Store) SetRemoteSuspended(hostname string, suspended bool) {
+	s.mu.Lock()
+	if suspended {
+		s.remoteSuspended[hostname] = true
+	} else {
+		delete(s.remoteSuspended, hostname)
+	}
+	s.mu.Unlock()
+}
+
+// IsRemoteSuspended reports the suspension reported for a host below this node (informative).
+func (s *Store) IsRemoteSuspended(hostname string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.remoteSuspended[hostname]
 }
 
 // ListRelayRoutes returns every valid route, sorted by hostname.
@@ -192,7 +232,9 @@ func (s *Store) ListRelayRoutes() ([]RelayRoute, error) {
 			warnIgnoredOnce("relay route", r.Hostname)
 			continue
 		}
-		out = append(out, r.clone())
+		c := r.clone()
+		c.Suspended = s.remoteSuspended[r.Hostname]
+		out = append(out, c)
 	}
 	s.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].Hostname < out[j].Hostname })

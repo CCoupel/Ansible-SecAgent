@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
@@ -37,9 +36,13 @@ The server never creates its state implicitly: without relay.state it refuses to
 		if dir == "" {
 			dir = state.DirFromEnv()
 		}
+		masterKey, mkErr := masterKeyFromEnv()
+		if mkErr != nil {
+			return mkErr
+		}
 		err := state.Init(state.InitOptions{
 			Dir:            dir,
-			MasterKey:      os.Getenv("RSA_MASTER_KEY"),
+			MasterKey:      masterKey,
 			AllowPlaintext: stateInitTestMode,
 			RSABits:        stateInitRSABitsFn(),
 		})

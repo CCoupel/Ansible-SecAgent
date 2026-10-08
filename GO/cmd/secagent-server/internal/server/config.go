@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/state"
 	"secagent-server/cmd/secagent-server/internal/tlsca"
+	"secagent-server/internal/secretenv"
 )
 
 // Default listen addresses (unchanged since v1).
@@ -40,7 +42,10 @@ const (
 type Config struct {
 	JWTSecret  string
 	AdminToken string
-	LogLevel   string
+	// MasterKey is RSA_MASTER_KEY (or RSA_MASTER_KEY_FILE), resolved by ConfigFromEnv. Empty = Build
+	// falls back to the RSA_MASTER_KEY environment variable (tests, direct callers).
+	MasterKey string
+	LogLevel  string
 
 	// StateDir is STATE_DIR (default /data): the directory of relay.state (#160). The state must
 	// have been created by `secagent-server state init`; the server never creates it.
@@ -122,6 +127,33 @@ type Config struct {
 
 	// Repeater is the validated child-relay configuration (REPEATER_UPSTREAM_*); nil = no pull parent.
 	Repeater *config.RepeaterConfig
+
+	// Limits of concurrency and stdout budget (#179); zero = the default (10 / 1000 / 1 GiB).
+	// MAX_TASKS_PER_AGENT, MAX_TASKS_INFLIGHT, MAX_STDOUT_BUFFER_TOTAL (bytes). An invalid value
+	// (not a positive integer) refuses to start.
+	MaxTasksPerAgent     int
+	MaxTasksInflight     int
+	MaxStdoutBufferTotal int64
+}
+
+// Environment variables of the task admission limits (#179).
+const (
+	EnvMaxTasksPerAgent     = "MAX_TASKS_PER_AGENT"
+	EnvMaxTasksInflight     = "MAX_TASKS_INFLIGHT"
+	EnvMaxStdoutBufferTotal = "MAX_STDOUT_BUFFER_TOTAL"
+)
+
+// envPositiveInt reads a positive integer variable (0 = unset).
+func envPositiveInt(name string) (int64, error) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s: %q is not a positive integer", name, v)
+	}
+	return n, nil
 }
 
 // ErrDatabaseURLRemoved is returned when DATABASE_URL is still set: since v3.0.3 the relay state is
@@ -138,8 +170,6 @@ var (
 // PROXY_MODE and PROXY_RELAYS are silently ignored (removed in v3.0, #123).
 func ConfigFromEnv() (Config, error) {
 	cfg := Config{
-		JWTSecret:         os.Getenv("JWT_SECRET_KEY"),
-		AdminToken:        os.Getenv("ADMIN_TOKEN"),
 		StateDir:          state.DirFromEnv(),
 		LogLevel:          envOr("LOG_LEVEL", "INFO"),
 		TrustedProxyCIDRs: os.Getenv(handlers.EnvTrustedProxyCIDRs),
@@ -150,6 +180,16 @@ func ConfigFromEnv() (Config, error) {
 		TLSKey:            os.Getenv(EnvTLSKey),
 	}
 	var terr error
+	// Secrets: X or X_FILE (#196). Both set, or an unsafe file, refuses to start.
+	if cfg.JWTSecret, terr = secretenv.Get("JWT_SECRET_KEY"); terr != nil {
+		return Config{}, terr
+	}
+	if cfg.AdminToken, terr = secretenv.Get("ADMIN_TOKEN"); terr != nil {
+		return Config{}, terr
+	}
+	if cfg.MasterKey, terr = secretenv.Get("RSA_MASTER_KEY"); terr != nil {
+		return Config{}, terr
+	}
 	if cfg.TLSDisable, terr = envStrictBool(EnvTLSDisable); terr != nil {
 		return Config{}, terr
 	}
@@ -200,6 +240,21 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	cfg.StateMaxBytes = max
+	for name, dst := range map[string]*int64{EnvMaxStdoutBufferTotal: &cfg.MaxStdoutBufferTotal} {
+		if *dst, err = envPositiveInt(name); err != nil {
+			return Config{}, err
+		}
+	}
+	if n, err := envPositiveInt(EnvMaxTasksPerAgent); err != nil {
+		return Config{}, err
+	} else {
+		cfg.MaxTasksPerAgent = int(n)
+	}
+	if n, err := envPositiveInt(EnvMaxTasksInflight); err != nil {
+		return Config{}, err
+	} else {
+		cfg.MaxTasksInflight = int(n)
+	}
 	if cfg.JWTSecret == "" {
 		return Config{}, ErrMissingJWTSecret
 	}
@@ -212,6 +267,10 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, &InvalidRepeaterConfigError{Err: err}
 	}
 	cfg.Repeater = rep
+	// Dial policy of the outgoing relay links (#151): any invalid value refuses to start.
+	if err := repeater.ConfigureDialPolicyFromEnv(os.Getenv); err != nil {
+		return Config{}, err
+	}
 	gv, err := config.LoadGroupVars()
 	if err != nil {
 		return Config{}, fmt.Errorf("%s: %w", config.EnvRelayGroupVars, err)

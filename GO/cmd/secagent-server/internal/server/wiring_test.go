@@ -2,9 +2,13 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"github.com/golang-jwt/jwt/v5"
 	"io"
 	"net/http"
+	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/ws"
 	"strings"
 	"testing"
 	"time"
@@ -73,13 +77,19 @@ func registerRelay(t *testing.T, admin, id string) (token, uuid string) {
 		t.Fatalf("register %s: %d %s", id, code, body)
 	}
 	var r struct {
-		ID       string `json:"id"`
-		JWTToken string `json:"jwt_token"`
+		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(body, &r); err != nil || r.JWTToken == "" {
+	if err := json.Unmarshal(body, &r); err != nil || r.ID == "" {
 		t.Fatalf("register response: %s %v", body, err)
 	}
-	return r.JWTToken, r.ID
+	// v3.0.4: the declaration mints nothing; the root mints the relay-child link token
+	rootID, _ := ws.RelayIdentity()
+	code, body = adminCall(t, admin, "POST", "/api/admin/tokens", map[string]any{"role": "relay-child", "sub": id, "aud": rootID})
+	var tk struct{ Token string }
+	if err := json.Unmarshal(body, &tk); err != nil || code != http.StatusCreated || tk.Token == "" {
+		t.Fatalf("mint relay-child for %s: %d %s %v", id, code, body, err)
+	}
+	return tk.Token, r.ID
 }
 
 // ── admin handlers are never reachable on the public ports ───────────────────
@@ -198,19 +208,20 @@ func TestWiring_RelayTokenRevocationIsEnforcedEndToEnd(t *testing.T) {
 }
 
 func TestWiring_RelayParentTokenRevocationAndParentLinkAreWired(t *testing.T) {
-	_, _, admin, wsAddr := startNode(t, nil)
-
-	code, body := adminCall(t, admin, "POST", "/api/admin/tokens", map[string]any{
-		"role": "relay-parent", "sub": "central", "expires_at": time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)})
-	if code != http.StatusCreated {
-		t.Fatalf("mint: %d %s", code, body)
+	// this node has a parent (anchored on the root "central", REPEATER_ID dmz1): the root signs the
+	// relay-parent token its parent presents; a revocation reaches it as a link_revocations message
+	t.Setenv("REPEATER_ID", "dmz1")
+	root := newTestRoot(t)
+	n, _, _, wsAddr := startNode(t, root.anchored(nil))
+	tokStr := root.token(t, "relay-parent", "central", "dmz1")
+	parsed, _, err := jwt.NewParser().ParseUnverified(tokStr, jwt.MapClaims{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	var tok struct{ Token, ID string }
-	if err := json.Unmarshal(body, &tok); err != nil || tok.Token == "" {
-		t.Fatalf("mint response: %s", body)
-	}
+	claims := parsed.Claims.(jwt.MapClaims)
+	jti, _ := claims["jti"].(string)
 
-	c, _, err := dialRelayWS(wsAddr, tok.Token)
+	c, _, err := dialRelayWS(wsAddr, tokStr)
 	if err != nil {
 		t.Fatalf("relay-parent token must open the link: %v", err)
 	}
@@ -221,17 +232,21 @@ func TestWiring_RelayParentTokenRevocationAndParentLinkAreWired(t *testing.T) {
 	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var ack map[string]any
 	if err := c.ReadJSON(&ack); err != nil || ack["type"] != "relay_ack" {
-		t.Fatalf("a root node must accept a parent link (parent link hook wired): %v %v", ack, err)
+		t.Fatalf("a node with a parent must accept the parent link (parent link hook wired): %v %v", ack, err)
 	}
 
-	code, body = adminCall(t, admin, "POST", "/api/admin/tokens/"+tok.ID+"/revoke", nil)
-	if code != http.StatusOK || !strings.Contains(string(body), `"disconnected":true`) {
-		t.Fatalf("revoke: %d %s", code, body)
+	// the revocation of that token (what the uplink does on a verified link_revocations message)
+	exp := int64(claims["exp"].(float64))
+	if err := n.store.ApplyLinkRevocations(context.Background(), 1, []storage.LinkRevocation{{JTI: jti, Exp: exp}}); err != nil {
+		t.Fatal(err)
+	}
+	if closed := ws.CloseLinksByJTI(jti); closed != 1 {
+		t.Fatalf("CloseLinksByJTI closed %d links, want 1", closed)
 	}
 	if got := readUntilClose(t, c); got != 4010 {
 		t.Errorf("close code = %d, want 4010", got)
 	}
-	if _, status, err := dialRelayWS(wsAddr, tok.Token); err == nil || status != http.StatusUnauthorized {
+	if _, status, err := dialRelayWS(wsAddr, tokStr); err == nil || status != http.StatusUnauthorized {
 		t.Errorf("revoked relay-parent token reconnected: status %d err %v, want 401 (JTI blacklist wired)", status, err)
 	}
 }

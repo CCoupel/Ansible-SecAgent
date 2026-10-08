@@ -12,44 +12,61 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 
-	"secagent-server/cmd/secagent-server/internal/auth"
 	"secagent-server/cmd/secagent-server/internal/storage"
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-// wireChildLinks makes /ws/relay verify like production for CHILD links (JWT, JTI blacklist,
-// revoked flag) against the test store.
+// wireChildLinks makes /ws/relay verify like production for CHILD links (EdDSA link token, JTI blacklist,
+// revoked flag) against the test store; this node is the ROOT "central".
 func wireChildLinks(t *testing.T) *httptest.Server {
 	t.Helper()
-	prev := ws.JWTSecretsFunc
-	ws.SetJWTSecretsFunc(GetServerJWTSecrets)
-	ws.SetRelayLocalIDFunc(func() string { return "central" })
+	useLinkRoot(t)
 	ws.SetRelayJTIBlacklistFunc(func(jti string) (bool, error) { return adminStore.IsJTIBlacklisted(context.Background(), jti) })
 	ws.SetRelayRevokedFunc(RelayRevokedCheck)
 	srv := httptest.NewServer(http.HandlerFunc(ws.RelayHandler))
 	t.Cleanup(func() {
 		srv.Close()
-		ws.SetJWTSecretsFunc(prev)
-		ws.SetRelayLocalIDFunc(nil)
 		ws.SetRelayJTIBlacklistFunc(nil)
 		ws.SetRelayRevokedFunc(nil)
 	})
 	return srv
 }
 
-func registerPull(t *testing.T, relayID string) RelayCreateResponse {
+// pulled is a registered pull relay plus the relay-child link token minted for it on the root.
+type pulled struct {
+	RelayCreateResponse
+	JWTToken string
+}
+
+// registerPull declares a pull relay (nothing is minted by the declaration, v3.0.4), mints its
+// relay-child token on the root and records its JTI as the first connection does.
+func registerPull(t *testing.T, relayID string) pulled {
 	t.Helper()
+	if linkManager() == nil {
+		useLinkRoot(t)
+	}
 	rr := doAdminRelayRequest(t, AdminCreateRelay, "POST", "/api/admin/relays", map[string]interface{}{"relay_id": relayID, "mode": "pull"})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("register %s: %d %s", relayID, rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "jwt_token") {
+		t.Fatalf("a pull declaration must not return a token: %s", rr.Body.String())
 	}
 	var resp RelayCreateResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	return resp
+	code, tok, raw := mintLink(t, map[string]interface{}{"role": "relay-child", "sub": relayID, "aud": testRootID})
+	if code != http.StatusCreated {
+		t.Fatalf("mint for %s: %d %s", relayID, code, raw)
+	}
+	exp, _ := time.Parse(time.RFC3339, tok.ExpiresAt)
+	if err := adminStore.SetRelayTokenInfo(relayID, tok.JTI, exp.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	return pulled{RelayCreateResponse: resp, JWTToken: tok.Token}
 }
 
 func connectChild(t *testing.T, srv *httptest.Server, token, relayID string) (*websocket.Conn, int, error) {
@@ -95,7 +112,7 @@ func revokeRelayByPath(t *testing.T, id string) (int, RelayRevokeResponse, strin
 func TestRelayRevoke_RegistrationPersistsJTIAndExpiryNotTheToken(t *testing.T) {
 	s := useFreshStores(t)
 	resp := registerPull(t, "dmz1")
-	tok, err := jwt.Parse(resp.JWTToken, func(*jwt.Token) (any, error) { return []byte(server.JWTSecret), nil })
+	tok, _, err := jwt.NewParser().ParseUnverified(resp.JWTToken, jwt.MapClaims{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,11 +212,12 @@ func TestRelayRevoke_LegacyRelayWithoutJTI(t *testing.T) {
 	if err := s.UpsertRelayNode(storage.RelayNode{ID: "uuid-legacy", RelayID: "legacy", Mode: "pull", Status: "connected", CreatedAt: time.Now().Unix()}); err != nil {
 		t.Fatal(err)
 	}
-	// a legacy token: valid signature, role relay, a JTI that was never recorded
-	legacy, _, err := auth.New(GetServerJWTSecrets, 720*time.Hour).SignRelay("legacy")
-	if err != nil {
-		t.Fatal(err)
+	// a token whose JTI was never recorded on this node (valid link token minted on the root)
+	code, lk, raw := mintLink(t, map[string]interface{}{"role": "relay-child", "sub": "legacy", "aud": testRootID})
+	if code != http.StatusCreated {
+		t.Fatalf("mint: %d %s", code, raw)
 	}
+	legacy := lk.Token
 	c, _, err := connectChild(t, srv, legacy, "legacy")
 	if err != nil {
 		t.Fatalf("the legacy relay connects before revocation: %v", err)
@@ -264,31 +282,7 @@ func TestRelayRevoke_PushRelayStopsDialerAndClosesLink(t *testing.T) {
 	}
 }
 
-// ── re-registration rotates the token ────────────────────────────────────────
-
-func TestRelayRevoke_ReRegistrationCutsTheOldToken(t *testing.T) {
-	s := useFreshStores(t)
-	srv := wireChildLinks(t)
-	old := registerPull(t, "dmz1")
-	oldJTI := mustJTI(t, s, "dmz1")
-	c, _, err := connectChild(t, srv, old.JWTToken, "dmz1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fresh := registerPull(t, "dmz1") // same relay_id, new token
-	if mustJTI(t, s, "dmz1") == oldJTI {
-		t.Fatal("a new JTI must be recorded")
-	}
-	if got := expectCloseCode(t, c); got != ws.WSRelayCloseRevoked {
-		t.Errorf("the link authenticated with the replaced token must be cut (4010), got %d", got)
-	}
-	if _, status, err := connectChild(t, srv, old.JWTToken, "dmz1"); err == nil || status != http.StatusUnauthorized {
-		t.Errorf("old token: status %d err %v, want 401", status, err)
-	}
-	if _, _, err := connectChild(t, srv, fresh.JWTToken, "dmz1"); err != nil {
-		t.Errorf("the new token must work: %v", err)
-	}
-}
+// Re-registering a pull relay no longer rotates a token (v3.0.4): the root mints and revokes link tokens.
 
 // ── security ─────────────────────────────────────────────────────────────────
 

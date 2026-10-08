@@ -1,10 +1,36 @@
 # Surcharge pour un relay ENFANT (lien pull/push vers un relay parent) :
 #   docker compose -f docker-compose.server.yml -f docker-compose.child.yml up -d
-# Les valeurs (URLs, token, CA) restent dans prod.env / .env, hors artefact. Les listes d'adresses
+# Avant `up` : ./preflight-secrets.sh --child (proprietaire/mode des secrets, cle publique racine).
+# Les valeurs non secretes (URLs, identites, CA) restent dans .env, hors artefact. Les listes d'adresses
 # sont separees par des virgules (le parent peut etre actif/passif sur plusieurs hotes).
+#
+# v3.0.4 (#141/#146) : le lien est authentifie par un JETON DE LIEN (Ed25519, role `relay-child`) mine sur la RACINE
+# (`secagent-server tokens create --role relay-child --sub <REPEATER_ID> --aud <relay parent>` ; le jeton n'est affiche
+# qu'UNE fois) et par une ANCRE DE CONFIANCE : la cle publique de la racine (`secagent-server keys link-pubkey` sur la
+# racine, sortie PEM + `root_id=` sur stderr) epinglee sur chaque relay non racine. Sans ancre, le relay refuse tout
+# lien entrant (close 4010 `link_trust_missing`). Les anciens jetons HS256 (v3.0.3) sont refuses : pas de retour arriere.
 services:
   secagent-server:
+    secrets:
+      - repeater_upstream_token      # fichier de l'HOTE (bind) : proprietaire UID 10001, mode 0400 ; uid/gid/mode Compose IGNORES
     environment:
       REPEATER_ID: ${REPEATER_ID:?REPEATER_ID est obligatoire pour un relay enfant}
       REPEATER_UPSTREAM_URL: ${REPEATER_UPSTREAM_URL:?REPEATER_UPSTREAM_URL (liste d'adresses du parent) est obligatoire}
-      # REPEATER_UPSTREAM_TOKEN : secret, dans prod.env (env_file).
+      # Jeton de lien : SECRET, par fichier (proprietaire 10001, mode 0400, voir preflight-secrets.sh --child). Ne pas definir
+      # REPEATER_UPSTREAM_TOKEN en plus (refus de demarrer).
+      REPEATER_UPSTREAM_TOKEN_FILE: /run/secrets/repeater_upstream_token
+      # Ancre de confiance : identite de la racine (== `root_id` de `keys link-pubkey`) et sa cle publique (NON secrete).
+      REPEATER_ROOT_ID: ${REPEATER_ROOT_ID:?REPEATER_ROOT_ID (relay_id de la racine, affiche par `keys link-pubkey`) est obligatoire pour un relay enfant}
+      REPEATER_ROOT_LINK_KEY_FILE: /run/secagent-link/root-link.pub
+      # REPEATER_CA_FILE: /certs/ca.pem                 # CA privee du parent, dans TLS_CERT_DIR
+    volumes:
+      # Cle publique racine (PEM `PUBLIC KEY`) : fichier regulier, jamais inscriptible par le groupe ni les autres
+      # (chmod 0644 ou 0444 sur l'hote). Montee en lecture seule ; elle ne depend pas de l'etat partage.
+      - type: bind
+        source: ${ROOT_LINK_KEY_FILE:?ROOT_LINK_KEY_FILE est obligatoire pour un relay enfant (chemin hote de la cle publique racine)}
+        target: /run/secagent-link/root-link.pub
+        read_only: true
+
+secrets:
+  repeater_upstream_token:
+    file: ${SECRETS_DIR:-./secrets}/repeater_upstream_token

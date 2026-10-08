@@ -14,6 +14,7 @@ type Tx struct {
 	m       *model
 	undo    []func()
 	relays  map[string]struct{} // relay ids touched (revocation invariant)
+	links   bool                // link data touched (link tokens, link trust, link signing keys)
 	opts    *Options
 	started time.Time
 }
@@ -33,6 +34,11 @@ func (t *Tx) rollback() {
 func (t *Tx) finish() error {
 	for id := range t.relays {
 		if err := t.m.checkRevokedBlacklisted(id, t.started); err != nil {
+			return err
+		}
+	}
+	if t.links {
+		if err := t.m.checkLinks(t.started); err != nil {
 			return err
 		}
 	}
@@ -237,6 +243,65 @@ func (t *Tx) DeleteRelayParentToken(id string) bool {
 	return true
 }
 
+// ── link tokens and link trust (schema v2) ───────────────────────────────────
+
+func (t *Tx) LinkToken(id string) (LinkToken, bool) {
+	v, ok := t.m.LinkTokens[id]
+	return v.clone(), ok
+}
+
+func (t *Tx) LinkTokenByJTI(jti string) (LinkToken, bool) {
+	id, ok := t.m.linkByJTI[jti]
+	if !ok {
+		return LinkToken{}, false
+	}
+	return t.LinkToken(id)
+}
+
+// PutLinkToken stores a link token. Revoking one (RevokedAt set, JTI not expired) requires its JTI
+// in the blacklist in the SAME mutation (checked when the mutation ends).
+func (t *Tx) PutLinkToken(v LinkToken) error {
+	if err := checkLinkToken(v.ID, v); err != nil {
+		return err
+	}
+	if owner, dup := t.m.linkByJTI[v.JTI]; dup && owner != v.ID {
+		return fmt.Errorf("%w: link token jti already used by %q", ErrDuplicate, owner)
+	}
+	if old, had := t.m.LinkTokens[v.ID]; had && old.JTI != v.JTI {
+		idxDel(t, t.m.linkByJTI, old.JTI)
+	}
+	idxSet(t, t.m.linkByJTI, v.JTI, v.ID)
+	put(t, t.m.LinkTokens, v.ID, v.clone())
+	t.links = true
+	return nil
+}
+
+func (t *Tx) DeleteLinkToken(id string) bool {
+	old, ok := t.m.LinkTokens[id]
+	if !ok {
+		return false
+	}
+	idxDel(t, t.m.linkByJTI, old.JTI)
+	del(t, t.m.LinkTokens, id)
+	t.links = true
+	return true
+}
+
+// LinkTrust returns the trust anchor (zero when none).
+func (t *Tx) LinkTrust() LinkTrust { return t.m.LinkTrust }
+
+// SetLinkTrust replaces the trust anchor (a zero value clears it).
+func (t *Tx) SetLinkTrust(v LinkTrust) error {
+	if err := checkLinkTrust(v); err != nil {
+		return err
+	}
+	old := t.m.LinkTrust
+	t.m.LinkTrust = v
+	t.undo = append(t.undo, func() { t.m.LinkTrust = old })
+	t.links = true
+	return nil
+}
+
 // ── blacklist ────────────────────────────────────────────────────────────────
 
 func (t *Tx) Blacklisted(jti string) bool { _, ok := t.m.Blacklist[jti]; return ok }
@@ -278,6 +343,9 @@ func (t *Tx) RelayNodeByID(id string) (RelayNode, bool) {
 
 func (t *Tx) PutRelayNode(v RelayNode) error {
 	if err := checkRelayNode(v.RelayID, v); err != nil {
+		return err
+	}
+	if err := t.m.checkRelayJTI(v.RelayID, v); err != nil {
 		return err
 	}
 	if owner, dup := t.m.relayByID[v.ID]; dup && owner != v.RelayID {
@@ -333,7 +401,19 @@ func (t *Tx) SetConfig(key, value string) error {
 		return fmt.Errorf("%w: refusing to write %q in clear (secrets are stored encrypted; clear only in explicit test mode without a master key)", ErrInvalid, key)
 	}
 	put(t, t.m.ServerConfig, key, value)
+	if isLinkKeyConfig(key) {
+		t.links = true
+	}
 	return nil
 }
 
-func (t *Tx) DeleteConfig(key string) { del(t, t.m.ServerConfig, key) }
+func (t *Tx) DeleteConfig(key string) {
+	del(t, t.m.ServerConfig, key)
+	if isLinkKeyConfig(key) {
+		t.links = true
+	}
+}
+
+func isLinkKeyConfig(key string) bool {
+	return key == ConfigLinkSigningKeyCurrent || key == ConfigLinkSigningKeyPrevious
+}

@@ -100,6 +100,13 @@ func TestPush_ParentLinkRefusals(t *testing.T) {
 			}
 			srv := setupRelayTestServer(t)
 			defer srv.Close()
+			if tt.tokenSub == "dmz1" {
+				// a token whose subject is its own verifier (sub == aud) is refused by the verifier itself (#141 audit)
+				if code := dialRelayExpectFail(t, srv, makeRelayJWT(tt.tokenSub, "relay-parent")); code != http.StatusUnauthorized {
+					t.Errorf("status %d, want 401", code)
+				}
+				return
+			}
 			c := dialRelay(t, srv, makeRelayJWT(tt.tokenSub, "relay-parent"))
 			parentHello(t, c, tt.helloID, tt.ancestors)
 			if code := expectClose(t, c); code != tt.code {
@@ -138,7 +145,7 @@ func TestPush_UnknownRoleRefused(t *testing.T) {
 	setTreeHooks(t, "dmz1", nil, nil, nil)
 	srv := setupRelayTestServer(t)
 	defer srv.Close()
-	for _, role := range []string{"agent", "admin", "relay-child", ""} {
+	for _, role := range []string{"agent", "admin", "relay-admin", ""} {
 		if code := dialRelayExpectFail(t, srv, makeRelayJWT("central", role)); code != http.StatusUnauthorized {
 			t.Errorf("role %q: status %d, want 401", role, code)
 		}

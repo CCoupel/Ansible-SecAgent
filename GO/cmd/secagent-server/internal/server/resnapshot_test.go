@@ -1,8 +1,6 @@
 package server
 
 import (
-	"encoding/json"
-	"net/http"
 	"testing"
 	"time"
 
@@ -41,19 +39,14 @@ func snapshotHas(m map[string]any, key, field, want string) bool {
 // relays without waiting for a reconnection (#126).
 func TestResnapshot_LateChildRelayIsPublishedToTheParent(t *testing.T) {
 	t.Setenv("REPEATER_ID", "relay1")
-	_, _, admin, wsAddr := startNode(t, func(c *Config) {
+	root, nodeID := newTestRoot(t), "relay1"
+	_, _, _, wsAddr := startNode(t, root.anchored(func(c *Config) {
 		c.Tune = func(o *repeater.Options, _ *repeater.DialerOptions) {
 			o.TopologyDebounce, o.TopologyMinGap = 20*time.Millisecond, 50*time.Millisecond
 		}
-	})
+	}))
 
-	code, body := adminCall(t, admin, "POST", "/api/admin/tokens", map[string]any{
-		"role": "relay-parent", "sub": "central", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
-	if code != http.StatusCreated {
-		t.Fatalf("mint: %d %s", code, body)
-	}
-	var tok struct{ Token string }
-	_ = json.Unmarshal(body, &tok)
+	tok := struct{ Token string }{root.token(t, "relay-parent", "central", nodeID)}
 	parent, _, err := dialRelayWS(wsAddr, tok.Token)
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +61,7 @@ func TestResnapshot_LateChildRelayIsPublishedToTheParent(t *testing.T) {
 	}
 
 	// relay2 joins AFTER the parent link is established
-	token, _ := registerRelay(t, admin, "relay2")
+	token := root.token(t, "relay-child", "relay2", nodeID)
 	child, _, err := dialRelayWS(wsAddr, token)
 	if err != nil {
 		t.Fatal(err)

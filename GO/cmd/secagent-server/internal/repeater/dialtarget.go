@@ -166,12 +166,13 @@ func checkTargetHostStrict(host string, strict bool) error {
 	if nonCanonicalNumericHost(h) {
 		return fmt.Errorf("%w: numeric host that is not a canonical IP address", ErrForbiddenTarget)
 	}
-	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
-		return fmt.Errorf("%w: localhost", ErrForbiddenTarget)
+	pol := currentPolicy()
+	if !pol.AllowsLoopback() && (h == "localhost" || strings.HasSuffix(h, ".localhost")) {
+		return fmt.Errorf("%w: localhost (category=%s)", ErrForbiddenTarget, CategoryLoopback)
 	}
 	if ip := net.ParseIP(strings.Trim(h, "[]")); ip != nil {
-		if why := internalReason(ip); why != "" {
-			return fmt.Errorf("%w: %s address", ErrForbiddenTarget, why)
+		if cat, why := pol.refusal(ip); cat != "" {
+			return fmt.Errorf("%w: %s address (category=%s)", ErrForbiddenTarget, why, cat)
 		}
 		return nil
 	}
@@ -185,8 +186,8 @@ func checkTargetHostStrict(host string, strict bool) error {
 		return nil
 	}
 	for _, ip := range ips {
-		if why := internalReason(ip); why != "" {
-			return fmt.Errorf("%w: the name resolves to a %s address", ErrForbiddenTarget, why)
+		if cat, why := pol.refusal(ip); cat != "" {
+			return fmt.Errorf("%w: the name resolves to a %s address (category=%s)", ErrForbiddenTarget, why, cat)
 		}
 	}
 	return nil

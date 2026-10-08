@@ -209,7 +209,8 @@ func TestResnapshot_RefusedReplacementLeavesNoPartialState(t *testing.T) {
 	waitUntil(t, "link cleanup releases the previous state", func() bool { return ownerOf("zone-a") == "" })
 }
 
-// Replacement snapshots are rate limited per link.
+// Snapshots are rate limited per IDENTITY (#156): the first snapshot of a link counts too (a deliberate
+// change of the issue: it used to be free), so with a limit of 3 the first and two replacements pass.
 func TestResnapshot_RateLimited(t *testing.T) {
 	fr := newFakeRouting(t)
 	setTreeHooks(t, "central", nil, nil, nil)
@@ -220,9 +221,9 @@ func TestResnapshot_RateLimited(t *testing.T) {
 	defer srv.Close()
 	c := dialRelay(t, srv, makeRelayJWT("relay1", "relay"))
 	handshake(t, c, "relay1")
-	sendSnapshot(t, c, nil, nil) // the first snapshot is not a replacement
+	sendSnapshot(t, c, nil, nil) // the first snapshot counts (1/3)
 	expectAck(t, readMsg(t, c))
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 2; i++ {
 		sendSnapshot(t, c, nil, nil)
 		expectAck(t, readMsg(t, c))
 	}

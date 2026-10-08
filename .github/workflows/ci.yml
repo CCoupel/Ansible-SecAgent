@@ -47,6 +47,37 @@ jobs:
           ADMIN_TOKEN: test
         run: go test -race ./... -timeout 300s
 
+  # Tests lents (rafales de 3 000 agents, ~4 min a eux seuls) : exclus de la boucle rapide ci-dessus par
+  # le tag de build `slow`, mais JOUES a chaque push dans ce job dedie (le garde-fou n'est pas retire).
+  slow-tests:
+    name: Tests lents (tag slow, 3 000 agents)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: GO/go.work
+          cache-dependency-path: GO/go.sum
+
+      - name: Rafales et charge (-tags slow)
+        working-directory: GO
+        env:
+          JWT_SECRET_KEY: test
+          ADMIN_TOKEN: test
+        run: |
+          # UN `go test` par test lourd, en SEQUENCE : chacun lance des centaines d'enrolements RSA + 3 000 liens TLS ;
+          # lances ensemble (t.Parallel) ils se volaient le CPU (runner 4 vCPU) et les clients d'enrolement
+          # expiraient (R1 de la QA v3.0.4). Aucun de ces tests n'appelle plus parallel(t).
+          go test -race -tags slow -run '^TestBurst_3000EventsAreAllExecutedAndJournaled$' ./cmd/secagent-server/internal/hooks/ -timeout 600s
+          go test -race -tags slow -run '^TestHooksBurst_3000AgentsReconnectingAllRunTheirHook$' ./cmd/secagent-server/internal/integration/ -timeout 900s
+          # le test de charge compile lui-meme son noeud SANS -race (go test -c) : le RSS d'un noeud -race est sans signification
+          go test -race -tags slow -run '^TestTaskLimits_Load3000AgentsNominalThenSaturation$' ./cmd/secagent-server/internal/integration/ -timeout 900s
+          go test -race -tags slow -run '^TestExec_AnAnswerLongerThanTheAPIWriteTimeoutArrivesIntact$' ./cmd/secagent-server/internal/integration/ -timeout 300s
+          # binaire reel secagent-server (compile par le test) : state rekey / state restore / keys, contre de vrais noeuds
+          go test -race -tags slow -run '^(TestRekeyBinary_|TestKeysCLI_RealBinaryAgainstRealNodes$)' ./cmd/secagent-server/internal/integration/ -timeout 600s
+
   lint:
     name: Lint Go
     runs-on: ubuntu-latest
@@ -185,6 +216,7 @@ jobs:
           python3 scripts/ci/check_scripts_selftest.py
           bash scripts/ci/chain_verify_images_selftest.sh
           bash scripts/ci/failover_guard_selftest.sh
+          bash scripts/ci/preflight_secrets_selftest.sh
           python3 scripts/ci/check_scripts.py .github/workflows/*.yml
 
       # Variables d'exemple NON secretes : uniquement pour que `docker compose config` puisse interpoler.
@@ -198,6 +230,8 @@ jobs:
           SECAGENT_MINION_IMAGE: ghcr.io/ccoupel/secagent-minion:sha-0000000
           REPEATER_ID: ci
           REPEATER_UPSTREAM_URL: https://parent.example:7770
+          REPEATER_ROOT_ID: root
+          ROOT_LINK_KEY_FILE: /etc/tls/root-link.pub
         run: |
           set -euo pipefail
           mkdir -p render
@@ -330,6 +364,8 @@ jobs:
           TLS_CERT_DIR: /etc/tls
           REPEATER_ID: ci
           REPEATER_UPSTREAM_URL: https://parent.example:7770
+          REPEATER_ROOT_ID: root
+          ROOT_LINK_KEY_FILE: /etc/tls/root-link.pub
         run: |
           set -euo pipefail
           mkdir x && tar -xzf dist/secagent-compose-0.0.0.tar.gz -C x

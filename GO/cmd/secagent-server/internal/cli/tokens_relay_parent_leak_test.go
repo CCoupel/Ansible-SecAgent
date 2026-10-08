@@ -84,7 +84,7 @@ func TestLeak_Create_JWTShownExactlyOnceOnStdoutOnly(t *testing.T) {
 	for _, format := range []string{"table", "json"} {
 		t.Run(format, func(t *testing.T) {
 			apiWithJWT(t, http.StatusCreated, createResponse)
-			out, errOut, code := runCLI(t, "--format", format, "tokens", "create", "--role", "relay-parent", "--sub", "central", "--expires", "30d")
+			out, errOut, code := runCLI(t, "--format", format, "tokens", "create", "--role", "relay-parent", "--sub", "central", "--aud", "dmz1", "--expires", "30d")
 			if code != 0 {
 				t.Fatalf("exit %d, stderr: %s", code, errOut)
 			}
@@ -109,15 +109,14 @@ func TestLeak_Create_ErrorPathsNeverPrintJWT(t *testing.T) {
 		stderr string
 		calls  int32
 	}{
-		{name: "expiry missing", args: []string{"--role", "relay-parent", "--sub", "central"}, status: 201, body: createResponse, code: 1, stderr: "--expires is required"},
-		{name: "expiry never", args: []string{"--role", "relay-parent", "--sub", "central", "--expires", "never"}, status: 201, body: createResponse, code: 1, stderr: "--expires is required"},
-		{name: "expiry beyond 365d", args: []string{"--role", "relay-parent", "--sub", "central", "--expires", "366d"}, status: 201, body: createResponse, code: 1, stderr: "365d"},
+		{name: "aud missing", args: []string{"--role", "relay-parent", "--sub", "central", "--expires", "30d"}, status: 201, body: createResponse, code: 1, stderr: "--aud"},
+		{name: "expiry beyond 365d", args: []string{"--role", "relay-parent", "--sub", "central", "--aud", "dmz1", "--expires", "366d"}, status: 201, body: createResponse, code: 1, stderr: "365d"},
 		{name: "sub missing", args: []string{"--role", "relay-parent", "--expires", "30d"}, status: 201, body: createResponse, code: 1, stderr: "--sub"},
-		{name: "API 500 whose body carries a token", args: []string{"--role", "relay-parent", "--sub", "central", "--expires", "30d"}, status: 500,
+		{name: "API 500 whose body carries a token", args: []string{"--role", "relay-parent", "--sub", "central", "--aud", "dmz1", "--expires", "30d"}, status: 500,
 			body: func() any { return map[string]any{"error": "db_error", "token": leakJWT} }, code: 1, stderr: "db_error", calls: 1},
-		{name: "API 401", args: []string{"--role", "relay-parent", "--sub", "central", "--expires", "30d"}, status: 401,
+		{name: "API 401", args: []string{"--role", "relay-parent", "--sub", "central", "--aud", "dmz1", "--expires", "30d"}, status: 401,
 			body: func() any { return map[string]any{"error": "unauthorized", "token": leakJWT} }, code: 1, stderr: "unauthorized", calls: 1},
-		{name: "malformed 201 response containing the JWT", args: []string{"--role", "relay-parent", "--sub", "central", "--expires", "30d"}, status: 201,
+		{name: "malformed 201 response containing the JWT", args: []string{"--role", "relay-parent", "--sub", "central", "--aud", "dmz1", "--expires", "30d"}, status: 201,
 			raw: `{"token":"` + leakJWT + `"`, code: 1, stderr: "parse response", calls: 1},
 	}
 	for _, tt := range tests {
@@ -151,14 +150,14 @@ func TestLeak_Create_ErrorPathsNeverPrintJWT(t *testing.T) {
 func TestLeak_List_NeverPrintsAToken(t *testing.T) {
 	apiWithJWT(t, http.StatusOK, func() any {
 		// Metadata as the API returns it, plus a hypothetical "token" field: the table must ignore it.
-		return []map[string]any{{"id": "uuid-rp-1", "role": "relay-parent", "sub": "central", "jti": "jti-1",
+		return []map[string]any{{"id": "uuid-rp-1", "role": "relay-parent", "sub": "central", "aud": "dmz1", "jti": "jti-1",
 			"token_hash": "0123456789abcdef0123456789abcdef", "token": leakJWT, "revoked": false, "expires_at": "2027-01-01T00:00:00Z"}}
 	})
 	out, errOut, code := runCLI(t, "tokens", "list", "--role", "relay-parent")
 	if code != 0 {
 		t.Fatalf("exit %d, stderr: %s", code, errOut)
 	}
-	for _, want := range []string{"uuid-rp-1", "parent=central"} {
+	for _, want := range []string{"uuid-rp-1", "central -> dmz1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("list output lacks %q:\n%s", want, out)
 		}

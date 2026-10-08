@@ -184,7 +184,7 @@ Authorization: Bearer <ADMIN_TOKEN>
 ```
 
 **Paramètres :**
-- `role` : `plugin` | `enrollment` | `relay-parent` | `all` (défaut: `all`) ; autre valeur : `400 invalid_role`
+- `role` : `plugin` | `enrollment` | `relay-child` | `relay-parent` | `all` (défaut: `all`) ; autre valeur : `400 invalid_role`. Les rôles `relay-child` / `relay-parent` listent le **registre des jetons de lien** (v3.0.4, #141/#146) : vide sur un nœud non racine.
 
 **Réponse 200 :**
 ```json
@@ -204,11 +204,18 @@ Authorization: Bearer <ADMIN_TOKEN>
 ]
 ```
 
-`expires_at`, `last_used_*` et `description` sont omis quand ils sont vides. `last_used_at` / `last_used_ip` sont gardés en mémoire et ne sont persistés qu'avec la prochaine écriture de l'état : ils peuvent retarder de plusieurs minutes (`last_used_approximate: true`), et un jeton utilisé juste avant un crash peut apparaître « jamais utilisé » — ne pas s'en servir pour un audit. Chaque entrée porte aussi `token_hash` (jamais le jeton en clair). Les jetons `enrollment` et `relay-parent` ont leurs propres champs (`hostname_pattern`, `reusable`, `use_count` ; `sub`, `jti`) — `handlers/admin_tokens.go`.
+`expires_at`, `last_used_*` et `description` sont omis quand ils sont vides. `last_used_at` / `last_used_ip` sont gardés en mémoire et ne sont persistés qu'avec la prochaine écriture de l'état : ils peuvent retarder de plusieurs minutes (`last_used_approximate: true`), et un jeton utilisé juste avant un crash peut apparaître « jamais utilisé » — ne pas s'en servir pour un audit. Chaque entrée porte aussi `token_hash` (jamais le jeton en clair). Les jetons `enrollment` ont leurs propres champs (`hostname_pattern`, `reusable`, `use_count`).
+
+**Jetons de lien (v3.0.4)** — entrée de `role=relay-child|relay-parent|all` :
+```json
+{ "id": "lnk-uuid", "role": "relay-child", "sub": "relay-b", "aud": "relay-a", "jti": "<uuid>", "kid": "<kid de la clé racine>",
+  "created_at": "...", "expires_at": "...", "revoked": false, "revoked_at": "...", "created_by": "admin", "description": "..." }
+```
+Jamais le jeton lui-même ni son hash. `token_hash` n'existe pas pour ces entrées.
 
 ---
 
-### `POST /api/admin/tokens` — Créer un token (plugin, enrôlement ou relay-parent)
+### `POST /api/admin/tokens` — Créer un token (plugin, enrôlement, relay-child ou relay-parent)
 
 ```http
 POST /api/admin/tokens
@@ -226,7 +233,21 @@ Content-Type: application/json
 }
 ```
 
-`role` : `plugin`, `enrollment` ou `relay-parent` (sinon `400 invalid_role`). L'expiration est `expires_at` en **RFC 3339** (pas de durée `expires_in` ; format invalide : `400 invalid_expires_at`). Vide = jeton sans expiration, sauf `relay-parent` pour lequel elle est obligatoire (maximum 365 jours, `400 expires_exceeds_maximum_365d`). Le CLI `tokens create --expires <durée>` convertit la durée en `expires_at`. Champs propres au rôle : `enrollment` → `hostname_pattern` (obligatoire), `reusable` (0 = usage unique, 1 = permanent) ; `plugin` → `description`, `allowed_ips`, `allowed_hostname_pattern` ; `relay-parent` → `sub` (relay_id du parent).
+`role` : `plugin`, `enrollment`, `relay-child` ou `relay-parent` (sinon `400 invalid_role`). L'expiration est `expires_at` en **RFC 3339** (pas de durée `expires_in` ; format invalide : `400 invalid_expires_at`). Vide = jeton sans expiration, sauf `relay-child` / `relay-parent` pour lesquels elle vaut **720 h par défaut** (maximum 365 jours, `400 expires_exceeds_maximum_365d`). Le CLI `tokens create --expires <durée>` convertit la durée en `expires_at`. Champs propres au rôle : `enrollment` → `hostname_pattern` (obligatoire), `reusable` (0 = usage unique, 1 = permanent) ; `plugin` → `description`, `allowed_ips`, `allowed_hostname_pattern` ; `relay-child` / `relay-parent` → voir ci-dessous.
+
+#### Jetons de lien `relay-child` / `relay-parent` (v3.0.4, [BREAKING] #141/#146)
+
+Émis **uniquement par la racine** (nœud sans parent : ni `REPEATER_UPSTREAM_URL`, ni ancre de confiance `REPEATER_ROOT_ID` / `REPEATER_ROOT_LINK_KEY_FILE` / `link_trust` — un enfant en mode push n'a pas d'`UPSTREAM_URL` mais est ancré), signés Ed25519 (`alg=EdDSA`) par la clé racine. Corps : `{"role":"relay-child"|"relay-parent", "sub":"<relay_id du présentateur>", "aud":"<relay_id du vérificateur>", "expires_at":"...", "description":"..."}`.
+
+- `relay-child` (lien **pull**, l'enfant ouvre) : `sub` = enfant X, `aud` = parent P.
+- `relay-parent` (lien **push**, le parent ouvre) : `sub` = parent P, `aud` = enfant X.
+- `sub` et `aud` : obligatoires, forme `relay_id` (`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`), différents (`400 missing_sub`, `missing_aud`, `invalid_sub`, `invalid_aud`, `sub_equals_aud`).
+- `iss` = `relay_id` de la racine ; `kid` = empreinte de la clé racine (`auth.LinkKID`) ; `jti` unique ; format exact dans `auth/linkjwt.go` (`SignLinkToken`).
+- **`409 {"error":"not_root"}`** sur un nœud qui a un parent (`REPEATER_UPSTREAM_URL` défini, ou ancre de confiance épinglée) ; **`503 {"error":"master_key_required"}`** sans `RSA_MASTER_KEY` (la clé privée n'est jamais stockée en clair ; aucun jeton n'est émis).
+- La clé de signature est générée **paresseusement** au premier appel de mint (ou de `GET /api/admin/link/pubkey`), chiffrée `enc:` dans `server_config.link_signing_key_current`.
+- Le rôle `relay` (HS256, v3.0.3) n'existe plus ; un `relay-parent` n'est plus minté par l'enfant.
+
+Réponse 201 d'un jeton de lien : `{ "id", "token": "<JWT EdDSA>", "role", "sub", "aud", "jti", "kid", "expires_at", "created_at" }` — le jeton n'est retourné qu'une fois ; le registre `link_tokens` n'en garde que les métadonnées.
 
 **Réponse 201 :**
 ```json
@@ -238,7 +259,7 @@ Content-Type: application/json
 }
 ```
 
-Le token en clair n'est retourné **qu'une seule fois** à la création. Ensuite, seul le hash est stocké. Les jetons `plugin` et `enrollment` sont des chaînes **opaques** préfixées `secagent_plg_` / `secagent_enr_` (suivies de 64 caractères hexadécimaux), **pas des JWT** ; seul le jeton `relay-parent` est un JWT (`handlers/admin_tokens.go:163`).
+Le token en clair n'est retourné **qu'une seule fois** à la création. Ensuite, seul le hash est stocké (rien pour un jeton de lien : sa signature l'authentifie). Les jetons `plugin` et `enrollment` sont des chaînes **opaques** préfixées `secagent_plg_` / `secagent_enr_` (suivies de 64 caractères hexadécimaux), **pas des JWT** ; seuls les jetons de lien `relay-child` / `relay-parent` sont des JWT (EdDSA).
 
 #### Note sur `allowed_hostname_pattern`
 
@@ -266,7 +287,9 @@ Le champ `allowed_hostname_pattern` est une **regexp Go** (pas un glob shell). L
 
 ### `POST /api/admin/tokens/{id}/revoke` — Révoquer un token
 
-Révoque un jeton **plugin** (ou `relay-parent`). Les jetons d'enrôlement ne se révoquent pas : utiliser `DELETE`. Réponse 200 : `{ "revoked": true, "id": "...", "updated_at": "..." }` ; `404 token_not_found` si l'id n'existe pas.
+Révoque un jeton **plugin** ou un **jeton de lien** (`relay-child` / `relay-parent`). Les jetons d'enrôlement ne se révoquent pas : utiliser `DELETE`. Réponse 200 : `{ "revoked": true, "id": "...", "updated_at": "..." }` ; `404 token_not_found` si l'id n'existe pas.
+
+Pour un jeton de lien, **dans la même mutation d'état** : `revoked_at` posé, `jti` ajouté à la blacklist (jusqu'à l'`exp` du jeton) et compteur `seq` incrémenté ; la réponse ajoute `"jti"`, `"seq"` et `"links_closed"` (liens locaux fermés en `4010`). La racine pousse ensuite un message `link_revocations` à ses enfants (`SERVER_SPEC.md` §9.2.1). Si l'écriture d'état est refusée, rien n'est révoqué ni fermé (500 `db_error`).
 
 ---
 
@@ -401,7 +424,7 @@ Lu dans le journal append-only `actions.log` (#161). `limit` : 1–200 (défaut 
 
 ### `GET /api/admin/status`
 
-**Réponse 200 :** `db`, `ws_connections`, `uptime`, `links` (relay hiérarchique, si câblé) et, depuis #183, la file des hooks :
+**Réponse 200 :** `db`, `ws_connections`, `tasks_in_flight` (tâches admises sur ce relay, locales et relayées, #179), `uptime`, `links` (relay hiérarchique, si câblé) et, depuis #183, la file des hooks :
 
 ```json
 { "db": "ok", "ws_connections": 3, "uptime": "7200s",
@@ -432,13 +455,26 @@ Lu dans le journal append-only `actions.log` (#161). `limit` : 1–200 (défaut 
 
 | Route | Rôle |
 |---|---|
-| `POST /api/admin/relays` | Enregistre un relay enfant (`relay_id`, `mode` `pull` (défaut) ou `push`, `urls`, `token`, `description`). Mode pull : renvoie `jwt_token` **une seule fois**. |
+| `POST /api/admin/relays` | Déclare un relay enfant (`relay_id`, `mode` `pull` (défaut) ou `push`, `urls`, `token`, `description`). **Mode pull : ne minte plus aucun jeton** et ne renvoie plus `jwt_token` ([BREAKING] v3.0.4) : l'enfant attendu est seulement déclaré ; son jeton `relay-child` est minté sur la racine (`POST /api/admin/tokens`) et porté par l'enfant (`REPEATER_UPSTREAM_TOKEN`). Mode push : `token` = jeton `relay-parent` minté sur la racine (`sub` = ce nœud, `aud` = `relay_id`), stocké scellé `enc:` (inchangé). |
 | `GET /api/admin/relays` | Liste des relays |
 | `GET /api/admin/relays/status` | État des relays : `{ "relays": [...], "timestamp": "..." }` |
 | `DELETE /api/admin/relays/{id}` | Supprime un relay |
 | `POST /api/admin/relays/{id}/revoke` | Révoque un relay (c'est la seule forme de révocation : il n'y a pas de sous-commande CLI `relays revoke`) |
 
-(`server/routers.go:91-95`, `handlers/admin_relays.go`.)
+(`server/routers.go:96-100`, `handlers/admin_relays.go`.)
+
+### Clé de signature des liens (v3.0.4, #141) — racine seulement
+
+Tous : `409 {"error":"not_root"}` sur un nœud non racine ; `503 {"error":"master_key_required"}` sans `RSA_MASTER_KEY`.
+
+| Route | Rôle |
+|---|---|
+| `GET /api/admin/link/pubkey` | Clé **publique** de la racine, à épingler sur les enfants (`REPEATER_ROOT_LINK_KEY_FILE`). 200 : `{ "root_id": "<relay_id>", "current_kid": "...", "current_pub_pem": "-----BEGIN PUBLIC KEY-----…" (PKIX Ed25519), "previous_kid": "..." (si fenêtre de rotation ouverte), "seq": N }`. Génère la clé si elle n'existe pas encore. Jamais de clé privée. |
+| `POST /api/admin/link/keys/rotate` | `current` devient `previous`, nouvelle `current` ; `seq`++ ; pousse `link_keys` (signé par l'**ancienne** `current`). 200 : `{ "current_kid", "previous_kid", "seq" }`. `409 previous_key_not_retired` si une rotation précédente n'est pas close (une seule rotation en vol). |
+| `POST /api/admin/link/keys/retire-previous` | Ferme la fenêtre de double acceptation (`previous` supprimée) ; `seq`++ ; pousse `link_keys` sans `previous`. Corps optionnel `{ "force": true }`. `409 no_previous_key` ; **`409 {"error":"rotation_unconfirmed","unconfirmed":["relay-x",…]}`** tant que des relays connus n'ont pas confirmé la rotation (`link_state`) — avec `force` : exécuté, `[SECURITY WARNING]` journalisé listant les relays (R2). |
+| `GET /api/admin/link/status` | `{ "root_id", "seq", "rotation_seq", "previous_kid", "relays": [ { "relay_id", "link_seq", "link_kid", "confirmed": bool } ] }` : confirmation de rotation par relay (messages `link_state`, informatifs). |
+
+CLI : `secagent-server keys link-pubkey`, `keys rotate-link`, `keys retire-link-previous [--force]`, `keys link-status`.
 
 ---
 

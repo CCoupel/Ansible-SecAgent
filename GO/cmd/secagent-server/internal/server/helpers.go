@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"time"
 
@@ -42,24 +41,6 @@ func (n *Node) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// isListening reports whether something accepts connections on the listener's EFFECTIVE address
-// (an unspecified host such as ":7770" or "[::]:7770" is dialed through the loopback).
-func isListening(a net.Addr) bool {
-	host, port, err := net.SplitHostPort(a.String())
-	if err != nil {
-		return false
-	}
-	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
-		host = "127.0.0.1"
-	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 1*time.Second)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
-
 // directAgents lists the agents connected directly to this node (1 level).
 func directAgents() []repeater.AgentInfo {
 	hosts := ws.GetConnectedHostnames()
@@ -76,7 +57,9 @@ func directAgents() []repeater.AgentInfo {
 func buildSnapshot(selfID string, st *storage.Store) repeater.Snapshot {
 	snap := repeater.Snapshot{}
 	for _, h := range ws.GetConnectedHostnames() {
-		snap.Agents = append(snap.Agents, repeater.TopoAgent{Hostname: h, RelayID: selfID, RelayChain: []string{selfID}})
+		// the suspension of an agent we hold is ours to state (state file); unreadable = not reported
+		suspended, _ := st.IsAgentSuspended(context.Background(), h)
+		snap.Agents = append(snap.Agents, repeater.TopoAgent{Hostname: h, RelayID: selfID, RelayChain: []string{selfID}, Suspended: suspended})
 	}
 	nodes, err := st.ListValidRelayNodes()
 	if err != nil {
@@ -117,7 +100,7 @@ func buildSnapshot(selfID string, st *storage.Store) repeater.Snapshot {
 			continue
 		}
 		for _, h := range hosts {
-			snap.Agents = append(snap.Agents, repeater.TopoAgent{Hostname: h, RelayID: n.RelayID, RelayChain: chain})
+			snap.Agents = append(snap.Agents, repeater.TopoAgent{Hostname: h, RelayID: n.RelayID, RelayChain: chain, Suspended: st.IsRemoteSuspended(h)})
 		}
 	}
 	return snap

@@ -2,7 +2,7 @@
 
 > Document de référence pour le modèle de sécurité d'Ansible-SecAgent.
 > Remplace et étend ARCHITECTURE.md §7.
-> Dernière mise à jour : 2026-10-06 (v3.0.3)
+> Dernière mise à jour : 2026-10-08 (v3.0.4 : jetons de lien signés par la racine, décision `DECISION_141.md`)
 
 ---
 
@@ -31,18 +31,20 @@ Défense en profondeur        : IP binding + hostname claim + token secret + TLS
 |---|---|---|---|
 | `agent` | secagent-minion (hôte cible) | `POST /api/register`, `WSS /ws/agent` | JWT HMAC-HS256 chiffré RSA-OAEP |
 | `plugin` | Ansible Control Node | `GET /api/inventory`, `POST /api/exec`, `/api/upload`, `/api/fetch` | Token statique hashé (SHA-256) |
-| `relay` (dit « relay-child ») | repeater-enfant (présenté au handshake) | `WSS /ws/relay` (relay_hello, agent_list, event_forward, task_forward) | JWT HMAC-HS256 (créé et signé par le relay parent avec sa JWT_SECRET_KEY) |
-| `relay-parent` | repeater-parent en mode push (présenté au handshake) | `WSS /ws/relay` (ouvrir connexion vers enfant) | JWT HMAC-HS256 (créé et signé par le relay enfant avec sa JWT_SECRET_KEY) |
+| `relay-child` | repeater-enfant, lien pull (présenté au handshake) | `WSS /ws/relay` (relay_hello, agent_list, event_forward, task_forward) | **Jeton de lien** JWT Ed25519 (`alg=EdDSA`), signé par la **racine** ; `iss` = relay_id de la racine, `sub` = l'enfant, `aud` = le parent qui le vérifie, `kid`, `jti`, `exp` |
+| `relay-parent` | repeater-parent en mode push (présenté au handshake) | `WSS /ws/relay` (ouvrir connexion vers enfant) | **Jeton de lien** JWT Ed25519, signé par la **racine** ; `sub` = le parent, `aud` = l'enfant qui le vérifie |
 | `admin` | CLI dans le container serveur | Port 7771 — tous les endpoints d'administration | `ADMIN_TOKEN` env var (container-interne) |
 
 ### Règles d'isolation des rôles
 
 - Un token `role: agent` ne peut **pas** appeler `/api/exec` ni `/api/inventory` ni ouvrir `/ws/relay`
 - Un token `role: plugin` ne peut **pas** ouvrir `/ws/agent` ni `/ws/relay`
-- Un token `role: relay` (dit relay-child) ne peut **pas** accéder `/api/inventory`, `/api/exec`, `/api/upload`, `/api/fetch`, ni `/ws/agent` (repeater-to-repeater uniquement)
+- Un token `role: relay-child` ne peut **pas** accéder `/api/inventory`, `/api/exec`, `/api/upload`, `/api/fetch`, ni `/ws/agent` (repeater-to-repeater uniquement)
+- Le rôle HS256 `relay` de la v3.0.3 **n'existe plus** : un tel jeton est refusé (`link_role_legacy`) ; un jeton `agent` ou `plugin` ne peut pas ouvrir `/ws/relay`
 - Un token `role: relay-parent` ne peut **pas** accéder `/api/inventory`, `/api/exec`, `/api/upload`, `/api/fetch`, ni `/ws/agent` (repeater-to-repeater uniquement)
 - Le port 7771 (admin) n'est **jamais** exposé hors du container (`expose:` uniquement, pas `ports:`)
 - L'admin CLI s'authentifie via `localhost:7771` en lisant `ADMIN_TOKEN` depuis l'environnement du container
+- **Jetons de lien (v3.0.4)** : un seul vérificateur (`auth.VerifyLinkToken`) sur `/ws/relay`, jamais le chemin HS256 : `alg` EdDSA seul, `kid` ∈ {clé racine courante, précédente}, `iss` = racine, `aud` = ce relay (un jeton ne vaut qu'auprès d'**un** vérificateur), `role` conforme, `exp`, `jti` non blacklisté, `sub ≠ aud`. Les jetons `agent`, `plugin`, `enrollment` et admin ne changent pas. Décision, alternatives écartées et exigences S1-S23 : `DOC/security/DECISION_141.md`.
 
 
 ---
@@ -212,9 +214,9 @@ Le serveur n'émet vers les agents que `4000`, `4001` et `1001`. `4002` existe c
 
 | Code | Nature | Signification | Comportement du pair qui reçoit le close |
 |---|---|---|---|
-| `4010` | **Refus permanent** | Identité non autorisée pour ce lien : token révoqué, `relay_id` ≠ `jwt.sub`, identité du pair différente de celle attendue, boucle détectée (C ∈ {P} ∪ ancêtres(P)) | **Ne pas reconnecter** : le client/dialer s'arrête (état terminal, log ERROR) ; une action opérateur est nécessaire |
-| `4011` | **Non émis** | Constante réservée (`ws/relay_handler.go:37`), jamais envoyée ni traitée : un token expiré est refusé par un 401 avant l'upgrade | — |
-| `4012` | **Refus corrigible** | Erreur protocolaire ou de validation pouvant se résoudre : `topology_snapshot` invalide / déjà reçu / reçu avant `relay_hello`, conflit de routage ou de relay déclaré, slot « parent unique » occupé | Reconnexion avec backoff exponentiel (5 s → 60 s max) |
+| `4010` | **Refus permanent** | Identité non autorisée pour ce lien : **jeton de lien révoqué** (révocation propagée par `link_revocations`), **relay non racine sans ancre de confiance** (`link_trust_missing`, S21), `relay_id` ≠ `jwt.sub`, identité du pair différente de celle attendue, boucle détectée (C ∈ {P} ∪ ancêtres(P)) | **Ne pas reconnecter** : le client/dialer s'arrête (état terminal, log ERROR) ; une action opérateur est nécessaire |
+| `4011` | **Non émis** | Constante réservée (`ws/relay_handler.go`), jamais envoyée ni traitée : un token expiré est refusé par un 401 avant l'upgrade | — |
+| `4012` | **Refus corrigible** | Erreur protocolaire ou de validation pouvant se résoudre : `topology_snapshot` invalide / reçu avant `relay_hello` / **au-delà de 40 par 60 s pour une même identité `relay_id`** (#156, y compris dès le `relay_hello` d'une identité au quota épuisé), conflit de routage ou de relay déclaré, **trame de lien trop grande** (`link frame too large` : `link_keys`/`link_revocations` > 1 Mio, `link_state` > 512 o), slot « parent unique » occupé | Reconnexion avec backoff exponentiel (5 s → 60 s max) |
 | `4000` | Constante définie, non émise sur les liens relay | — | — |
 
 > Un refus HTTP 401 avant l'upgrade (token invalide, révoqué à la reconnexion, secret non configuré) n'a pas de code de fermeture : le client le traite comme une erreur de connexion (backoff 5 s → 60 s).
@@ -273,15 +275,15 @@ Tous les secrets du serveur sont stockés en DB chiffrés (AES-256-GCM) :
 | `jwt_secret_previous` | `server_config` | idem |
 | RSA keypair serveur | `server_config` | idem |
 | `key_rotation_deadline` | `server_config` | idem |
+| `link_signing_key_current` / `link_signing_key_previous` (v3.0.4, **racine seulement**) | `server_config` | AES-256-GCM, clef dérivée de `RSA_MASTER_KEY`, **AAD = nom du champ** (un chiffré déplacé de `current` vers `previous` est un refus de sécurité final au chargement) ; absent des logs, de l'API et de `state verify` (`[SEALED]`/`[ABSENT]`) |
 
-### Modèle per-relay (v3.0.0)
+### Modèle per-relay et signature centralisée des liens (v3.0.4)
 
-**En mode repeater (topologie arbre)**, chaque relay a sa propre `JWT_SECRET_KEY` unique :
-- Rotation s'applique **indépendamment** par relay (pas de synchronisation globale)
-- Tokens relay-child et relay-parent signés par la clé du relay qui les crée
-- Chaque relay exécute sa propre rotation de clef sur son CLI (la grace period s'applique localement)
-- Les relays enfants gèrent la rotation des tokens relay-parent qu'ils ont émis pour leurs parents (dual-key via leur propre JWT_SECRET_KEY)
-- **Hors-scope v3.0.0** : synchronisation des rotations de clef entre relays (envisagée pour v3.0.1+ avec PKI hiérarchique)
+- **Jetons d'agent** (HS256) : chaque relay garde sa propre `JWT_SECRET_KEY` ; la rotation (§ ci-dessus) s'applique indépendamment par relay. Une paire actif/passif partage `STATE_DIR`, donc le même secret.
+- **Jetons de lien** (`relay-child` / `relay-parent`) : **plus de clé par relay**. Ils sont signés Ed25519 par la **racine** (nœud sans parent) ; la clé privée vit dans `server_config.link_signing_key_*` de la racine (chiffrée, partagée par la paire actif/passif : un nouveau maître signe avec le même `kid`). Les autres relays n'ont que la **clé publique** de la racine, épinglée au déploiement (`REPEATER_ROOT_LINK_KEY_FILE`, `REPEATER_ROOT_ID`) et persistée dans `link_trust`.
+- **Rotation de la clé racine** : `keys rotate-link` (message `link_keys` signé par l'**ancienne** clé, chaîne vérifiée depuis l'ancre de chaque relay), double acceptation jusqu'à `keys retire-link-previous` (voir §7).
+
+> **⚠️ Surface de risque de `RSA_MASTER_KEY` (v3.0.4, réserve R3 de `DECISION_141.md`)** : en v3.0.3, compromettre `RSA_MASTER_KEY` donnait accès aux secrets JWT des agents et à la clé RSA du serveur. Depuis la v3.0.4 elle donne **aussi** accès à `link_signing_key_current/previous` : **un attaquant qui la détient (avec une copie de `relay.state`) peut forger des jetons de lien valides pour toute la hiérarchie des relays**. Traiter `RSA_MASTER_KEY` comme le secret de plus haute valeur ; **faire une rotation de `RSA_MASTER_KEY` après la montée en v3.0.4 et avant d'accepter du trafic de production** (`state rekey` n'existe qu'en v3.0.4) (commande hors ligne `secagent-server state rekey` ; procédure : « Rotation de `RSA_MASTER_KEY` » en §11 et `DEPLOYMENT.md`), puis `keys rotate-link` si elle est soupçonnée compromise.
 
 ---
 
@@ -454,15 +456,25 @@ secagent-server tokens purge --used             # one-shot déjà consommés (us
 secagent-server tokens purge --expired --used   # les deux
 ```
 
-### Tokens relay (HAUT-4, HAUT-5)
+### Jetons de lien relay (v3.0.4 — HAUT-4, HAUT-5, #141, #146)
 
-**Révocation (HAUT-4, #153)** : Les tokens relay entrent dans la blacklist JTI identique aux agents :
-- Persistance à l'émission : `relay_nodes.jti` / `token_exp` (jamais le token) ; réémettre un token pour le même `relay_id` (nouvel `POST /api/admin/relays`) blackliste l'ancien JTI et coupe son lien.
-- Révocation : `POST /api/admin/relays/{id}/revoke` ou `secagent-server tokens revoke <id-du-relay>` (admin seulement) : INSERT dans `blacklist(jti)` + drapeau `relay_nodes.revoked` + close **4010** (permanent, le pair s'arrête) de la WS `/ws/relay` active (`ws.CloseRelay`).
-- `DELETE /api/admin/relays/{id}` fait de même (blacklist + fermeture du lien ; arrêt du dialer pour un relay push).
-- Aucun reconnect possible : le JTI blacklisté et le drapeau `revoked` sont vérifiés à l'upgrade (401, fail closed).
-- Relais créés avant #153 (sans JTI) : révocables via le drapeau `revoked` seul (réponse `legacy_token: true`) ; un `DELETE` d'un tel relais (ou d'un relais push) non révoqué est **refusé (409 `relay_not_revoked`)** : révoquer d'abord, sinon l'ancien token pourrait se reconnecter jusqu'à son expiration.
-- Tokens `relay-parent` (#150) : `tokens revoke <id>` blackliste le JTI et ferme le lien parent actif.
+Référence de conception : `DECISION_141.md`. Contrat : `SERVER_SPEC.md` §9.2 / §9.2.1, `REST_ADMIN.md` §3 et §6b.
+
+**Création (racine seulement)** : `secagent-server tokens create --role relay-child --sub <enfant> --aud <parent>` (pull) ou `--role relay-parent --sub <parent> --aud <enfant>` (push) ; `409 not_root` sur un nœud qui a un parent ou une ancre épinglée, `503 master_key_required` sans `RSA_MASTER_KEY`. TTL 720 h par défaut, 365 jours au plus. Le jeton n'est montré qu'une fois ; le registre `link_tokens` n'en garde que les métadonnées (jamais le jeton ni son hash). `POST /api/admin/relays` **ne minte plus** de jeton en mode pull : il déclare seulement l'enfant attendu.
+
+**Ancre de confiance** : un relay non racine épingle la clé publique de la racine (`keys link-pubkey` → `REPEATER_ROOT_LINK_KEY_FILE`, lu par un lecteur strict : fichier régulier, ni lien symbolique ni inscriptible par le groupe ou les autres, vérifié sur le descripteur) et son identité (`REPEATER_ROOT_ID`). **Sans ancre, il refuse tout lien entrant** (close `4010`, `[SECURITY WARNING]`). Une clé épinglée qui contredit le `link_trust` persisté, hors chaîne de rotation, **empêche le démarrage**.
+
+**Révocation** : `secagent-server tokens revoke <id>` sur la racine pose `revoked_at`, blackliste le `jti` jusqu'à l'expiration du jeton et incrémente le compteur `seq`, **dans la même mutation d'état** ; la racine pousse `link_revocations` (signé, `seq` strictement croissant : un rejeu d'une liste plus ancienne est refusé) aux enfants, de proche en proche ; chaque relay ajoute les `jti` à sa blacklist et ferme (`4010`) le lien que le jeton authentifie. Liste complète renvoyée à chaque établissement de lien. **Racine injoignable** : les liens établis continuent (vérification locale) ; la révocation n'atteint les enfants qu'au retour du lien. Remède local d'urgence : `POST /api/admin/relays/{id}/revoke` (ou `tokens revoke <id-du-relay>`) sur le parent concerné : drapeau `revoked` + blacklist du `jti` relevé au premier `relay_hello` + close `4010`.
+
+**Rotation de la clé racine** : `keys rotate-link` → nouvelle clé courante, ancienne `previous` (une seule rotation en vol : `409 previous_key_not_retired`) ; `link_keys` signé par l'ancienne clé, chaîne vérifiée par chaque relay depuis son ancre (un parent intermédiaire compromis ne peut pas injecter sa propre clé). Les relays confirment par `link_state` : « confirmé » = le relay rapporte le `kid` de la clé **courante** (le `seq` rapporté est informatif, non signé). **Ordre** : un relay ancré sur la **nouvelle** clé ne peut pas vérifier la rotation signée par l'ancienne (il n'a aucune clé de confiance capable de la vérifier) : il ignore le `link_keys` rejoué et ne le retransmet plus à ses enfants ; un enfant resté sur l'ancienne ancre sous un tel relay ne reçoit jamais la rotation et doit être ré-épinglé (`state link-trust reset`). Lancer la rotation et obtenir la confirmation de **tous les relays existants** avant de déployer de nouveaux relays épinglés sur la nouvelle clé. **Limite de la confirmation** : `link_state` n'est pas signé ; un relay intermédiaire (ou un enfant qui déclare des descendants dans son snapshot) peut rapporter le `kid` courant à la place d'un descendant qui ne l'a pas reçu (la racine n'accepte un `link_state` que du lien lui-même ou d'un descendant déclaré par lui). Le garde de `retire-link-previous` est une protection contre l'oubli, pas contre un relais malveillant ; l'impact d'un faux « confirmé » est limité à une coupure de disponibilité du descendant concerné (ré-épinglage). **`keys retire-link-previous` n'est à lancer qu'après confirmation de tous les relays** (`keys link-status`) : tant que des relays connus n'ont pas confirmé la racine répond `409 rotation_unconfirmed` ; `--force` passe outre avec un `[SECURITY WARNING]` listant les relays, qui seront refusés (`jwt_unknown_kid`) jusqu'à ré-épinglage (R2 de `DECISION_141.md`).
+
+**Ré-épinglage** : l'ancre persistée dans `link_trust` **prime** sur le fichier épinglé tant que celui-ci est égal à sa clé courante ou précédente ; une clé épinglée qui n'est ni l'une ni l'autre (ou une autre `REPEATER_ROOT_ID`) fait **refuser le démarrage** (`ErrAnchorMismatch`). Pour ré-épingler un relay (rotation ratée suivie d'un `retire-link-previous`, ou re-racine) : **arrêter le relay**, lancer `secagent-server state link-trust reset --yes` (commande hors ligne : vérifie le HMAC, refuse une racine et un verrou actif, sauvegarde `relay.state.linktrust-reset.<horodatage>.bak` avant toute écriture, n'efface que `link_trust` ; voir `STATE_SPEC.md`), remplacer `REPEATER_ROOT_LINK_KEY_FILE` / `REPEATER_ROOT_ID` par la nouvelle ancre (`keys link-pubkey` sur la racine) et redémarrer : le relay épingle la nouvelle clé. Ses agents, ses jetons et sa blacklist sont conservés. Il faut ensuite un **nouveau jeton de lien** signé par la racine courante si l'ancien l'était par une clé qui n'est plus acceptée.
+
+**Re-racine** (perte de `RSA_MASTER_KEY` ou de la clé privée de la racine) : arrêter la hiérarchie ; la racine regénère sa clé à la demande (`keys link-pubkey`, après `state init` si les secrets sont perdus) ; exporter la nouvelle clé publique ; sur **chaque** relay non racine : `state link-trust reset --yes`, nouvelle ancre, nouveau jeton ; **re-minter tous les jetons de lien** (les anciens sont invalides) ; redémarrer les parents d'abord. Coût équivalent à une montée de version complète : à répéter en qualification. Pas à pas : `DOC/project/DEPLOYMENT.md`.
+
+> **Point sensible** : `state link-trust reset` déverrouille une ancre de confiance : quiconque l'exécute avec accès à `STATE_DIR` et à `RSA_MASTER_KEY` peut ensuite épingler une autre racine. Il demande donc l'arrêt du nœud, une confirmation explicite, produit une sauvegarde et une trace (`[SECURITY WARNING]`, `state-restore.log`) ; l'accès à `STATE_DIR` et à la clé maître reste le périmètre de confiance (mêmes hypothèses que `state restore`).
+
+**Variables** : `REPEATER_ROOT_ID`, `REPEATER_ROOT_LINK_KEY_FILE` (non secrète), `REPEATER_UPSTREAM_TOKEN[_FILE]` (le jeton `relay-child` présenté au parent), `REPEATER_DIAL_ALLOW_LOOPBACK`, `REPEATER_DIAL_DENY_CIDRS`, `REPEATER_DIAL_ALLOW_CIDRS` (politique de dial des liens sortants, #151 : adresses réellement contactées, anti-rebinding, redirections 3xx jamais suivies).
 
 **Stockage sécurisé (HAUT-5)** : Le token relay utilisé en mode push (parent ouvre vers enfant) est stocké **chiffré AES-256-GCM** :
 - Colonne `relay_nodes.token_encrypted TEXT` (chiffré avec RSA_MASTER_KEY)
@@ -704,6 +716,13 @@ Le binaire `secagent-inventory` utilise `RELAY_INSECURE_TLS` pour désactiver la
 
 **Recommandation** : mettre à jour vers v3.0.3 ; après la mise à jour, tous les agents se ré-enrôlent avec un jeton d'enrôlement (état vierge).
 
+### Limites connues — v3.0.4
+
+- **Une seule rupture, pas de retour arrière vers v3.0.3** (décision de l'utilisateur) : `schema_version` 2, un binaire v3.0.3 refuse l'état v2 (`ErrSchemaVersion`, sans repli sur `.prev`) ; le retour arrière passe par `relay.state.v1.bak` + binaires v3.0.3 + anciens jetons HS256, et perd les écritures faites sous v3.0.4 (voir `DEPLOYMENT.md`).
+- **Rejeu d'un `link_keys` sur un relay déjà à jour (audit R4, corrigé en `1c231ee`)** : une trame qui annonce exactement les clés déjà de confiance (reconnexion, redémarrage) n'est acceptée que si sa **signature se vérifie avec une clé déjà de confiance** (`auth.VerifyLinkKeysReplay` : la `previous` de confiance pour une rotation encore ouverte, la `current` une fois la fenêtre fermée), jamais avec une clé lue dans la trame. Authentique : no-op idempotent. Non authentifiable (y compris un `link_keys{current_pub = clé de confiance, sig invalide, seq élevé}` forgé par un parent compromis) : **ni retransmise, ni mémorisée, ni confirmée**, et le `seq` d'un `link_state` ne provient jamais d'une trame non vérifiée ; il ne peut donc plus produire de faux consensus de rotation. Chaque relay rapporte son **propre** état authentifié (`kid`, `seq`) ; la racine confirme une rotation sur le `kid` rapporté. Limite connue restante : `link_state` n'est pas signé (un relay intermédiaire compromis peut mentir sur l'état de ses descendants) ; `retire-link-previous --force` reste donc à n'utiliser qu'en connaissance de cause. Voir `SERVER_SPEC.md` §9.2.1.
+- **Racine = point unique de signature** : tant qu'elle est injoignable, aucun nouveau jeton de lien ni aucune révocation ne se propage ; les liens établis continuent.
+- **`event_forward` (200/s)** reste limité par lien et non par identité.
+
 ### Limites connues — v3.0.3
 
 #### Révocation d'agent : drapeau persistant, retour arrière et révocations anciennes (#193)
@@ -738,15 +757,23 @@ Un attaquant ayant accès en écriture à `STATE_DIR` peut déposer un `relay.lo
 
 #### Rotation de `RSA_MASTER_KEY`
 
-La rotation de la clé maître exige une **réécriture complète de l'état** (tous les secrets rechiffrés, HMAC recalculé), sinon l'ancien fichier est refusé au démarrage.
+`RSA_MASTER_KEY` chiffre au repos tous les secrets de `relay.state` (AES-256-GCM, lié au champ) et dérive la clé HMAC du fichier ; un état ouvert avec une autre clé est **refusé** au démarrage (`authentication failed: wrong RSA_MASTER_KEY or tampered file`). Un simple redémarrage avec une nouvelle clé **ne rechiffre donc rien** : la rotation passe par la commande hors ligne **`secagent-server state rekey`** (`state/rekey.go`, `cli/state_tools.go`).
 
-**Procédure** :
-1. Sauvegarder `STATE_DIR` préalablement
-2. Arrêter toutes les instances (ou utiliser la bascule actif/passif)
-3. Redémarrer les instances avec la nouvelle clé : elles rechiffrent l'état au 1er démarrage
-4. Monitorer les erreurs de déchiffrement (clé mal propagée)
+**Ce que fait la commande** : ouvre l'état avec l'ancienne clé (HMAC vérifié), déchiffre **chaque** champ `enc:` (les secrets de `server_config` : `rsa_key_*`, `jwt_secret_*`, `link_signing_key_*`, et le `token_secret` des relays en mode push), les rechiffre avec la nouvelle clé (nonce neuf, même liaison au champ), recalcule le HMAC, écrit atomiquement avec un `write_seq` + 1, puis **rouvre** le résultat avec la nouvelle clé et compare tous les clairs à l'original ; en cas d'échec l'original est remis en place (code de sortie 10). Une valeur `enc:` trouvée dans un champ que la commande ne sait pas rechiffrer la **refuse** (rien n'est écrit : elle serait devenue illisible).
 
-Le serveur **ne** redéploiera **jamais** une ancienne clé en cas d'erreur : il s'arrêtera avec un message d'erreur explicite.
+**Ce qu'elle ne fait pas** : c'est une rotation de la **clé maître** (le secret qui protège l'état au repos), **pas** des secrets eux-mêmes. `JWT_SECRET_KEY`, les secrets JWT, la clé RSA du serveur et les clés de signature des liens **gardent leur valeur** : les jetons déjà émis (agents, jetons de lien) restent valides. Si l'ancienne clé maître a pu être exposée avec une copie de `relay.state`, ces secrets sont à considérer comme exposés : faire en plus `keys rotate-link` (puis `retire-link-previous` selon `DEPLOYMENT.md`) et la rotation des secrets JWT.
+
+**Quand** : la commande n'existe qu'en v3.0.4. Lors d'une montée depuis v3.0.3, monter d'abord en v3.0.4, **puis** faire la rotation (étape 6 bis de `DEPLOYMENT.md`) avant d'accepter du trafic de production. La migration v1 → v2 de l'état a lieu à la **première écriture du maître** ; un état encore en schéma 1 est accepté par `state rekey`, qui le migre dans la même écriture atomique (copie de l'original dans `relay.state.v1.bak`, en plus de `relay.state.rekey.<UTC>.bak`). **Après une compromission** de la clé (lue avec une copie de `relay.state`), `state rekey` seul est insuffisant : enchaîner `keys rotate-link` puis `retire-link-previous` (clé de signature des liens), `security keys rotate` (secrets JWT et clé RSA du serveur) et détruire les `.bak`/`.prev`/sauvegardes lisibles avec l'ancienne clé.
+
+**Procédure** (aucune clé en argument de ligne de commande, visible dans `ps`) :
+1. Sauvegarder `STATE_DIR` (copie du volume + `secagent-server state verify relay.state`).
+2. **Arrêter tous les nœuds** qui partagent `STATE_DIR` (actif **et** passif) : la commande refuse (code 8) si un `relay.lock` est frais et revérifie le verrou juste avant de remplacer le fichier.
+3. Fournir la clé actuelle et la nouvelle **de préférence par fichier** (`RSA_MASTER_KEY_FILE`, `NEW_RSA_MASTER_KEY_FILE` : fichier régulier 0600 non-lien) plutôt que par des variables saisies au shell (historique de commandes) ; la variable et son `_FILE` ensemble sont refusés. Générer la nouvelle clé aléatoirement, **au moins 32 octets** (par exemple `umask 077; openssl rand -base64 48 > new.key`) : la commande refuse une nouvelle clé plus courte (code de sortie 11, `ErrRekeyKeyTooShort`), vide ou identique à l'ancienne (une relance est donc inoffensive). Le minimum ne s'applique **ni** à l'ancienne clé (une clé historique plus courte doit rester ouvrable) **ni** à `state init`. Lancer ensuite **une seule fois** `secagent-server state rekey --yes` (confirmation `rekey` en interactif) sur le `STATE_DIR`.
+4. Redéployer la **nouvelle** clé sur **tous** les nœuds candidats, puis les redémarrer. Un nœud qui démarre encore avec l'ancienne clé refuse l'état (fail closed, il ne retombe jamais sur une ancienne copie).
+5. Contrôler : `state verify relay.state` avec la nouvelle clé, puis le démarrage et `status --local`.
+6. **Détruire** les copies lisibles avec l'ancienne clé : `relay.state.rekey.<UTC>.bak` (écrite avant toute modification, 0600), `relay.state.prev` et les sauvegardes de `STATE_DIR` d'avant la rotation. Tant qu'elles existent, l'ancienne clé les ouvre. Les conserver quelques jours est le seul filet de retour arrière (`state restore --from` avec l'**ancienne** clé, puis redéployer l'ancienne clé).
+
+Journal : `[SECURITY WARNING] master key rekeyed` et une ligne `"source":"rekey"` dans `state-restore.log` (nom de la sauvegarde, `write_seq`, opérateur ; jamais une clé ni une valeur).
 
 #### Fichier de jeton du plugin Ansible : `O_NOFOLLOW` ne protège que le dernier composant
 
@@ -781,3 +808,14 @@ Contrairement à `TLS_CERT` / `TLS_KEY` qui sont rechargés à chaud via `GetCer
 | Rotation de clefs JWT | Dual-key grace period → migration sans interruption |
 | `become_pass` dans les logs | Masquage systématique côté agent et serveur |
 | Homme du milieu | TLS obligatoire sur toutes les connexions (WSS + HTTPS) |
+| Confusion d'algorithme sur `/ws/relay` (HS256 avec la clé publique comme secret, `none`, RS256) | Vérificateur EdDSA séparé (`auth.VerifyLinkToken`) : `WithValidMethods(EdDSA)`, aucune route vers le code HMAC |
+| Jeton de lien présenté à un autre relay que son destinataire | `aud` = relay local obligatoire ; `iss` = racine ; `sub ≠ aud` |
+| Relay parent compromis qui injecte sa propre clé racine | `link_keys` signé par l'**ancienne** clé et chaîne vérifiée depuis l'ancre de chaque relay ; `link_trust` inchangé en cas d'échec |
+| Rejeu d'une liste de révocations plus ancienne | `link_revocations.seq` strictement croissant (compteur unique), signature de la clé racine |
+| Compromission de `RSA_MASTER_KEY` | **Désormais : forge de tous les jetons de lien** (encadré §5) ; rotation après la montée en v3.0.4 et avant le trafic de production (`state rekey`, §11 : elle ne change pas les secrets eux-mêmes), puis, si la clé a pu fuiter, `keys rotate-link` + `retire-link-previous`, `security keys rotate` et destruction des copies `.bak`/`.prev` |
+| Relay hors ligne pendant `retire-link-previous` | Refus `rotation_unconfirmed` tant que tous les relays connus n'ont pas confirmé ; `--force` journalise un `[SECURITY WARNING]` ; ré-épinglage par `state link-trust reset` (§7), sans perte des agents |
+| Relay non racine démarré sans ancre | Refus de tout lien entrant (`4010`) ; une ancre en désaccord avec `link_trust` empêche le démarrage |
+| Flood de `topology_snapshot` par reconnexions | Quota **par identité** `relay_id` (40 / 60 s), premier snapshot compté |
+| Trame de lien surdimensionnée | Bornes sur les octets bruts avant décodage (1 Mio / 512 o), fermeture `4012` |
+| Enfant qui ment sur la suspension d'un agent (#180) | Drapeau purement informatif ; le refus appartient au relay qui détient l'agent |
+| Saturation mémoire par `exec` massifs (#179) | Admission avec réservation de 5 Mio/tâche, limites par agent et globale, `503 memory_budget_exhausted` |

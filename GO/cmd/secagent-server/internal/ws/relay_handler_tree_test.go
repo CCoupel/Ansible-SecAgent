@@ -125,6 +125,13 @@ func TestTree_LoopRefused(t *testing.T) {
 			setTreeHooks(t, tt.local, tt.ancestors, nil, nil)
 			srv := setupRelayTestServer(t)
 			defer srv.Close()
+			if tt.child == tt.local {
+				// sub == aud: refused by the link verifier itself, before any loop check (#141 audit)
+				if code := dialRelayExpectFail(t, srv, makeRelayJWT(tt.child, "relay")); code != http.StatusUnauthorized {
+					t.Errorf("status %d, want 401", code)
+				}
+				return
+			}
 			c := dialRelay(t, srv, makeRelayJWT(tt.child, "relay"))
 			if tt.refused {
 				// refused at upgrade time, without waiting for any hello
@@ -439,10 +446,10 @@ func TestTree_MessageSizeLimit(t *testing.T) {
 
 // ── fail-closed authentication (HAUT-2) ──────────────────────────────────────
 
-func TestRelayAuth_FailClosedWithoutJWTSecretsFunc(t *testing.T) {
+func TestRelayAuth_FailClosedWithoutLinkTrust(t *testing.T) {
 	srv := setupRelayTestServer(t)
 	defer srv.Close()
-	JWTSecretsFunc = nil // setupRelayTestServer's cleanup restores the previous value
+	SetLinkTrustFunc(nil) // setupRelayTestServer's cleanup restores the previous value
 
 	tests := []struct {
 		name  string
@@ -461,11 +468,17 @@ func TestRelayAuth_FailClosedWithoutJWTSecretsFunc(t *testing.T) {
 			if tt.token != "" {
 				h.Set("Authorization", "Bearer "+tt.token)
 			}
-			_, resp, err := websocket.DefaultDialer.Dial(url, h)
+			c, resp, err := websocket.DefaultDialer.Dial(url, h)
 			if err == nil {
-				t.Fatal("connection must be refused")
-			}
-			if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+				// S21: a token presented to a node without trust anchor: upgrade, then the permanent 4010
+				defer func() { _ = c.Close() }()
+				if tt.token == "" {
+					t.Fatal("a request without credentials must be refused before the upgrade")
+				}
+				if code := expectClose(t, c); code != WSRelayCloseRevoked {
+					t.Errorf("close code = %d, want 4010 (link_trust_missing)", code)
+				}
+			} else if resp == nil || resp.StatusCode != http.StatusUnauthorized {
 				t.Errorf("response = %v, want 401", resp)
 			}
 			if IsRelayConnected("dmz1") {

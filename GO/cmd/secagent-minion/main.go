@@ -28,6 +28,7 @@
 //	RELAY_PRIVATE_KEY        Chemin clef privée RSA       (défaut: /etc/secagent-minion/id_rsa)
 //	RELAY_JWT_PATH           Chemin JWT persisté          (défaut: /etc/secagent-minion/token.jwt)
 //	RELAY_ENROLLMENT_TOKEN   Token d'enrollment (REQUIS)  ex: secagent_enr_aBcXy123...
+//	                         ou RELAY_ENROLLMENT_TOKEN_FILE (chemin d'un fichier 0600, exclusif)
 //	RELAY_CA_BUNDLE          CA bundle PEM custom         (défaut: store système)
 //	RELAY_ASYNC_DIR          Répertoire registre async    (défaut: /var/lib/secagent-minion/async)
 //	RELAY_INSECURE_TLS       "true" pour désactiver TLS   (TESTS UNIQUEMENT)
@@ -53,6 +54,7 @@ import (
 	"secagent-server/cmd/secagent-minion/internal/registry"
 	"secagent-server/cmd/secagent-minion/internal/ws"
 	"secagent-server/internal/endpoints"
+	"secagent-server/internal/secretenv"
 )
 
 func main() {
@@ -402,19 +404,24 @@ func loadConfig() agentConfig {
 			maxTasks = n
 		}
 	}
+	// RELAY_ENROLLMENT_TOKEN or RELAY_ENROLLMENT_TOKEN_FILE (#196): both set, or an
+	// unsafe file (symlink, group/world-readable, empty), refuses to start.
+	enrollmentToken, err := secretenv.Get("RELAY_ENROLLMENT_TOKEN")
+	if err != nil {
+		log.Fatalf("[FATAL] %v", err)
+	}
 	cfg := agentConfig{
 		serverURL:          getenv("RELAY_SERVER_URL", "https://localhost:7770"),
 		wsURL:              getenv("RELAY_WS_URL", "wss://localhost:7772/ws/agent"),
 		hostname:           getenv("RELAY_AGENT_HOSTNAME", ""),
 		privateKeyPath:     getenv("RELAY_PRIVATE_KEY", "/etc/secagent-minion/id_rsa"),
 		jwtPath:            getenv("RELAY_JWT_PATH", "/etc/secagent-minion/token.jwt"),
-		enrollmentToken:    os.Getenv("RELAY_ENROLLMENT_TOKEN"), // pas de valeur par défaut
+		enrollmentToken:    enrollmentToken, // pas de valeur par défaut
 		caBundle:           getenv("RELAY_CA_BUNDLE", ""),
 		asyncDir:           getenv("RELAY_ASYNC_DIR", "/var/lib/secagent-minion/async"),
 		insecure:           getenv("RELAY_INSECURE_TLS", "") == "true",
 		maxConcurrentTasks: maxTasks,
 	}
-	var err error
 	if cfg.serverRotor, cfg.wsRotor, err = buildEndpoints(cfg.serverURL, cfg.wsURL); err != nil {
 		log.Fatalf("[FATAL] %v", err)
 	}

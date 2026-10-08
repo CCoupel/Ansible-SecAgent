@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 // helpers ─────────────────────────────────────────────────────────────────────
@@ -67,8 +69,8 @@ func TestAdminCreateRelay_PullMode(t *testing.T) {
 	if resp.Mode != "pull" {
 		t.Errorf("expected mode=pull, got %s", resp.Mode)
 	}
-	if resp.JWTToken == "" {
-		t.Error("expected jwt_token to be set for pull mode")
+	if strings.Contains(rr.Body.String(), "jwt_token") {
+		t.Error("v3.0.4: a pull declaration returns no token (the root mints the relay-child link token)")
 	}
 	if resp.Status != "pending" {
 		t.Errorf("expected status=pending, got %s", resp.Status)
@@ -95,9 +97,6 @@ func TestAdminCreateRelay_PushMode(t *testing.T) {
 	}
 	if resp.Mode != "push" {
 		t.Errorf("expected mode=push, got %s", resp.Mode)
-	}
-	if resp.JWTToken != "" {
-		t.Error("jwt_token should be empty for push mode")
 	}
 	if resp.URL != "wss://dmz2.example.com:7772" {
 		t.Errorf("unexpected url: %s", resp.URL)
@@ -246,6 +245,10 @@ func TestAdminDeleteRelay(t *testing.T) {
 	})
 	var created RelayCreateResponse
 	mustUnmarshal(t, rr.Body.Bytes(), &created)
+	// the node learned the JTI of its token at the first connection (v3.0.4): deletable, it gets blacklisted
+	if err := adminStore.SetRelayTokenInfo("relay-to-delete", "jti-relay-to-delete", time.Now().Add(time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
 
 	// Delete by ID
 	req := httptest.NewRequest("DELETE", "/api/admin/relays/"+created.ID, nil)

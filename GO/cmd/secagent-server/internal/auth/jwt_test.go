@@ -277,71 +277,7 @@ func TestNew_CustomTTL(t *testing.T) {
 	}
 }
 
-// ── SignRelay ─────────────────────────────────────────────────────────────────
-
-func TestSignRelay_ProducesValidJWT(t *testing.T) {
-	svc := newSvc(singleKeyProvider("relay-secret"))
-	raw, jti, err := svc.SignRelay("dmz1")
-	if err != nil {
-		t.Fatalf("SignRelay: %v", err)
-	}
-	if raw == "" {
-		t.Error("expected non-empty JWT")
-	}
-	if jti == "" {
-		t.Error("expected non-empty JTI")
-	}
-}
-
-func TestSignRelay_RoleIsRelay(t *testing.T) {
-	svc := newSvc(singleKeyProvider("relay-secret"))
-	raw, _, err := svc.SignRelay("dmz1")
-	if err != nil {
-		t.Fatalf("SignRelay: %v", err)
-	}
-
-	claims, _, err := svc.Verify(raw)
-	if err != nil {
-		t.Fatalf("Verify relay token: %v", err)
-	}
-	role, _ := claims["role"].(string)
-	if role != "relay" {
-		t.Errorf("expected role=relay, got %q", role)
-	}
-}
-
-func TestSignRelay_SubIsRelayID(t *testing.T) {
-	svc := newSvc(singleKeyProvider("relay-secret"))
-	raw, _, err := svc.SignRelay("dmz1")
-	if err != nil {
-		t.Fatalf("SignRelay: %v", err)
-	}
-
-	claims, _, err := svc.Verify(raw)
-	if err != nil {
-		t.Fatalf("Verify relay token: %v", err)
-	}
-	sub, _ := claims["sub"].(string)
-	if sub != "dmz1" {
-		t.Errorf("expected sub=dmz1, got %q", sub)
-	}
-}
-
-func TestSignRelay_TokenNotValidAsAgent(t *testing.T) {
-	// A relay JWT must have role=relay, not role=agent.
-	// Verify the role is set correctly — callers like ws/relay_handler check role.
-	svc := newSvc(singleKeyProvider("relay-secret"))
-	raw, _, _ := svc.SignRelay("dmz1")
-
-	claims, _, err := svc.Verify(raw)
-	if err != nil {
-		t.Fatalf("Verify: %v", err)
-	}
-	role, _ := claims["role"].(string)
-	if role == "agent" {
-		t.Error("relay token must not have role=agent")
-	}
-}
+// SignRelay / SignRelayParent (HS256 relay roles) were removed in v3.0.4 (#146): link tokens are EdDSA (linkjwt.go).
 
 func TestSign_TokenNotValidAsRelay(t *testing.T) {
 	// An agent JWT (produced by Sign) must have role=agent, not role=relay.
@@ -355,63 +291,5 @@ func TestSign_TokenNotValidAsRelay(t *testing.T) {
 	role, _ := claims["role"].(string)
 	if role == "relay" {
 		t.Error("agent token must not have role=relay")
-	}
-}
-
-func TestSignRelay_EmptySecret_ReturnsError(t *testing.T) {
-	svc := newSvc(singleKeyProvider(""))
-	_, _, err := svc.SignRelay("dmz1")
-	if err == nil {
-		t.Error("expected error when secret is empty")
-	}
-}
-
-// ── SignRelayParent ───────────────────────────────────────────────────────────
-
-func TestSignRelayParent_RoleSubAndTTL(t *testing.T) {
-	svc := newSvc(singleKeyProvider("child-secret"))
-	raw, jti, err := svc.SignRelayParent("central")
-	if err != nil || raw == "" || jti == "" {
-		t.Fatalf("SignRelayParent: %q %q %v", raw, jti, err)
-	}
-	claims, _, err := svc.Verify(raw)
-	if err != nil {
-		t.Fatalf("Verify: %v", err)
-	}
-	if claims["role"] != "relay-parent" || claims["sub"] != "central" || claims["jti"] != jti {
-		t.Errorf("claims = %v", claims)
-	}
-	exp, _ := claims["exp"].(float64)
-	iat, _ := claims["iat"].(float64)
-	if d := time.Duration(exp-iat) * time.Second; d != 720*time.Hour {
-		t.Errorf("ttl = %v, want 720h", d)
-	}
-}
-
-func TestSignRelayParent_FailsWithoutSecret(t *testing.T) {
-	if _, _, err := newSvc(singleKeyProvider("")).SignRelayParent("central"); err == nil {
-		t.Error("expected an error without a configured secret")
-	}
-}
-
-func TestSignRelayParentTTL_ExplicitExpiryAndRefusal(t *testing.T) {
-	svc := newSvc(singleKeyProvider("child-secret"))
-	raw, _, err := svc.SignRelayParentTTL("central", 24*time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	claims, _, err := svc.Verify(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	exp, _ := claims["exp"].(float64)
-	iat, _ := claims["iat"].(float64)
-	if d := time.Duration(exp-iat) * time.Second; d != 24*time.Hour {
-		t.Errorf("ttl = %v, want 24h", d)
-	}
-	for _, ttl := range []time.Duration{0, -time.Hour} {
-		if raw, _, err := svc.SignRelayParentTTL("central", ttl); err == nil || raw != "" {
-			t.Errorf("ttl %v must be refused (a relay-parent token always expires)", ttl)
-		}
 	}
 }

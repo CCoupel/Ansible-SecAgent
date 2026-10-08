@@ -199,18 +199,13 @@ func TestInventory_FourLevelsKeepTheFullChain(t *testing.T) {
 // parent ← r1 ← r2 ← r3, r3 learned through r2 (the flattening bug declared r3 a child of r1).
 func TestResnapshot_MiddleNodePublishesTheRealChains(t *testing.T) {
 	t.Setenv("REPEATER_ID", "r1")
-	_, _, admin, wsAddr := startNode(t, func(c *Config) {
+	root, nodeID := newTestRoot(t), "r1"
+	_, _, _, wsAddr := startNode(t, root.anchored(func(c *Config) {
 		c.Tune = func(o *repeater.Options, _ *repeater.DialerOptions) {
 			o.TopologyDebounce, o.TopologyMinGap = 20*time.Millisecond, 50*time.Millisecond
 		}
-	})
-	code, body := adminCall(t, admin, "POST", "/api/admin/tokens", map[string]any{
-		"role": "relay-parent", "sub": "central", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
-	if code != http.StatusCreated {
-		t.Fatalf("mint: %d %s", code, body)
-	}
-	var tok struct{ Token string }
-	_ = json.Unmarshal(body, &tok)
+	}))
+	tok := struct{ Token string }{root.token(t, "relay-parent", "central", nodeID)}
 	parent, _, err := dialRelayWS(wsAddr, tok.Token)
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +216,7 @@ func TestResnapshot_MiddleNodePublishesTheRealChains(t *testing.T) {
 	}
 	readSnapshot(t, parent, "the first snapshot")
 
-	token, _ := registerRelay(t, admin, "r2")
+	token := root.token(t, "relay-child", "r2", nodeID)
 	child, _, err := dialRelayWS(wsAddr, token)
 	if err != nil {
 		t.Fatal(err)

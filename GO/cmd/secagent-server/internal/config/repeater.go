@@ -2,14 +2,19 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"regexp"
 	"strings"
 
 	"secagent-server/internal/endpoints"
+	"secagent-server/internal/secretenv"
 )
 
 // Environment variables describing the (single) parent of a child relay.
@@ -64,7 +69,12 @@ func LoadRepeaterConfig() (*RepeaterConfig, error) {
 func loadRepeaterConfig(getenv func(string) string) (*RepeaterConfig, error) {
 	id := strings.TrimSpace(getenv(EnvRepeaterID))
 	upstream := strings.TrimSpace(getenv(EnvRepeaterUpstreamURL))
-	token := strings.TrimSpace(getenv(EnvRepeaterUpstreamToken))
+	// REPEATER_UPSTREAM_TOKEN or REPEATER_UPSTREAM_TOKEN_FILE (#196): both set, or an unsafe file, refuses.
+	rawToken, terr := secretenv.GetFrom(getenv, EnvRepeaterUpstreamToken)
+	if terr != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidRepeaterConfig, terr)
+	}
+	token := strings.TrimSpace(rawToken)
 
 	if upstream == "" {
 		if token != "" {
@@ -109,4 +119,102 @@ func loadRepeaterConfig(getenv func(string) string) (*RepeaterConfig, error) {
 // i.e. REPEATER_UPSTREAM_URL is defined.
 func IsRepeaterClientMode() bool {
 	return strings.TrimSpace(os.Getenv(EnvRepeaterUpstreamURL)) != ""
+}
+
+// Environment variables of the trust anchor of a non-root relay (#141, L1e).
+const (
+	EnvRepeaterRootID          = "REPEATER_ROOT_ID"
+	EnvRepeaterRootLinkKeyFile = "REPEATER_ROOT_LINK_KEY_FILE"
+
+	maxRootLinkKeyFileSize = 4096
+)
+
+// LinkAnchorConfig is the root identity and the pinned root public key (the anchor). The key is
+// public (exported by `keys link-pubkey`), so the file is not a secret: it only has to be a regular
+// file nobody else can write (it is the root of trust of the whole subtree).
+type LinkAnchorConfig struct {
+	RootID string            // REPEATER_ROOT_ID: expected `iss` of every link token
+	Key    ed25519.PublicKey // REPEATER_ROOT_LINK_KEY_FILE content; nil when not given
+}
+
+// LoadLinkAnchorConfig reads REPEATER_ROOT_ID / REPEATER_ROOT_LINK_KEY_FILE. It returns (nil, nil)
+// when neither is set. A key file without a root id is refused (the id is part of the anchor);
+// a root id alone is accepted (the key may already be persisted in link_trust).
+func LoadLinkAnchorConfig() (*LinkAnchorConfig, error) {
+	return loadLinkAnchorConfig(os.Getenv)
+}
+
+func loadLinkAnchorConfig(getenv func(string) string) (*LinkAnchorConfig, error) {
+	id := strings.TrimSpace(getenv(EnvRepeaterRootID))
+	path := strings.TrimSpace(getenv(EnvRepeaterRootLinkKeyFile))
+	if id == "" && path == "" {
+		return nil, nil
+	}
+	if id == "" {
+		return nil, fmt.Errorf("%w: %s is required when %s is set", ErrInvalidRepeaterConfig, EnvRepeaterRootID, EnvRepeaterRootLinkKeyFile)
+	}
+	if !repeaterIDPattern.MatchString(id) {
+		return nil, fmt.Errorf("%w: %s %q must match %s", ErrInvalidRepeaterConfig, EnvRepeaterRootID, id, repeaterIDPattern)
+	}
+	cfg := &LinkAnchorConfig{RootID: id}
+	if path == "" {
+		return cfg, nil
+	}
+	key, err := ReadRootLinkKeyFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", ErrInvalidRepeaterConfig, EnvRepeaterRootLinkKeyFile, err)
+	}
+	cfg.Key = key
+	return cfg, nil
+}
+
+// ReadRootLinkKeyFile reads a PEM "PUBLIC KEY" (PKIX) holding one Ed25519 public key. The file must
+// be a regular file (no symbolic link), at most 4 KiB, and neither group- nor world-writable.
+func ReadRootLinkKeyFile(path string) (ed25519.PublicKey, error) {
+	li, err := os.Lstat(path)
+	if err != nil {
+		return nil, errors.New("cannot read the file")
+	}
+	if li.Mode()&os.ModeSymlink != 0 || !li.Mode().IsRegular() {
+		return nil, errors.New("must be a regular file (no symbolic link)")
+	}
+	if li.Mode().Perm()&0o022 != 0 {
+		return nil, fmt.Errorf("file is writable by group or others (mode %04o)", li.Mode().Perm())
+	}
+	if li.Size() > maxRootLinkKeyFileSize {
+		return nil, errors.New("file is too large")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, errors.New("cannot read the file")
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil || !os.SameFile(li, fi) || !fi.Mode().IsRegular() {
+		return nil, errors.New("file changed while reading")
+	}
+	// the checks that matter are made on the OPEN descriptor, not on the earlier Lstat (no TOCTOU)
+	if fi.Mode().Perm()&0o022 != 0 {
+		return nil, fmt.Errorf("file is writable by group or others (mode %04o)", fi.Mode().Perm())
+	}
+	if fi.Size() > maxRootLinkKeyFileSize {
+		return nil, errors.New("file is too large")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxRootLinkKeyFileSize+1))
+	if err != nil || len(data) > maxRootLinkKeyFileSize {
+		return nil, errors.New("cannot read the file")
+	}
+	block, rest := pem.Decode(data)
+	if block == nil || block.Type != "PUBLIC KEY" || len(strings.TrimSpace(string(rest))) != 0 {
+		return nil, errors.New("expected exactly one PEM \"PUBLIC KEY\" block")
+	}
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, errors.New("not a PKIX public key")
+	}
+	k, ok := pub.(ed25519.PublicKey)
+	if !ok || len(k) != ed25519.PublicKeySize {
+		return nil, errors.New("not an Ed25519 public key")
+	}
+	return k, nil
 }

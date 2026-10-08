@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -211,7 +213,10 @@ func pointerString(s string) *string {
 // Returns the result Message or an error.
 func sendTaskAndWait(hostname, taskID string, message map[string]interface{}, timeout int) (ws.Message, error) {
 	// Register channel before send to avoid race where result arrives before we listen
-	resultChan := ws.RegisterFuture(taskID, hostname)
+	resultChan, admitErr := ws.RegisterFuture(taskID, hostname)
+	if admitErr != nil {
+		return ws.Message{}, admitErr // typed: ErrAgentBusy / ErrTooManyTasks / ErrMemoryBudget (nothing was sent)
+	}
 
 	if err := ws.SendToAgent(hostname, message); err != nil {
 		// Cleanup the orphaned future
@@ -234,9 +239,10 @@ func writeAgentError(w http.ResponseWriter, errStr string, hostname, taskID stri
 	case "agent_disconnected":
 		log.Printf("Agent disconnected during task: hostname=%q task_id=%q", hostname, taskID)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent_disconnected"})
-	case "agent_busy":
-		log.Printf("Agent busy: hostname=%q task_id=%q", hostname, taskID)
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "agent_busy"})
+	case "agent_busy", "too_many_tasks", "memory_budget_exhausted":
+		// the agent, or a relay below, refused the task (#179): same answer as an admission refusal here
+		log.Printf("Task refused downstream: hostname=%q task_id=%q reason=%s", hostname, taskID, errStr)
+		writeAdmissionCode(w, errStr)
 	default:
 		log.Printf("Agent error: hostname=%q task_id=%q error=%q", hostname, taskID, errStr)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": errStr})
@@ -263,6 +269,8 @@ func ExecCommand(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+
+	extendWriteDeadline(w, req.Timeout)
 
 	// Generate or use provided task ID
 	taskID := req.TaskID
@@ -349,6 +357,9 @@ func ExecCommand(w http.ResponseWriter, r *http.Request) {
 	// Send to agent and wait for result
 	result, err := sendTaskAndWait(hostname, *taskID, message, req.Timeout)
 	if err != nil {
+		if writeAdmissionError(w, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "timeout") {
 			writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "task_timeout"})
 		} else {
@@ -364,12 +375,7 @@ func ExecCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("Exec complete: hostname=%q task_id=%q rc=%d", hostname, *taskID, result.RC)
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"rc":        result.RC,
-		"stdout":    result.Stdout,
-		"stderr":    result.Stderr,
-		"truncated": result.Truncated,
-	})
+	writeExecResult(w, result.RC, result.Stdout, result.Stderr, result.Truncated)
 }
 
 // POST /api/upload/{hostname} — Transfer a file to a remote agent
@@ -407,6 +413,8 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	extendWriteDeadline(w, 60) // blocking: the answer comes after the task (file timeout)
 
 	// Generate or use provided task ID
 	taskID := req.TaskID
@@ -471,6 +479,9 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 	fileTimeout := 60
 	result, err := sendTaskAndWait(hostname, *taskID, message, fileTimeout)
 	if err != nil {
+		if writeAdmissionError(w, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "timeout") {
 			writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "task_timeout"})
 		} else {
@@ -508,6 +519,8 @@ func FetchFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+
+	extendWriteDeadline(w, 60) // blocking: the answer comes after the task (file timeout)
 
 	// Generate or use provided task ID
 	taskID := req.TaskID
@@ -571,6 +584,9 @@ func FetchFile(w http.ResponseWriter, r *http.Request) {
 	fileTimeout := 60
 	result, err := sendTaskAndWait(hostname, *taskID, message, fileTimeout)
 	if err != nil {
+		if writeAdmissionError(w, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "timeout") {
 			writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "task_timeout"})
 		} else {
@@ -597,6 +613,12 @@ func writeProxyExecError(w http.ResponseWriter, err error, hostname, taskID stri
 	e := err.Error()
 	log.Printf("Proxy exec error: hostname=%q task_id=%q err=%q", hostname, taskID, e)
 	switch {
+	case strings.Contains(e, "too_many_tasks"):
+		writeAdmissionCode(w, "too_many_tasks")
+	case strings.Contains(e, "memory_budget_exhausted"):
+		writeAdmissionCode(w, "memory_budget_exhausted")
+	case strings.Contains(e, "agent_busy"):
+		writeAdmissionCode(w, "agent_busy")
 	case strings.Contains(e, "timeout"):
 		writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "task_timeout"})
 	case strings.Contains(e, ErrAgentSuspended):
@@ -609,4 +631,93 @@ func writeProxyExecError(w http.ResponseWriter, err error, hostname, taskID stri
 	default:
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": e})
 	}
+}
+
+// writeAdmissionCode answers a task refused for load (#179): 429 agent_busy / too_many_tasks, 503
+// memory_budget_exhausted, each with a Retry-After in seconds. Nothing was sent to the agent.
+func writeAdmissionCode(w http.ResponseWriter, code string) {
+	status, retry := http.StatusTooManyRequests, ws.RetryAfterSeconds(ws.ErrAgentBusy)
+	switch code {
+	case "too_many_tasks":
+		retry = ws.RetryAfterSeconds(ws.ErrTooManyTasks)
+	case "memory_budget_exhausted":
+		status, retry = http.StatusServiceUnavailable, ws.RetryAfterSeconds(ws.ErrMemoryBudget)
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(retry))
+	writeJSON(w, status, map[string]string{"error": code})
+}
+
+// writeAdmissionError writes the answer of an admission refusal; false when err is not one.
+func writeAdmissionError(w http.ResponseWriter, err error) bool {
+	if !ws.IsAdmissionError(err) {
+		return false
+	}
+	writeAdmissionCode(w, err.Error())
+	return true
+}
+
+// extendWriteDeadline gives the blocking answer of a task the time the task may take. The API server
+// has a short WriteTimeout (15 s) meant for ordinary requests: without this, a task that lasts longer
+// than that is executed but its answer is cut (the TLS record is truncated and the client sees
+// "bad record MAC"). Best effort: a writer that does not support deadlines keeps the server default.
+func extendWriteDeadline(w http.ResponseWriter, taskTimeoutSec int) {
+	if taskTimeoutSec <= 0 {
+		taskTimeoutSec = 60
+	}
+	d := time.Duration(taskTimeoutSec+timeoutMarginSec+30) * time.Second
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(d)); err != nil {
+		log.Printf("write deadline not extended: %v", err)
+	}
+}
+
+// writeExecResult writes {"rc","stdout","stderr","truncated"} without building the whole body in
+// memory: the stdout (up to 5 MiB) is escaped and written piece by piece. json.NewEncoder(w).Encode of
+// a map would hold a second, escaped copy of it per request, which doubles the memory of the exec
+// answers when many tasks end together (#179).
+func writeExecResult(w http.ResponseWriter, rc int, stdout, stderr string, truncated bool) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if _, err := fmt.Fprintf(w, `{"rc":%d,"stdout":`, rc); err != nil {
+		return
+	}
+	if err := writeJSONString(w, stdout); err != nil {
+		return
+	}
+	if _, err := io.WriteString(w, `,"stderr":`); err != nil {
+		return
+	}
+	if err := writeJSONString(w, stderr); err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(w, `,"truncated":%t}`+"\n", truncated)
+}
+
+// writeJSONString writes s as a JSON string, escaped by pieces of at most 64 KiB (cut on rune boundaries).
+func writeJSONString(w io.Writer, s string) error {
+	if _, err := io.WriteString(w, `"`); err != nil {
+		return err
+	}
+	const piece = 64 << 10
+	for len(s) > 0 {
+		n := len(s)
+		if n > piece {
+			n = piece
+			for n > 0 && !utf8.RuneStart(s[n]) {
+				n--
+			}
+			if n == 0 {
+				n = piece
+			}
+		}
+		b, err := json.Marshal(s[:n]) // escapes like the encoder (invalid UTF-8 becomes U+FFFD)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(b[1 : len(b)-1]); err != nil {
+			return err
+		}
+		s = s[n:]
+	}
+	_, err := io.WriteString(w, `"`)
+	return err
 }

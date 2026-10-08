@@ -1,7 +1,11 @@
 package proxy
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"github.com/golang-jwt/jwt/v5"
 	"os"
+	"secagent-server/cmd/secagent-server/internal/auth"
 	"sync"
 	"testing"
 	"time"
@@ -32,14 +36,41 @@ func currentWSHooks() wsHooks {
 	return curWSHooks
 }
 
-// intJWTSecret is the HMAC secret ws.JWTSecretsFunc returns during proxy tests.
-// /ws/relay fails closed without JWT verification, so it is set once here.
-const intJWTSecret = "proxy-int-test-secret"
+// /ws/relay fails closed without a link verifier: the test root key is installed once in TestMain.
+
+// Link tokens (v3.0.4): /ws/relay verifies Ed25519 tokens signed by this test root.
+var testRootPub, testRootPriv = func() (ed25519.PublicKey, ed25519.PrivateKey) {
+	p, k, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	return p, k
+}()
+
+func signTestLink(sub, jti string) string {
+	id, _ := ws.RelayIdentity()
+	tok := jwt.NewWithClaims(jwt.SigningMethodEdDSA, jwt.MapClaims{
+		"iss": "test-root", "sub": sub, "aud": id, "role": "relay-child", "jti": jti,
+		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
+	})
+	tok.Header["kid"] = auth.LinkKID(testRootPub)
+	raw, err := tok.SignedString(testRootPriv)
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
+func installTestLinkTrust() {
+	ws.SetLinkTrustFunc(func() (auth.LinkTrust, string, error) {
+		return auth.LinkTrust{Current: testRootPub}, "test-root", nil
+	})
+}
 
 func TestMain(m *testing.M) {
 	ws.SetRelayJTIBlacklistFunc(func(string) (bool, error) { return false, nil }) // nothing revoked
 	ws.SetRelayRevokedFunc(func(string) (bool, error) { return false, nil })
-	ws.SetJWTSecretsFunc(func() (string, string, time.Time) { return intJWTSecret, "", time.Time{} })
+	installTestLinkTrust()
 	ws.RelayRoutingBulkUpsertFunc = func(relayID string, hostnames []string) error {
 		if fn := currentWSHooks().routing; fn != nil {
 			return fn(relayID, hostnames)

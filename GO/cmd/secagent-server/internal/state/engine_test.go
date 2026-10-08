@@ -228,7 +228,7 @@ func TestSchemaVersionUnknownRefusesWithoutFallback(t *testing.T) {
 	}
 	sp := filepath.Join(dir, StateFile)
 	b := mustFile(t, sp)
-	if err := os.WriteFile(sp, []byte(strings.Replace(string(b), `"schema_version":1`, `"schema_version":2`, 1)), 0o600); err != nil {
+	if err := os.WriteFile(sp, []byte(strings.Replace(string(b), `"schema_version":2`, `"schema_version":3`, 1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Open(Options{Dir: dir}); !errors.Is(err, ErrSchemaVersion) {

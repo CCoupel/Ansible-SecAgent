@@ -17,6 +17,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -141,8 +142,18 @@ func ConfigureServer(jwtSecret, adminToken string) {
 // In production the variable must be set; InitServerState will log a warning if absent.
 func rsaMasterKey() (string, bool) {
 	v := os.Getenv("RSA_MASTER_KEY")
+	if v == "" {
+		// resolved at startup from RSA_MASTER_KEY_FILE (#196); the environment wins when both exist
+		v, _ = configuredMasterKey.Load().(string)
+	}
 	return v, v != ""
 }
+
+// ConfigureMasterKey sets the master key resolved from RSA_MASTER_KEY or RSA_MASTER_KEY_FILE (#196).
+// Called by server.Build with the same value it hands to the state engine.
+func ConfigureMasterKey(key string) { configuredMasterKey.Store(key) }
+
+var configuredMasterKey atomic.Value // string
 
 // persistConfigSecret stores a server_config secret (RSA private key, JWT secret): sealed with
 // AES-256-GCM under RSA_MASTER_KEY and bound to its field name (AAD) when a master key is set; in

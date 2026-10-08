@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -11,17 +12,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 
+	"secagent-server/cmd/secagent-server/internal/auth"
+	"secagent-server/cmd/secagent-server/internal/link"
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
 // Precedence rule (#127): an agent connected to THIS node always wins over relay_routing.
 // A relay that declares such a host (even an online one) must never receive the task, the
 // file content, the fetch request nor the stdin / become_pass of an exec.
-
-const precSecret = "precedence-test-secret"
 
 // precAgent is a locally connected minion that records what it receives and answers rc=0.
 type precAgent struct {
@@ -93,23 +93,18 @@ type spyRelay struct {
 
 func newSpyRelay(t *testing.T, id string) *spyRelay {
 	t.Helper()
-	prevSecrets := ws.JWTSecretsFunc
-	ws.SetJWTSecretsFunc(func() (string, string, time.Time) { return precSecret, "", time.Time{} })
+	m := useLinkRoot(t) // this node is the root "central"; the spy presents a relay-child link token
 	ws.SetRelayJTIBlacklistFunc(func(string) (bool, error) { return false, nil })
 	ws.SetRelayRevokedFunc(func(string) (bool, error) { return false, nil })
 	t.Cleanup(func() {
-		ws.SetJWTSecretsFunc(prevSecrets)
 		ws.SetRelayJTIBlacklistFunc(nil)
 		ws.SetRelayRevokedFunc(nil)
 	})
-
-	raw, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": id, "role": "relay", "jti": "prec-" + id,
-		"iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
-	}).SignedString([]byte(precSecret))
+	minted, err := m.Mint(context.Background(), link.MintRequest{Role: auth.RoleRelayChild, Sub: id, Aud: testRootID, TTL: time.Hour, CreatedBy: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	raw := minted.Token
 	srv := httptest.NewServer(http.HandlerFunc(ws.RelayHandler))
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+raw)

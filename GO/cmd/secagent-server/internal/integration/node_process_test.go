@@ -71,6 +71,9 @@ func TestNodeProcess(t *testing.T) {
 	if err != nil {
 		log.Fatalf("ConfigFromEnv: %v", err)
 	}
+	if os.Getenv("NODE_INSECURE_STATE") == "1" { // the explicit test seam: a clear-text state, never with a master key
+		cfg.InsecureTestState = true
+	}
 	cert, err := tls.LoadX509KeyPair(os.Getenv(envNodeCert), os.Getenv(envNodeKey))
 	if err != nil {
 		log.Fatalf("test certificate: %v", err)

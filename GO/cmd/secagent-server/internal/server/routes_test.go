@@ -44,6 +44,10 @@ var (
 		"POST /api/admin/tokens/{id}/revoke",
 		"DELETE /api/admin/tokens/{id}",
 		"POST /api/admin/tokens/purge",
+		"GET /api/admin/link/pubkey", // link signing key of the root (v3.0.4, #141)
+		"POST /api/admin/link/keys/rotate",
+		"POST /api/admin/link/keys/retire-previous",
+		"GET /api/admin/link/status",
 		"GET /api/admin/status",
 		"GET /api/admin/stats",
 		"DELETE /api/admin/minions/{hostname}",

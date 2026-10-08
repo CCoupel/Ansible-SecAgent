@@ -98,8 +98,8 @@ func TestCheckHTTPS_RemoteHTTPSAllowed(t *testing.T) {
 
 func TestAdminToken_FromEnv(t *testing.T) {
 	t.Setenv("ADMIN_TOKEN", "my-token")
-	if got := adminToken(); got != "my-token" {
-		t.Errorf("expected my-token, got %q", got)
+	if got, err := adminToken(); err != nil || got != "my-token" {
+		t.Errorf("expected my-token, got %q (%v)", got, err)
 	}
 }
 

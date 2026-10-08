@@ -17,7 +17,7 @@ const fakeParentJWT = "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoicmVsYXktcGFyZW50In0.c2ln
 func resetCreateFlags(t *testing.T) {
 	t.Helper()
 	for name, def := range map[string]string{
-		"role": "", "sub": "", "expires": "never", "description": "", "hostname-pattern": "",
+		"role": "", "sub": "", "aud": "", "expires": "never", "description": "", "hostname-pattern": "",
 		"allowed-ips": "", "allowed-hostname-pattern": "",
 	} {
 		if err := tokensCreateCmd.Flags().Set(name, def); err != nil {
@@ -31,7 +31,7 @@ func resetCreateFlags(t *testing.T) {
 }
 
 func resetCreateFlags2() {
-	for _, name := range []string{"role", "sub", "description"} {
+	for _, name := range []string{"role", "sub", "aud", "description"} {
 		_ = tokensCreateCmd.Flags().Set(name, "")
 	}
 	_ = tokensCreateCmd.Flags().Set("expires", "never")
@@ -54,22 +54,22 @@ func TestTokensCreate_RelayParent_Success(t *testing.T) {
 		mustDecode(t, r.Body, &gotBody)
 		w.WriteHeader(http.StatusCreated)
 		mustEncode(t, w, map[string]interface{}{
-			"token": fakeParentJWT, "id": "uuid-rp-1", "role": "relay-parent", "sub": "central",
+			"token": fakeParentJWT, "id": "uuid-rp-1", "role": "relay-parent", "sub": "central", "aud": "dmz1",
 			"jti": "jti-1", "expires_at": "2027-01-01T00:00:00Z", "created_at": time.Now().UTC().Format(time.RFC3339),
 		})
 	})
-	out, err := runCreate(t, "--role", "relay-parent", "--sub", "central", "--expires", "90d", "--description", "uplink")
+	out, err := runCreate(t, "--role", "relay-parent", "--sub", "central", "--aud", "dmz1", "--expires", "90d", "--description", "uplink")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotBody["role"] != "relay-parent" || gotBody["sub"] != "central" || gotBody["description"] != "uplink" {
+	if gotBody["role"] != "relay-parent" || gotBody["sub"] != "central" || gotBody["aud"] != "dmz1" || gotBody["description"] != "uplink" {
 		t.Errorf("request body = %v", gotBody)
 	}
 	exp, perr := time.Parse(time.RFC3339, gotBody["expires_at"].(string))
 	if perr != nil || time.Until(exp) < 89*24*time.Hour || time.Until(exp) > 91*24*time.Hour {
 		t.Errorf("expires_at = %v (%v), want ~90d", gotBody["expires_at"], perr)
 	}
-	for _, want := range []string{fakeParentJWT, "shown only once", "uuid-rp-1", "relay-parent", "central"} {
+	for _, want := range []string{fakeParentJWT, "shown only once", "uuid-rp-1", "relay-parent", "central", "dmz1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -87,12 +87,12 @@ func TestTokensCreate_RelayParent_RefusedBeforeAnyRequest(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"no sub", []string{"--role", "relay-parent", "--expires", "30d"}, "--sub"},
-		{"bad sub", []string{"--role", "relay-parent", "--sub", "a b!", "--expires", "30d"}, "--sub"},
-		{"no expiry", []string{"--role", "relay-parent", "--sub", "central"}, "--expires is required"},
-		{"explicit never", []string{"--role", "relay-parent", "--sub", "central", "--expires", "never"}, "--expires is required"},
-		{"beyond the cap", []string{"--role", "relay-parent", "--sub", "central", "--expires", "366d"}, "365d"},
-		{"unknown role", []string{"--role", "relay-child", "--sub", "central", "--expires", "30d"}, "--role must be"},
+		{"no sub", []string{"--role", "relay-parent", "--aud", "dmz1", "--expires", "30d"}, "--sub"},
+		{"bad sub", []string{"--role", "relay-parent", "--sub", "a b!", "--aud", "dmz1", "--expires", "30d"}, "--sub"},
+		{"no aud", []string{"--role", "relay-parent", "--sub", "central", "--expires", "30d"}, "--aud"},
+		{"sub equals aud", []string{"--role", "relay-child", "--sub", "central", "--aud", "central", "--expires", "30d"}, "must differ"},
+		{"beyond the cap", []string{"--role", "relay-parent", "--sub", "central", "--aud", "dmz1", "--expires", "366d"}, "365d"},
+		{"legacy role relay", []string{"--role", "relay", "--sub", "central", "--aud", "dmz1", "--expires", "30d"}, "--role must be"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -114,7 +114,7 @@ func TestTokensCreate_RelayParent_ExactlyAtTheCapIsAccepted(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		mustEncode(t, w, map[string]interface{}{"token": fakeParentJWT, "id": "x", "role": "relay-parent", "created_at": "t"})
 	})
-	if _, err := runCreate(t, "--role", "relay-parent", "--sub", "central", "--expires", "365d"); err != nil {
+	if _, err := runCreate(t, "--role", "relay-parent", "--sub", "central", "--aud", "dmz1", "--expires", "365d"); err != nil {
 		t.Errorf("365d must be accepted: %v", err)
 	}
 }
@@ -124,7 +124,7 @@ func TestTokensList_RelayParent_ShowsMetadataNeverTheToken(t *testing.T) {
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.RequestURI()
 		mustEncode(t, w, []map[string]interface{}{{
-			"id": "uuid-rp-1", "role": "relay-parent", "sub": "central", "jti": "jti-1",
+			"id": "uuid-rp-1", "role": "relay-parent", "sub": "central", "aud": "dmz1", "jti": "jti-1",
 			"expires_at": "2027-01-01T00:00:00Z", "revoked": true, "created_at": "2026-10-04T00:00:00Z",
 		}})
 	})
@@ -137,7 +137,7 @@ func TestTokensList_RelayParent_ShowsMetadataNeverTheToken(t *testing.T) {
 	if gotPath != "/api/admin/tokens?role=relay-parent" {
 		t.Errorf("path = %s", gotPath)
 	}
-	for _, want := range []string{"uuid-rp-1", "relay-parent", "parent=central", "true"} {
+	for _, want := range []string{"uuid-rp-1", "relay-parent", "central -> dmz1", "true"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("list output lacks %q:\n%s", want, out)
 		}
@@ -159,9 +159,9 @@ func TestTokensCreate_RelayParent_JWTNeverLogged(t *testing.T) {
 
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		mustEncode(t, w, map[string]interface{}{"token": fakeParentJWT, "id": "x", "role": "relay-parent", "sub": "central", "created_at": "t"})
+		mustEncode(t, w, map[string]interface{}{"token": fakeParentJWT, "id": "x", "role": "relay-parent", "sub": "central", "aud": "dmz1", "created_at": "t"})
 	})
-	out, err := runCreate(t, "--role", "relay-parent", "--sub", "central", "--expires", "30d")
+	out, err := runCreate(t, "--role", "relay-parent", "--sub", "central", "--aud", "dmz1", "--expires", "30d")
 	if err != nil {
 		t.Fatal(err)
 	}

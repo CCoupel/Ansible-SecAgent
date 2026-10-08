@@ -16,6 +16,7 @@ import (
 
 // resetState clears all module-level maps between tests to prevent cross-test pollution
 func resetState() {
+	resetAdmission()
 	connectionsMu.Lock()
 	for k := range wsConnections {
 		delete(wsConnections, k)
@@ -136,7 +137,7 @@ func TestRegisterFuture(t *testing.T) {
 	taskID := "task-123"
 	hostname := "test-agent-3"
 
-	resultChan := RegisterFuture(taskID, hostname)
+	resultChan := mustFuture(RegisterFuture(taskID, hostname))
 	if resultChan == nil {
 		t.Error("RegisterFuture returned nil channel")
 	}
@@ -174,9 +175,9 @@ func TestRegisterFuture(t *testing.T) {
 func TestResolveFuturesForHostname(t *testing.T) {
 	resetState()
 
-	ch1 := RegisterFuture("task-1", "host-a")
-	ch2 := RegisterFuture("task-2", "host-a")
-	ch3 := RegisterFuture("task-3", "host-b") // different host
+	ch1 := mustFuture(RegisterFuture("task-1", "host-a"))
+	ch2 := mustFuture(RegisterFuture("task-2", "host-a"))
+	ch3 := mustFuture(RegisterFuture("task-3", "host-b")) // different host
 
 	ResolveFuturesForHostname("host-a", "agent_disconnected")
 
@@ -218,7 +219,7 @@ func TestUnregisterConnectionResolvesFutures(t *testing.T) {
 
 	mockConn := &AgentConnection{Hostname: "host-a"}
 	RegisterConnection("host-a", mockConn)
-	ch := RegisterFuture("task-1", "host-a")
+	ch := mustFuture(RegisterFuture("task-1", "host-a"))
 
 	UnregisterConnection("host-a")
 
@@ -259,13 +260,12 @@ func TestHandleMessageMissingType(t *testing.T) {
 
 func TestHandleMessageStdoutAccumulates(t *testing.T) {
 	resetState()
+	_, _ = RegisterFuture("task-1", "host-a") // stdout of a task that was not admitted is dropped (#179)
 
 	HandleMessage(Message{TaskID: "task-1", Type: "stdout", Chunk: "hello "}, "host-a")
 	HandleMessage(Message{TaskID: "task-1", Type: "stdout", Chunk: "world"}, "host-a")
 
-	buffersMu.RLock()
-	buf := stdoutBuffers["task-1"]
-	buffersMu.RUnlock()
+	buf := stdoutString("task-1")
 
 	if buf != "hello world" {
 		t.Errorf("buffer: got %q, want %q", buf, "hello world")
@@ -274,6 +274,7 @@ func TestHandleMessageStdoutAccumulates(t *testing.T) {
 
 func TestHandleMessageStdoutTruncatesAt5MB(t *testing.T) {
 	resetState()
+	_, _ = RegisterFuture("task-1", "host-a")
 
 	large := make([]byte, 5*1024*1024+100)
 	for i := range large {
@@ -281,9 +282,7 @@ func TestHandleMessageStdoutTruncatesAt5MB(t *testing.T) {
 	}
 	HandleMessage(Message{TaskID: "task-1", Type: "stdout", Chunk: string(large)}, "host-a")
 
-	buffersMu.RLock()
-	buf := stdoutBuffers["task-1"]
-	buffersMu.RUnlock()
+	buf := stdoutString("task-1")
 
 	if len([]byte(buf)) > stdoutMaxBytes {
 		t.Errorf("buffer exceeds max: got %d bytes, want <= %d", len([]byte(buf)), stdoutMaxBytes)
@@ -296,7 +295,7 @@ func TestHandleMessageStdoutTruncatesAt5MB(t *testing.T) {
 
 func TestHandleMessageResultResolveFuture(t *testing.T) {
 	resetState()
-	ch := RegisterFuture("task-1", "host-a")
+	ch := mustFuture(RegisterFuture("task-1", "host-a"))
 
 	HandleMessage(Message{TaskID: "task-1", Type: "result", RC: 0, Stdout: "done"}, "host-a")
 
@@ -322,7 +321,7 @@ func TestHandleMessageResultResolveFuture(t *testing.T) {
 
 func TestHandleMessageResultUsesAccumulatedStdout(t *testing.T) {
 	resetState()
-	ch := RegisterFuture("task-1", "host-a")
+	ch := mustFuture(RegisterFuture("task-1", "host-a"))
 
 	HandleMessage(Message{TaskID: "task-1", Type: "stdout", Chunk: "chunk1"}, "host-a")
 	HandleMessage(Message{TaskID: "task-1", Type: "stdout", Chunk: "chunk2"}, "host-a")
@@ -346,7 +345,7 @@ func TestHandleMessageResultNoFuture(t *testing.T) {
 
 func TestHandleMessageResultCleansUpBuffers(t *testing.T) {
 	resetState()
-	_ = RegisterFuture("task-1", "host-a")
+	_, _ = RegisterFuture("task-1", "host-a")
 	HandleMessage(Message{TaskID: "task-1", Type: "stdout", Chunk: "data"}, "host-a")
 	HandleMessage(Message{TaskID: "task-1", Type: "result", RC: 0}, "host-a")
 
@@ -537,8 +536,8 @@ func TestGetPendingTaskCount(t *testing.T) {
 		t.Errorf("expected 0 pending tasks, got %d", n)
 	}
 
-	RegisterFuture("task-a", "host-a")
-	RegisterFuture("task-b", "host-a")
+	_, _ = RegisterFuture("task-a", "host-a")
+	_, _ = RegisterFuture("task-b", "host-a")
 
 	if n := GetPendingTaskCount(); n != 2 {
 		t.Errorf("expected 2 pending tasks, got %d", n)
@@ -843,7 +842,7 @@ func TestConcurrentRekeyAndExec(t *testing.T) {
 
 	for i := 0; i < numTasks; i++ {
 		taskID := fmt.Sprintf("concurrent-task-%d", i)
-		results[i] = RegisterFuture(taskID, "host-concurrent")
+		results[i] = mustFuture(RegisterFuture(taskID, "host-concurrent"))
 	}
 
 	// Simulate concurrent result delivery

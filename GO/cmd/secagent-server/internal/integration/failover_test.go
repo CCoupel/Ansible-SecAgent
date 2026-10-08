@@ -518,7 +518,7 @@ func TestFailover_PullChildReconnectsToTheNewMasterThroughItsAddressList(t *test
 func TestFailover_PushChildIsDialedByTheNewMaster(t *testing.T) {
 	parallel(t)
 	a := startNode(t, nodeSpec{ID: "root"})
-	child := startNode(t, nodeSpec{ID: "relay1"})
+	child := startNode(t, nodeSpec{ID: "relay1", Root: a})
 	tok, _ := child.mintParentToken("root")
 	code, m := a.admin("POST", "/api/admin/relays", map[string]any{"relay_id": "relay1", "mode": "push", "urls": []string{child.wssURL()}, "token": tok})
 	if code != 201 {

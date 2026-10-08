@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"secagent-server/cmd/secagent-server/internal/auth"
 )
 
 // Uplink publishes this node's state to its single parent over an ESTABLISHED
@@ -25,6 +28,9 @@ type Uplink struct {
 	serving   bool
 	ancestors []string   // ancestors of this node, parent first
 	wmu       sync.Mutex // serialises writes on the current conn
+	cur       *websocket.Conn
+	states    map[string]json.RawMessage // last link_state frame per relay_id (own and relayed), re-sent after each snapshot
+	revoked   atomic.Bool                // the token of THIS link was revoked by the root (link_revocations)
 }
 
 // ErrUplinkBusy is returned by Serve when a parent link is already active (single parent).
@@ -113,10 +119,25 @@ func (u *Uplink) serve(ctx context.Context, conn *websocket.Conn) (established b
 func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established bool, err error) {
 	sessCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	u.revoked.Store(false)
+	u.mu.Lock()
+	u.cur = conn
+	u.mu.Unlock()
+	defer func() {
+		u.mu.Lock()
+		if u.cur == conn {
+			u.cur = nil
+		}
+		u.mu.Unlock()
+	}()
+	if u.opts.LinkTrust != nil {
+		u.opts.LinkTrust.ResetFrames() // the parent re-sends its full state on this link
+	}
 	go func() { <-sessCtx.Done(); _ = conn.Close() }()
 	if err := u.sendSnapshot(conn); err != nil {
 		return false, err
 	}
+	u.resendLinkStates(conn)
 	lastSnap := time.Now()
 	established = true
 
@@ -165,6 +186,9 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 		case <-ctx.Done():
 			return true, ctx.Err()
 		case err := <-readErr:
+			if u.revoked.Load() { // the root revoked our own link token: never reconnect with it
+				return true, &refusedError{reason: "link token revoked by the root (operator action required)", permanent: true}
+			}
 			return true, wrapRead("read", err)
 		case <-ping.C:
 			u.wmu.Lock()
@@ -193,6 +217,7 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 			if err := u.sendSnapshot(conn); err != nil {
 				return true, err
 			}
+			u.resendLinkStates(conn)
 			lastSnap = time.Now()
 		case <-u.changed():
 			if err := u.sendAgentList(conn); err != nil {
@@ -307,6 +332,10 @@ func (u *Uplink) handleIncoming(ctx context.Context, conn *websocket.Conn, raw [
 		}
 		reply := func(v any) error { return u.write(conn, v) }
 		go u.opts.OnTask(ctx, json.RawMessage(raw), reply)
+	case "link_keys", "link_revocations":
+		u.handleLinkFrame(conn, raw)
+	case "link_state":
+		// informative ack, only meaningful child -> parent: never used as a decision
 	case "event_forward":
 		log.Printf("[REPEATER] event_forward from parent ignored (never re-forwarded upstream)")
 	case "agent_list_ack", "heartbeat_ack", "topology_ack":
@@ -325,4 +354,128 @@ func (u *Uplink) write(conn *websocket.Conn, v any) error {
 		return err
 	}
 	return conn.WriteJSON(v)
+}
+
+// handleLinkFrame applies a link_keys / link_revocations frame from the parent (the format and the
+// signatures are checked by auth, through LinkTrust). The link stays open on an invalid frame.
+func (u *Uplink) handleLinkFrame(conn *websocket.Conn, raw []byte) {
+	if len(raw) > maxLinkFrameLen {
+		log.Printf("[SECURITY WARNING] link frame from parent refused: %d bytes exceed the limit", len(raw))
+		return
+	}
+	lt := u.opts.LinkTrust
+	if lt == nil {
+		log.Printf("[SECURITY WARNING] link frame from parent ignored: no link trust configured")
+		return
+	}
+	res, err := lt.HandleFrame(raw)
+	if err != nil || (!res.Applied && !res.Confirm) {
+		return
+	}
+	for _, jti := range res.Revoked {
+		if u.opts.OwnLinkJTI != "" && jti == u.opts.OwnLinkJTI {
+			log.Printf("[SECURITY WARNING] the token of the link to the parent was revoked by the root: closing the link")
+			u.revoked.Store(true)
+			u.closeWithCode(conn, CloseCodePermanent, "link token revoked")
+			_ = conn.Close()
+			return
+		}
+	}
+	// informative acknowledgement towards the parent (unsigned, never a decision)
+	frame, merr := json.Marshal(struct {
+		Type       string `json:"type"`
+		RelayID    string `json:"relay_id"`
+		Seq        uint64 `json:"seq"`
+		CurrentKID string `json:"current_kid"`
+	}{"link_state", u.id, res.Seq, res.KID})
+	if merr != nil {
+		return
+	}
+	u.rememberLinkState(u.id, frame)
+	_ = u.write(conn, json.RawMessage(frame))
+}
+
+const (
+	maxRememberedLinkStates = 1024
+	maxLinkStateFrameLen    = 512 // a link_state is ~120 bytes: total memory kept <= 1024 x 512 B
+)
+
+// validLinkStateFrame accepts only a well formed, small link_state (relay_id and kid shapes checked).
+func validLinkStateFrame(frame []byte) (relayID string, ok bool) {
+	if len(frame) > maxLinkStateFrameLen {
+		return "", false
+	}
+	var m struct {
+		Type       string `json:"type"`
+		RelayID    string `json:"relay_id"`
+		CurrentKID string `json:"current_kid"`
+	}
+	if json.Unmarshal(frame, &m) != nil || m.Type != "link_state" || !relayIDPattern.MatchString(m.RelayID) || !auth.ValidLinkKID(m.CurrentKID) {
+		return "", false
+	}
+	return m.RelayID, true
+}
+
+// rememberLinkState keeps the last link_state of a relay so that it can be re-sent once the parent
+// knows the topology (the parent ignores a link_state of a relay it has not seen declared yet).
+func (u *Uplink) rememberLinkState(relayID string, frame []byte) {
+	if id, ok := validLinkStateFrame(frame); !ok || id != relayID {
+		return // never kept: bounded size, strict shape, one entry per relay_id
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.states == nil {
+		u.states = map[string]json.RawMessage{}
+	}
+	if _, known := u.states[relayID]; !known && len(u.states) >= maxRememberedLinkStates {
+		return
+	}
+	u.states[relayID] = append(json.RawMessage(nil), frame...)
+}
+
+// resendLinkStates re-sends the remembered link_state frames: called right after a topology_snapshot,
+// which is what makes the sender (and the relays below it) known to the parent.
+func (u *Uplink) resendLinkStates(conn *websocket.Conn) {
+	// Our own state, as WE authenticated it (never read from a frame): the kid we trust as current and
+	// the last seq we verified. A relay deployed after a rotation never receives a verifiable link_keys;
+	// this is how it tells the root it trusts the current key.
+	if lt := u.opts.LinkTrust; lt != nil && lt.Anchored() {
+		seq, kid := lt.State()
+		if frame, err := json.Marshal(struct {
+			Type       string `json:"type"`
+			RelayID    string `json:"relay_id"`
+			Seq        uint64 `json:"seq"`
+			CurrentKID string `json:"current_kid"`
+		}{"link_state", u.id, seq, kid}); err == nil {
+			u.rememberLinkState(u.id, frame)
+		}
+	}
+	u.mu.Lock()
+	frames := make([]json.RawMessage, 0, len(u.states))
+	for _, f := range u.states {
+		frames = append(frames, f)
+	}
+	u.mu.Unlock()
+	for _, f := range frames {
+		if err := u.write(conn, f); err != nil {
+			return
+		}
+	}
+}
+
+// SendUpstream writes a message on the current parent link (used to retransmit a child's
+// link_state towards the root). It fails when no parent link is active.
+func (u *Uplink) SendUpstream(v any) error {
+	u.mu.Lock()
+	conn := u.cur
+	u.mu.Unlock()
+	if raw, ok := v.(json.RawMessage); ok {
+		if id, ok := validLinkStateFrame(raw); ok {
+			u.rememberLinkState(id, raw)
+		}
+	}
+	if conn == nil {
+		return errors.New("no parent link")
+	}
+	return u.write(conn, v)
 }

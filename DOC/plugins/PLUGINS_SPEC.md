@@ -344,8 +344,9 @@ Traitement réel par `relay.py` (`_post_relay`) :
 | Aucune adresse joignable (connexion/TLS) | `AnsibleConnectionFailure` (UNREACHABLE) |
 | Timeout de lecture/écriture | `AnsibleConnectionFailure` (pas de rejeu) |
 | `404` (hôte inconnu ou non connecté) | `AnsibleConnectionFailure` |
-| `>= 500` (dont 500, 503, 504) | `AnsibleConnectionFailure` (pas de rejeu) |
-| Autre code non-200 (`401`, `403`, `413`, `429`…) | `AnsibleError("Relay server error <code>[: détail]")` — le plugin ne distingue pas `AnsibleAuthenticationFailure` |
+| `429` ou `503` (refus à l'admission du serveur : `agent_busy`, `too_many_tasks`, `memory_budget_exhausted`, #179 ; mais aussi `agent_offline`, `agent_suspended`) | `AnsibleConnectionFailure("Relay server <hôte:port> refused the task (HTTP <code>, error=<code erreur>, Retry-After=<s>s); request not sent to the agent and not retried automatically")` : le code `error` du corps JSON (assaini) et `Retry-After` figurent dans le message, **jamais** la commande ni `become_pass` ; aucun rejeu automatique ; l'adresse n'est pas mémorisée comme bonne (`relay.py` `_admission_refusal`) |
+| autre `>= 500` (500, 504) | `AnsibleConnectionFailure` (pas de rejeu) |
+| Autre code non-200 (`401`, `403`, `413`…) | `AnsibleError("Relay server error <code>[: détail]")` — le plugin ne distingue pas `AnsibleAuthenticationFailure` |
 | Réponse non JSON | `AnsibleError` |
 | Fichier local > 500 KB (`put_file`) | `AnsibleError` avant tout envoi |
 

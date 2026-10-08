@@ -118,7 +118,8 @@ type Engine struct {
 	// wmu serializes the commit itself and Reload (the writer is unique by construction, this
 	// protects the fields below against a concurrent Reload).
 	wmu      sync.Mutex
-	fromPrev bool // the in-memory model was recovered from relay.state.prev: do not rotate over it
+	fromPrev bool   // the in-memory model was recovered from relay.state.prev: do not rotate over it
+	srcFile  string // file the in-memory model was read from (v1 backup source)
 
 	writes atomic.Uint64 // number of successful file replacements (observability, tests)
 }
@@ -155,8 +156,11 @@ func Open(opts Options) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := &Engine{opts: opts, fs: opts.FS, guard: opts.BeforeWrite, fromPrev: ld.fromPrev, codec: c}
+	e := &Engine{opts: opts, fs: opts.FS, guard: opts.BeforeWrite, fromPrev: ld.fromPrev, srcFile: ld.srcName(), codec: c}
 	e.cur.Store(ld.m)
+	if ld.m.schema == 1 {
+		slog.Info("state schema_version 1 loaded: it will be migrated to 2 (backup " + V1BackupFile + ") by the first write of the master")
+	}
 	slog.Info("state loaded", "dir", opts.Dir, "write_seq", ld.m.seq, "agents", len(ld.m.Agents), "from_prev", ld.fromPrev)
 	return e, nil
 }
@@ -185,6 +189,7 @@ func (e *Engine) Reload() error {
 		return err
 	}
 	e.fromPrev = ld.fromPrev
+	e.srcFile = ld.srcName()
 	e.cur.Store(ld.m)
 	return nil
 }
@@ -306,10 +311,22 @@ func (e *Engine) commit(batch []*request) {
 		return
 	}
 
+	if work.schema == 1 {
+		// Migration v1 -> v2: the file is rewritten as v2 by this write. The v1 content is first copied
+		// to relay.state.v1.bak (rollback = this file + v3.0.3 binaries); a failed backup cancels the
+		// whole batch and leaves the v1 state untouched. Idempotent: once written, the model is v2.
+		if err := writeV1Backup(e.fs, e.opts.Dir, e.srcFile, e.opts.MaxBytes); err != nil {
+			failAllApplied(results, batch, err)
+			finish()
+			return
+		}
+		slog.Info("state migration schema_version 1 -> 2", "backup", V1BackupFile)
+	}
 	if e.opts.Piggyback != nil {
 		e.opts.Piggyback(&work.Payload)
 	}
 	work.seq++
+	work.schema = SchemaVersion
 	data, err := e.codec.encode(&work.Payload, work.seq, e.opts.Instance, e.opts.now())
 	if err != nil {
 		failAllApplied(results, batch, err)

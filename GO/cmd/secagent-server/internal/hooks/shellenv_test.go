@@ -25,6 +25,7 @@ func envMap(env []string) map[string]string {
 func TestShellEnvironment_AllowListOnly(t *testing.T) {
 	server := []string{
 		"ADMIN_TOKEN=a", "JWT_SECRET_KEY=j", "RSA_MASTER_KEY=r", "REPEATER_UPSTREAM_TOKEN=u", "RELAY_ENROLLMENT_TOKEN=e",
+		"ADMIN_TOKEN_FILE=/run/secrets/a", "JWT_SECRET_KEY_FILE=/run/secrets/j", "RSA_MASTER_KEY_FILE=/run/secrets/r", "REPEATER_UPSTREAM_TOKEN_FILE=/run/secrets/u", "RELAY_ENROLLMENT_TOKEN_FILE=/run/secrets/e",
 		"FOO=bar", "MY_API_KEY=k", "DB_SECRET=s", "PATH=/evil/bin", "HOME=/home/svc", "LANG=fr_FR.UTF-8", "LC_ALL=C", "TZ=UTC",
 		"LD_PRELOAD=/x.so", "TLS_KEY=/k",
 	}
@@ -46,7 +47,7 @@ func TestShellEnvironment_AllowListOnly(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, got[k], v)
 		}
 	}
-	for _, leaked := range []string{"ADMIN_TOKEN", "JWT_SECRET_KEY", "RSA_MASTER_KEY", "REPEATER_UPSTREAM_TOKEN", "RELAY_ENROLLMENT_TOKEN", "FOO", "MY_API_KEY", "DB_SECRET", "LD_PRELOAD", "TLS_KEY"} {
+	for _, leaked := range []string{"ADMIN_TOKEN", "JWT_SECRET_KEY", "RSA_MASTER_KEY", "REPEATER_UPSTREAM_TOKEN", "RELAY_ENROLLMENT_TOKEN", "ADMIN_TOKEN_FILE", "JWT_SECRET_KEY_FILE", "RSA_MASTER_KEY_FILE", "REPEATER_UPSTREAM_TOKEN_FILE", "RELAY_ENROLLMENT_TOKEN_FILE", "FOO", "MY_API_KEY", "DB_SECRET", "LD_PRELOAD", "TLS_KEY"} {
 		if _, ok := got[leaked]; ok {
 			t.Errorf("%s must never be inherited", leaked)
 		}
@@ -77,6 +78,11 @@ func TestValidate_EnvRules(t *testing.T) {
 		"RSA_MASTER_KEY":   {Type: "shell", Env: map[string]string{"RSA_MASTER_KEY": "x"}},
 		"upstream token":   {Type: "shell", Env: map[string]string{"REPEATER_UPSTREAM_TOKEN": "x"}},
 		"enrollment":       {Type: "shell", Env: map[string]string{"RELAY_ENROLLMENT_TOKEN": "x"}},
+		"ADMIN_TOKEN_FILE": {Type: "shell", Env: map[string]string{"ADMIN_TOKEN_FILE": "/run/secrets/a"}},
+		"JWT_SECRET_FILE":  {Type: "shell", Env: map[string]string{"JWT_SECRET_KEY_FILE": "/run/secrets/j"}},
+		"MASTER_KEY_FILE":  {Type: "shell", Env: map[string]string{"RSA_MASTER_KEY_FILE": "/run/secrets/r"}},
+		"UPSTREAM_FILE":    {Type: "shell", Env: map[string]string{"REPEATER_UPSTREAM_TOKEN_FILE": "/run/secrets/u"}},
+		"ENROLLMENT_FILE":  {Type: "shell", Env: map[string]string{"relay_enrollment_token_file": "/run/secrets/e"}},
 		"case-insensitve":  {Type: "shell", Env: map[string]string{"admin_token": "x"}},
 		"SECAGENT_ prefix": {Type: "shell", Env: map[string]string{"SECAGENT_EVENT": "x"}},
 		"bad name":         {Type: "shell", Env: map[string]string{"A=B": "x"}},

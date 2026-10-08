@@ -129,6 +129,10 @@ Le déploiement se fait ensuite dans le projet Compose **`secagent-qualif`** (mo
 
 ---
 
+## Arguments du binaire `secagent-server` (v3.0.4)
+
+Le serveur démarre **sans argument** : toute sa configuration vient de l'environnement (`ENTRYPOINT ["/app/secagent-server"]`, aucun `command:` Compose). Tout argument est traité par la CLI d'administration : une commande ou un drapeau inconnu (`kyes`, `-d`, `--config …`) est **refusé** avec une erreur et le code de sortie 1, jamais interprété comme un démarrage de serveur. `--help`, `-h` et `--version` répondent sans rien démarrer. Ne pas ajouter d'`command:`/`args:` à un service serveur.
+
 ## Codes de Sortie et Redémarrage
 
 ### Agents (codes systemd significatifs)
@@ -181,39 +185,80 @@ docker exec secagent-server secagent-server tokens create --role enrollment --ho
 - **Retour arrière vers une version antérieure à #193** : un état contenant au moins un agent révoqué est **refusé au démarrage** (décodeur strict) avec `state: corrupt state file: payload: json: unknown field "revoked"` — message d'une corruption, mais le fichier est valide ; l'ancien binaire peut aussi basculer sur `relay.state.prev` (état plus ancien, révocation éventuellement absente). Lever d'abord les révocations (`DELETE` ci-dessus) ou restaurer un état antérieur (`state verify`, `state restore --from`).
 - **Mise à jour depuis un état sans drapeau** : au démarrage, le maître pose le drapeau aux agents dont le JTI courant est encore en blacklist (25 h). Une révocation plus ancienne est oubliée : **révoquer à nouveau** l'hôte.
 
-## Gestion des Tokens Relay (v3.0.1)
+## Montée de version v3.0.3 → v3.0.4 (une seule rupture des liens inter-relays)
 
-### Créer un token relay-parent (pour mode push)
+> Décision et risques : `DOC/security/DECISION_141.md` ; contrat : `SERVER_SPEC.md` §9.2.1 ; CHANGELOG `[BREAKING]`. Les **agents ne sont pas affectés** (leurs jetons HS256 ne changent pas, leurs connexions ne sont pas coupées). Ce qui est coupé, c'est chaque **lien relay ↔ relay** entre la montée du parent et celle de l'enfant : prévoir une fenêtre de coupure annoncée (les tâches vers les descendants échouent pendant la fenêtre ; les tâches locales et les agents directs continuent).
+>
+> ⚠️ **Retour arrière vers v3.0.3 non supporté** (décision de l'utilisateur) : un binaire v3.0.3 refuse l'état v2 (`ErrSchemaVersion`). Le seul chemin est de restaurer la sauvegarde `relay.state.v1.bak` avec les binaires v3.0.3 **et les anciens jetons HS256**, en perdant toutes les écritures faites sous v3.0.4 (enrôlements, révocations d'agents à rejouer à la main).
 
-Sur l'enfant (dmz1), créer un token que le parent utilisera :
+**0. Avant** : ne **pas** révoquer les anciens jetons HS256 tant que la v3.0.4 n'est pas validée (ils sont refusés par la v3.0.4 mais permettent le retour arrière). La rotation de `RSA_MASTER_KEY` (la clé maître protège désormais aussi la clé de signature des liens, `SECURITY.md` §5) est **recommandée avant la mise en production, mais elle se fait APRÈS la montée** (étape 6 bis) : `state rekey` n'existe qu'en v3.0.4. Elle accepte un état encore en schéma 1 (la migration v1 → v2 a lieu à la **première écriture du maître**, pas au simple démarrage) et le migre dans la même opération.
+
+1. **Sauvegarder** `STATE_DIR` de chaque relay (copie du volume + `secagent-server state verify relay.state`) : la migration crée aussi `relay.state.v1.bak`, mais une copie hors du volume reste obligatoire.
+2. **Racine, paire actif/passif** : arrêter le **passif**, monter l'**actif** en v3.0.4 (le maître migre `relay.state` v1 → v2 à sa première écriture ; le passif v3.0.3 refuserait de toute façon l'état v2), puis monter le **passif**. Il n'y a plus de bascule possible pendant la fenêtre.
+3. **Exporter la clé publique de la racine** : `docker exec <racine> secagent-server keys link-pubkey > root_link.pub` (génère la clé de signature au besoin ; la racine doit avoir `RSA_MASTER_KEY`). `REPEATER_ID` de la racine = l'`iss` attendu par tous les relays (`REPEATER_ROOT_ID`).
+4. **Minter les jetons de lien sur la racine, avant de descendre** (un jeton par lien, TTL 720 h par défaut) :
+   - lien **pull** (l'enfant X se connecte à son parent P) : `tokens create --role relay-child --sub X --aud P`
+   - lien **push** (le parent P ouvre vers l'enfant X) : `tokens create --role relay-parent --sub P --aud X`
+
+   Le jeton n'est affiché qu'une fois ; le placer dans le secret de l'enfant (`REPEATER_UPSTREAM_TOKEN_FILE`, ou `token` de `POST /api/admin/relays` pour un lien push).
+5. **Descendre niveau par niveau, parents d'abord** : pour chaque relay, déployer la v3.0.4 avec `REPEATER_ROOT_ID=<REPEATER_ID de la racine>` et `REPEATER_ROOT_LINK_KEY_FILE=<fichier root_link.pub>` (fichier régulier, non inscriptible par le groupe ni les autres) et son nouveau jeton ; même ordre passif/actif pour une paire. Un enfant **sans ancre refuse tout lien entrant** (`4010`, `[SECURITY WARNING]`) ; un enfant en mode push a aussi besoin de l'ancre (il n'a pas d'`UPSTREAM_URL`, mais il a un parent). Monter les parents d'abord évite aussi le bruit `unsupported event kind` des événements `host.suspended` (#180) vers un parent encore en v3.0.3.
+6. **Contrôles** : `secagent-server relays status` à chaque niveau (liens `connected`), inventaire de la racine complet (`GET /api/inventory`, comparer le nombre d'hôtes avant/après), smoke `exec` à travers chaque niveau, `secagent-server keys link-status` (chaque relay connu apparaît avec son `kid`), absence de `[SECURITY WARNING] … link_trust_missing` dans les journaux.
+**6 bis. Rotation de `RSA_MASTER_KEY`, après la montée et avant d'accepter du trafic de production** (commande hors ligne `secagent-server state rekey`, procédure complète et limites dans `DOC/security/SECURITY.md` §11) : arrêter **les deux** nœuds actif/passif, exécuter une fois `state rekey --yes` sur le `STATE_DIR` partagé avec `RSA_MASTER_KEY_FILE` (ancienne) et `NEW_RSA_MASTER_KEY_FILE` (nouvelle, fichier 0600 : à préférer aux variables saisies au shell, qui restent dans l'historique) — jamais en argument —, la nouvelle clé faisant **au moins 32 octets** (`openssl rand -base64 48`, sinon refus code 11 ; l'ancienne n'est pas contrôlée), redéployer la nouvelle clé sur **tous** les nœuds candidats, redémarrer, vérifier avec `state verify relay.state`. Un nœud encore lancé avec l'ancienne clé refuse l'état (code 2 de `state verify`). La commande écrit `relay.state.rekey.<UTC>.bak` (0600, lisible avec l'**ancienne** clé) avant toute modification : à conserver quelques jours comme seul retour arrière, puis à **détruire** avec `relay.state.prev` et les sauvegardes d'avant la rotation. Elle ne change ni `JWT_SECRET_KEY` ni les clés de signature (les jetons émis restent valides). Prérequis : les nœuds du relay sont en v3.0.4 (binaire de `state rekey`) et arrêtés ; sauvegarde de `STATE_DIR` éprouvée. L'état peut être encore en schéma 1 (un maître v3.0.4 démarré au repos n'a rien écrit) : `state rekey` le migre alors en schéma 2 dans la même écriture atomique, après avoir copié l'original dans `relay.state.v1.bak` (en plus de `relay.state.rekey.<UTC>.bak`), et le dit dans sa sortie ; le retour arrière vers v3.0.3 reste « `relay.state.v1.bak` + binaires v3.0.3 + **ancienne** clé ». Chaque relay a son propre `STATE_DIR` : répéter l'opération relay par relay (la nouvelle clé doit seulement être identique sur les nœuds d'une même paire actif/passif) ; le lien du relay est coupé pendant l'arrêt de ses nœuds. Un relay installé neuf en v3.0.4 peut être rekeyé juste après `state init`, avant son premier démarrage. **Après une compromission** (la clé a pu être lue avec une copie de `relay.state`) la rotation de la clé maître ne suffit pas, elle ne change pas les secrets eux-mêmes : faire en plus `keys rotate-link` puis `retire-link-previous` (rotation de la clé de signature, ci-dessous), `security keys rotate` (secrets JWT et clé RSA du serveur), puis **détruire** les `relay.state.rekey.*.bak`, `relay.state.prev` et toutes les anciennes sauvegardes de `STATE_DIR` (lisibles avec l'ancienne clé).
+
+7. **Après validation** seulement : révoquer/oublier les anciens jetons HS256, supprimer les sauvegardes selon la politique de rétention.
+
+### Rotation de la clé de signature des liens (racine)
 
 ```bash
-docker exec secagent-server secagent-server tokens create \
-  --role relay-parent \
-  --sub central \
-  --expires 90d
-
-# Sortie : JWT signé par ce nœud (affiché UNE SEULE FOIS ; --description ne vaut que pour les jetons plugin)
-# Transmettre ce token au parent pour POST /api/admin/relays
+docker exec <racine> secagent-server keys rotate-link      # courante → précédente, nouvelle courante ; link_keys poussé
+docker exec <racine> secagent-server keys link-status      # TOUS les relays doivent être "confirmed"
+docker exec <racine> secagent-server keys retire-link-previous
 ```
 
-### Lister les tokens relay-parent
+- **Ne jamais `retire-link-previous` avant la confirmation de tous les relays** : la racine répond `409 rotation_unconfirmed` (avec la liste) tant qu'un relay connu n'a pas confirmé la rotation. `--force` passe outre avec un `[SECURITY WARNING]` listant les relays concernés : à n'utiliser que pour un relay définitivement perdu.
+- Une seule rotation à la fois (`409 previous_key_not_retired` tant que la précédente n'est pas fermée).
+- Pendant la fenêtre, les jetons signés par l'ancienne **et** la nouvelle clé sont acceptés ; après `retire-link-previous`, plus que la nouvelle.
+- Les jetons de lien déjà distribués restent valables (même clé jusqu'à la rotation). **Confirmé** signifie que le relay rapporte (`link_state`) le `kid` de la clé **courante** (`keys link-status`, colonne `CONFIRMED`) ; le `seq` rapporté n'est qu'informatif (non signé). Un relay déployé **après** la rotation, ancré sur la nouvelle clé, se confirme à son premier `link_state`.
+- **Ordre à respecter — d'abord les relays existants, ensuite les nouveaux** : un relay ancré sur la **nouvelle** clé ne peut pas vérifier la rotation signée par l'ancienne ; il **ignore** la trame `link_keys` rejouée et **ne la retransmet plus** à ses enfants. Un enfant resté sur l'**ancienne** ancre sous un tel relay ne recevrait donc jamais la rotation. Lancer la rotation et vérifier la confirmation de **tous les relays existants** (`keys link-status`) **avant** de déployer de nouveaux relays épinglés sur la nouvelle clé. Un enfant déjà laissé sur l'ancienne ancre sous un relay ancré sur la nouvelle clé doit être **ré-épinglé** (arrêt, `state link-trust reset --yes`, nouveau `REPEATER_ROOT_LINK_KEY_FILE`, redémarrage).
+- Un relay qui rate une rotation **et** le `retire-link-previous`, ou deux rotations, ne peut plus vérifier la chaîne : le **ré-épingler** (relay arrêté) : `docker exec <relay> secagent-server state link-trust reset --yes` (sauvegarde `relay.state.linktrust-reset.<horodatage>.bak`, n'efface que l'ancre ; refuse une racine et un verrou actif), remplacer `REPEATER_ROOT_LINK_KEY_FILE` / `REPEATER_ROOT_ID` par `keys link-pubkey` de la racine, redémarrer ; ses agents sont conservés. La sauvegarde `relay.state.linktrust-reset.<horodatage>.bak` est une **copie complète de l'état** (secrets chiffrés `enc:` compris, mode `0600`) : la protéger comme `relay.state` (accès à `STATE_DIR`) et la **supprimer ou la déplacer hors du volume** une fois le relay re-validé : elle n'est jamais purgée automatiquement. Si un nœud démarre pendant la commande, celle-ci s'abandonne (code 8, état intact, sauvegarde conservée) : arrêter **toutes** les instances avant.
+
+### Re-racine (perte de `RSA_MASTER_KEY` ou de la clé privée de la racine)
+
+Coût équivalent à une montée de version complète : à répéter en qualification. (1) arrêter toute la hiérarchie ; (2) sur la racine, nouvelle `RSA_MASTER_KEY` et état à réinitialiser si les secrets sont perdus (`state init`, ré-enrôlement de tous les agents) ; la clé de signature est regénérée à la demande ; (3) `keys link-pubkey` ; (4) sur **chaque** relay non racine : `state link-trust reset --yes` (relay arrêté ; l'ancienne ancre ferait sinon refuser le démarrage, `ErrAnchorMismatch`), nouvelle ancre (`REPEATER_ROOT_ID` + `REPEATER_ROOT_LINK_KEY_FILE`) ; (5) re-minter **tous** les jetons de lien ; (6) redémarrer les parents d'abord.
+
+### Note : réponses d'`exec` de plus de 15 s (corrigé en v3.0.4)
+
+Jusqu'à la v3.0.3 incluse (et depuis v1.0.0), le serveur API coupait la réponse de tout `exec`, `upload` ou `fetch` bloquant plus de 15 s (`WriteTimeout`) : la tâche s'exécutait sur l'agent mais le plugin voyait une connexion rompue (`bad record MAC` en TLS). La v3.0.4 étend la deadline d'écriture à `timeout + 35 s` pour ces trois routes ; aucune configuration n'est nécessaire. Si vous restez en v3.0.3, un contournement partiel consiste à garder les tâches sous 15 s.
+
+## Gestion des Tokens Relay (v3.0.4)
+
+### Créer un jeton de lien (sur la racine uniquement)
 
 ```bash
-docker exec secagent-server secagent-server tokens list --role relay-parent
+docker exec <racine> secagent-server tokens create --role relay-child  --sub dmz1    --aud central   # lien pull
+docker exec <racine> secagent-server tokens create --role relay-parent --sub central --aud dmz1      # lien push
 
-# Sortie : id, parent_id (sub), expires_at, revoked_at
+# Sortie : JWT Ed25519 signé par la racine, affiché UNE SEULE FOIS (id, sub, aud, kid, expires_at)
+# Sur un relay qui a un parent : 409 not_root. Sans RSA_MASTER_KEY : 503 master_key_required.
 ```
 
-### Révoquer un token relay-parent
+### Lister les jetons de lien
 
 ```bash
-docker exec secagent-server secagent-server tokens revoke <token-id>
+docker exec <racine> secagent-server tokens list --role relay-child     # ou relay-parent, ou all
+# Sortie : id, role, sub -> aud, expires_at, revoked (jamais le jeton ni son hash)
+```
 
-# Effets :
-# - JTI blacklisté
-# - Lien parent actif fermé (close 4010 permanent)
-# - Parent ne peut plus se reconnecter avec ce token (401)
+### Révoquer un jeton de lien
+
+```bash
+docker exec <racine> secagent-server tokens revoke <token-id>
+
+# Effets (une seule mutation d'état sur la racine) :
+# - revoked_at posé, JTI blacklisté jusqu'à l'expiration du jeton, compteur seq incrémenté
+# - link_revocations poussé aux enfants, de proche en proche ; chaque relay ferme le lien
+#   authentifié par ce jeton (close 4010 permanent) et blackliste le JTI
+# - racine injoignable : les liens établis continuent, la révocation descend au retour du lien
 ```
 
 ### Identifiant d'un relay : l'UUID, pas le `relay_id`
@@ -306,6 +351,21 @@ docker compose -p secagent-qualif -f docker-compose.server.yml down -v
 | `ADMIN_ADDR` | `:7771` | Adresse admin (toutes interfaces par défaut ; `127.0.0.1:7771` pour la boucle locale) |
 | `ADMIN_TLS` | `false` | TLS sur admin ; **obligatoire** si `ADMIN_ADDR` n'est pas loopback (sinon refus de démarrer, ou dérogation `ADMIN_INSECURE_HTTP` + ACK) |
 
+#### Secrets par fichier (`*_FILE`, #196)
+
+Chaque secret peut être donné par une variable **ou** par un fichier : `JWT_SECRET_KEY` / `JWT_SECRET_KEY_FILE`, `ADMIN_TOKEN` / `ADMIN_TOKEN_FILE`, `RSA_MASTER_KEY` / `RSA_MASTER_KEY_FILE`, `REPEATER_UPSTREAM_TOKEN` / `REPEATER_UPSTREAM_TOKEN_FILE` (serveur seulement : la CLI ne lit que `ADMIN_TOKEN[_FILE]` et `RSA_MASTER_KEY[_FILE]`, `cli/client.go`), `RELAY_ENROLLMENT_TOKEN` / `RELAY_ENROLLMENT_TOKEN_FILE` (minion). Avantage : le secret n'apparaît plus dans `docker inspect` ni dans l'environnement du processus.
+
+- Les deux définies ensemble : **refus de démarrer**. Une variable vide compte comme non définie.
+- Le fichier doit être un fichier **régulier** (ni lien symbolique, ni périphérique), **non vide**, de 64 Kio au plus, avec des permissions `0600` ou plus strictes (aucun droit pour le groupe ni les autres). Les espaces et fins de ligne finaux sont retirés. Sinon : refus de démarrer, le message cite la variable et le chemin, jamais la valeur.
+- Les variables directes restent acceptées (rétrocompatible).
+- **Docker Compose (hors Swarm) : `uid`, `gid` et `mode` de `secrets:` sont IGNORÉS** (Compose affiche `secrets uid, gid and mode are not supported, they will be ignored`). Un `secrets: file:` est un **bind mount du fichier de l'hôte** qui garde son propriétaire et son mode d'hôte. Comme le conteneur tourne en **UID 10001** et que le serveur exige `0600` ou plus strict, le fichier doit **appartenir à l'UID 10001 avec le mode `0400`** (ou `0600`) : `chown 10001:10001` + `chmod 0400`. Un fichier root `0600` est illisible (`secret file cannot be read: permission denied`), un `0444`/`0644` est refusé (`permissions too open`) : dans les deux cas le serveur sort et redémarre en boucle. En production, `DEPLOYMENT/prod/preflight-secrets.sh` (à lancer **avant** `docker compose up`, `--child` pour un enfant) vérifie propriétaire, mode, type et taille de chaque fichier ; `--fix` corrige, `--write NOM` crée un secret depuis stdin. Contre un démon Docker **distant** un `secrets: file:` est inutilisable (le chemin est résolu sur l'hôte distant) : la qualif distante dépose les secrets de lien dans un volume nommé (`chain-test.sh`).
+- `REPEATER_ROOT_LINK_KEY_FILE` n'est pas un secret (clé publique) : lecteur à part (fichier régulier, non inscriptible par le groupe ni les autres).
+- Les variables `*_FILE` ne sont jamais transmises aux hooks (liste d'environnement autorisé) et un hook ne peut pas les déclarer dans `env`.
+
+#### Minions : exécution en root (BAS-1)
+
+Le minion exécute les tâches Ansible, y compris avec `become`, et doit donc rester **root** sur l'hôte géré. Ne pas lui retirer de capabilities (`CapDrop`) ni le passer en utilisateur non privilégié : les modules Ansible échoueraient. Le durcissement ne s'applique qu'au conteneur de qualif (réseau, système de fichiers en lecture seule, pas de privilèges supplémentaires), pas au minion de production installé par systemd.
+
 **Ports (configurables : `API_ADDR`, `ADMIN_ADDR`, `WS_ADDR`)** — défauts :
 - 7770 : API REST + WebSocket
 - 7771 : API d'administration
@@ -315,7 +375,12 @@ docker compose -p secagent-qualif -f docker-compose.server.yml down -v
 ```
 REPEATER_ID=dmz1                               # ID unique du relay enfant (format ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$)
 REPEATER_UPSTREAM_URL=wss://central:7772      # URL WSS du parent (liste séparée par des virgules : une par instance)
-REPEATER_UPSTREAM_TOKEN=<jwt-relay-child>     # Token JWT rôle relay-child
+REPEATER_UPSTREAM_TOKEN=<jwt-relay-child>     # Jeton de lien relay-child, minté sur la RACINE (tokens create --role relay-child --sub dmz1 --aud <parent>)
+REPEATER_ROOT_ID=central                       # (v3.0.4) REPEATER_ID de la racine : l'iss attendu des jetons de lien
+REPEATER_ROOT_LINK_KEY_FILE=/run/secagent/root_link.pub  # (v3.0.4) clé PUBLIQUE de la racine (keys link-pubkey) ; sans ancre le relay refuse tout lien entrant
+REPEATER_DIAL_ALLOW_LOOPBACK=false             # true|false strict ; true = dev/CI seulement (lève la loopback, rien d'autre)
+REPEATER_DIAL_DENY_CIDRS=                      # ex. 10.9.0.0/16 (réseau du plan de contrôle) : refus supplémentaires
+REPEATER_DIAL_ALLOW_CIDRS=                     # ex. 192.168.0.0/16,10.20.0.0/16 : si non vide, liste blanche (deny l'emporte)
 RELAY_GROUP_VARS={"region":"dmz"}             # Variables Ansible JSON (v3.0.2+)
 ```
 
@@ -326,9 +391,11 @@ RELAY_GROUP_VARS={"region":"dmz"}             # Variables Ansible JSON (v3.0.2+)
 # {
 #   "relay_id": "dmz1",
 #   "urls": ["wss://dmz1.internal:7772"],
-#   "token": "<jwt-relay-parent>",
+#   "token": "<jwt-relay-parent>",     # minté sur la RACINE : --role relay-parent --sub central --aud dmz1
 #   "mode": "push"
 # }
+# L'enfant dmz1 n'a pas d'UPSTREAM_URL mais il a un parent : il a besoin de l'ancre
+# (REPEATER_ROOT_ID + REPEATER_ROOT_LINK_KEY_FILE), sinon il refuse le lien (close 4010).
 ```
 
 ### Server Limits (Repeater)
@@ -337,7 +404,25 @@ MAX_SNAPSHOT_HOSTS=10000                        # Limite hôtes dans topology_sn
 MAX_SNAPSHOT_RELAYS=1000                        # Limite relays dans topology_snapshot (défaut 1000)
 MAX_AGENT_LIST_HOSTS=10000                      # Limite hôtes dans agent_list heartbeat (défaut 10000)
 MAX_WS_MESSAGE_SIZE_RELAY=10485760              # Taille max message WebSocket relay (défaut 10MB)
+MAX_TASKS_PER_AGENT=10                          # (#179) tâches simultanées par agent ; au-delà 429 agent_busy
+MAX_TASKS_INFLIGHT=1000                         # (#179) tâches en vol sur le relay (relayées comprises) ; au-delà 429 too_many_tasks
+MAX_STDOUT_BUFFER_TOTAL=1073741824              # (#179) budget mémoire des tampons stdout, 1 Gio par défaut
 ```
+
+#### Dimensionner les limites de tâches (#179, v3.0.4)
+
+Chaque tâche admise **réserve 5 Mio** de budget (le maximum de stdout qu'elle peut produire) dès son admission, avant que le stdout n'arrive. Le plafond effectif de tâches simultanées d'un relay est donc `MAX_STDOUT_BUFFER_TOTAL / 5 Mio` :
+
+| `MAX_STDOUT_BUFFER_TOTAL` | tâches simultanées max | pic RSS mesuré (3 000 agents, saturation) |
+|---|---|---|
+| 1 Gio (défaut) | **204** | ≈ 1,8 Gio |
+| 2 Gio | 409 | ≈ 3,5 Gio (estimation) |
+
+- Au-delà du plafond, `exec` / `upload` / `fetch` répondent **`503 memory_budget_exhausted`** avec `Retry-After` ; rien n'est envoyé à l'agent, le plugin Ansible remonte une erreur explicite sans rejouer.
+- `MAX_TASKS_INFLIGHT=1000` (défaut) n'est atteignable **que si** `MAX_STDOUT_BUFFER_TOTAL` augmente : avec 1 Gio, le budget mémoire limite avant lui.
+- **`forks` d'Ansible** : `forks` ≤ 200 passe sans refus avec les défauts. Pour `forks` 300-400, passer `MAX_STDOUT_BUFFER_TOTAL` à `2147483648` (409 tâches) et prévoir au moins **4 Gio de mémoire** pour le conteneur du relay. Règle : `MAX_STDOUT_BUFFER_TOTAL ≥ forks × 5 Mio` (+ une marge si plusieurs plugins partagent le relay) et mémoire du conteneur ≈ 2 × `MAX_STDOUT_BUFFER_TOTAL` + 200 Mio.
+- Sauf `GOMEMLIMIT` défini, le serveur fixe une limite mémoire souple du runtime à `MAX_STDOUT_BUFFER_TOTAL + 768 Mio`.
+
 
 ### Server Hooks (v3.0.2)
 ```

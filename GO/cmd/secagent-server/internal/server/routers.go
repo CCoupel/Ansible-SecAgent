@@ -76,6 +76,12 @@ func (n *Node) buildRouters() {
 	adminH("DELETE /api/admin/tokens/{id}", handlers.AdminDeleteToken)
 	adminH("POST /api/admin/tokens/purge", handlers.AdminPurgeTokens)
 
+	// Link signing key of the root (v3.0.4, #141): public key, rotation, retire, confirmation status
+	adminH("GET /api/admin/link/pubkey", handlers.AdminLinkPubkey)
+	adminH("POST /api/admin/link/keys/rotate", handlers.AdminLinkRotate)
+	adminH("POST /api/admin/link/keys/retire-previous", handlers.AdminLinkRetire)
+	adminH("GET /api/admin/link/status", handlers.AdminLinkStatus)
+
 	// Server status / stats
 	adminH("GET /api/admin/status", handlers.AdminStatus)
 	adminH("GET /api/admin/stats", handlers.AdminStats)

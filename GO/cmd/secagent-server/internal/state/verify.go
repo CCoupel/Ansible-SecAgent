@@ -20,6 +20,15 @@ type Report struct {
 	WrittenAt      time.Time
 	WriterInstance string
 	Counts         map[string]int // entity type -> number of entries
+	// NeedsMigration: a schema_version 1 file, migrated to 2 by the first write of the master.
+	NeedsMigration bool
+	// Link data (schema v2). The signing private keys are NEVER reported, only whether they exist; the
+	// kid and the sequence number of the trust anchor are public.
+	LinkSigningKeyCurrent  bool
+	LinkSigningKeyPrevious bool
+	LinkTrustCurrentKID    string
+	LinkTrustPreviousKID   string
+	LinkTrustSeq           uint64
 }
 
 // VerifyOptions configures VerifyFile.
@@ -69,11 +78,16 @@ func verifyData(data []byte, o VerifyOptions) (*Report, error) {
 		return nil, err
 	}
 	return &Report{
+		NeedsMigration:         env.SchemaVersion < SchemaVersion,
+		LinkSigningKeyCurrent:  m.ServerConfig[ConfigLinkSigningKeyCurrent] != "",
+		LinkSigningKeyPrevious: m.ServerConfig[ConfigLinkSigningKeyPrevious] != "",
+		LinkTrustCurrentKID:    m.LinkTrust.CurrentKID, LinkTrustPreviousKID: m.LinkTrust.PreviousKID, LinkTrustSeq: m.LinkTrust.Seq,
 		SchemaVersion: env.SchemaVersion, WriteSeq: env.WriteSeq, WrittenAt: env.WrittenAt, WriterInstance: env.WriterInstance,
 		Counts: map[string]int{
 			"agents": len(m.Agents), "authorized_keys": len(m.AuthorizedKeys), "enrollment_tokens": len(m.EnrollmentTokens),
 			"plugin_tokens": len(m.PluginTokens), "relay_parent_tokens": len(m.RelayParentTokens),
 			"blacklist": len(m.Blacklist), "relay_nodes": len(m.RelayNodes), "server_config": len(m.ServerConfig),
+			"link_tokens": len(m.LinkTokens),
 		},
 	}, nil
 }
@@ -101,6 +115,10 @@ type RestoreOptions struct {
 	// LockOverride records in the journal that the operator passed over a lock that was not proven
 	// stale (the caller already logged the [SECURITY WARNING]).
 	LockOverride bool
+	// BeforeRename (may be nil) is the last check before relay.state is replaced: it re-reads relay.lock
+	// and returns ErrInstanceAppeared when a node took it since the probe. The write is then abandoned
+	// (state untouched, backups kept).
+	BeforeRename func() error
 }
 
 // RestoreResult is what Restore did.
@@ -114,6 +132,10 @@ type RestoreResult struct {
 
 // ErrWriteSeqTooLow: the source is older than the requested minimum.
 var ErrWriteSeqTooLow = errors.New("state: write_seq below the requested minimum")
+
+// ErrInstanceAppeared: relay.lock changed between the probe and the replacement of relay.state, a node
+// is (or was just) alive: the offline operation is abandoned, relay.state is untouched.
+var ErrInstanceAppeared = errors.New("state: relay.lock changed since it was probed: an instance appeared; relay.state was NOT modified")
 
 // Restore replaces relay.state in o.Dir by the file o.From after verifying it with VerifyFile
 // (an inauthentic or invalid source is refused and nothing is modified). The caller has already
@@ -170,7 +192,7 @@ func Restore(o RestoreOptions) (*RestoreResult, error) {
 	}
 
 	// replacement by the engine's atomic write; rotate=false keeps the existing relay.state.prev
-	if err := atomicWrite(o.FS, o.Dir, data, false, nil); err != nil {
+	if err := atomicWrite(o.FS, o.Dir, data, false, o.BeforeRename); err != nil {
 		return nil, err
 	}
 

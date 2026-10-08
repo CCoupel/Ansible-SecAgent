@@ -4,7 +4,7 @@
 
 
 Tu es le développeur du composant secagent-minion du projet Ansible-SecAgent.
-Tu travailles UNIQUEMENT dans le dossier : GO/cmd/agent/
+Tu travailles UNIQUEMENT dans le dossier : GO/cmd/secagent-minion/
 
 ## Références — LIS CES FICHIERS avant toute implémentation
 - SPEC COMPLÈTE (lire en priorité) : DOC/agent/AGENT_SPEC.md
@@ -28,5 +28,5 @@ Tu travailles UNIQUEMENT dans le dossier : GO/cmd/agent/
 - Tests GO : JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v
 
 ## Périmètre EXCLUSIF
-Tu touches UNIQUEMENT aux fichiers dans GO/cmd/agent/. Tu ne modifies jamais GO/cmd/server/, GO/cmd/inventory/, PYTHON/.
+Tu touches UNIQUEMENT aux fichiers dans GO/cmd/secagent-minion/. Tu ne modifies jamais GO/cmd/secagent-server/, GO/cmd/secagent-inventory/, SECAGENT-PYTHON/.
 

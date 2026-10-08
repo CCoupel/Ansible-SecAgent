@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"secagent-server/cmd/secagent-server/internal/auth"
 	"secagent-server/cmd/secagent-server/internal/storage"
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
@@ -39,10 +38,12 @@ func TestDeleteGuard_LegacyRelayNotRevokedIsRefusedWith409(t *testing.T) {
 	s := useFreshStores(t)
 	srv := wireChildLinks(t)
 	seedLegacyRelay(t, s, "legacy", "pull")
-	legacyToken, _, err := auth.New(GetServerJWTSecrets, 720*time.Hour).SignRelay("legacy")
-	if err != nil {
-		t.Fatal(err)
+	// a relay whose JTI the node never learned (legacy row): token minted, JTI deliberately NOT recorded
+	code, tk, raw := mintLink(t, map[string]interface{}{"role": "relay-child", "sub": "legacy", "aud": testRootID})
+	if code != http.StatusCreated {
+		t.Fatalf("mint: %d %s", code, raw)
 	}
+	legacyToken := tk.Token
 	c, _, err := connectChild(t, srv, legacyToken, "legacy")
 	if err != nil {
 		t.Fatal(err)

@@ -126,24 +126,33 @@ Ansible-SecAgent permet d'exécuter des playbooks Ansible sur des hôtes distant
 
 ### 3.1 Provisioning et enrollment
 
+> Tout enrôlement exige un jeton `secagent_enr_…` **et** le challenge RSA-OAEP ; `POST /api/register` sans jeton est refusé (`403 enrollment_token_required`, #192c). `authorized_keys` n'est plus consultée par `/api/register` et ne donne aucun droit d'enrôlement. Détail : `DOC/security/SECURITY.md` §3-§4, `DOC/server/SERVER_SPEC.md` (`POST /api/register`).
+
 ```
 PIPELINE CI/CD       RELAY SERVER           RELAY AGENT (host-A)
      │                    │                        │
-     │ ① POST /api/admin/authorize               │
-     │  { hostname, public_key, approved_by }    │
+     │ ① CLI: tokens create --role enrollment    │
+     │    --hostname-pattern … (jeton secagent_enr_…, montré une fois)
      │───────────────────▶│                        │
-     │                    │ INSERT authorized_keys │
-     │  HTTP 201          │                        │
+     │  jeton d'enrôlement│                        │
      │◀───────────────────│                        │
      │                    │                        │
-     │  [serveur provisionné, agent démarre]      │
+     │  [jeton transmis à l'opérateur ; agent démarre]
      │                    │                        │
      │                    │  ② POST /api/register  │
-     │                    │  { hostname, pubkey }  │
+     │                    │  { hostname, public_key_pem,
+     │                    │    enrollment_token }  │
      │                    │◀───────────────────────│
-     │                    │ SELECT authorized_keys │
-     │                    │ → clef OK ? génère JWT │
-     │                    │                        │
+     │                    │ valide le jeton (existe, non expiré,
+     │                    │ non utilisé, hostname_pattern)
+     │                    │  HTTP 200 { challenge }│
+     │                    │──────────────────────▶│ déchiffre le nonce
+     │                    │  POST /api/register    │
+     │                    │  { …, challenge_response }
+     │                    │◀───────────────────────│
+     │                    │ vérifie nonce + jeton, │
+     │                    │ consomme le jeton,     │
+     │                    │ mémorise la clef, JWT  │
      │                    │  HTTP 200              │
      │                    │  { token_encrypted }   │
      │                    │──────────────────────▶│

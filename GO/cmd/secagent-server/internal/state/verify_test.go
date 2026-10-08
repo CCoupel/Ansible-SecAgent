@@ -65,7 +65,7 @@ func TestVerifyFile_Classification(t *testing.T) {
 	}
 	// unknown schema
 	sch := filepath.Join(dir, "schema")
-	_ = os.WriteFile(sch, []byte(strings.Replace(raw, `"schema_version":1`, `"schema_version":9`, 1)), 0o600)
+	_ = os.WriteFile(sch, []byte(strings.Replace(raw, `"schema_version":2`, `"schema_version":9`, 1)), 0o600)
 	if _, err := VerifyFile(sch, VerifyOptions{MasterKey: hmKey}); !errors.Is(err, ErrSchemaVersion) {
 		t.Errorf("schema: %v", err)
 	}

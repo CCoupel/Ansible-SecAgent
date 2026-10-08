@@ -1,6 +1,6 @@
-# Ansible-SecAgent — Spécifications Techniques v3.0.3
+# Ansible-SecAgent — Spécifications Techniques v3.0.3 (§7 et §23 mis à jour pour v3.0.4)
 
-> Spécifications pour la version stable v3.0.3.
+> Spécifications pour la version stable v3.0.3. **§7 (rôles JWT) et §23 (liens relay) décrivent la v3.0.4** : jetons de lien EdDSA signés par la racine (`DOC/security/DECISION_141.md`).
 > Relay sans NATS (WebSocket direct dispatch), état fichier (STATE_DIR), déploiement Compose multi-hôtes actif/passif.
 > Voir SECURITY.md (modèle sécurité), STATE_SPEC.md (persistance), DEPLOYMENT/README.md (déploiement).
 
@@ -501,7 +501,7 @@ Connexion permanente, maintenue par l'agent. Voir section 4 pour le protocole de
 
 ```
 zero-trust sur le transport : TLS obligatoire sur toutes les connexions
-trust-on-first-use (TOFU) pour l'enrollment : clef déposée manuellement
+anti-TOFU pour l'enrollment : jeton d'enrôlement `secagent_enr_…` obligatoire + challenge-response (SECURITY.md §3) ; clef du relay racine épinglée au déploiement, jamais apprise à la première connexion
 JWT signé pour les sessions : vérification à chaque connexion WebSocket
 ```
 
@@ -511,9 +511,12 @@ JWT signé pour les sessions : vérification à chaque connexion WebSocket
 |---|---|---|
 | `agent` | `hostname` | `recv_task`, `send_result` |
 | `plugin` | `ansible-controller` | `send_task`, `read_inventory` |
+| `relay-child` (v3.0.4) | `relay_id` de l'enfant (`aud` = parent) | ouvrir `/ws/relay` (lien pull) ; EdDSA signé par la racine |
+| `relay-parent` (v3.0.4) | `relay_id` du parent (`aud` = enfant) | ouvrir `/ws/relay` (lien push) ; EdDSA signé par la racine |
 
 Un token `role: agent` ne peut pas envoyer des tâches (`send_task`).
 Un token `role: plugin` ne peut pas ouvrir de WebSocket agent.
+Les jetons `agent` sont vérifiés par `ws/jwt.go` (HS256, dual-key) ; les jetons de lien `relay-child` / `relay-parent` le sont uniquement par `auth/linkjwt.go` (`VerifyLinkToken`, Ed25519). Le rôle `relay` (HS256) de la v3.0.3 est refusé (`link_role_legacy`).
 
 ### Flow d'enrollment
 
@@ -1292,7 +1295,7 @@ services:
     restart: unless-stopped
     user: "10001:10001"
     stop_grace_period: 30s              # arrêt propre : relâche relay.lock
-    env_file: [./prod.env]              # JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY (secrets, hors dépôt)
+    secrets: [jwt_secret_key, admin_token, rsa_master_key]   # v3.0.4 : fichiers (*_FILE) appartenant à l'UID 10001, mode 0400, hors dépôt ; uid/gid/mode Compose ignorés hors Swarm (DEPLOYMENT/prod/preflight-secrets.sh)
     environment:
       STATE_DIR: /data                  # stockage partagé (bind mount du partage NFS)
       RELAY_STATUS_FILE: /run/secagent/status.json   # LOCAL (tmpfs), JAMAIS sur le partage
@@ -1610,7 +1613,7 @@ Le mode repeater permet de construire une topologie arbre stricte de relays, cha
 - Un seul upstream par relay enfant (pas de multi-upstream)
 - Deux modes d'ouverture de connexion : enfant-push (enfant ouvre vers parent) ou parent-push (parent ouvre vers enfant via API)
 - Inventaire : chaque relay expose TOUTE LA DESCENDANCE (agents + sous-relays comme groupes récursifs), cloisonnement via authentification JWT
-- Authentification : deux rôles JWT distincts, `relay` (dit « relay-child ») et `relay-parent`, pour les deux sens de connexion
+- Authentification : deux rôles de jeton de lien, `relay-child` (enfant ouvre) et `relay-parent` (parent ouvre) ; **depuis la v3.0.4**, JWT EdDSA signés par la racine (le rôle `relay` HS256 per-relay de la v3.0.3 est supprimé) — `DECISION_141.md`, `SERVER_SPEC.md` §9.4
 
 ### Topologie de référence — Arbre
 
@@ -1656,7 +1659,7 @@ Configuration sur l'enfant (variables d'environnement) :
 ```bash
 REPEATER_ID="dmz1"
 REPEATER_UPSTREAM_URL="wss://central.example.com:7772"
-REPEATER_UPSTREAM_TOKEN="${REPEATER_UPSTREAM_TOKEN_DMZ1}"
+REPEATER_UPSTREAM_TOKEN="${REPEATER_UPSTREAM_TOKEN_DMZ1}"   # jeton relay-child minté sur la racine (v3.0.4)
 ```
 
 L'enfant établit **UNE SEULE** connexion WSS persistante vers son parent et envoie régulièrement `agent_list`.
@@ -1664,7 +1667,7 @@ L'enfant établit **UNE SEULE** connexion WSS persistante vers son parent et env
 ```
 [Enfant (dmz1)]
   → WSS /ws/relay (port 7772 du parent central)
-  → Authorization: Bearer <JWT rôle="relay" (dit relay-child), sub="dmz1">
+  → Authorization: Bearer <jeton de lien EdDSA rôle="relay-child", sub="dmz1", aud="central">
   → {type:"relay_hello", node_type:"relay", relay_id:"dmz1"}
   → agent_list { agents: [{ hostname: "host-A", status: "connected" }, ...] }
        (uniquement agents DIRECTS du relay, pas récursifs)
@@ -1681,8 +1684,8 @@ Configuration sur le parent (via API admin) :
 POST /api/admin/relays
 {
   "relay_id": "dmz1",
-  "url": "wss://dmz1.internal:7772",
-  "token": "${REPEATER_UPSTREAM_TOKEN_DMZ1}",
+  "urls": ["wss://dmz1.internal:7772"],
+  "token": "${RELAY_PARENT_TOKEN_DMZ1}",   // jeton relay-parent (sub=central, aud=dmz1) minté sur la racine
   "mode": "push"
 }
 ```
@@ -1699,7 +1702,7 @@ Le parent ouvre la connexion (une goroutine par enfant enregistré ainsi). L'enf
 
 ```
 WSS /ws/relay
-Authorization: Bearer <JWT rôle "relay" (enfant qui ouvre) ou "relay-parent" (parent qui ouvre), sub=relay_id du porteur>
+Authorization: Bearer <jeton de lien EdDSA rôle "relay-child" (enfant qui ouvre) ou "relay-parent" (parent qui ouvre), sub=relay_id du porteur, aud=relay_id du vérificateur>
 Port : 7772 (relay handler)
 ```
 
@@ -2017,37 +2020,14 @@ Chaque relay maintient sa propre table `relay_routing` avec ses enfants directs.
 
 ### 23.6 Authentification repeater-to-parent
 
-**Deux rôles JWT distincts** (voir SECURITY.md §2) :
+> **v3.0.4 [BREAKING]** : le modèle v3.0.3 (rôle `relay` HS256, « chaque relay signe avec sa `JWT_SECRET_KEY` ») est supprimé. Conception et décisions validées : `DOC/security/DECISION_141.md` ; spécification : `DOC/server/SERVER_SPEC.md` §9.2 et §9.4 ; modèle de sécurité : `DOC/security/SECURITY.md` §7 « Jetons de lien relay ». Ce paragraphe ne les duplique pas.
 
-**Rôle `relay`** (dit « relay-child » ; présenté par l'enfant au handshake) :
-- Permissions : ouvrir `/ws/relay`, envoyer `relay_hello`, `agent_list`, `event_forward`
-- Restrictions : pas d'accès `/api/inventory`, `/api/exec`, `/ws/agent`, `/api/admin`
-- JWT créé sur : le relay parent (l'entité qui accueille l'enfant)
-- JWT signé par : JWT_SECRET_KEY du relay parent (vérification par le parent récepteur)
-
-**Rôle `relay-parent`** (présenté par le parent au handshake en mode push) :
-- Permissions : ouvrir `/ws/relay` (en tant que WS client vers l'enfant)
-- Restrictions : pas d'accès `/api/inventory`, `/api/exec`, `/ws/agent`, `/api/admin`
-- JWT créé sur : le relay enfant (l'entité qui accepte l'ouverture)
-- JWT signé par : JWT_SECRET_KEY du relay enfant (vérification par l'enfant récepteur)
-
-Les tokens relay sont créés via CLI avec le rôle approprié :
-
-**Rôle `relay`** (créé sur le parent, présenté par l'enfant qui ouvre vers le parent) :
-> *Pas disponible via `tokens create`* (rôles acceptés : `enrollment`, `plugin`, `relay-parent`). Le JWT de l'enfant (rôle `relay`, 30 j) est émis à l'enregistrement du relay :
-> `secagent-server relays add --id dmz1` (mode pull) ou `POST /api/admin/relays`.
-
-**Relay-parent** (créé sur l'enfant, présenté par le parent qui ouvre vers l'enfant) :
-```bash
-# Sur dmz1 (enfant) :
-secagent-server tokens create --role relay-parent \
-  --sub central \
-  --expires 90d
-```
-
-**Isolation des tokens** :
-- Chaque relay enfant a un token distinct
-- Tokens jamais loggés en clair (risque sécurité)
+Résumé :
+- **Deux rôles** : `relay-child` (présenté par l'enfant qui ouvre vers son parent, pull) et `relay-parent` (présenté par le parent qui ouvre vers l'enfant, push). Les deux sont des JWT **EdDSA signés par la racine** (`sub` = porteur, `aud` = vérificateur).
+- **Création** sur la **racine** seulement : `secagent-server tokens create --role relay-child --sub <enfant> --aud <parent>` ou `--role relay-parent --sub <parent> --aud <enfant>` (`409 not_root` ailleurs). `relays add` (pull) ne minte plus de jeton.
+- **Vérification** par chaque relay avec la clé publique racine **épinglée au déploiement** (`REPEATER_ROOT_LINK_KEY_FILE`, `REPEATER_ROOT_ID`) ; sans ancre, tout lien entrant est refusé (close `4010`).
+- **Révocation et rotation** de la clé racine : `tokens revoke`, `keys rotate-link`, `keys retire-link-previous` (SECURITY.md §7).
+- Tokens jamais journalisés en clair.
 
 ---
 
@@ -2071,7 +2051,7 @@ Pour déploiement simple où l'enfant ouvre vers son parent :
 |---|---|
 | `REPEATER_ID` | Identifiant unique du relay (`dmz1`) |
 | `REPEATER_UPSTREAM_URL` | URL WSS du parent (`wss://central:7772`) |
-| `REPEATER_UPSTREAM_TOKEN` | Token d'authentification du relay enfant |
+| `REPEATER_UPSTREAM_TOKEN` | Jeton de lien EdDSA `relay-child` du relay enfant, minté sur la racine (v3.0.4, §23.6) |
 | `RELAY_GROUP_VARS` | Variables Ansible JSON injectées pour ce relay : `{"region":"dmz"}` |
 
 Configuration sur l'enfant :
@@ -2089,8 +2069,8 @@ Configuration sur le parent via API admin (voir §23.6 pour l'authentification) 
 POST /api/admin/relays
 {
   "relay_id": "dmz1",
-  "url": "wss://dmz1.internal:7772",
-  "token": "${REPEATER_UPSTREAM_TOKEN_DMZ1}",
+  "urls": ["wss://dmz1.internal:7772"],
+  "token": "${RELAY_PARENT_TOKEN_DMZ1}",   // jeton relay-parent (sub=central, aud=dmz1) minté sur la racine
   "mode": "push"
 }
 ```
@@ -2146,7 +2126,7 @@ volumes:
 | **Server (events)** | Remontée parent à parent ; relay_chain accumule ; pas de déduplication (un seul chemin) |
 | **Server (hooks)** | Filter `relay_chain_contains` ; signature `Dispatcher.Dispatch()` + relayChain param |
 | **Server (admin)** | Endpoints `/api/admin/relays` (list, status, add, remove, revoke) ; enregistrement API pour mode=push |
-| **Server (auth)** | Deux rôles JWT `relay` (dit relay-child) et `relay-parent` (voir SECURITY.md §2) : enfant ouvre vers parent, parent ouvre vers enfant ; `relay` role N'a PAS droit `read_inventory` |
+| **Server (auth)** | Deux rôles de jeton de lien `relay-child` et `relay-parent` (v3.0.4 : EdDSA signés par la racine, voir §23.6 ; v3.0.0-v3.0.3 : rôle `relay` HS256, supprimé) : enfant ouvre vers parent, parent ouvre vers enfant ; ces rôles n'ont PAS droit `read_inventory` |
 | **Server (startup)** | Validation : si `REPEATER_UPSTREAM_URL` et `REPEATER_UPSTREAM_TOKEN` définis → mode enfant-push, vérifier parent |
 | **Suppression** | Fichiers proxy (push_manager.go, client.go) ; variables REPEATER_UPSTREAMS_FILE, REPEATER_UPSTREAMS ; plus de multi-upstream |
 | **CLI** | `secagent-server relays add|list|remove|status` |
@@ -2165,7 +2145,7 @@ volumes:
 **Propriétés du remplacement** :
 - **Atomique** : validation complète (chaînes, noms, conflits) AVANT tout commit
 - **Coalescé** : rafales 200ms coalesced, min gap 2s (evite trop de snapshots)
-- **Rate-limited** : 40 remplacements/60s par lien (close 4012 si dépassé)
+- **Rate-limited** : 40 snapshots/60s par identité `relay_id`, premier snapshot compris (close 4012 si dépassé ; v3.0.4, #156)
 - **Chaînes réelles** : chaque relay conserve la vraie chaîne de ses descendants (en mémoire, `storeRelayChain`), sans aplatissement
 
 **Stockage** : les chaînes sont volatiles (reconstruites à chaque snapshot) et servent à construire le snapshot envoyé aux ancêtres.

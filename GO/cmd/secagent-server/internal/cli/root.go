@@ -12,6 +12,9 @@ import (
 var globalFormat string
 
 // rootCmd is the cobra root command for secagent-server CLI mode.
+// Version is printed by --version; override at build time with -ldflags "-X .../internal/cli.Version=vX.Y.Z".
+var Version = "dev"
+
 var rootCmd = &cobra.Command{
 	Use:   "secagent-server",
 	Short: "Ansible-SecAgent secagent-server CLI",
@@ -22,6 +25,7 @@ Environment variables:
   ADMIN_TOKEN    Admin bearer token (required)`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
+	Version:       Version,
 }
 
 func init() {
@@ -48,4 +52,28 @@ func Execute() {
 		}
 		os.Exit(1)
 	}
+}
+
+// IsCommand reports whether name is a top-level command of the CLI (registered on the cobra root,
+// plus the built-in help and completion). main uses it to choose between the CLI and the server, so
+// a newly registered command can never fall through to starting a server.
+func IsCommand(name string) bool {
+	if name == "help" || name == "completion" {
+		return true
+	}
+	for _, c := range rootCmd.Commands() {
+		if c.Name() == name || c.HasAlias(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// CommandNames lists the registered top-level commands (tests).
+func CommandNames() []string {
+	var names []string
+	for _, c := range rootCmd.Commands() {
+		names = append(names, c.Name())
+	}
+	return names
 }
