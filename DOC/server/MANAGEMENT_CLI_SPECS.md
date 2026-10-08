@@ -5,7 +5,7 @@
 > Commandes réelles (v3.0.3) : `minions` (list, get, set-state, suspend, resume, revoke, authorize, vars get/set/delete),
 > `tokens` (create, list, revoke, delete, purge), `relays` (list, add, remove, status), `security` (keys status/rotate,
 > tokens list, blacklist list/purge), `hooks` (status, log), `inventory list`, `server` (status, stats), `status --local`,
-> `state` (init, verify, restore). Il n'existe **pas** de `minions refresh`, de login/refresh de jeton ni de composant NATS :
+> `state` (init, verify, restore, link-trust reset). Il n'existe **pas** de `minions refresh`, de login/refresh de jeton ni de composant NATS :
 > l'authentification se fait par jeton admin (`ADMIN_TOKEN`), sans renouvellement automatique côté CLI.
 > Voir `DOC/server/SERVER_SPEC.md`.
 

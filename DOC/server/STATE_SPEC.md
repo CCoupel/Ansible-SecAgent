@@ -137,6 +137,27 @@ Redémarrer ensuite les instances. La garde `write_seq` en mémoire des secondai
 
 
 
+### `secagent-server state link-trust reset [--state-dir D] [--yes] [--i-know-no-instance-is-running]` (v3.0.4)
+
+Efface **uniquement** l'ancre de confiance persistée (`link_trust` : `root_id`, clés publiques courante/précédente, `seq`) d'un relay **non racine**, **nœud arrêté**. Raison d'être : l'ancre persistée l'emporte sur `REPEATER_ROOT_LINK_KEY_FILE` et rien d'autre ne peut la remplacer ; sans cette commande, un relay qui a raté une rotation de la clé racine (puis un `retire-link-previous`), ou après une re-racine, ne pourrait jamais être ré-épinglé.
+
+1. `RSA_MASTER_KEY` (ou `_FILE`) requis ; le HMAC et les invariants de `relay.state` sont vérifiés **avant** (mêmes codes 2 à 7 que `state verify`).
+2. **Refus** (code **9**, rien n'est modifié) sur une **racine** (clé de signature de lien présente : elle n'a pas d'ancre à réinitialiser ; la re-racine passe par `keys rotate-link` / un nouvel état) et sur un état qui viendrait de `relay.state.prev` (réparer d'abord, par exemple `state restore`).
+3. **Aucune instance active** : même règle de verrou que `state restore` (code **8** si `relay.lock` est frais ; `--i-know-no-instance-is-running` seulement pour un verrou orphelin sur stockage figé, `[SECURITY WARNING]`).
+4. **Confirmation** : invite « Type "reset" » en mode interactif (rappel de la conséquence : sans ancre le relay refuse tout lien entrant) ; en mode non interactif `--yes` est **obligatoire** (sinon code 9).
+5. **Sauvegarde avant toute écriture** : le `relay.state` vérifié est copié tel quel dans `relay.state.linktrust-reset.<UTC>.bak` (0600, `fsync`, exclusif, jamais relu par le serveur) ; échec de la sauvegarde ⇒ rien n'est modifié.
+6. **Réécriture atomique** (moteur : fichier temporaire, `fsync`, lien/`rename`, `fsync` du répertoire), `link_trust` vidé, **HMAC recalculé**, `write_seq` + 1 (la garde anti-rejeu §#163 n'est pas contournée) ; `relay.state.prev` devient l'état d'avant. Rien d'autre n'est touché : ni agents, ni `link_tokens`, ni blacklist, ni `server_config`.
+7. Journal : `[SECURITY WARNING] link trust anchor reset` (répertoire, nom de la sauvegarde, horodatage, opérateur ; **aucune clé**) et une ligne dans `state-restore.log` (`"source":"link-trust-reset"`).
+
+Idempotent : sans `link_trust`, « nothing to reset », code 0, **rien n'est écrit** (ni sauvegarde ni nouvelle génération). Au démarrage suivant, le relay épingle l'ancre donnée par `REPEATER_ROOT_ID` + `REPEATER_ROOT_LINK_KEY_FILE` ; sans ancre il refuse tout lien entrant (fail closed, inchangé).
+
+| Code | Signification |
+|---|---|
+| 0 | ancre effacée, ou rien à effacer |
+| 2-7 | idem `state verify` (clé incorrecte, état falsifié, invariant, clé maître absente…) |
+| 8 | `relay.lock` frais : une instance est active |
+| 9 | refusé : racine, état issu de `.prev`, confirmation absente ou refusée |
+
 ## Anti-rejeu : garde de `write_seq` (#163)
 
 Le HMAC interdit de **forger** un état, pas de **rejouer une copie authentique plus ancienne** de `relay.state` (ou de supprimer `relay.state` pour forcer la reprise sur un `.prev` plus ancien). Garde :
