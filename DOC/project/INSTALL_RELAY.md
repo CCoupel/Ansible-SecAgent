@@ -37,7 +37,7 @@ Identifiants : `REPEATER_ID` (et donc `relay_id`) doit respecter `^[A-Za-z0-9][A
 ```bash
 # Alias srv : voir INSTALL_SERVER.md §7 (exécute la CLI dans le conteneur racine)
 
-# 1. Déclarer l'enfant attendu (mode pull, par défaut). Cela ne minte AUCUN jeton depuis la v3.0.4.
+# 1. (OPTIONNEL) Déclarer l'enfant attendu (mode pull, par défaut). Cela ne minte AUCUN jeton depuis la v3.0.4.
 srv relays add --id dmz1 --description "Zone DMZ1"
 
 # 2. Exporter l'ancre : clé publique PEM sur stdout, « root_id=<id> kid=<kid> » sur stderr
@@ -53,6 +53,11 @@ srv tokens create --role relay-child --sub dmz1 --aud <relay_id du parent direct
   d'un lien *déjà établi* à l'échéance de son jeton n'est pas documenté ici (non vérifié) : ne comptez pas dessus.
 - `tokens create` de rôle `relay-*` n'existe que sur la **racine** : `409 not_root` ailleurs, `503 master_key_required` sans
   `RSA_MASTER_KEY`.
+
+> `relays add` n'est **pas requis** en mode pull : un enfant muni d'un jeton valide se lie sans déclaration préalable. **Mise en
+> garde** : un relay *déclaré mais jamais connecté* s'affiche `CONFIRMED=true` avec un `kid` vide (`<nil>`) dans
+> `keys link-status` ; le garde de `retire-link-previous` ne l'attend donc pas (cf. #215). Ne déclarez que des enfants qui se
+> connecteront, ou retirez la déclaration d'un enfant abandonné avant une rotation (`relays remove <uuid>` exige de le révoquer d'abord : `DEPLOYMENT.md`, « Supprimer un relay »).
 
 Remettez à l'hôte de l'enfant : le **jeton**, `root-link.pub` (non secret) et le **`root_id`** affiché par `keys link-pubkey`
 (= le `REPEATER_ID` de la racine).
@@ -70,6 +75,7 @@ Même archive Compose que la racine ([`INSTALL_SERVER.md`](INSTALL_SERVER.md) §
 printf '%s' "$JETON_DE_LIEN" | sudo ./preflight-secrets.sh --write repeater_upstream_token     # 0400, UID 10001
 
 # Ancre : clé publique racine, non secrète, lisible par l'UID 10001, jamais inscriptible par le groupe ou les autres
+install -d -m 0755 /etc/secagent
 install -m 0644 root-link.pub /etc/secagent/root-link.pub
 ```
 
@@ -83,8 +89,9 @@ REPEATER_ROOT_ID=<root_id affiché par keys link-pubkey>
 ROOT_LINK_KEY_FILE=/etc/secagent/root-link.pub       # chemin HÔTE de la clé publique racine
 ```
 
-> `REPEATER_UPSTREAM_URL` exige le schéma **`wss://`** et le port **7772** du parent (le chemin `/ws/relay` est ajouté par
-> le serveur). Un schéma `https://` est refusé au démarrage. (Le fichier `.env.example` de l'archive v3.0.4 montre à tort des
+> `REPEATER_UPSTREAM_URL` exige le schéma **`wss://`** (liste de 16 adresses au plus ; le chemin `/ws/relay` est ajouté par
+> le serveur). Le port **7772** est la convention du Compose (listener WebSocket), pas une exigence du code : utilisez le port
+> réellement publié par le parent. Un schéma `https://` est refusé au démarrage. (Le fichier `.env.example` de l'archive v3.0.4 montre à tort des
 > adresses `https://…:7770` en commentaire : suivez ce guide.)
 
 Si le parent présente un certificat signé par une CA privée, ajoutez à l'environnement du service enfant
@@ -94,6 +101,7 @@ sortants ; l'option est commentée dans `docker-compose.child.yml`).
 Puis :
 
 ```bash
+set -a; . ./.env; set +a              # exporte SECRETS_DIR et ROOT_LINK_KEY_FILE : le script ne lit PAS .env
 ./preflight-secrets.sh --child        # code 0 exigé (secrets + clé publique racine)
 export COMPOSE_PROJECT_NAME=secagent-prod-dmz1
 docker compose -f docker-compose.server.yml -f docker-compose.child.yml run --rm --no-deps secagent-server state init
@@ -105,6 +113,11 @@ clé publique racine en lecture seule (`REPEATER_ROOT_LINK_KEY_FILE=/run/secagen
 est lu par un lecteur strict : fichier régulier, ni lien symbolique ni inscriptible par le groupe ou les autres ; un fichier
 de secret doit appartenir à l'UID 10001 en mode 0400 (Compose hors Swarm **ignore** `uid`/`gid`/`mode` ; c'est le rôle de
 `preflight-secrets.sh`).
+
+> *Non exécuté ici* (pas de démon Docker dans l'environnement de rédaction) : les commandes `docker compose … run/up` de cette
+> section viennent de `DEPLOYMENT/prod/README.md`. Ont été rejouées avec les binaires de la release et un harnais racine + enfant
+> hors conteneur : `relays add`, `keys link-pubkey`, `tokens create`, le lien pull, `keys link-status`, la rotation avec et sans
+> nouveau jeton, `preflight-secrets.sh --child`.
 
 ### Vérifications
 
