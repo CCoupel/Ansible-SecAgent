@@ -24,3 +24,5 @@
 | GO/cmd/secagent-server/internal/integration/exec_long_answer_slow_test.go | integration | secagent-server | #179 régression : la réponse d'un exec > 15 s (WriteTimeout API) arrive intacte (« bad record MAC » sinon) | regression | slow |
 | GO/cmd/secagent-server/internal/ws/qa_gaps_test.go | unit | secagent-server | QA v3.0.4 R2 : refund stdout après coupe UTF-8, plafond global du budget abaissé, fenêtre/éviction/refus au hello du quota #156, garde « hôte local ET routé » #180 | regression | |
 | GO/cmd/secagent-server/internal/integration/suspension_three_levels_test.go | integration | secagent-server | QA v3.0.4 R2 : #180 drapeau de suspension sur 3 niveaux restauré après redémarrage de la racine | regression | |
+| GO/cmd/secagent-server/internal/auth/linkjwt_replay_keys_test.go | unit | secagent-server | R4 : un link_keys re-envoyé signé par une clé de confiance mais annonçant d'autres clés est refusé (3 égalités) | regression | |
+| GO/cmd/secagent-server/internal/state/linktrust_peek_backup_test.go | unit | secagent-server | `state link-trust reset` : refus racine côté Peek/CLI, « no backup, no reset » | regression | |
