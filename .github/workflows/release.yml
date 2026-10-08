@@ -81,6 +81,25 @@ jobs:
             echo "::warning::Tests desactives (skip_tests) pour $TAG"
           fi
 
+      # Les notes de release sont validees ICI, avant toute publication GHCR : sans section `## [vX.Y.Z]` non vide dans le
+      # CHANGELOG du tag, le job `release` echouerait APRES la publication des images. Le contenu valide est transmis tel
+      # quel au job `release` (une seule extraction, aucune divergence). Le CHANGELOG est lu au commit du TAG.
+      - name: Valider les notes de release (CHANGELOG du tag)
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p notes
+          git show "refs/tags/$TAG:CHANGELOG.md" > notes/CHANGELOG.tag.md
+          bash scripts/ci/release_notes.sh "$TAG" notes/CHANGELOG.tag.md > notes/release-notes.md
+          echo "notes de $TAG : $(wc -l < notes/release-notes.md) lignes"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-notes
+          path: notes/release-notes.md
+          if-no-files-found: error
+
   test:
     name: Build + tests Go
     needs: prepare
@@ -305,19 +324,12 @@ jobs:
           go-version-file: GO/go.work
           cache-dependency-path: GO/go.sum
 
-      - name: Notes depuis CHANGELOG.md
+      # Notes extraites et validees par le job `prepare` (scripts/ci/release_notes.sh), avant toute publication.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: steps.exists.outputs.exists == 'false'
-        env:
-          TAG: ${{ needs.prepare.outputs.tag }}
-        run: |
-          set -euo pipefail
-          awk -v tag="$TAG" '
-            /^## \[/ { if (found) exit; if (index($0, "[" tag "]")) { found=1; next } }
-            found { print }
-          ' CHANGELOG.md > release-notes.md
-          if [ ! -s release-notes.md ]; then
-            echo "::error::Aucune entree '## [$TAG]' dans CHANGELOG.md"; exit 1
-          fi
+        with:
+          name: release-notes
+          path: .
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: steps.exists.outputs.exists == 'false'
