@@ -43,6 +43,14 @@ COPY --chmod=755 <<'EOF' /app/entrypoint.sh
 #!/bin/sh
 set -e
 
+# Any argument (`--version`, `--help`, or a mistyped word): hand over to the binary IMMEDIATELY, before any action.
+# The binary answers --version/-v and --help/-h and REFUSES every other argument (exit 1): key generation, mkdir and
+# chown must never precede an answer or a refusal. Same identity as the normal path (su-exec relay). Only the path
+# WITHOUT argument below initialises the data directory.
+if [ "$#" -gt 0 ]; then
+    exec su-exec relay /app/secagent-minion "$@"
+fi
+
 KEY_PATH="${RELAY_PRIVATE_KEY:-/var/lib/secagent-minion/id_rsa}"
 JWT_PATH="${RELAY_JWT_PATH:-/var/lib/secagent-minion/token.jwt}"
 ASYNC_DIR="${RELAY_ASYNC_DIR:-/var/lib/secagent-minion/async}"

@@ -230,6 +230,7 @@ jobs:
           bash scripts/ci/assert_version_selftest.sh
           bash scripts/ci/release_notes_selftest.sh
           bash scripts/ci/build_compose_archive_selftest.sh
+          bash scripts/ci/minion_entrypoint_selftest.sh
           bash scripts/ci/preflight_secrets_selftest.sh
           python3 scripts/ci/check_scripts.py .github/workflows/*.yml
 
