@@ -216,6 +216,7 @@ jobs:
           python3 scripts/ci/check_scripts_selftest.py
           bash scripts/ci/chain_verify_images_selftest.sh
           bash scripts/ci/failover_guard_selftest.sh
+          python3 scripts/ci/check_no_binds_selftest.py
           bash scripts/ci/preflight_secrets_selftest.sh
           python3 scripts/ci/check_scripts.py .github/workflows/*.yml
 
@@ -240,9 +241,13 @@ jobs:
           docker compose -f DEPLOYMENT/prod/docker-compose.server.yml config --format json > render/prod-root.json
           docker compose -f DEPLOYMENT/prod/docker-compose.server.yml -f DEPLOYMENT/prod/docker-compose.child.yml config --format json > render/prod-child.json
           docker compose -f DEPLOYMENT/qualif/docker-compose.server.yml config --format json > render/qualif-server.json
-          docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml config --format json > render/qualif-chain.json
-          docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.remote-tls.yml config --format json > render/qualif-chain-remote.json
+          # chain-test.sh ajoute TOUJOURS docker-compose.hooks.yml (hooks.json par volume nomme)
+          docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml config --format json > render/qualif-chain.json
+          docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.remote-tls.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml config --format json > render/qualif-chain-remote.json
           python3 scripts/ci/check_compose.py --require-memory-limit render/prod-root.json render/prod-child.json render/qualif-server.json render/qualif-chain.json render/qualif-chain-remote.json
+          # Rendu destine a un demon Docker DISTANT (qualif reelle) : aucun chemin du client (bind, secret/config file:, build).
+          # Le CI a un demon local et ne peut pas voir ce defaut a l'execution : ce controle statique est la seule garde.
+          python3 scripts/ci/check_no_binds.py < render/qualif-chain-remote.json
 
       - name: Test negatif — un Compose qui publie 7771 sur toutes les interfaces doit echouer
         run: |

@@ -8,6 +8,7 @@
 #   chain-test.sh backup-restore  # sauvegarde de l etat + de RSA_MASTER_KEY (a part), perte du volume, restauration
 #   chain-test.sh load-images <dir>  # docker load des images d'un artefact CI (sans registre), SECAGENT_PULL_POLICY=never
 #   chain-test.sh push-tls     # TLS_MODE=volume : copie les certificats dans le volume Docker (hote distant)
+#   chain-test.sh push-hooks    # hooks.json -> volume ${PROJECT}_hooks (fait par bootstrap)
 #   chain-test.sh push-link-key  # cle publique racine (+ jeton de lien s'il existe) -> volume ${PROJECT}_link
 #   chain-test.sh link-rotation  # rotation de la cle de lien, confirmation, nouveau jeton, retire-link-previous (v3.0.4)
 #   chain-test.sh link-revoke    # revocation du lien d'un enfant : fermeture 4010, pas de reconnexion, puis remise en etat
@@ -29,9 +30,12 @@ REPO="$(cd "$HERE/../.." && pwd)"
 # admin 127.0.0.1:7771/8771/9771). Deployer sur un hote qui heberge deja une ancienne qualif : liberer ces ports avant.
 export COMPOSE_FILE="$HERE/docker-compose.chain.yml" PROJECT="${PROJECT:-${COMPOSE_PROJECT_NAME:-secagent-qualif}}"
 # TLS_MODE=volume : certificats dans un VOLUME Docker nomme (hote Docker distant) au lieu d'un bind mount.
+# Les hooks de qualif sont TOUJOURS livres par un volume nomme (docker-compose.hooks.yml), jamais par un fichier du client.
+export SECAGENT_HOOKS_VOLUME="${SECAGENT_HOOKS_VOLUME:-${PROJECT}_hooks}"
+export COMPOSE_OVERRIDES="$HERE/docker-compose.hooks.yml"
 if [ "${TLS_MODE:-bind}" = volume ]; then
   export SECAGENT_TLS_VOLUME="${SECAGENT_TLS_VOLUME:-${PROJECT}_tls}"
-  export COMPOSE_OVERRIDES="$HERE/docker-compose.remote-tls.yml"
+  export COMPOSE_OVERRIDES="$HERE/docker-compose.remote-tls.yml $COMPOSE_OVERRIDES"
 fi
 # Hote sur lequel le poste de controle joint la racine (ports d'hote 7770 et 8770) ; defaut : poste local / runner.
 # Hote distant : SECAGENT_ENDPOINT_HOST=192.168.1.218 (doit figurer dans les SAN : PKI_EXTRA_SAN=IP:192.168.1.218).
@@ -83,6 +87,17 @@ push_tls() {
     alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
     sh -c 'tar -xf - -C /certs && chmod 755 /certs && chmod 644 /certs/tls.crt /certs/tls.key /certs/ca.crt'
   echo "certificats de test pousses dans le volume $SECAGENT_TLS_VOLUME"
+}
+
+# Depose hooks.json dans le volume `$SECAGENT_HOOKS_VOLUME` (hote Docker distant ou non) par un conteneur ephemere
+# (flux tar sur stdin, image alpine epinglee) : aucun bind mount, aucun fichier du client reference par Compose.
+push_hooks() {
+  [ -f "$HERE/hooks.json" ] || fail "$HERE/hooks.json absent"
+  docker volume create "$SECAGENT_HOOKS_VOLUME" >/dev/null
+  tar -C "$HERE" -cf - hooks.json | docker run --rm -i -v "$SECAGENT_HOOKS_VOLUME:/hooks" \
+    alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
+    sh -c 'set -e; tar -xf - -C /hooks; chown 0:0 /hooks /hooks/hooks.json; chmod 755 /hooks; chmod 644 /hooks/hooks.json'
+  echo "hooks.json depose dans le volume $SECAGENT_HOOKS_VOLUME"
 }
 
 # Empreinte STABLE d'une image : sha256 de la liste des couches (RootFS.Layers). L'ID `.Id` varie selon le magasin
@@ -145,6 +160,7 @@ bootstrap() {
   need SECAGENT_IMAGE; need SECAGENT_MINION_IMAGE
   verify_images
   mkdir -p "$CHAIN_DIR"; chmod 700 "$CHAIN_DIR"
+  push_hooks
   echo "== etat initial (racine)"
   "${DC[@]}" run --rm --no-deps secagent-server-a state init
   echo "== racine : demarrage et identification du maitre"
@@ -405,7 +421,7 @@ link_revoke() {
 }
 
 # --- Hooks en reel (#197 item 1) -----------------------------------------------------------------------------------
-# hooks.json (DEPLOYMENT/qualif/hooks.json, injecte par `configs:`) ecrit chaque host.up / host.down dans
+# hooks.json (DEPLOYMENT/qualif/hooks.json, livre par le volume `${PROJECT}_hooks`, push-hooks) ecrit chaque host.up / host.down dans
 # /run/secagent/events.log (tmpfs) de chaque conteneur. Seul le MAITRE de la racine execute ses hooks.
 events_log() { docker exec "$1" cat /run/secagent/events.log 2>/dev/null || true; }
 # $1 conteneur, $2 hote, $3 UP|DOWN : une ligne "<horodatage> <UP|DOWN> <hote>" existe dans le journal.
@@ -469,6 +485,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     logs) "${DC[@]}" logs --tail=100 ;;
     load-images) load_images "${2:-}" ;;
     push-tls) push_tls ;;
+    push-hooks) push_hooks ;;
     push-link-key) push_link_key ;;
     link-rotation) link_rotation ;;
     link-revoke) link_revoke ;;
@@ -476,7 +493,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     negative-ca) negative_ca ;;
     down) guard_project; "${DC[@]}" down -v
           # le volume du jeton de lien est EXTERNE (non supprime par down -v) et contient un secret : retrait explicite
-          docker volume rm "$SECAGENT_LINK_VOLUME" >/dev/null 2>&1 || true ;;
-    *) sed -n '2,22p' "$0"; exit 2 ;;
+          docker volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" >/dev/null 2>&1 || true ;;
+    *) sed -n '2,26p' "$0"; exit 2 ;;
   esac
 fi
