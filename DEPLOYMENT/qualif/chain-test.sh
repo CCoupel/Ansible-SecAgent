@@ -8,7 +8,7 @@
 #   chain-test.sh backup-restore  # sauvegarde de l etat + de RSA_MASTER_KEY (a part), perte du volume, restauration
 #   chain-test.sh load-images <dir>  # docker load des images d'un artefact CI (sans registre), SECAGENT_PULL_POLICY=never
 #   chain-test.sh push-tls     # TLS_MODE=volume : copie les certificats dans le volume Docker (hote distant)
-#   chain-test.sh push-link-key  # cle publique racine (ancre) -> volume ${PROJECT}_link (fait par bootstrap)
+#   chain-test.sh push-link-key  # cle publique racine (+ jeton de lien s'il existe) -> volume ${PROJECT}_link
 #   chain-test.sh link-rotation  # rotation de la cle de lien, confirmation, nouveau jeton, retire-link-previous (v3.0.4)
 #   chain-test.sh link-revoke    # revocation du lien d'un enfant : fermeture 4010, pas de reconnexion, puis remise en etat
 #   chain-test.sh hooks        # journal des hooks (host.up/host.down) de la racine et de l'enfant (#197, hooks.json)
@@ -282,24 +282,33 @@ backup_restore() {
 
 # --- Jetons de lien v3.0.4 (#141/#146) -----------------------------------------------------------------------------
 # La RACINE mint un jeton par lien (Ed25519) ; la cle publique racine est epinglee sur chaque relay non racine.
-#   pull : racine `tokens create --role relay-child --sub dmz1 --aud <root_id>` -> secret Compose repeater_upstream_token
-#          (REPEATER_UPSTREAM_TOKEN_FILE de l'enfant, mode 0400) ; REPEATER_ROOT_ID dans chain/child.env (non secret)
-#   ancre : `keys link-pubkey` (PEM sur stdout, `root_id=... kid=...` sur stderr) -> volume ${PROJECT}_link (ci-dessous)
+#   pull : racine `tokens create --role relay-child --sub dmz1 --aud <root_id>` -> fichier `upstream-token` du volume
+#          ${PROJECT}_link (proprietaire 10001, mode 0400) = REPEATER_UPSTREAM_TOKEN_FILE de l'enfant ; REPEATER_ROOT_ID
+#          dans chain/child.env (non secret). PAS de `secrets:` Compose : hors Swarm il monte le fichier de l'HOTE
+#          (uid/gid/mode ignores), illisible par l'uid 10001 du conteneur et irrealisable contre un demon distant.
+#   ancre : `keys link-pubkey` (PEM sur stdout, `root_id=... kid=...` sur stderr) -> meme volume (0644)
 # L'enfant n'a PLUS de jeton en variable d'environnement (docker inspect ne montre aucun secret).
 
-# Pousse chain/root-link.pub (cle publique, NON secrete) dans le volume `$SECAGENT_LINK_VOLUME` (hote Docker distant ou
-# non) par un conteneur ephemere (flux tar sur stdin, image alpine epinglee) : aucun bind mount.
+# Pousse dans le volume `$SECAGENT_LINK_VOLUME` (hote Docker distant ou non) la cle publique racine
+# (chain/root-link.pub, NON secrete, 0644) et, s'il existe, le jeton de lien (chain/upstream-token, SECRET, 0400,
+# proprietaire 10001 = uid du conteneur), par un conteneur ephemere (flux tar sur stdin, image alpine epinglee) : aucun
+# bind mount, aucun droit requis sur l'hote. Le jeton local est supprime apres la copie (il vit alors dans le volume).
 push_link_key() {
   [ -f "$CHAIN_DIR/root-link.pub" ] || fail "$CHAIN_DIR/root-link.pub absent (lancer bootstrap)"
+  local files="root-link.pub"
+  [ -f "$CHAIN_DIR/upstream-token" ] && files="root-link.pub upstream-token"
   docker volume create "$SECAGENT_LINK_VOLUME" >/dev/null
-  tar -C "$CHAIN_DIR" -cf - root-link.pub | docker run --rm -i -v "$SECAGENT_LINK_VOLUME:/link" \
+  # shellcheck disable=SC2086
+  tar -C "$CHAIN_DIR" -cf - $files | docker run --rm -i -v "$SECAGENT_LINK_VOLUME:/link" \
     alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
-    sh -c 'tar -xf - -C /link && chmod 755 /link && chmod 644 /link/root-link.pub'
-  echo "cle publique racine poussee dans le volume $SECAGENT_LINK_VOLUME"
+    sh -c 'set -e; tar -xf - -C /link; chmod 755 /link; chown 0:0 /link/root-link.pub; chmod 644 /link/root-link.pub
+           if [ -f /link/upstream-token ]; then chown 10001:10001 /link/upstream-token; chmod 0400 /link/upstream-token; fi'
+  rm -f "$CHAIN_DIR/upstream-token"
+  echo "ancre (et jeton de lien) deposes dans le volume $SECAGENT_LINK_VOLUME"
 }
 
 # $1 conteneur maitre : exporte la cle publique racine, releve root_id, ecrit chain/root-link.pub, chain/root-id et
-# chain/child.env (REPEATER_ROOT_ID, non secret), puis alimente le volume.
+# chain/child.env (REPEATER_ROOT_ID, non secret).
 link_anchor_prepare() {
   local m="$1" rid
   # stdout = PEM (fichier) ; stderr = "root_id=<id> kid=<kid>" (capture), jamais de cle privee.
@@ -309,11 +318,12 @@ link_anchor_prepare() {
   chmod 644 "$CHAIN_DIR/root-link.pub"
   printf '%s' "$rid" | write_secret root-id
   printf 'REPEATER_ROOT_ID=%s\n' "$rid" | write_secret child.env
-  push_link_key
+  # le depot dans le volume est fait par link_mint_child (cle publique et jeton ensemble)
 }
 
-# $1 conteneur maitre : mint (sur la racine) du jeton relay-child de dmz1 -> chain/upstream-token (secret Compose) et
-# chain/upstream-token.id (identifiant du registre, non secret, pour `tokens revoke`). Jamais affiche.
+# $1 conteneur maitre : mint (sur la racine) du jeton relay-child de dmz1 -> chain/upstream-token puis DEPOT dans le
+# volume (push_link_key : 0400, proprietaire 10001, fichier local supprime) et chain/upstream-token.id (identifiant du
+# registre, non secret, pour `tokens revoke`). Jamais affiche.
 link_mint_child() {
   local m="$1" out t id rid
   rid="$(cat "$CHAIN_DIR/root-id")" || fail "chain/root-id absent (link_anchor_prepare)"
@@ -325,6 +335,7 @@ link_mint_child() {
   [ -n "$id" ] || fail "identifiant du jeton de lien non extrait"
   printf '%s' "$t" | write_secret upstream-token
   printf '%s' "$id" | write_secret upstream-token.id
+  push_link_key
 }
 
 relay_connected() { # $1 conteneur CLI, $2 relay_id
@@ -337,7 +348,7 @@ link_confirmed() { # $1 conteneur CLI, $2 relay_id : la rotation est confirmee p
 link_field() { # $1 conteneur CLI, $2 champ de la 1re ligne de keys link-status (current|previous|seq)
   adm "$1" keys link-status 2>/dev/null | head -1 | sed -n "s/.* $2=\([^ ]*\).*/\1/p"
 }
-recreate_child() { # remplace le conteneur de l'enfant (le secret est copie a la creation) et attend healthy
+recreate_child() { # remplace le conteneur de l'enfant (le jeton n'est lu qu'au demarrage) et attend healthy
   "${DC[@]}" up -d --force-recreate --no-deps secagent-child
   wait_for "enfant healthy" 120 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_CHILD)\" = healthy ]" >/dev/null
 }
@@ -463,7 +474,9 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     link-revoke) link_revoke ;;
     hooks) check_hooks ;;
     negative-ca) negative_ca ;;
-    down) guard_project; "${DC[@]}" down -v ;;
+    down) guard_project; "${DC[@]}" down -v
+          # le volume du jeton de lien est EXTERNE (non supprime par down -v) et contient un secret : retrait explicite
+          docker volume rm "$SECAGENT_LINK_VOLUME" >/dev/null 2>&1 || true ;;
     *) sed -n '2,22p' "$0"; exit 2 ;;
   esac
 fi

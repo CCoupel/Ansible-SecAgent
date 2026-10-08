@@ -29,10 +29,13 @@ x-child-env: &child-env
   REPEATER_ID: dmz1
   REPEATER_UPSTREAM_URL: wss://secagent-server-a:7772,wss://secagent-server-b:7772
   REPEATER_CA_FILE: /certs/ca.crt
-  # Jeton de lien v3.0.4 (relay-child, Ed25519, mine sur la RACINE par chain-test.sh) : SECRET, par fichier (secret
-  # Compose ci-dessous, mode 0400). Ancre de confiance : REPEATER_ROOT_ID (dans ./chain/child.env, ecrit par le bootstrap)
-  # et la cle publique racine (NON secrete) dans le volume `secagent_link` alimente par `chain-test.sh push-link-key`.
-  REPEATER_UPSTREAM_TOKEN_FILE: /run/secrets/repeater_upstream_token
+  # Jeton de lien v3.0.4 (relay-child, Ed25519, mine sur la RACINE par chain-test.sh) : SECRET, par fichier, depose dans
+  # le volume `secagent_link` (proprietaire 10001, mode 0400) par `chain-test.sh` via un conteneur ephemere. PAS un
+  # `secrets:` Compose : hors Swarm Compose monte le fichier de l'HOTE (uid/gid/mode ignores) ; or le conteneur tourne
+  # en 10001, secretenv exige 0600 ou plus strict, et contre un demon distant le bind serait resolu sur l'hote distant.
+  # Ancre de confiance : REPEATER_ROOT_ID (dans ./chain/child.env, ecrit par le bootstrap) et la cle publique racine
+  # (NON secrete) dans le meme volume.
+  REPEATER_UPSTREAM_TOKEN_FILE: /run/secagent-link/upstream-token
   REPEATER_ROOT_LINK_KEY_FILE: /run/secagent-link/root-link.pub
 
 services:
@@ -53,14 +56,12 @@ services:
       - path: ./chain/child.env           # REPEATER_ROOT_ID (non secret) ; plus aucun jeton ici
         required: false
     environment: *child-env
-    secrets:
-      - {source: repeater_upstream_token, target: repeater_upstream_token, uid: "10001", gid: "10001", mode: 0400}
     configs:
       - source: secagent_hooks            # defini dans docker-compose.server.yml (inclus) : hooks.json de qualif
         target: /etc/secagent-server/hooks.json
     volumes:
       - child_state:/data
-      - type: volume                       # cle publique racine (ancre), lecture seule
+      - type: volume                       # cle publique racine (ancre) + jeton de lien, lecture seule
         source: secagent_link
         target: /run/secagent-link
         read_only: true
@@ -137,14 +138,10 @@ services:
       RELAY_ENROLLMENT_TOKEN: secagent_enr_0000000000000000000000000000000000000000000000000000000000000000
     mem_limit: 256m
 
-# Jeton de lien de l'enfant : ./chain/upstream-token (0600 sur le poste, ignore par git), copie dans le conteneur en
-# /run/secrets avec uid/gid/mode du service. Cree par `chain-test.sh bootstrap` AVANT le demarrage de l'enfant.
-secrets:
-  repeater_upstream_token:
-    file: ./chain/upstream-token
-
 volumes:
-  # Volume EXTERNE (cree et alimente par `chain-test.sh push-link-key`, modele de push-tls) : aucun bind mount.
+  # Volume EXTERNE (cree et alimente par `chain-test.sh`, modele de push-tls) : cle publique racine (0644) et jeton de
+  # lien (0400, proprietaire 10001). Aucun bind mount ni secret Compose : fonctionne identiquement en local et sur un
+  # hote Docker distant.
   secagent_link:
     external: true
     name: ${SECAGENT_LINK_VOLUME:-secagent-qualif_link}
