@@ -1,4 +1,6 @@
-# Ansible-SecAgent — Deployment Guide v3.0.3
+# Ansible-SecAgent — Deployment Guide v3.0.4
+
+> Guides d'installation pas à pas : [agent](INSTALL_AGENT.md), [serveur racine](INSTALL_SERVER.md), [relays enfants](INSTALL_RELAY.md).
 
 ## Architecture
 
@@ -97,8 +99,8 @@ TOKEN=$(srv tokens create --role enrollment --expires 1h | grep -oE 'secagent_en
 # (unité systemd, `docker run -e`, etc.). `docker compose set-env` n'existe pas.
 ```
 
-Rôles de jeton : `enrollment`, `plugin`, `relay-parent` ; la révocation (`tokens revoke <id>`) ne vaut que pour
-`plugin` et `relay-parent`. Les agents sont démarrés selon la section « Agents (variables d'environnement) » ci-dessous
+Rôles de jeton : `enrollment`, `plugin`, `relay-child`, `relay-parent` ; la révocation (`tokens revoke <id>`) vaut pour
+`plugin`, `relay-child` et `relay-parent`. Les agents sont démarrés selon la section « Agents (variables d'environnement) » ci-dessous
 (unité systemd, ou service `minion-*` de `docker-compose.chain.yml` pour l'essai de qualif ; `docker-compose.minion.yml` a été supprimé) ;
 vérifier leurs logs : enrôlement puis ouverture de la WebSocket.
 
