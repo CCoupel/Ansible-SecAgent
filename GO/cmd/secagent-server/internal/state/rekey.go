@@ -31,6 +31,9 @@ var (
 	ErrRekeyNoNewKey = errors.New("state rekey: the new master key is empty")
 	// ErrRekeySameKey: the new key equals the old one (nothing to rotate; also an idempotent re-run).
 	ErrRekeySameKey = errors.New("state rekey: the new master key is identical to the current one: nothing to rotate")
+	// ErrRekeyKeyTooShort: the new master key is shorter than MinNewMasterKeyBytes (the AES key is a
+	// plain SHA-256 of it, so a short key is a weak key). The message never echoes the key.
+	ErrRekeyKeyTooShort = errors.New("state rekey: the new master key is too short (minimum 32 bytes; generate one with 'openssl rand -base64 48')")
 	// ErrRekeyFromPrev: relay.state is not usable and the state would come from relay.state.prev.
 	ErrRekeyFromPrev = errors.New("state rekey: relay.state is not usable as is (the state comes from relay.state.prev): fix it first, for example with 'state restore'")
 	// ErrRekeySchema: a v1 state must be migrated by a v3.0.4 server start first (migration backup).
@@ -41,6 +44,24 @@ var (
 	// ErrRekeyVerify: the rewritten state did not verify with the new key; the original was restored.
 	ErrRekeyVerify = errors.New("state rekey: the rewritten state failed its end-to-end verification")
 )
+
+// MinNewMasterKeyBytes is the minimum length of the NEW master key accepted by Rekey. It is not applied to
+// the current key (historical keys may be shorter and must stay openable) nor to `state init`.
+const MinNewMasterKeyBytes = 32
+
+// ValidateNewMasterKey applies the rules on the new key of a rekey: not empty, not shorter than
+// MinNewMasterKeyBytes, different from the current one.
+func ValidateNewMasterKey(oldKey, newKey string) error {
+	switch {
+	case newKey == "":
+		return ErrRekeyNoNewKey
+	case newKey == oldKey:
+		return ErrRekeySameKey
+	case len(newKey) < MinNewMasterKeyBytes:
+		return ErrRekeyKeyTooShort
+	}
+	return nil
+}
 
 // RekeyOptions configures Rekey.
 type RekeyOptions struct {
@@ -202,11 +223,8 @@ func Rekey(o RekeyOptions) (*RekeyResult, error) {
 	if o.OldKey == "" {
 		return nil, ErrNoMasterKey
 	}
-	if o.NewKey == "" {
-		return nil, ErrRekeyNoNewKey
-	}
-	if o.NewKey == o.OldKey {
-		return nil, ErrRekeySameKey
+	if err := ValidateNewMasterKey(o.OldKey, o.NewKey); err != nil {
+		return nil, err
 	}
 	oldOpts := Options{MasterKey: o.OldKey}
 	oldC, err := oldOpts.codec()

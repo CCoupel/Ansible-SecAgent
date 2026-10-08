@@ -442,6 +442,9 @@ func lockUnchangedGuard(dir string, overridden bool) func() error {
 // message says how to restore it).
 const ExitRekeyVerify = 10
 
+// ExitRekeyKeyTooShort: the new master key is shorter than 32 bytes.
+const ExitRekeyKeyTooShort = 11
+
 var (
 	stateRekeyDir string
 	stateRekeyYes bool
@@ -460,9 +463,11 @@ This rotates the key that protects the state AT REST, not the secrets themselves
 secrets, the agent RSA key and the link signing keys keep their value, so issued tokens (agents, link
 tokens) stay valid.
 
-Keys never go on the command line (they would show in 'ps'):
-  current key  RSA_MASTER_KEY  or RSA_MASTER_KEY_FILE
-  new key      NEW_RSA_MASTER_KEY  or NEW_RSA_MASTER_KEY_FILE
+Keys never go on the command line (they would show in 'ps'). Prefer the _FILE forms to a variable typed in
+a shell (shell history):
+  current key  RSA_MASTER_KEY_FILE  or RSA_MASTER_KEY
+  new key      NEW_RSA_MASTER_KEY_FILE  or NEW_RSA_MASTER_KEY
+The new key must be at least 32 bytes (for example 'openssl rand -base64 48'); the current key is not checked.
 (giving both the variable and the _FILE of one key is refused; a key file must be a regular file, mode 0600,
 not a symbolic link).
 
@@ -481,7 +486,8 @@ Active/passive: stop BOTH nodes, run it once on the shared STATE_DIR, then start
 node started with the old key refuses the state (fail closed).
 
 Exit codes: those of 'state verify', plus 8 (an instance is alive), 9 (refused: same or missing new key,
-unknown encrypted field, schema 1, no confirmation) and 10 (post-write verification failed).`,
+unknown encrypted field, schema 1, no confirmation), 10 (post-write verification failed) and 11 (new key
+shorter than 32 bytes).`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dir := stateRekeyDir
@@ -500,10 +506,10 @@ unknown encrypted field, schema 1, no confirmation) and 10 (post-write verificat
 			return err
 		}
 		if newKey == "" {
-			return &ExitError{Code: ExitRefused, Msg: "rekey refused, nothing modified: the new master key is not set (NEW_RSA_MASTER_KEY or NEW_RSA_MASTER_KEY_FILE; never as an argument)"}
+			return &ExitError{Code: ExitRefused, Msg: "rekey refused, nothing modified: the new master key is not set (NEW_RSA_MASTER_KEY_FILE or NEW_RSA_MASTER_KEY; never as an argument)"}
 		}
-		if newKey == oldKey {
-			return &ExitError{Code: ExitRefused, Msg: "rekey refused, nothing modified: " + state.ErrRekeySameKey.Error()}
+		if verr := state.ValidateNewMasterKey(oldKey, newKey); verr != nil {
+			return rekeyError(verr, "")
 		}
 		out := cmd.OutOrStdout()
 		// 1. verify with the current key before asking anything (wrong key, tampered file, schema…)
@@ -559,6 +565,8 @@ func rekeyError(err error, prefix string) error {
 	switch {
 	case errors.Is(err, state.ErrRekeyVerify):
 		return &ExitError{Code: ExitRekeyVerify, Msg: prefix + err.Error()}
+	case errors.Is(err, state.ErrRekeyKeyTooShort):
+		return &ExitError{Code: ExitRekeyKeyTooShort, Msg: prefix + "refused, nothing modified: " + err.Error()}
 	case errors.Is(err, state.ErrRekeySameKey), errors.Is(err, state.ErrRekeyNoNewKey), errors.Is(err, state.ErrRekeyUncovered),
 		errors.Is(err, state.ErrRekeySchema), errors.Is(err, state.ErrRekeyFromPrev):
 		return &ExitError{Code: ExitRefused, Msg: prefix + "refused, nothing modified: " + err.Error()}

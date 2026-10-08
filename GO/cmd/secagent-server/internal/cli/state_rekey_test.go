@@ -16,7 +16,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/storage"
 )
 
-const rekeyNewKey = "state-tools-NEW-master-key"
+const rekeyNewKey = "state-tools-NEW-master-key-0123456789"
 
 func execRekey(t *testing.T, dir string, yes, tty bool, stdin string) (string, int) {
 	t.Helper()
@@ -253,4 +253,17 @@ func TestStateRekey_NodeRestartsWithNewKey_LinkTokensAndAgentsSurvive(t *testing
 	if ags, err := s2.ListAgents(context.Background(), false); err != nil || len(ags) != 2 {
 		t.Errorf("agents after rotation: %d (%v)", len(ags), err)
 	}
+}
+
+func TestStateRekey_ShortNewKeyIsRefusedWithItsOwnExitCode(t *testing.T) {
+	rekeyEnv(t)
+	dir := toolsState(t)
+	before := snapshotDir(t, dir)
+	short := strings.Repeat("s", 31)
+	t.Setenv("NEW_RSA_MASTER_KEY", short)
+	out, code := execRekey(t, dir, true, false, "")
+	if code != ExitRekeyKeyTooShort || !strings.Contains(out, "32 bytes") || strings.Contains(out, short) {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	sameDir(t, before, snapshotDir(t, dir))
 }

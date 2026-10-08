@@ -14,7 +14,7 @@ import (
 
 const (
 	rekeyOld = "rekey-old-master-key"
-	rekeyNew = "rekey-new-master-key"
+	rekeyNew = "rekey-new-master-key-0123456789abcdef"
 )
 
 // rekeyState builds a state where EVERY encrypted field is populated: all secretConfigKeys (taken from
@@ -290,5 +290,45 @@ func TestRekey_NeverEchoesAKey(t *testing.T) {
 	_, err := Rekey(o)
 	if err == nil || strings.Contains(err.Error(), rekeyNew) || strings.Contains(err.Error(), rekeyOld) {
 		t.Errorf("error = %v", err)
+	}
+}
+
+func TestRekey_NewKeyMinimumLength(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  string
+		ok   bool
+	}{
+		{"one byte", "x", false},
+		{"31 bytes", strings.Repeat("k", 31), false},
+		{"32 bytes", strings.Repeat("k", 32), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, _ := rekeyState(t) // the current key (rekeyOld) is shorter than 32 bytes: it stays openable
+			raw := mustFile(t, filepath.Join(dir, StateFile))
+			o := rekeyOpts(dir)
+			o.NewKey = tc.key
+			_, err := Rekey(o)
+			if tc.ok {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrRekeyKeyTooShort) {
+				t.Fatalf("err = %v", err)
+			}
+			if strings.Contains(err.Error(), tc.key) && len(tc.key) > 1 {
+				t.Errorf("the message must not echo the key: %v", err)
+			}
+			if !bytes.Equal(raw, mustFile(t, filepath.Join(dir, StateFile))) {
+				t.Error("state modified")
+			}
+			for _, n := range listDir(t, dir) {
+				if strings.Contains(n, "rekey") {
+					t.Errorf("leftover %s", n)
+				}
+			}
+		})
 	}
 }
