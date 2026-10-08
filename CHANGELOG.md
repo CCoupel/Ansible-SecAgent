@@ -39,7 +39,7 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [v3.0.3] — 2026-10-06 — Relay Actif/Passif et État sans SQLite
+## [v3.0.3] — 2026-10-07 — Relay Actif/Passif et État sans SQLite
 
 **⚠️ BREAKING CHANGES — Migration Required**
 
