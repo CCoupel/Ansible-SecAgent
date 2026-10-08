@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"secagent-server/cmd/secagent-server/internal/cli"
 )
 
 // setArgs temporarily replaces os.Args for the duration of a test.
@@ -429,5 +431,28 @@ func TestCLI_ServerStatus_ServerRunning(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("server status: expected 200, got %d", resp.StatusCode)
+	}
+}
+
+// Every top-level command registered on the cobra root must select CLI mode (a missing "keys" once
+// made `secagent-server keys …` start a server). The list comes from cobra, not from a copy.
+func TestIsCLIMode_EveryRegisteredCommand(t *testing.T) {
+	names := cli.CommandNames()
+	if len(names) < 8 {
+		t.Fatalf("suspicious command list: %v", names)
+	}
+	for _, name := range append(names, "help", "completion", "keys", "state", "tokens", "relays") {
+		t.Run(name, func(t *testing.T) {
+			setArgs(t, []string{name})
+			if !isCLIMode() {
+				t.Errorf("%q is a CLI command but isCLIMode() is false", name)
+			}
+		})
+	}
+	for _, name := range []string{"-d", "--config"} {
+		setArgs(t, []string{name})
+		if isCLIMode() {
+			t.Errorf("%q must not select CLI mode", name)
+		}
 	}
 }

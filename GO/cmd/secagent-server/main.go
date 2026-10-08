@@ -26,12 +26,9 @@ func isCLIMode() bool {
 	if len(first) > 0 && first[0] == '-' {
 		return false
 	}
-	// Known CLI top-level commands
-	switch first {
-	case "minions", "security", "inventory", "server", "tokens", "hooks", "relays", "state", "status", "help", "completion":
-		return true
-	}
-	return false
+	// Top-level commands come from the cobra root itself (cli.IsCommand), never from a copied list:
+	// a command registered there cannot fall through to starting a server.
+	return cli.IsCommand(first)
 }
 
 func main() {
