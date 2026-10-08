@@ -95,12 +95,20 @@ openssl rand -base64 48 | tr -d '\n' | sudo ./preflight-secrets.sh --write jwt_s
 openssl rand -base64 48 | tr -d '\n' | sudo ./preflight-secrets.sh --write admin_token
 openssl rand -base64 48 | tr -d '\n' | sudo ./preflight-secrets.sh --write rsa_master_key
 
+set -a; . ./.env; set +a        # exporte SECRETS_DIR s'il est défini dans .env (le script ne lit pas .env)
 ./preflight-secrets.sh          # à lancer AVANT chaque `docker compose up` ; code 0 exigé ; --fix pour corriger
 ```
+
+Note : `preflight-secrets.sh` lit `SECRETS_DIR` et `ROOT_LINK_KEY_FILE` dans l'**environnement du processus**, pas dans `.env` : exportez-les d'abord (`set -a; . ./.env; set +a`) ou passez-les en préfixe de la commande ; `sudo` ne transmet pas l'environnement (`sudo env SECRETS_DIR="$SECRETS_DIR" ./preflight-secrets.sh …`).
 
 Copiez les **mêmes** valeurs sur les autres hôtes (canal sûr). **Sauvegardez `rsa_master_key` hors des hôtes et hors du
 partage, en deux copies au moins** : sans elle, tous les champs `enc:` de l'état sont définitivement illisibles et tous les
 agents doivent se ré-enrôler. Testez la restauration (`DEPLOYMENT/prod/README.md`, « `RSA_MASTER_KEY` »).
+
+> *Non exécuté ici* (pas de démon Docker dans l'environnement de rédaction) : les commandes `docker compose run … state init`, `up`
+> et `exec … secagent-server …` de ce guide sont reprises de `DEPLOYMENT/prod/README.md` et `DEPLOYMENT.md` ; la CLI, elle, a été
+> exécutée contre une racine réelle hors conteneur (même binaire, mêmes variables). `state init`, `state verify`, `status --local`
+> et `preflight-secrets.sh` ont été rejoués avec les binaires de la release.
 
 ## 6. Première mise en service
 
@@ -204,7 +212,7 @@ par des tests mais n'a pas été exercé en qualification réelle (il faut ≥ 2
   `secagent-server state restore --from <fichier>` (revérifie le fichier, refuse si une instance tient un verrou frais —
   code 8 —, sauvegarde l'état courant en `relay.state.bak-<UTC>`, journalise dans `state-restore.log`). Redémarrez ensuite.
 - **Bascule** : arrêt propre du maître (`docker compose stop secagent-server`) → un secondaire devient maître en quelques
-  secondes (mesuré : 3 à 7 s). Perte brutale (`kill -9`, hôte perdu) : le verrou n'est pas libéré par le système de
+  secondes (de l'ordre de 5 à 6 s mesurées en qualification, pour une limite de 10 s). Perte brutale (`kill -9`, hôte perdu) : le verrou n'est pas libéré par le système de
   fichiers ; la reprise attend sa péremption (**≈ 5 minutes**). Un maître qui perd le verrou en étant vivant sort avec le
   code 75 et redémarre secondaire.
 - **Rotation de `RSA_MASTER_KEY`** : commande hors ligne `state rekey` (arrêter *tous* les nœuds, une seule exécution sur
