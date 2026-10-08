@@ -39,7 +39,7 @@ jobs:
       is_latest: ${{ steps.resolve.outputs.is_latest }}
       run_tests: ${{ steps.resolve.outputs.run_tests }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -108,7 +108,7 @@ jobs:
     # Meme commande que ci.yml (mesure sur main : 3 min 35 s pour ce job). 15 min = marge x4.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
 
@@ -142,7 +142,7 @@ jobs:
       SECAGENT_IMAGE: secagent-server:ci
       QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
       # La version du tag est injectee comme dans l'image publiee, puis VERIFIEE avant toute publication GHCR.
@@ -188,7 +188,7 @@ jobs:
           - image: secagent-minion
             dockerfile: Dockerfile.agent
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
 
@@ -270,7 +270,7 @@ jobs:
           - {image: secagent-server, dockerfile: Dockerfile}
           - {image: secagent-minion, dockerfile: Dockerfile.agent}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
@@ -301,7 +301,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
 
