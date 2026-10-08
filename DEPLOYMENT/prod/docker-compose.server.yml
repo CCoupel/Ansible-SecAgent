@@ -16,7 +16,7 @@ name: secagent
 
 services:
   secagent-server:
-    image: ghcr.io/ccoupel/secagent-server:${SECAGENT_VERSION:?SECAGENT_VERSION est obligatoire (ex. v3.0.3)}
+    image: ghcr.io/ccoupel/secagent-server:${SECAGENT_VERSION:?SECAGENT_VERSION est obligatoire (ex. v3.0.4)}
     restart: unless-stopped
     # UID/GID de l'image : IDENTIQUES sur tous les hotes (droits du partage portes par l'UID numerique).
     user: "10001:10001"

@@ -81,12 +81,32 @@ jobs:
             echo "::warning::Tests desactives (skip_tests) pour $TAG"
           fi
 
+      # Les notes de release sont validees ICI, avant toute publication GHCR : sans section `## [vX.Y.Z]` non vide dans le
+      # CHANGELOG du tag, le job `release` echouerait APRES la publication des images. Le contenu valide est transmis tel
+      # quel au job `release` (une seule extraction, aucune divergence). Le CHANGELOG est lu au commit du TAG.
+      - name: Valider les notes de release (CHANGELOG du tag)
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p notes
+          git show "refs/tags/$TAG:CHANGELOG.md" > notes/CHANGELOG.tag.md
+          bash scripts/ci/release_notes.sh "$TAG" notes/CHANGELOG.tag.md > notes/release-notes.md
+          echo "notes de $TAG : $(wc -l < notes/release-notes.md) lignes"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-notes
+          path: notes/release-notes.md
+          if-no-files-found: error
+
   test:
     name: Build + tests Go
     needs: prepare
     if: needs.prepare.outputs.run_tests == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Meme commande que ci.yml (mesure sur main : 3 min 35 s pour ce job). 15 min = marge x4.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -101,13 +121,14 @@ jobs:
         working-directory: GO
         run: go build ./...
 
-      # Bloquant, sans contournement.
+      # Bloquant, sans contournement. Identique a ci.yml : -race (CGO actif sur ubuntu-latest) et -timeout 300s par
+      # package (marge x8 sur le package le plus lent, un runner GitHub etant 2 a 3 fois plus lent qu'un poste).
       - name: Tests
         working-directory: GO
         env:
           JWT_SECRET_KEY: test
           ADMIN_TOKEN: test
-        run: go test ./... -timeout 120s
+        run: go test -race ./... -timeout 300s
 
   # Prerequis BLOQUANT de la publication (#174 M6) : le basculement actif/passif est verifie avec l'image
   # construite localement depuis le commit du tag (arret propre puis docker kill, vraies peremptions).
@@ -124,8 +145,20 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
-      - name: Build de l'image du tag (local, sans push)
-        run: docker build -t secagent-server:ci -f GO/Dockerfile GO
+      # La version du tag est injectee comme dans l'image publiee, puis VERIFIEE avant toute publication GHCR.
+      # Garde de compatibilite : republier (workflow_dispatch) un tag anterieur a v3.0.4, dont le Dockerfile n'a pas
+      # `ARG VERSION`, ne doit pas echouer sur ce controle.
+      - name: Build de l'image du tag (local, sans push) et version affichee
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker build --build-arg VERSION="$VERSION" -t secagent-server:ci -f GO/Dockerfile GO
+          if grep -q '^ARG VERSION=' GO/Dockerfile && [ -f scripts/ci/assert_version.sh ]; then
+            bash scripts/ci/assert_version.sh "$VERSION" docker run --rm secagent-server:ci
+          else
+            echo "::warning::Dockerfile du tag sans ARG VERSION : version non injectee (tag anterieur a v3.0.4)"
+          fi
       - name: Preparation
         run: bash DEPLOYMENT/qualif/failover-test.sh setup-ci
       - name: Arret propre
@@ -195,6 +228,10 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Version affichee par `secagent-server --version` (verifiee par le job failover avant toute publication) ;
+          # inoffensif pour GO/Dockerfile.agent, qui n'a pas de variable de version.
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
           outputs: type=image,push=true,rewrite-timestamp=true
           # M10 : SBOM et attestation de provenance attaches aux images (signature cosign : a proposer)
           provenance: true
@@ -244,6 +281,7 @@ jobs:
           for n in 1 2; do
             docker buildx build --provenance=false --sbom=false --no-cache \
               --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+              --build-arg VERSION="${{ needs.prepare.outputs.version }}" \
               -f GO/${{ matrix.dockerfile }} \
               --output "type=oci,dest=build$n.tar,rewrite-timestamp=true" GO
             mkdir "o$n" && tar -xf "build$n.tar" -C "o$n"
@@ -288,19 +326,12 @@ jobs:
           go-version-file: GO/go.work
           cache-dependency-path: GO/go.sum
 
-      - name: Notes depuis CHANGELOG.md
+      # Notes extraites et validees par le job `prepare` (scripts/ci/release_notes.sh), avant toute publication.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: steps.exists.outputs.exists == 'false'
-        env:
-          TAG: ${{ needs.prepare.outputs.tag }}
-        run: |
-          set -euo pipefail
-          awk -v tag="$TAG" '
-            /^## \[/ { if (found) exit; if (index($0, "[" tag "]")) { found=1; next } }
-            found { print }
-          ' CHANGELOG.md > release-notes.md
-          if [ ! -s release-notes.md ]; then
-            echo "::error::Aucune entree '## [$TAG]' dans CHANGELOG.md"; exit 1
-          fi
+        with:
+          name: release-notes
+          path: .
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: steps.exists.outputs.exists == 'false'
@@ -328,10 +359,17 @@ jobs:
           mkdir -p dist
           cd GO
           # server : pur Go, sans CGO (l'état du relay est un fichier, plus de SQLite : #160), comme GO/Dockerfile
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w" -o "../dist/secagent-server-${VERSION}-linux-amd64" ./cmd/secagent-server
+          # Seul le serveur porte une variable de version (cli.Version) ; le minion et l'inventory n'en ont pas
+          # (aucun --version) : leur version est le nom du fichier et SHA256SUMS.
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w -X secagent-server/cmd/secagent-server/internal/cli.Version=${VERSION}" -o "../dist/secagent-server-${VERSION}-linux-amd64" ./cmd/secagent-server
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w" -o "../dist/secagent-minion-${VERSION}-linux-amd64" ./cmd/secagent-minion
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w" -o "../dist/secagent-inventory-${VERSION}-linux-amd64" ./cmd/secagent-inventory
-          cd ../dist
+          cd ..
+          # Le binaire publie annonce la version du tag (le runner est linux/amd64) ; tag anterieur a v3.0.4 : ignore.
+          if [ -f scripts/ci/assert_version.sh ] && grep -q 'var Version' GO/cmd/secagent-server/internal/cli/root.go; then
+            bash scripts/ci/assert_version.sh "$VERSION" "dist/secagent-server-${VERSION}-linux-amd64"
+          fi
+          cd dist
           sha256sum ./* > "SHA256SUMS-${VERSION}.txt"
 
       - name: Creer la release
