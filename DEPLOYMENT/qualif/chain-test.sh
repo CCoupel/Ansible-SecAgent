@@ -369,9 +369,10 @@ recreate_child() { # remplace le conteneur de l'enfant (le jeton n'est lu qu'au 
   wait_for "enfant healthy" 120 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_CHILD)\" = healthy ]" >/dev/null
 }
 
-# Scenario link-rotation : rotation de la cle de signature -> confirmation par dmz1 (link_state) -> nouveau jeton signe
-# par la nouvelle cle -> retire-link-previous (sans --force : refuse tant que non confirme) -> le lien survit a une
-# reconnexion de l'enfant. Termine par un smoke (inventaire, ping).
+# Scenario link-rotation : rotation de la cle de signature -> confirmation par dmz1 (link_state) -> MISE A JOUR DU FICHIER
+# EPINGLE de chaque relay non racine avec la nouvelle cle publique -> nouveau jeton signe par la nouvelle cle ->
+# retire-link-previous (sans --force : refuse tant que non confirme) -> le lien survit a un REDEMARRAGE de l'enfant (c'est
+# ce redemarrage qui revele un fichier epingle perime). Termine par un smoke (inventaire, ping).
 link_rotation() {
   verify_images; need INVENTORY_BIN
   local m kid0 kid1 prev; m="$(master)" || fail "pas de maitre sur la racine"
@@ -383,8 +384,12 @@ link_rotation() {
   [ -n "$kid1" ] && [ "$kid1" != "$kid0" ] || fail "le kid courant n'a pas change apres la rotation"
   [ "$(link_field "$m" previous)" = "$kid0" ] || fail "previous != ancien kid (fenetre de double acceptation absente)"
   wait_for "dmz1 confirme la rotation (keys link-status)" 90 link_confirmed "$m" dmz1 >/dev/null
-  echo "== nouveau jeton de lien (signe par la nouvelle cle) et remplacement du conteneur de l'enfant"
-  link_mint_child "$m"; recreate_child
+  echo "== ANCRE : fichier epingle de l'enfant <- NOUVELLE cle publique (AVANT le retrait), puis nouveau jeton et enfant recree"
+  # Apres retire-link-previous, un fichier epingle qui n'est ni la cle courante ni la precedente fait REFUSER le demarrage
+  # de l'enfant (« pinned root link key disagrees with the persisted link_trust », fail closed voulu) : constate sur 192.168.1.218.
+  link_anchor_prepare "$m"
+  link_mint_child "$m"   # depose aussi la cle publique courante dans le volume
+  recreate_child
   connected "$m" relays dmz1 4
   echo "== retire-link-previous (refus attendu tant que non confirme : ici confirme)"
   adm "$m" keys retire-link-previous || fail "retire-link-previous refuse (rotation non confirmee ?)"

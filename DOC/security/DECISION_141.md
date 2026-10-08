@@ -302,9 +302,10 @@ En v3.0.4, la JTI du jeton de lien est dans `link_tokens`, plus dans `relay_node
 
 1. `keys rotate-link` → nouvelle `current`, ancienne → `previous`.
 2. Message `link_keys` poussé automatiquement vers les relays connectés.
-3. Vérifier via `relays status` que **tous** les relays ont `link_trust.seq ≥ seq_rotation`.
-4. **Seulement après** : `keys retire-link-previous`.
-5. Mettre à jour `REPEATER_ROOT_LINK_KEY_FILE` sur les relays qui maintiennent une copie locale.
+3. Vérifier via `keys link-status` que **tous** les relays sont `confirmed` (et `relays status` : `link_trust.seq ≥ seq_rotation`).
+4. **Mettre à jour `REPEATER_ROOT_LINK_KEY_FILE` de CHAQUE relay non racine avec la NOUVELLE clé publique** (`keys link-pubkey` sur la racine), **avant** `retire-link-previous`. Tant que `previous` existe, l'ancien fichier épinglé est encore accepté (il égale la clé précédente) ; **dès le retrait, il n'est plus ni la courante ni la précédente** : le prochain démarrage du relay (même fortuit : redémarrage du conteneur, mise à jour d'image) est **refusé** en boucle, fail closed voulu, avec `link trust anchor: pinned root link key disagrees with the persisted link_trust (outside a valid rotation chain)` (`ErrAnchorMismatch`). Constaté en qualification réelle (2026-10-08) : le lien déjà établi survit jusqu'au redémarrage, puis l'enfant ne repart plus.
+5. **Seulement après** : `keys retire-link-previous`.
+6. Si le retrait a déjà eu lieu avec un fichier périmé : remplacer le fichier par la clé courante (`keys link-pubkey`) et redémarrer le relay ; si l'ancre persistée est elle-même obsolète, `state link-trust reset --yes` (relay arrêté) puis redémarrer.
 
 ### Montée de version v3.0.3 → v3.0.4 (rupture de liens, pas des agents)
 
