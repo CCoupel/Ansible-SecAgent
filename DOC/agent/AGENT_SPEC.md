@@ -325,6 +325,21 @@ Il n'existe pas de variable pour la taille du buffer stdout : la limite de 5 MiB
 
 ---
 
+## 11a. Ligne de commande
+
+Le minion est configuré **uniquement par l'environnement** (§11) ; il n'accepte aucun argument de démarrage.
+
+| Invocation | Effet | Code de sortie |
+|---|---|---|
+| `secagent-minion` (sans argument) | démarre l'agent | selon §7 |
+| `secagent-minion --version` ou `-v` | affiche `secagent-minion version <version>` (stdout) sans rien démarrer | 0 |
+| `secagent-minion --help` ou `-h` | affiche l'aide et les variables d'environnement (stdout) sans rien démarrer | 0 |
+| tout autre argument (mot inconnu, `-d`, `--config x`, `7770`, `--version extra`…) | message d'erreur et aide sur stderr, **avant** toute initialisation (ni bannière, ni lecture de configuration ou de secret, ni génération de clé) | 1 |
+
+L'argument refusé n'est jamais répété dans le message (il pourrait être un secret saisi par erreur). La version est `main.Version` (`"dev"` par défaut), fixée à la compilation par `-ldflags "-X main.Version=X.Y.Z"`. Aucun Dockerfile, Compose, unité systemd ni script du dépôt ne passe d'argument au minion (`ENTRYPOINT ["/app/entrypoint.sh"]` sans `CMD`, `ExecStart=/usr/local/bin/secagent-minion`) ; ne pas ajouter de `command:`/`args:` à un service minion.
+
+---
+
 ## 11b. Environnement des tâches (liste blanche)
 
 Les tâches Ansible **ne reçoivent PAS** l'environnement complet du minion. Une liste blanche stricte prévient les fuites de secrets :
