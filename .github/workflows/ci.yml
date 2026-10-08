@@ -222,6 +222,8 @@ jobs:
           SECAGENT_MINION_IMAGE: ghcr.io/ccoupel/secagent-minion:sha-0000000
           REPEATER_ID: ci
           REPEATER_UPSTREAM_URL: https://parent.example:7770
+          REPEATER_ROOT_ID: root
+          ROOT_LINK_KEY_FILE: /etc/tls/root-link.pub
         run: |
           set -euo pipefail
           mkdir -p render
@@ -354,6 +356,8 @@ jobs:
           TLS_CERT_DIR: /etc/tls
           REPEATER_ID: ci
           REPEATER_UPSTREAM_URL: https://parent.example:7770
+          REPEATER_ROOT_ID: root
+          ROOT_LINK_KEY_FILE: /etc/tls/root-link.pub
         run: |
           set -euo pipefail
           mkdir x && tar -xzf dist/secagent-compose-0.0.0.tar.gz -C x

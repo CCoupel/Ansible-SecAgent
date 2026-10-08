@@ -93,3 +93,6 @@ DEPLOYMENT/qualif/.ci-tls/
 /GO/relay-server-linux
 DEPLOYMENT/qualif/pki/out/
 DEPLOYMENT/qualif/chain/
+
+# Secrets de production (fichiers, un par secret)
+DEPLOYMENT/prod/secrets/

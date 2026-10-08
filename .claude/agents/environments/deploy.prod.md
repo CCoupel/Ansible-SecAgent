@@ -12,7 +12,7 @@ Docker Compose. Pas de Kubernetes/Helm, pas de Swarm, pas de NATS, pas de Caddy,
 - Fichier Compose : `DEPLOYMENT/prod/docker-compose.server.yml` (service `secagent-server`) ; relay enfant : ajouter `-f DEPLOYMENT/prod/docker-compose.child.yml` (`REPEATER_*` obligatoires).
 - Projet compose dédié : `docker compose -p secagent-prod-<relay_id> ...` — jamais un projet de QUALIF.
 - Variables non secrètes : `DEPLOYMENT/prod/.env` (modèle `.env.example` : `SECAGENT_VERSION`, `STATE_HOST_DIR`, `TLS_CERT_DIR`, `ADMIN_PUBLISH_ADDR`, `SECAGENT_MEM_LIMIT`, `GOMEMLIMIT`).
-- Secrets : `DEPLOYMENT/prod/prod.env` (modèle `prod.env.example`, mode 0600, hors dépôt) : `JWT_SECRET_KEY`, `ADMIN_TOKEN`, `RSA_MASTER_KEY` IDENTIQUES sur tous les nœuds d'un relay, propres à PROD, jamais les valeurs de qualification. `RSA_MASTER_KEY` se sauvegarde HORS hôte et hors du partage.
+- Secrets (v3.0.4, #196) : FICHIERS dans `DEPLOYMENT/prod/secrets/` (`jwt_secret_key`, `admin_token`, `rsa_master_key`, + `repeater_upstream_token` pour un enfant ; mode d'emploi `prod.env.example`, mode 0400, hors dépôt, montés en `secrets:` et lus par `*_FILE`) : `JWT_SECRET_KEY`, `ADMIN_TOKEN`, `RSA_MASTER_KEY` IDENTIQUES sur tous les nœuds d'un relay, propres à PROD, jamais les valeurs de qualification. `RSA_MASTER_KEY` se sauvegarde HORS hôte et hors du partage.
 - `.claude/agents/environments/prod.env` (jamais commité, modèle `prod.env.example` de ce dossier) ne porte que les accès registre/SSH de l'agent.
 
 ## Artefact
@@ -29,7 +29,7 @@ Docker Compose. Pas de Kubernetes/Helm, pas de Swarm, pas de NATS, pas de Caddy,
 - Ne jamais lancer `docker compose down -v` ni supprimer un volume ou le stockage d'état sans ordre explicite.
 
 ## Processus (sur demande du teamleader)
-1. Vérifier que `DEPLOYMENT/prod/docker-compose.server.yml` existe, que `.env` / `prod.env` sont en place et que l'image/tag publié est présent. Sinon `BLOQUE` au teamleader (le scaffold est du ressort de l'agent `infra`).
+1. Vérifier que `DEPLOYMENT/prod/docker-compose.server.yml` existe, que `.env` et le répertoire `secrets/` sont en place (enfant : aussi `REPEATER_ROOT_ID` et `ROOT_LINK_KEY_FILE`) et que l'image/tag publié est présent. Sinon `BLOQUE` au teamleader (le scaffold est du ressort de l'agent `infra`).
 2. Première installation uniquement, depuis UN seul hôte : `docker compose -p secagent-prod-<relay_id> -f docker-compose.server.yml run --rm --no-deps secagent-server state init`.
 3. Sur chaque hôte : `docker compose -p secagent-prod-<relay_id> -f docker-compose.server.yml pull` puis `up -d`.
 4. Vérifier `ps` et `logs --tail=50` : une instance maître (ports ouverts), les autres secondaires (aucun port) ; `exec secagent-server secagent-server status --local` code 0 sur chaque hôte (healthy).

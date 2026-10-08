@@ -5,7 +5,7 @@
 # et n'ouvrent AUCUN port. `restart: unless-stopped` : un maitre qui perd le verrou sort et repart
 # comme secondaire.
 #
-# Usage : cp .env.example .env ; cp prod.env.example prod.env  (tous deux HORS DEPOT, jamais commites)
+# Usage : cp .env.example .env  (HORS DEPOT) ; creer les fichiers de secrets dans ./secrets (voir prod.env.example)
 #         docker compose -p secagent-prod-<relay_id> -f docker-compose.server.yml up -d
 # Pour un relay ENFANT : ajouter -f docker-compose.child.yml (REPEATER_* obligatoires).
 #
@@ -24,11 +24,19 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    # Secrets : JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY (IDENTIQUES sur tous les noeuds candidats).
-    env_file:
-      - path: ./prod.env
-        required: true
+    # Secrets (#196, v3.0.4) : JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY, IDENTIQUES sur tous les noeuds candidats,
+    # fournis par FICHIER (`secrets:` ci-dessous, montes dans /run/secrets, mode 0400, UID du service) et plus par
+    # variable d'environnement : ils n'apparaissent plus dans `docker inspect` ni dans l'environnement du processus.
+    # Ne JAMAIS definir en plus la variable directe (JWT_SECRET_KEY...) : les deux ensemble = refus de demarrer.
+    # (l'ancien `env_file: prod.env` est supprime ; `docker exec ... secagent-server <cmd>` herite des *_FILE.)
+    secrets:
+      - {source: jwt_secret_key, target: jwt_secret_key, uid: "10001", gid: "10001", mode: 0400}
+      - {source: admin_token,    target: admin_token,    uid: "10001", gid: "10001", mode: 0400}
+      - {source: rsa_master_key, target: rsa_master_key, uid: "10001", gid: "10001", mode: 0400}
     environment:
+      JWT_SECRET_KEY_FILE: /run/secrets/jwt_secret_key
+      ADMIN_TOKEN_FILE: /run/secrets/admin_token
+      RSA_MASTER_KEY_FILE: /run/secrets/rsa_master_key
       STATE_DIR: /data
       # Fichier de statut LOCAL de `status --local` : tmpfs ci-dessous, JAMAIS dans STATE_DIR (refuse sinon).
       RELAY_STATUS_FILE: /run/secagent/status.json
@@ -46,6 +54,20 @@ services:
       # Le GC travaille avant l'OOM-kill : ~80 % de la limite memoire (2 GiB -> 1638 MiB). A changer
       # AVEC SECAGENT_MEM_LIMIT (voir « Dimensionnement » dans le README).
       GOMEMLIMIT: ${GOMEMLIMIT:-1638MiB}
+      # --- Limites de tâches (#179, v3.0.4) : defauts ci-dessous, a ne decommenter que pour les changer. -----------
+      # Chaque tache admise RESERVE 5 Mio de budget stdout des son admission : plafond reel = budget / 5 Mio.
+      #   defaut 1 Gio = 204 taches simultanees par relay (au-dela : 503 memory_budget_exhausted + Retry-After) ;
+      #   MAX_TASKS_INFLIGHT (1000) n'est atteignable que si le budget augmente (>= 1000 x 5 Mio).
+      #   forks Ansible <= 200 : defauts suffisants. forks 300-400 : budget 2 Gio (409 taches) ET memoire du
+      #   conteneur >= 4 Gio (regle : memoire ~ 2 x budget + 200 Mio) -> SECAGENT_MEM_LIMIT=4g, GOMEMLIMIT=3276MiB
+      #   (a changer ENSEMBLE dans .env). Sans GOMEMLIMIT, le serveur fixe budget + 768 Mio.
+      # MAX_TASKS_PER_AGENT: "10"                       # taches simultanees par agent (429 agent_busy au-dela)
+      # MAX_TASKS_INFLIGHT: "1000"                      # taches en vol sur le relay, relayees comprises (429 too_many_tasks)
+      # MAX_STDOUT_BUFFER_TOTAL: "1073741824"           # budget memoire des tampons stdout, en octets (1 Gio ; forks 300-400 : "2147483648")
+      # --- Politique de dial des liens (#151, v3.0.4) : durcissement optionnel, voir DOC/project/DEPLOYMENT.md. ------
+      # REPEATER_DIAL_ALLOW_LOOPBACK: "false"           # booleen strict ; "true" = dev/CI SEULEMENT (leve la loopback, rien d'autre)
+      # REPEATER_DIAL_DENY_CIDRS: "10.9.0.0/16"         # refus supplementaires (ex. reseau du plan de controle)
+      # REPEATER_DIAL_ALLOW_CIDRS: "192.168.0.0/16,10.20.0.0/16"   # si non vide : liste blanche (deny l'emporte)
     volumes:
       # Etat partage (relay.state, relay.lock, journal). Voir DEPLOYMENT/prod/README.md : montage
       # NFS de l'hote (fstab : hard, noatime...) puis bind mount ; alternative : volume Docker NFS
@@ -80,8 +102,21 @@ services:
       options: {max-size: "20m", max-file: "5"}
     deploy:
       resources:
-        limits: {cpus: "2", memory: "${SECAGENT_MEM_LIMIT:-2g}"}   # > 3000 hotes : 2 GiB minimum (pic ~900 Mio mesure a 10 000 agents)
+        limits: {cpus: "2", memory: "${SECAGENT_MEM_LIMIT:-2g}"}   # > 3000 hotes : 2 GiB minimum (pic ~900 Mio mesure a 10 000 agents) ; budget stdout 2 Gio : 4g minimum
         reservations: {cpus: "0.25", memory: 256m}
+
+# Fichiers de secrets (un secret par fichier, contenu brut, sans guillemets), crees HORS DEPOT dans SECRETS_DIR
+# (defaut ./secrets) sur CHAQUE hote, mode 0400 ou 0600, proprietaire = celui qui lance `docker compose` (ou 10001) :
+# jwt_secret_key, admin_token, rsa_master_key. Voir prod.env.example. Compose les copie dans /run/secrets avec
+# uid/gid/mode du service ci-dessus ; verification a la 1re mise en service : `docker compose exec secagent-server
+# stat -c '%a %u' /run/secrets/admin_token` -> `400 10001` (sinon le serveur refuse de demarrer).
+secrets:
+  jwt_secret_key:
+    file: ${SECRETS_DIR:-./secrets}/jwt_secret_key
+  admin_token:
+    file: ${SECRETS_DIR:-./secrets}/admin_token
+  rsa_master_key:
+    file: ${SECRETS_DIR:-./secrets}/rsa_master_key
 
 # Alternative au bind mount : volume Docker NFS (remplacer la ligne `type: bind` de /data par
 # `- secagent_state:/data` et decommenter).

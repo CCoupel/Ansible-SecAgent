@@ -10,7 +10,7 @@
 # (`sha-<commit>@sha256:<digest>`) OU tag local `secagent-*:ci-<sha12>` charge par `docker load` (artefact CI,
 # SECAGENT_PULL_POLICY=never) ; aucun `build:`, aucun `latest`. TLS de bout en bout avec une CA privee :
 # REPEATER_CA_FILE / RELAY_CA_BUNDLE, aucune desactivation de la verification TLS.
-# Les jetons sont produits par `chain-test.sh bootstrap` dans ./chain/ (ignore par git, fichiers 0600) :
+# Les jetons (enrolement, plugin, LIEN relay-child de l'enfant) sont produits par `chain-test.sh bootstrap` dans ./chain/ (ignore par git, fichiers 0600) :
 # jamais dans le depot, jamais dans les logs. Le poste de controle Ansible est HORS Compose (voir README).
 include:
   - docker-compose.server.yml
@@ -29,13 +29,11 @@ x-child-env: &child-env
   REPEATER_ID: dmz1
   REPEATER_UPSTREAM_URL: wss://secagent-server-a:7772,wss://secagent-server-b:7772
   REPEATER_CA_FILE: /certs/ca.crt
-  # REPEATER_UPSTREAM_TOKEN : secret, dans ./chain/child.env (env_file ci-dessous)
-  # TODO(L1d/L1e, jetons de lien v3.0.4) : ne pas deviner la syntaxe finale. Quand L1e livre `REPEATER_ROOT_LINK_KEY_FILE`
-  # (cle publique racine PEM, NON secrete, exportee par `keys link-pubkey` sur la racine) :
-  #   REPEATER_ROOT_LINK_KEY_FILE: /run/secagent-link/root-link.pub
-  # et la monter dans CHAQUE relay non racine (ici secagent-child). Pas de bind mount (mode distant interdit) : soit un
-  # volume nomme `${PROJECT}_link` alimente par `chain-test.sh push-link-key` (modele de push-tls), soit `configs:` si le
-  # fichier existe au rendu. Voir chain-test.sh (link_tokens_*) et REHEARSAL_v3.0.4.md.
+  # Jeton de lien v3.0.4 (relay-child, Ed25519, mine sur la RACINE par chain-test.sh) : SECRET, par fichier (secret
+  # Compose ci-dessous, mode 0400). Ancre de confiance : REPEATER_ROOT_ID (dans ./chain/child.env, ecrit par le bootstrap)
+  # et la cle publique racine (NON secrete) dans le volume `secagent_link` alimente par `chain-test.sh push-link-key`.
+  REPEATER_UPSTREAM_TOKEN_FILE: /run/secrets/repeater_upstream_token
+  REPEATER_ROOT_LINK_KEY_FILE: /run/secagent-link/root-link.pub
 
 services:
   secagent-child:
@@ -52,14 +50,20 @@ services:
     env_file:
       - path: ./qualif.env
         required: true
-      - path: ./chain/child.env
+      - path: ./chain/child.env           # REPEATER_ROOT_ID (non secret) ; plus aucun jeton ici
         required: false
     environment: *child-env
+    secrets:
+      - {source: repeater_upstream_token, target: repeater_upstream_token, uid: "10001", gid: "10001", mode: 0400}
     configs:
       - source: secagent_hooks            # defini dans docker-compose.server.yml (inclus) : hooks.json de qualif
         target: /etc/secagent-server/hooks.json
     volumes:
       - child_state:/data
+      - type: volume                       # cle publique racine (ancre), lecture seule
+        source: secagent_link
+        target: /run/secagent-link
+        read_only: true
       - type: bind
         source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}
         target: /certs
@@ -133,7 +137,17 @@ services:
       RELAY_ENROLLMENT_TOKEN: secagent_enr_0000000000000000000000000000000000000000000000000000000000000000
     mem_limit: 256m
 
+# Jeton de lien de l'enfant : ./chain/upstream-token (0600 sur le poste, ignore par git), copie dans le conteneur en
+# /run/secrets avec uid/gid/mode du service. Cree par `chain-test.sh bootstrap` AVANT le demarrage de l'enfant.
+secrets:
+  repeater_upstream_token:
+    file: ./chain/upstream-token
+
 volumes:
+  # Volume EXTERNE (cree et alimente par `chain-test.sh push-link-key`, modele de push-tls) : aucun bind mount.
+  secagent_link:
+    external: true
+    name: ${SECAGENT_LINK_VOLUME:-secagent-qualif_link}
   child_state:
   minion_root_data:
   minion_child_data:

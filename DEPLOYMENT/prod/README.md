@@ -12,10 +12,10 @@ Le Compose est fourni avec la release (`secagent-compose-<version>.tar.gz`, imag
 |---|---|
 | `docker-compose.server.yml` | relay racine ; `docker-compose.child.yml` en surcharge pour un relay enfant |
 | `.env.example` → `.env` | variables d'interpolation non secrètes (version, chemins, adresse de publication admin) |
-| `prod.env.example` → `prod.env` | **secrets** (`JWT_SECRET_KEY`, `ADMIN_TOKEN`, `RSA_MASTER_KEY`, `REPEATER_UPSTREAM_TOKEN`), mode 0600, **jamais dans le dépôt** |
+| `prod.env.example` | **mode d'emploi des secrets** (v3.0.4, #196) : un FICHIER par secret dans `secrets/` (`jwt_secret_key`, `admin_token`, `rsa_master_key`, `repeater_upstream_token` pour un enfant), montés en `secrets:` Compose (`mode: 0400`, UID 10001) et lus par `*_FILE` ; **plus aucun secret en variable d'environnement** (invisibles dans `docker inspect`) ; `secrets/` **jamais dans le dépôt** (ignoré par git). Ce fichier n'est plus lu par Compose. |
 | `tools/test_shared_storage.py` | qualification du stockage partagé |
 
-`JWT_SECRET_KEY`, `ADMIN_TOKEN` et `RSA_MASTER_KEY` sont **identiques sur tous les nœuds candidats** d'un relay.
+`JWT_SECRET_KEY`, `ADMIN_TOKEN` et `RSA_MASTER_KEY` (fichiers `secrets/…`) sont **identiques sur tous les nœuds candidats** d'un relay. Ne jamais définir en plus la variable directe : les deux ensemble = refus de démarrer.
 Nom de projet : `docker compose -p secagent-prod-<relay_id> …`.
 
 ## Réseau et sécurité
@@ -91,6 +91,15 @@ StartLimitIntervalSec=600
 StartLimitBurst=5
 ```
 
+## Relay enfant : jeton de lien et ancre de confiance (v3.0.4)
+
+Le lien enfant → parent est authentifié par un **jeton de lien** Ed25519 signé par la **racine** et par une **ancre** : la clé publique de la racine, épinglée sur chaque relay non racine. Les jetons HS256 de v3.0.3 sont refusés ; **il n'y a pas de retour arrière** vers v3.0.3 (décision) et la rotation de `RSA_MASTER_KEY` est recommandée avant la mise en production.
+
+1. Sur la racine : `docker compose exec secagent-server secagent-server keys link-pubkey > root-link.pub` (PEM public sur stdout ; `root_id=<id> kid=<kid>` sur stderr = `REPEATER_ROOT_ID`). Copier `root-link.pub` sur l'hôte de l'enfant (`chmod 0644`), non secret mais jamais inscriptible par d'autres.
+2. Sur la racine : `… tokens create --role relay-child --sub <REPEATER_ID de l'enfant> --aud <relay_id du parent> [--expires 720h]` ; le jeton n'est affiché **qu'une fois** : l'écrire dans `secrets/repeater_upstream_token` (0400) de l'enfant.
+3. `.env` de l'enfant : `REPEATER_ID`, `REPEATER_UPSTREAM_URL`, `REPEATER_ROOT_ID`, `ROOT_LINK_KEY_FILE` ; puis `-f docker-compose.server.yml -f docker-compose.child.yml`.
+4. Rotation : `keys rotate-link` sur la racine, attendre que `keys link-status` confirme chaque relay, remplacer les jetons expirant, puis `keys retire-link-previous` (refusé `409 rotation_unconfirmed` tant que des relays n'ont pas confirmé). Révocation : `tokens revoke <id>` (lien fermé en 4010 à chaque niveau).
+
 ## Dimensionnement (parc > 3 000 hôtes)
 
 Mesures QA (#160) : fichier d'état 5,9 Mio à 3 000 agents, 19,7 Mio à 10 000 ; RSS établi 111 à 349 Mio, mais **pic de 640 à 884 Mio**
@@ -99,9 +108,11 @@ exec 5,8 ms à 10 000 agents. Valeur de départ : **limite mémoire 2 GiB** (`SE
 (`1638MiB`) pour que le GC travaille avant l'OOM-kill. Modifier les deux ensemble (ex. 4g → 3276MiB). Surveiller le RSS et
 les redémarrages OOM (`docker inspect -f '{{.State.OOMKilled}}'`). La limite est exigée par le contrôle CI de rendu.
 
+Limites de tâches (#179) : chaque tâche admise réserve 5 Mio de budget stdout (`MAX_STDOUT_BUFFER_TOTAL`, défaut 1 Gio = **204 tâches simultanées** par relay, au-delà `503 memory_budget_exhausted`) ; `MAX_TASKS_PER_AGENT` (10) et `MAX_TASKS_INFLIGHT` (1000, atteignable seulement si le budget augmente). Pour des `forks` Ansible de 300 à 400 : `MAX_STDOUT_BUFFER_TOTAL=2147483648` (409 tâches) **et** `SECAGENT_MEM_LIMIT=4g` + `GOMEMLIMIT=3276MiB` (règle : mémoire ≈ 2 × budget + 200 Mio). Variables en commentaire dans `docker-compose.server.yml`.
+
 ## Premier déploiement
 
-1. Sur chaque hôte : `.env`, `prod.env`, certificats, partage monté, `docker login ghcr.io` si l'image est privée.
+1. Sur chaque hôte : `.env`, répertoire `secrets/` (voir `prod.env.example`), certificats, partage monté, `docker login ghcr.io` si l'image est privée.
 2. **Initialiser l'état une seule fois**, depuis un seul hôte, avant de démarrer les autres :
    `docker compose run --rm --no-deps secagent-server state init` (nécessite `RSA_MASTER_KEY`).
 3. `docker compose -p secagent-prod-<relay_id> up -d` sur chaque hôte.
