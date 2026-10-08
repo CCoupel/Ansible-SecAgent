@@ -380,7 +380,7 @@ Sans `--yes` en terminal, la commande demande de taper `reset`. Avant toute écr
 
 #### `secagent-server state rekey [--state-dir D] [--yes] [--i-know-no-instance-is-running]`
 
-Commande **hors ligne** (ouvre `STATE_DIR` directement) qui fait la rotation de `RSA_MASTER_KEY` : rechiffre **tous** les champs `enc:` de `relay.state` avec une nouvelle clé maître et recalcule le HMAC. Les deux clés passent par l'environnement, **jamais** en argument : `RSA_MASTER_KEY` / `RSA_MASTER_KEY_FILE` (actuelle) et `NEW_RSA_MASTER_KEY` / `NEW_RSA_MASTER_KEY_FILE` (nouvelle ; fichier 0600). Ne change ni `JWT_SECRET_KEY` ni les clés de signature. Détail, ordre des opérations et procédure actif/passif : `STATE_SPEC.md` (§ `state rekey`) et `SECURITY.md` §11.
+Commande **hors ligne** (ouvre `STATE_DIR` directement) qui fait la rotation de `RSA_MASTER_KEY` : rechiffre **tous** les champs `enc:` de `relay.state` avec une nouvelle clé maître et recalcule le HMAC. Les deux clés passent par l'environnement, **jamais** en argument : `RSA_MASTER_KEY_FILE` / `RSA_MASTER_KEY` (actuelle) et `NEW_RSA_MASTER_KEY_FILE` / `NEW_RSA_MASTER_KEY` (nouvelle ; fichier 0600, **à préférer** aux variables saisies au shell) ; la nouvelle clé doit faire **au moins 32 octets** (`openssl rand -base64 48`). Ne change ni `JWT_SECRET_KEY` ni les clés de signature. Détail, ordre des opérations et procédure actif/passif : `STATE_SPEC.md` (§ `state rekey`) et `SECURITY.md` §11.
 
 | Option | Rôle |
 |---|---|
@@ -397,6 +397,7 @@ Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écr
 | 8 | `relay.lock` frais (ou apparu pendant la commande) : une instance est active, état intact |
 | 9 | refusé, rien n'est modifié : nouvelle clé absente ou identique à l'ancienne, champ `enc:` non couvert, état de schéma 1 ou issu de `relay.state.prev`, confirmation absente (`--yes` manquant) ou réponse ≠ `rekey` |
 | 10 | vérification après écriture échouée (l'original a été remis en place, sauf message contraire) |
+| 11 | nouvelle clé de moins de 32 octets, rien n'est modifié (l'ancienne clé n'est pas contrôlée) |
 
 Le code 7 (`--min-write-seq`) n'existe que pour `state verify` / `state restore`.
 
