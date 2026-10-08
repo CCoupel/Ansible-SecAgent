@@ -27,17 +27,13 @@ func TestIsCLIMode_NoArgs(t *testing.T) {
 	}
 }
 
-func TestIsCLIMode_ServerFlag(t *testing.T) {
-	setArgs(t, []string{"-d"})
-	if isCLIMode() {
-		t.Error("-d flag: expected server mode")
-	}
-}
-
-func TestIsCLIMode_ServerFlagLong(t *testing.T) {
-	setArgs(t, []string{"--config", "/etc/relay.conf"})
-	if isCLIMode() {
-		t.Error("--config flag: expected server mode")
+func TestIsCLIMode_AnyArgumentIsCLI(t *testing.T) {
+	// A flag, a path, a number or a mistyped word is handed to cobra (error), never to the server.
+	for _, args := range [][]string{{"-d"}, {"--config", "/etc/relay.conf"}, {"--help"}, {"-h"}, {"--version"}, {"7770"}, {"/etc/relay.conf"}, {"kyes"}} {
+		setArgs(t, args)
+		if !isCLIMode() {
+			t.Errorf("%v: expected CLI mode (cobra refuses or answers)", args)
+		}
 	}
 }
 
@@ -120,8 +116,8 @@ func TestIsCLIMode_Completion(t *testing.T) {
 
 func TestIsCLIMode_UnknownArg(t *testing.T) {
 	setArgs(t, []string{"unknowncmd"})
-	if isCLIMode() {
-		t.Error("unknown arg: expected server mode (not a known CLI command)")
+	if !isCLIMode() {
+		t.Error("unknown arg: expected CLI mode (cobra rejects it, no server is started)")
 	}
 }
 
@@ -147,46 +143,30 @@ func TestIsCLIMode_AllKnownCommands(t *testing.T) {
 	}
 }
 
-func TestIsCLIMode_AllServerModeInputs(t *testing.T) {
-	serverInputs := []struct {
-		name string
-		args []string
-	}{
-		{"no args", []string{}},
-		{"short flag", []string{"-d"}},
-		{"long flag", []string{"--config", "/etc/relay.conf"}},
-		{"unknown subcommand", []string{"unknowncmd"}},
-		{"number arg", []string{"7770"}},
-		{"path arg", []string{"/etc/relay.conf"}},
-	}
-	for _, tc := range serverInputs {
-		t.Run(tc.name, func(t *testing.T) {
-			setArgs(t, tc.args)
-			if isCLIMode() {
-				t.Errorf("%q: expected server mode", tc.name)
-			}
-		})
+func TestIsCLIMode_NoArgumentIsServerMode(t *testing.T) {
+	setArgs(t, []string{})
+	if isCLIMode() {
+		t.Error("no argument: expected server mode")
 	}
 }
 
 // ── isCLIMode — edge cases ─────────────────────────────────────────────────────
 
-// TestIsCLIMode_FlagBeforeCommand: "--verbose tokens list" → first arg is "--verbose"
-// which starts with '-', so isCLIMode returns false (server mode).
-// This is the documented behavior: flags before the subcommand are treated as server flags.
+// "--verbose tokens list": a leading flag goes to cobra, which rejects it (unknown flag).
 func TestIsCLIMode_FlagBeforeCommand(t *testing.T) {
 	setArgs(t, []string{"--verbose", "tokens", "list"})
-	// --verbose starts with '-' → server mode
-	if isCLIMode() {
-		t.Error("flag before command: expected server mode (--verbose looks like a server flag)")
+	if !isCLIMode() {
+		t.Error("flag before command: expected CLI mode (cobra rejects the unknown flag)")
 	}
 }
 
-// TestIsCLIMode_HelpFlag: "--help" starts with '-' → server mode.
+// --help / -h / --version are answered by cobra and never start a server.
 func TestIsCLIMode_HelpFlag(t *testing.T) {
-	setArgs(t, []string{"--help"})
-	if isCLIMode() {
-		t.Error("--help flag: expected server mode (cobra handles via subcommand 'help')")
+	for _, a := range []string{"--help", "-h", "--version"} {
+		setArgs(t, []string{a})
+		if !isCLIMode() {
+			t.Errorf("%s: expected CLI mode", a)
+		}
 	}
 }
 
@@ -448,11 +428,5 @@ func TestIsCLIMode_EveryRegisteredCommand(t *testing.T) {
 				t.Errorf("%q is a CLI command but isCLIMode() is false", name)
 			}
 		})
-	}
-	for _, name := range []string{"-d", "--config"} {
-		setArgs(t, []string{name})
-		if isCLIMode() {
-			t.Errorf("%q must not select CLI mode", name)
-		}
 	}
 }

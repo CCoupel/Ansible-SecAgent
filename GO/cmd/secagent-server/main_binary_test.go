@@ -29,6 +29,13 @@ func TestBinary_CLICommandsDoNotStartAServer(t *testing.T) {
 		{[]string{"keys", "rotate-link", "--help"}, "rotate-link", false},
 		{[]string{"state", "link-trust", "reset", "--help"}, "reset", false},
 		{[]string{"tokens", "create", "--help"}, "relay-child", false},
+		{[]string{"--help"}, "Usage", false},
+		{[]string{"-h"}, "Usage", false},
+		{[]string{"--version"}, "secagent-server version", false},
+		{[]string{"kyes"}, "unknown command", true},
+		{[]string{"-d"}, "unknown shorthand flag", true},
+		{[]string{"--config", "/etc/relay.conf"}, "unknown flag", true},
+		{[]string{"7770"}, "unknown command", true},
 		{[]string{"relays", "add", "--help"}, "relay-child", false},
 	}
 	for _, c := range cases {
@@ -48,5 +55,25 @@ func TestBinary_CLICommandsDoNotStartAServer(t *testing.T) {
 				t.Errorf("unexpected output:\n%s", out)
 			}
 		})
+	}
+}
+
+// No argument = server mode: with an empty environment it reaches the server configuration check
+// (TLS_CERT/TLS_KEY required) and exits, without printing the CLI help.
+func TestBinary_NoArgumentIsServerMode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the binary")
+	}
+	bin := filepath.Join(t.TempDir(), "secagent-server")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "TLS is required") || strings.Contains(string(out), "Usage") {
+		t.Errorf("expected the server start-up path (config error), got err=%v\n%s", err, out)
 	}
 }

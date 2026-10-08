@@ -129,6 +129,10 @@ Le déploiement se fait ensuite dans le projet Compose **`secagent-qualif`** (mo
 
 ---
 
+## Arguments du binaire `secagent-server` (v3.0.4)
+
+Le serveur démarre **sans argument** : toute sa configuration vient de l'environnement (`ENTRYPOINT ["/app/secagent-server"]`, aucun `command:` Compose). Tout argument est traité par la CLI d'administration : une commande ou un drapeau inconnu (`kyes`, `-d`, `--config …`) est **refusé** avec une erreur et le code de sortie 1, jamais interprété comme un démarrage de serveur. `--help`, `-h` et `--version` répondent sans rien démarrer. Ne pas ajouter d'`command:`/`args:` à un service serveur.
+
 ## Codes de Sortie et Redémarrage
 
 ### Agents (codes systemd significatifs)

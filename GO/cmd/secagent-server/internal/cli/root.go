@@ -12,6 +12,9 @@ import (
 var globalFormat string
 
 // rootCmd is the cobra root command for secagent-server CLI mode.
+// Version is printed by --version; override at build time with -ldflags "-X .../internal/cli.Version=vX.Y.Z".
+var Version = "dev"
+
 var rootCmd = &cobra.Command{
 	Use:   "secagent-server",
 	Short: "Ansible-SecAgent secagent-server CLI",
@@ -22,6 +25,7 @@ Environment variables:
   ADMIN_TOKEN    Admin bearer token (required)`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
+	Version:       Version,
 }
 
 func init() {
