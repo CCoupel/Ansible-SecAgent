@@ -29,10 +29,13 @@ if grep -rniE --exclude-dir=tools 'nats|jetstream' "$D"; then
 fi
 grep -qE "image: ghcr.io/ccoupel/secagent-server:${TAG}@sha256:[0-9a-f]{64}\$" "$D/docker-compose.server.yml" \
   || { echo "::error::docker-compose.server.yml : image non epinglee en tag@digest"; exit 1; }
-# Modes explicites (independants du systeme de fichiers source) : 755 pour les dossiers et tools/*.py, 644 sinon
+# Modes explicites (independants du systeme de fichiers source) : 755 pour les dossiers, tools/*.py et TOUS les scripts
+# *.sh (ex. preflight-secrets.sh, documente comme `./preflight-secrets.sh` avant chaque `docker compose up`), 644 sinon
 find "$D" -type d -exec chmod 755 {} +
 find "$D" -type f -exec chmod 644 {} +
 chmod 755 "$D"/tools/*.py
+find "$D" -type f -name '*.sh' -exec chmod 755 {} +
+[ -x "$D/preflight-secrets.sh" ] || { echo "::error::preflight-secrets.sh absent ou non executable dans l'archive"; exit 1; }
 # Archive reproductible (ordre, dates, proprietaires fixes)
 tar --sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner \
   --exclude='__pycache__' --exclude='*.pyc' \

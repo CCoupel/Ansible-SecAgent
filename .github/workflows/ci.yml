@@ -227,6 +227,7 @@ jobs:
           python3 scripts/ci/check_no_binds_selftest.py
           bash scripts/ci/assert_version_selftest.sh
           bash scripts/ci/release_notes_selftest.sh
+          bash scripts/ci/build_compose_archive_selftest.sh
           bash scripts/ci/preflight_secrets_selftest.sh
           python3 scripts/ci/check_scripts.py .github/workflows/*.yml
 
@@ -386,6 +387,7 @@ jobs:
           mkdir x && tar -xzf dist/secagent-compose-0.0.0.tar.gz -C x
           cd x/secagent-compose-0.0.0
           touch prod.env
+          test -x preflight-secrets.sh   # documente comme `./preflight-secrets.sh` : doit rester executable dans l'archive
           grep -E 'image: ghcr.io/ccoupel/secagent-server:v0.0.0@sha256:[0-9a-f]{64}$' docker-compose.server.yml
           docker compose --env-file .env.example -f docker-compose.server.yml config --format json > r.json
           docker compose --env-file .env.example -f docker-compose.server.yml -f docker-compose.child.yml config --format json > c.json
