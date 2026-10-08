@@ -134,7 +134,7 @@ if err := dec.Decode(&p); err != nil {
 
 ### Décision Q5 (figée par l'utilisateur)
 
-> **Pas de rétrocompatibilité** : `SchemaVersion` 2 ; retour arrière vers v3.0.3 **non supporté** (v3.0.3 refuse l'état v2 avec `ErrSchemaVersion`). La migration v1→v2 au premier démarrage de v3.0.4 est conservée (sinon tous les agents seraient à ré-enrôler).
+> **Pas de rétrocompatibilité** : `SchemaVersion` 2 ; retour arrière vers v3.0.3 **non supporté** (v3.0.3 refuse l'état v2 avec `ErrSchemaVersion`). La migration v1→v2, faite à la première écriture du maître v3.0.4 (pas au simple démarrage) ou pendant `state rekey`, est conservée (sinon tous les agents seraient à ré-enrôler).
 
 ---
 
