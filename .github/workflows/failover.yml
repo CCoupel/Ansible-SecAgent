@@ -3,10 +3,9 @@ name: Failover (docker kill)
 # Scenario `docker kill` avec les VRAIES peremptions du verrou (~5-6 min). Aucune publication :
 # l'image est construite localement depuis le commit. Planifie, manuel, et appelable avant une release.
 #
-# ATTENTION : le declencheur `schedule` est NEUTRALISE tant que main ne contient pas le code v3.0.3
-# (DEPLOYMENT/qualif/failover-test.sh, GO/Dockerfile actif/passif) : ce workflow est present sur main
-# uniquement pour que GitHub expose `workflow_dispatch`, et un cron sur main echouerait chaque nuit.
-# A reactiver (decommenter) apres la fusion de milestone/v3.0.3 dans main.
+# Le declencheur `schedule` est reste NEUTRALISE (commente) : main contient desormais le code actif/passif
+# (v3.0.3 et v3.0.4), donc le cron peut etre reactive (decommenter) sur decision de l'utilisateur ; le ref par defaut
+# du declenchement manuel est `main`.
 on:
   # schedule:
   #   - cron: '17 3 * * *'
@@ -16,7 +15,7 @@ on:
         description: 'Branche, tag ou commit a tester (le code construit et le script sont ceux de ce ref)'
         required: false
         type: string
-        default: 'milestone/v3.0.3'
+        default: 'main'
 
 permissions:
   contents: read
@@ -29,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ inputs.ref || 'milestone/v3.0.3' }}
+          ref: ${{ inputs.ref || 'main' }}
       - name: Build de l'image du commit
         run: docker build -t secagent-server:ci -f GO/Dockerfile GO
       - name: Preparation
