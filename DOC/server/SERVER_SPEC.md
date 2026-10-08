@@ -34,6 +34,7 @@ GO/cmd/secagent-server/
 │   │   ├── relay_handler.go         — WSS /ws/relay (liens relay ↔ relay)
 │   │   └── jwt.go                   — validation dual-key JWT HMAC-HS256
 │   ├── lock/                        — verrou actif/passif (relay.lock)
+│   ├── auth/linkjwt.go              — validation des jetons de lien JWT EdDSA signés par la racine (v3.0.4)
 │   ├── state/
 │   │   └── engine.go, file.go, model.go … — fichier d'état JSON (HMAC-SHA256, secrets AES-256-GCM, write_seq anti-rejeu)
 │   ├── storage/
@@ -283,7 +284,7 @@ secagent-server state init|verify <fichier>|restore --from <fichier>   # voir ST
 | `RSA_MASTER_KEY` | ✅ en production | Secret (chaîne, pas une clef RSA) dont dérivent le HMAC du fichier d'état et le chiffrement AES-256-GCM des secrets ; exigé par `state init` (sauf `--insecure-test-mode`) et par le serveur ; identique sur tous les nœuds candidats |
 | `REPEATER_ID` | — | Identifiant du relay (ex: `dmz1`) — requis en mode enfant |
 | `REPEATER_UPSTREAM_URL` | — | URL WSS du parent (ex: `wss://central:7772`) — requis en mode enfant pull. Liste séparée par des virgules (une adresse par instance du parent, `wss://` uniquement, 16 max) : essayées dans l'ordre, la dernière qui a répondu en premier ; un échec avant envoi passe à l'adresse suivante, un échec après envoi de la requête d'upgrade ne rejoue pas sur une autre |
-| `REPEATER_UPSTREAM_TOKEN` | — | Token JWT du relay enfant (rôle `relay`, émis par `relays add` sur le parent) — requis en mode enfant pull |
+| `REPEATER_UPSTREAM_TOKEN` | — | Jeton de lien EdDSA du relay enfant (rôle `relay-child`, `sub` = `REPEATER_ID`, `aud` = `relay_id` du parent), minté sur la **racine** par `tokens create --role relay-child --sub <enfant> --aud <parent>` — requis en mode enfant pull. Variante `REPEATER_UPSTREAM_TOKEN_FILE` (exclusive : les deux définies refusent le démarrage). Voir §9.4 |
 | `RELAY_GROUP_VARS` | — | Variables Ansible JSON injectées pour ce relay (ex: `{"env":"prod"}`) |
 | `API_ADDR` | — | Adresse d'écoute de l'API publique + WS agent/relay (défaut `:7770`) |
 | `ADMIN_ADDR` | — | Adresse d'écoute de l'API admin (défaut `:7771`) — ne jamais l'exposer publiquement ; les handlers admin ne sont servis que sur cette adresse (sauf `POST /api/admin/authorize`, par compatibilité) |
@@ -328,7 +329,7 @@ secagent-server state init|verify <fichier>|restore --from <fichier>   # voir ST
 | `REPEATER_ID` | — | Identifiant du relay (`dmz1`) — requis en mode repeater enfant |
 | `REPEATER_UPSTREAM_URL` | — | URL(s) WSS du parent (`wss://central:7772[,wss://central2:7772]`) — requise si enfant ouvre vers parent |
 | `REPEATER_CA_FILE` | — | Bundle PEM des CA de confiance pour **tous les liens sortants** (lien pull vers le parent, dial-out push vers les enfants, CLI `secagent-server` vers l'API admin). Il **remplace** les CA système (rien d'autre n'est de confiance) ; il n'existe aucune option de non-vérification. Lu au démarrage (redémarrer pour le changer) ; fichier illisible, vide, > 1 Mio, contenant autre chose que des blocs `CERTIFICATE` (une clé privée est refusée) ou sans aucun certificat actuellement valide ⇒ le démarrage est refusé. |
-| `REPEATER_UPSTREAM_TOKEN` | — | Token d'authentification du relay enfant — requis si enfant ouvre vers parent |
+| `REPEATER_UPSTREAM_TOKEN` | — | Jeton de lien EdDSA `relay-child` du relay enfant (signé par la racine, mêmes règles que ci-dessus) — requis si l'enfant ouvre vers le parent ; jamais journalisé. `REPEATER_UPSTREAM_TOKEN_FILE` en variante fichier |
 | `RELAY_GROUP_VARS` | — | Variables Ansible JSON injectées pour ce relay : `{"region":"dmz"}` |
 
 **Mode pur serveur** (défaut, pas de parent) :
@@ -532,12 +533,12 @@ Trois messages JSON sur `/ws/relay`, **parent → enfant** pour les deux premier
 {"type":"link_state","relay_id":"<relay_id du rapporteur>","seq":8,"current_kid":"<kid>"}
 ```
 
-- **`link_keys`** : annonce de rotation (`previous_*` présents : `previous_pub` = ancienne `current`, signé par l'**ancienne** `current`, S16/S17) ou de fermeture de la fenêtre (`previous_*` absents, `current` inchangée, signé par `current`). Le receveur la vérifie par `auth.ApplyLinkKeys` depuis son ancre **avant** toute écriture ; en cas de succès il persiste `link_trust` (clés, `kid`, `seq`) ; en cas d'échec (`link_keys_chain_broken`, `link_message_signature_invalid`, `link_message_invalid`) : `[SECURITY WARNING]`, `link_trust` **inchangé**, trame ignorée, **le lien reste ouvert**. `link_message_seq_replay` est bénin (état déjà appliqué : rien à faire). **Rejeu sur un relay déjà à jour** : une trame `link_keys` qui annonce exactement la `current` déjà de confiance (cas d'un relay déployé après la rotation, ancré sur la nouvelle clé, qui reçoit le `link_keys` signé par l'ancienne) est un **no-op idempotent** : aucune erreur, aucun `[SECURITY WARNING]`, rien n'est écrit ni adopté (la `previous` annoncée est ignorée : les jetons de l'ancienne clé restent refusés), la trame est retransmise aux enfants et le relay **confirme** par `link_state` (`seq` = max du `seq` local et de celui de la trame). Une chaîne réellement rompue (clé inconnue, signature fausse, trame mal formée, `kid` incohérent) est refusée avec `[SECURITY WARNING]` et `link_trust` inchangé.
+- **`link_keys`** : annonce de rotation (`previous_*` présents : `previous_pub` = ancienne `current`, signé par l'**ancienne** `current`, S16/S17) ou de fermeture de la fenêtre (`previous_*` absents, `current` inchangée, signé par `current`). Le receveur la vérifie par `auth.ApplyLinkKeys` depuis son ancre **avant** toute écriture ; en cas de succès il persiste `link_trust` (clés, `kid`, `seq`) ; en cas d'échec (`link_keys_chain_broken`, `link_message_signature_invalid`, `link_message_invalid`) : `[SECURITY WARNING]`, `link_trust` **inchangé**, trame ignorée, **le lien reste ouvert**. `link_message_seq_replay` est bénin (état déjà appliqué : rien à faire). **Rejeu d'un `link_keys` (D6, audit R4)** : une trame qui annonce exactement les clés déjà de confiance (reconnexion, redémarrage) n'est acceptée que si sa **signature se vérifie avec une clé déjà de confiance** (`auth.VerifyLinkKeysReplay` : la `previous` de confiance pour une rotation encore ouverte, la `current` une fois la fenêtre fermée), jamais avec une clé lue dans la trame. Authentique : no-op idempotent (rien d'écrit), trame retransmise et mémorisée pour les enfants, `link_state` avec le `seq` **propre** du relay. Non authentifiable (par exemple un relay déployé après la rotation, ancré sur la nouvelle clé, qui ne détient aucune clé capable de vérifier une rotation signée par l'ancienne) : **ignorée** sans `[SECURITY WARNING]` quand elle ne fait que répéter la `current` de confiance, **ni retransmise, ni mémorisée, ni confirmée** ; toute autre trame non vérifiable est refusée avec `[SECURITY WARNING]` et `link_trust` inchangé. Le `seq` d'un `link_state` ne provient **jamais** d'une trame non vérifiée. **Confirmation** : après son premier `topology_snapshot` sur un lien, chaque relay annonce par `link_state` son état propre (le `kid` qu'il tient pour `current`, le dernier `seq` qu'il a vérifié), de même après chaque trame appliquée ; la racine tient la rotation pour **confirmée** quand le `kid` rapporté est la `current` (le `seq` rapporté est informatif : un relay déployé après la rotation ne peut pas authentifier celui de la rotation). Les `link_state` mémorisés sont renvoyés après chaque `topology_snapshot` (le parent ignore celui d'un relay qu'il n'a pas encore vu déclaré).
 - **`link_revocations`** : `entries` = JTI de jetons de lien révoqués et leur `exp` (secondes Unix). Signée par la `current` racine, vérifiée par `auth.VerifyLinkRevocations` (signature et **`seq` strictement supérieur** au dernier accepté, S18/S19). Le receveur **ajoute** ces JTI à sa blacklist (jusqu'à `exp`, jamais de retrait), persiste `seq`, **ferme en `4010`** le lien actif dont le `jti` y figure, puis retransmet. Une trame invalide est ignorée (`[SECURITY WARNING]`), le lien reste ouvert.
 - **`link_state`** (renvoi) : les `link_state` mémorisés par un relay sont renvoyés à son parent après chaque `topology_snapshot` (un parent qui a redémarré, ou une racine qui a basculé, retrouve les confirmations).
 - **`link_state`** : accusé **informatif** (non signé, jamais utilisé pour une décision d'accès) : après avoir appliqué un message, le relay annonce son dernier `seq` appliqué et son `kid` courant ; chaque relay le **retransmet vers son parent** avec le `relay_id` d'origine. La racine l'utilise pour `retire-link-previous` (R2) et `GET /api/admin/link/status`.
 - **Compteur `seq` unique** (S20) : la racine incrémente un seul compteur (`server_config.link_seq`) à **chaque révocation de jeton de lien, rotation et fermeture de fenêtre**, dans la même mutation d'état que l'événement ; les trames sont émises dans l'ordre des `seq`.
-- **À l'établissement du lien** (juste après `relay_ack`, dans cet ordre) : (1) `link_keys` tant qu'une rotation est ouverte (`previous` existe) ; (2) `link_revocations` avec la liste **complète** des révocations non expirées au `seq` courant (omis si `seq` = 0). Ensuite : **incrémental** — `link_keys` à la rotation / fermeture, `link_revocations` avec les seules nouvelles entrées. Un relay non racine renvoie à ses enfants, à leur connexion, ce qu'il a reçu et vérifié de son parent (`repeater.LinkTrust.Replay` : la rotation ouverte, puis les trames de révocation reçues depuis l'établissement du lien amont) et retransmet chaque trame **à l'identique** (octets inchangés) dès qu'il l'a appliquée. **Exception — rejeu idempotent d'une rotation** : un `link_keys` qui annonce exactement la `current` déjà de confiance (clé et `kid` cohérents) n'est **pas re-vérifié** (le relay, ancré sur la nouvelle clé, ne peut pas vérifier une signature de l'ancienne) : il est retransmis aux enfants et mémorisé pour les enfants futurs tant qu'une `previous` existe (`repeater/linktrust.go` `applyKeys`/`alreadyCurrent`), sans rien écrire ni adopter. Un enfant qui reçoit cette trame la traite pareillement, ou la rejette si sa propre chaîne ne la couvre pas : la confiance de chaque relay ne dépend que de **sa** vérification, jamais de celle de son parent.
+- **À l'établissement du lien** (juste après `relay_ack`, dans cet ordre) : (1) `link_keys` tant qu'une rotation est ouverte (`previous` existe) ; (2) `link_revocations` avec la liste **complète** des révocations non expirées au `seq` courant (omis si `seq` = 0). Ensuite : **incrémental** — `link_keys` à la rotation / fermeture, `link_revocations` avec les seules nouvelles entrées. Un relay non racine renvoie à ses enfants, à leur connexion, ce qu'il a reçu et vérifié de son parent (`repeater.LinkTrust.Replay` : la rotation ouverte, puis les trames de révocation reçues depuis l'établissement du lien amont) et retransmet chaque trame **à l'identique** (octets inchangés) dès qu'il l'a appliquée. **Rejeu d'une rotation** : seule une trame `link_keys` dont la signature se vérifie avec une clé déjà de confiance est retransmise et mémorisée (voir ci-dessus) ; une trame non vérifiable n'est jamais relayée. Un enfant ancré sur l'ancienne clé reçoit la rotation d'un parent qui l'a vérifiée ; la confiance de chaque relay ne dépend que de **sa** vérification, jamais de celle de son parent.
 - **Bornes des trames de lien** : contrôlées sur les **octets bruts, avant tout décodage**, à la lecture générique de `/ws/relay` (`ws/link.go` `readRelayMessage`/`linkFrameLimit`) comme à la réception par l'uplink (`repeater/linktrust.go` `maxLinkFrameLen`) : `link_keys` et `link_revocations` ≤ **1 Mio**, `link_state` ≤ **512 octets**. Une trame plus grande reçue par un parent ferme le lien en **`4012`** (raison `link frame too large`, `[SECURITY WARNING]`) ; reçue par un enfant, elle est ignorée (lien conservé). La limite générique de 10 Mio (`MAX_WS_MESSAGE_SIZE_RELAY`) reste celle des autres types.
 - **`kid`** : forme exacte de `auth.LinkKID` — 22 caractères base64url canonique (sans remplissage) de 16 octets, vérifiée par `auth.ValidLinkKID` ; un `link_state` dont `current_kid` n'a pas cette forme est ignoré avant d'être mémorisé ou retransmis (`ws/link.go` `handleLinkState`).
 - **Tampon des `link_state`** : l'uplink ne garde que les `link_state` bien formés d'au plus 512 octets, **un par `relay_id`**, au plus **1024** entrées (≤ 1024 × 512 octets) ; il les renvoie après chaque `topology_snapshot` (`repeater/uplink.go` `rememberLinkState`).
@@ -627,7 +628,7 @@ DELETE /api/admin/relays/{relay_id}
 ```bash
 secagent-server relays list
 secagent-server relays status
-secagent-server relays add --id <relay_id> [--description …] [--mode pull]           # pull : JWT affiché une fois
+secagent-server relays add --id <relay_id> [--description …] [--mode pull]           # pull : DÉCLARE seulement l'enfant attendu, ne minte aucun jeton (v3.0.4) — le jeton se crée sur la racine : tokens create --role relay-child
 secagent-server relays add --id <relay_id> --mode push --url wss://enfant-a:7772[,wss://enfant-b:7772] --token <token>   # push : --url accepte une liste séparée par des virgules (`cli/relays.go:118-124`)
 secagent-server relays remove <uuid>
 # Pas de `relays get/revoke/delete` : la révocation se fait par l'API POST /api/admin/relays/{id}/revoke
@@ -637,48 +638,41 @@ secagent-server relays remove <uuid>
 
 ### 9.4 Authentification repeater-to-parent
 
-**Deux rôles JWT distincts** :
+> **v3.0.4 [BREAKING] (#141, #146)** : le modèle « chaque relay signe avec sa `JWT_SECRET_KEY` » et le rôle `relay` (HS256) de la v3.0.3 sont **supprimés**. Conception : `DOC/security/DECISION_141.md` ; vérification : §9.2 ; modèle de sécurité : `DOC/security/SECURITY.md` §7 « Jetons de lien relay ».
 
-**Rôle `relay`** (appelé « relay-child » ailleurs ; présenté par l'enfant au handshake) :
+**Deux rôles de jeton de lien**, tous deux JWT **EdDSA (Ed25519) signés par la racine** :
+
+**Rôle `relay-child`** (lien pull ; présenté par l'enfant qui ouvre vers son parent) :
+- `sub` = `relay_id` de l'enfant (porteur), `aud` = `relay_id` du parent (vérificateur)
 - Permissions : ouvrir `/ws/relay`, envoyer `relay_hello`, `agent_list`, `event_forward`
 - Restrictions : pas d'accès `/api/inventory`, `/api/exec`, `/ws/agent`, `/api/admin`
-- JWT créé sur : le relay parent (l'entité qui accueille l'enfant)
-- JWT signé par : JWT_SECRET_KEY du relay parent (vérification par le parent récepteur)
 
-**Rôle `relay-parent`** (présenté par le parent au handshake en mode push) :
-- Permissions : ouvrir `/ws/relay` (en tant que WS client vers l'enfant)
-- Restrictions : pas d'accès `/api/inventory`, `/api/exec`, `/ws/agent`, `/api/admin`
-- JWT créé sur : le relay enfant (l'entité qui accepte l'ouverture)
-- JWT signé par : JWT_SECRET_KEY du relay enfant (vérification par l'enfant récepteur)
+**Rôle `relay-parent`** (lien push ; présenté par le parent qui ouvre vers l'enfant) :
+- `sub` = `relay_id` du parent (porteur), `aud` = `relay_id` de l'enfant (vérificateur)
+- Mêmes permissions et restrictions que ci-dessus
 
-**Modèle de signature (HAUT-6)** : Chaque relay crée et signe ses tokens avec sa JWT_SECRET_KEY :
-- `relay` (créé par le parent) : parent signe, enfant ne peut pas valider (isolation clef)
-- relay-parent (créé par l'enfant) : enfant signe, parent ne peut pas valider (isolation clef)
-- Jamais de signature centralisée par la racine (évolution envisagée pour v3.0.1+)
+**Modèle de signature (v3.0.4)** : un seul signataire, la **racine** (clé Ed25519 `link_signing_key_current/previous`, chiffrée AES-256-GCM sous `RSA_MASTER_KEY` dans l'état de la racine). Chaque relay non racine vérifie avec la clé publique racine **épinglée** (`REPEATER_ROOT_LINK_KEY_FILE`) et l'identité `REPEATER_ROOT_ID` ; il ne détient aucun secret de signature. Plus de `JWT_SECRET_KEY` par relay pour les liens.
 
-Les tokens relay sont créés via CLI avec le rôle approprié :
+**Création : sur la racine seulement** (`409 not_root` sur un nœud qui a un parent ou une ancre épinglée, `503 master_key_required` sans `RSA_MASTER_KEY`) :
 
-**Rôle `relay`** (créé sur le parent, présenté par l'enfant qui ouvre vers le parent) :
-> *Pas encore disponible via `tokens create`* (modèle de rôles complet : #146). Aujourd'hui le JWT de l'enfant
-> (rôle `relay`, 30 j) est émis à l'enregistrement : `POST /api/admin/relays` (`relays add`, mode pull).
-
-**Relay-parent** (créé sur l'enfant, présenté par le parent qui ouvre vers l'enfant — #150) :
 ```bash
-# Sur dmz1 (enfant) :
-secagent-server tokens create --role relay-parent \
-  --sub central \
-  --expires 90d
+# Lien pull : l'enfant dmz1 ouvre vers son parent central
+secagent-server tokens create --role relay-child  --sub dmz1    --aud central --expires 720h
+# Lien push : le parent central ouvre vers l'enfant dmz1
+secagent-server tokens create --role relay-parent --sub central --aud dmz1    --expires 90d
 ```
-- Adossé à `POST /api/admin/tokens` (`role=relay-parent`, `sub`, `expires_at`), réservé à l'admin.
-- `--expires` **obligatoire**, plafond **365 j** ; `sub` = `relay_id` du parent (identité qu'il présentera dans `relay_hello`).
-- Le JWT (signé avec la `JWT_SECRET_KEY` de l'enfant) est **affiché une seule fois** ; seules ses métadonnées (id, JTI, sub, expiration, révocation) sont persistées (table `relay_parent_tokens`), jamais le token ; `tokens list --role relay-parent` ne le montre pas.
-- `tokens revoke <id>` : le JTI entre en blacklist **et** le lien parent actif est fermé (close 4010) ; le parent ne peut plus se reconnecter avec ce token (401).
-- Le parent donne ensuite ce token à `POST /api/admin/relays` (`mode=push`, `url=wss://…`, `token`).
 
-**Sécurité :** 
-- Tokens jamais loggés en clair
-- JWT_SECRET_KEY unique par relay (jamais partagé)
-- Chaque relay valide les tokens reçus avec sa propre clé
+- `--sub` et `--aud` obligatoires, conformes à `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`, **différents** ; `--expires` : 720 h par défaut, plafond **365 j** (`cli/tokens.go:61-63,109-134`). Adossé à `POST /api/admin/tokens`.
+- Le jeton est **affiché une seule fois** ; le registre `link_tokens` ne garde que les métadonnées (jamais le jeton ni son hash) ; `tokens list --role relay-child|relay-parent` n'affiche pas le jeton (libellé `sub -> aud`).
+- `tokens revoke <id>` sur la racine : `revoked_at`, blacklist du `jti`, `seq` incrémenté, `link_revocations` poussé aux enfants, fermeture du lien (close `4010`).
+- Distribution : pull, le jeton `relay-child` est donné à l'enfant (`REPEATER_UPSTREAM_TOKEN[_FILE]`) ; push, le jeton `relay-parent` est donné au parent à `POST /api/admin/relays` (`mode=push`, `urls`, `token` ; stocké chiffré AES-256-GCM, jamais renvoyé, jamais journalisé).
+- `POST /api/admin/relays` / `relays add --mode pull` **ne minte plus rien** : il déclare l'enfant attendu (`handlers/admin_relays.go:136-137,222-224`).
+- Le rôle `relay` et les anciens jetons HS256 sont refusés (`link_role_legacy`) : à la migration, tous les liens doivent recevoir un jeton EdDSA (`DOC/project/DEPLOYMENT.md`).
+
+**Sécurité :**
+- Jetons jamais journalisés en clair
+- Seule la racine détient la clé de signature des liens ; sa compromission (ou celle de `RSA_MASTER_KEY` avec une copie de l'état) permet de forger des jetons pour toute la hiérarchie (`SECURITY.md` §5)
+- Chaque relay valide les jetons reçus avec l'ancre racine épinglée, jamais avec un secret partagé
 
 ---
 
@@ -905,7 +899,7 @@ Les fichiers Compose de référence sont `DEPLOYMENT/prod/docker-compose.server.
 | **Routage** | Lookup simple `hostname` (un seul chemin, pas de sélection multi-chemins) |
 | **Events** | Remontée parent-à-parent, pas de déduplication (un seul chemin) |
 | **Anti-cycle** | Rejet si `REPEATER_ID ∈ relay_chain` |
-| **Auth** | Deux rôles JWT fixés : `relay` (dit « relay-child », enfant ouvre) + `relay-parent` (parent ouvre) ; chaque relay signe ses tokens avec sa JWT_SECRET_KEY |
+| **Auth** | v3.0.1 : deux rôles fixés, `relay` (enfant ouvre) + `relay-parent` (parent ouvre), signature per-relay HS256. **Remplacé en v3.0.4** : jetons de lien EdDSA `relay-child` / `relay-parent` signés par la racine (§9.4) |
 | **Suppression** | REPEATER_UPSTREAMS_FILE, seen-set, event_id dedup, priority, multi-upstream |
 
 
