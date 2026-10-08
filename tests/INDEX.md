@@ -26,3 +26,6 @@
 | GO/cmd/secagent-server/internal/integration/suspension_three_levels_test.go | integration | secagent-server | QA v3.0.4 R2 : #180 drapeau de suspension sur 3 niveaux restauré après redémarrage de la racine | regression | |
 | GO/cmd/secagent-server/internal/auth/linkjwt_replay_keys_test.go | unit | secagent-server | R4 : un link_keys re-envoyé signé par une clé de confiance mais annonçant d'autres clés est refusé (3 égalités) | regression | |
 | GO/cmd/secagent-server/internal/state/linktrust_peek_backup_test.go | unit | secagent-server | `state link-trust reset` : refus racine côté Peek/CLI, « no backup, no reset » | regression | |
+| GO/cmd/secagent-server/internal/state/rekey_integrity_test.go | unit | secagent-server | `state rekey` : état réécrit authentique mais faux ⇒ rollback, schéma 1 refusé, sauvegarde non durable ⇒ arrêt | regression | |
+| GO/cmd/secagent-server/internal/cli/state_rekey_exit_test.go | unit | secagent-server | `state rekey` : code de sortie 10 (vérification) / 11 (clé < 32 octets) / 9 | regression | |
+| GO/cmd/secagent-server/internal/integration/rekey_binary_slow_test.go | integration | secagent-server | binaire réel : `state rekey` racine+non-racine, rollback par `state restore`, clé ≥ 32 octets (31 refusée code 11 / 32 acceptée), CLI `keys` contre de vrais nœuds | regression | slow |

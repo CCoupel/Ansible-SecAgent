@@ -75,6 +75,8 @@ jobs:
           # le test de charge compile lui-meme son noeud SANS -race (go test -c) : le RSS d'un noeud -race est sans signification
           go test -race -tags slow -run '^TestTaskLimits_Load3000AgentsNominalThenSaturation$' ./cmd/secagent-server/internal/integration/ -timeout 900s
           go test -race -tags slow -run '^TestExec_AnAnswerLongerThanTheAPIWriteTimeoutArrivesIntact$' ./cmd/secagent-server/internal/integration/ -timeout 300s
+          # binaire reel secagent-server (compile par le test) : state rekey / state restore / keys, contre de vrais noeuds
+          go test -race -tags slow -run '^(TestRekeyBinary_|TestKeysCLI_RealBinaryAgainstRealNodes$)' ./cmd/secagent-server/internal/integration/ -timeout 600s
 
   lint:
     name: Lint Go
