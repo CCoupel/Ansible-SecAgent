@@ -285,6 +285,7 @@ func buildInventory(opts inventoryOptions) InventoryResponse {
 					RelayID:           rt.RelayID,
 					RelayChain:        reversed(topDown),
 					NextHop:           nextHop,
+					Suspended:         rt.Suspended, // reported by the relay holding the agent: informative only (#180)
 				}
 				// groups: the top-level relay hangs under the root, each next relay under the previous one
 				parent := root

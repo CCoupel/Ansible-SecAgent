@@ -408,7 +408,7 @@ func (d *Dispatcher) reportDrops() {
 // Propagated reports whether an event kind is propagated upstream through the relay tree.
 func Propagated(event string) bool {
 	switch event {
-	case "host.up", "host.down", "host.new":
+	case "host.up", "host.down", "host.new", "host.suspended", "host.resumed":
 		return true
 	}
 	return false

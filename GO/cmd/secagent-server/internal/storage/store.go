@@ -63,6 +63,9 @@ type Store struct {
 	pluginVol map[string]pluginVolatile
 	relayVol  map[string]relayVolatile
 	routes    map[string]RelayRoute
+	// remoteSuspended: hosts BELOW this node reported suspended by the relay that holds them (#180).
+	// Volatile and purely informative (inventory): never an authority, never persisted.
+	remoteSuspended map[string]bool
 
 	onWrite atomic.Pointer[func(uint64)]
 }
@@ -106,10 +109,11 @@ func Open(opts state.Options) (*Store, error) {
 
 func newStore() *Store {
 	return &Store{
-		agentVol:  map[string]agentVolatile{},
-		pluginVol: map[string]pluginVolatile{},
-		relayVol:  map[string]relayVolatile{},
-		routes:    map[string]RelayRoute{},
+		agentVol:        map[string]agentVolatile{},
+		pluginVol:       map[string]pluginVolatile{},
+		relayVol:        map[string]relayVolatile{},
+		routes:          map[string]RelayRoute{},
+		remoteSuspended: map[string]bool{},
 	}
 }
 

@@ -244,3 +244,73 @@ func TestEvents_UncontestedHostUpDoesNotRearmTheConflictReport(t *testing.T) {
 		t.Errorf("conflicts = %d, want still 1: an uncontested host.up must not re-arm the report", len(got))
 	}
 }
+
+// ── host.suspended / host.resumed (#180) ─────────────────────────────────────
+
+type suspensionSink struct {
+	mu  sync.Mutex
+	got map[string]bool
+}
+
+func recordSuspensions(t *testing.T) *suspensionSink {
+	t.Helper()
+	s := &suspensionSink{got: map[string]bool{}}
+	SetRelayHostSuspendedFunc(func(host string, v bool) {
+		s.mu.Lock()
+		s.got[host] = v
+		s.mu.Unlock()
+	})
+	t.Cleanup(func() { SetRelayHostSuspendedFunc(nil) })
+	return s
+}
+
+func (s *suspensionSink) snapshot() map[string]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]bool{}
+	for k, v := range s.got {
+		out[k] = v
+	}
+	return out
+}
+
+func TestEvents_SuspensionOfAHostOfTheSenderSubtreeIsRecordedDispatchedAndForwarded(t *testing.T) {
+	sink := recordSuspensions(t)
+	r := newEventRig(t, map[string]string{"host-A": "dmz1", "host-B": "zone-a"})
+	r.send(RelayMessage{Event: "host.suspended", Hostname: "host-A", Status: "suspended", RelayChain: []string{"dmz1"}})
+	r.send(RelayMessage{Event: "host.suspended", Hostname: "host-B", RelayChain: []string{"zone-a", "dmz1"}})
+	r.send(RelayMessage{Event: "host.resumed", Hostname: "host-A", Status: "resumed", RelayChain: []string{"dmz1"}})
+	r.ready()
+	if got := sink.snapshot(); !got["host-B"] || got["host-A"] {
+		t.Errorf("recorded = %v, want host-B suspended and host-A resumed", got)
+	}
+	if got := r.local.list(); len(got) != 3 || got[0].Event != "host.suspended" || got[2].Event != "host.resumed" {
+		t.Errorf("local dispatches = %+v, want the three events for the hooks", got)
+	}
+	if r.upstreamCount() != 3 {
+		t.Errorf("forwarded %d, want 3", r.upstreamCount())
+	}
+}
+
+func TestEvents_SuspensionOutsideTheSenderSubtreeOrMalformedIsRefused(t *testing.T) {
+	sink := recordSuspensions(t)
+	r := newEventRig(t, map[string]string{"host-A": "dmz1", "elsewhere": "other-relay"})
+	for name, m := range map[string]RelayMessage{
+		"routed through another relay": {Event: "host.suspended", Hostname: "elsewhere", RelayChain: []string{"dmz1"}},
+		"no route at all":              {Event: "host.suspended", Hostname: "ghost", RelayChain: []string{"dmz1"}},
+		"unknown status":               {Event: "host.suspended", Hostname: "host-A", Status: "exploded", RelayChain: []string{"dmz1"}},
+		"bad hostname":                 {Event: "host.suspended", Hostname: "h;rm", RelayChain: []string{"dmz1"}},
+		"enrolled_at":                  {Event: "host.resumed", Hostname: "host-A", EnrolledAt: "2026-10-05T09:00:00Z", RelayChain: []string{"dmz1"}},
+		"wrong sender in the chain":    {Event: "host.suspended", Hostname: "host-A", RelayChain: []string{"zone-a"}},
+	} {
+		_ = name
+		r.send(m)
+	}
+	r.ready()
+	if got := sink.snapshot(); len(got) != 0 {
+		t.Errorf("refused events changed the state: %v", got)
+	}
+	if got := r.local.list(); len(got) != 0 || r.upstreamCount() != 0 {
+		t.Errorf("refused events were dispatched (%d) or forwarded (%d)", len(got), r.upstreamCount())
+	}
+}

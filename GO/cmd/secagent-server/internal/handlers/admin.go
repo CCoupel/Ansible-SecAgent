@@ -223,6 +223,10 @@ func AdminSuspendMinion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// the ancestors learn it as an informative event (#180); local hooks fire as for any host.* event
+	if hooks.GlobalDispatcher != nil {
+		hooks.GlobalDispatcher.Dispatch("host.suspended", hostname, "suspended", "")
+	}
 	log.Printf("Minion suspended: hostname=%q", hostname)
 	writeJSON(w, http.StatusOK, map[string]string{"hostname": hostname, "status": "suspended"})
 }
@@ -256,6 +260,9 @@ func AdminResumeMinion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if hooks.GlobalDispatcher != nil {
+		hooks.GlobalDispatcher.Dispatch("host.resumed", hostname, "resumed", "")
+	}
 	log.Printf("Minion resumed: hostname=%q", hostname)
 	writeJSON(w, http.StatusOK, map[string]string{"hostname": hostname, "status": "active"})
 }

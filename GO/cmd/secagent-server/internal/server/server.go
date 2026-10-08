@@ -451,10 +451,11 @@ func Build(cfg Config) (node *Node, err error) {
 		_, err := store.SetRelayChain(relayID, chain)
 		return err
 	})
+	ws.SetRelayHostSuspendedFunc(store.SetRemoteSuspended) // reported by the relay holding the agent: informative only (#180)
 	ws.SetRelayRouteChainsFunc(func(entries []ws.RouteChainEntry) error {
 		rc := make([]storage.RouteChain, 0, len(entries))
 		for _, e := range entries {
-			rc = append(rc, storage.RouteChain{Hostname: e.Hostname, RelayID: e.RelayID, Chain: e.Chain})
+			rc = append(rc, storage.RouteChain{Hostname: e.Hostname, RelayID: e.RelayID, Chain: e.Chain, Suspended: e.Suspended})
 		}
 		return store.SetRelayRouteChains(rc)
 	})

@@ -409,11 +409,13 @@ C'est toujours l'enfant (le relay logiquement plus profond) qui envoie son sous-
   "type":"topology_snapshot",
   "relays":[{"relay_id":"zone-a", "relay_chain":["dmz1","zone-a"]}],
   "agents":[
-    {"hostname":"host-A", "relay_id":"dmz1", "relay_chain":["dmz1"]},
+    {"hostname":"host-A", "relay_id":"dmz1", "relay_chain":["dmz1"], "suspended":true},
     {"hostname":"host-B", "relay_id":"zone-a", "relay_chain":["dmz1","zone-a"]}
   ]
 }
 ```
+
+**`suspended` (v3.0.4, #180)** : booléen optionnel (`omitempty`), renseigné par le relay qui **détient** l'agent (état local `agents.suspended`) et recopié tel quel par les relays intermédiaires (snapshots initiaux et de remplacement). Un enfant antérieur à v3.0.4 ne l'envoie pas : lu `false`, sans erreur. Le snapshot d'un enfant fait foi : il écrase l'état de suspension qu'on avait reçu de lui (un événement perdu est ainsi rattrapé).
 
 Validation du snapshot :
 - Pas de cycle (aucun relay_chain ne contient le REPEATER_ID du serveur)
@@ -435,6 +437,14 @@ Validation du snapshot :
 Contient **uniquement les agents directs** du relay. Le serveur répond `agent_list_ack` (`count`). Hostnames mal formés ignorés ; liste > `MAX_AGENT_LIST_HOSTS` : close 4012
 (`relay_handler.go:946-1005`). Entre relays, le dernier arrivé gagne (avec `host.conflict`), mais un agent connecté localement n'est jamais re-routé (§9.5a).
 
+#### Suspension d'un agent derrière un enfant (#180)
+
+L'état de suspension reste persisté **uniquement** sur le relay qui détient l'agent, qui **applique** le refus (`503 agent_suspended`). Sur les ancêtres, le drapeau reçu (snapshot `suspended`, événements `host.suspended` / `host.resumed`) est **éphémère, en mémoire, purement informatif** : il alimente l'inventaire (`secagent_suspended: true`, même rendu qu'un agent direct) et rien d'autre. Un relay **ne refuse jamais** une tâche sur la seule foi de ce drapeau (un enfant peut mentir ou être en retard).
+
+- **Cohérence à terme** : l'inventaire d'un ancêtre peut brièvement afficher un état périmé ; le refus d'`exec` est toujours exact. Après la reconnexion d'un enfant, son snapshot rétablit l'état.
+- **Compatibilité mixte** : un parent v3.0.3 rejette `host.suspended` / `host.resumed` avec `[SECURITY WARNING] … unsupported event kind` sans fermer le lien et ignore le champ `suspended` du snapshot ; sans danger mais bruyant pendant une montée progressive : monter **les parents d'abord**.
+- **Hors périmètre** : suspendre depuis la racine un agent situé derrière un enfant (l'API admin est locale à chaque relay).
+
 #### event_forward — Propagation des changements du sous-arbre
 
 Après handshake établi, tous les changements (hôtes, relays) sont notifiés via `event_forward` unifié.
@@ -443,7 +453,7 @@ Après handshake établi, tous les changements (hôtes, relays) sont notifiés v
 ```json
 {
   "type":"event_forward",
-  "event":"host.up|host.down|host.new",
+  "event":"host.up|host.down|host.new|host.suspended|host.resumed",
   "hostname":"host-A",
   "relay_id":"dmz1",
   "status":"connected|disconnected",
@@ -809,6 +819,7 @@ le routage (`relay_routing` : clé simple `hostname`, `relay_id`, `hop_type` age
 |---|---|---|---|
 | `host.up` | Agent se connecte via `/ws/agent` | `[relay_id]` (l'agent direct) | Propagé au parent par l'uplink (et exécute les hooks locaux) ; reçu d'un enfant, il met à jour la route sauf si l'hôte est connecté localement |
 | `host.down` | Agent se déconnecte | `[relay_id]` | — |
+| `host.suspended` / `host.resumed` | `POST /api/admin/minions/{hostname}/suspend` / `resume` sur le relay qui détient l'agent (#180) | `[relay_id]` | `status` absent, `suspended` ou `resumed`. Remonte comme `host.up`/`host.down` (même validation, même limite de débit `maxEventsPerSecond`). Un ancêtre ne l'accepte que pour un hôte **routé par le lien émetteur** (route connue de ce sous-arbre) et jamais pour un hôte connecté localement ; sinon rejeté avec `[SECURITY WARNING]`, lien ouvert. |
 | `host.new` | Agent apparaît via `agent_list` d'un enfant | `[relay_id_origine, relay_parent, ...]` (chaîne de l'agent) | — |
 | `host.conflict` | Un relay déclare un hôte déjà routé vers un autre relay | `[relay_id_nouveau_propriétaire]` (l'hôte va au nouveau proprietaire) | Rare ; indicatif d'une mal-configuration ou d'une attaque (détournement de route). Un événement max par changement de propriétaire. |
 | `relay.updated` | `group_vars` d'un relay changeant | `[relay_id]` | Permet aux hooks de réagir à la mise à jour des variables d'un relay |

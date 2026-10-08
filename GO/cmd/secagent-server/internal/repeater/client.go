@@ -69,6 +69,8 @@ type TopoAgent struct {
 	Hostname   string   `json:"hostname"`
 	RelayID    string   `json:"relay_id"`
 	RelayChain []string `json:"relay_chain"`
+	// Suspended: this agent is suspended on the relay that holds it (informative upstream, #180).
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 // Snapshot is the full subtree of this relay (descendants only).

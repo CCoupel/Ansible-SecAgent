@@ -105,6 +105,7 @@ Authorization: Bearer <PLUGIN_TOKEN>
 - `children` = relays enfants directs (hiérarchie récursive)
 - `vars` = `RELAY_GROUP_VARS` du relay (JSON)
 - Chaînes `secagent_relay_chain` = ordre **origine en premier** (relay le plus proche de l'agent d'abord)
+- `secagent_suspended: true` (optionnel, absent si faux) : l'agent est suspendu (#173). Pour un agent **derrière un relay enfant** (#180), l'information est celle que le relay qui détient l'agent a transmise (snapshot / événements `host.suspended` et `host.resumed`) : **informative et à cohérence à terme** — l'inventaire peut afficher brièvement un état périmé, mais le refus d'`exec` / `upload` / `fetch` (`503 agent_suspended`) est toujours exact, car appliqué par le relay détenteur.
 - `secagent_next_hop` = relay enfant direct vers lequel router la tâche
 
 Les agents `disconnected` sont inclus par défaut. Ansible les marquera `UNREACHABLE` lors de l'exécution.

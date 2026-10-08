@@ -153,6 +153,9 @@ type RelayAgentInfo struct {
 	// topology_snapshot only
 	RelayID    string   `json:"relay_id,omitempty"`
 	RelayChain []string `json:"relay_chain,omitempty"`
+	// Suspended: the relay holding the agent says it is suspended (#180). Informative for the
+	// ancestors; an old child does not send it (false).
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 // RelayTopoEntry is a descendant relay declared in a topology_snapshot.
@@ -384,9 +387,10 @@ func checkHostConflicts(conn *RelayConnection, relays map[string]struct{}, byRel
 // RouteChainEntry is a host route learned from a topology_snapshot: the declaring relay and
 // the top-down chain from this node's direct child (the peer) down to that relay.
 type RouteChainEntry struct {
-	Hostname string
-	RelayID  string
-	Chain    []string
+	Hostname  string
+	RelayID   string
+	Chain     []string
+	Suspended bool
 }
 
 // HostConflict describes a host whose route changed to a different owner (SECURITY.md §9):
@@ -510,6 +514,24 @@ func detectHostConflict(conn *RelayConnection, hostname string, chain []string) 
 		return nil
 	}
 	return &HostConflict{Hostname: hostname, OldRelay: prev, NewRelay: conn.RelayID, RelayChain: chain}
+}
+
+// SetRelayHostSuspendedFunc sets the recorder of the suspension a descendant reported for a host (#180).
+func SetRelayHostSuspendedFunc(fn func(hostname string, suspended bool)) {
+	treeHooksMu.Lock()
+	relayHostSuspendedFn = fn
+	treeHooksMu.Unlock()
+}
+
+var relayHostSuspendedFn func(hostname string, suspended bool)
+
+func recordHostSuspended(hostname string, suspended bool) {
+	treeHooksMu.RLock()
+	fn := relayHostSuspendedFn
+	treeHooksMu.RUnlock()
+	if fn != nil {
+		fn(hostname, suspended)
+	}
 }
 
 func routeChainsHook() func(entries []RouteChainEntry) error {
@@ -1647,7 +1669,7 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	if fn := routeChainsHook(); fn != nil {
 		var entries []RouteChainEntry
 		for _, a := range msg.Agents {
-			entries = append(entries, RouteChainEntry{Hostname: a.Hostname, RelayID: a.RelayID, Chain: a.RelayChain})
+			entries = append(entries, RouteChainEntry{Hostname: a.Hostname, RelayID: a.RelayID, Chain: a.RelayChain, Suspended: a.Suspended})
 		}
 		if cerr := fn(entries); cerr != nil {
 			log.Printf("topology_snapshot: route chains: relay=%q err=%v", conn.RelayID, cerr)
@@ -1715,7 +1737,7 @@ func handleEventForward(conn *RelayConnection, msg RelayMessage) {
 	// then forwarded to our own parent (the uplink appends our id). A received event is never
 	// handed back to the sender.
 	switch msg.Event {
-	case "host.up", "host.down", "host.new":
+	case "host.up", "host.down", "host.new", "host.suspended", "host.resumed":
 		dispatchEventLocal(msg)
 	}
 	forwardEventUpstream(msg)
@@ -1763,7 +1785,7 @@ var hostnameShape = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-
 // eventShapeError returns why an event_forward must be refused, "" when well formed.
 func eventShapeError(m RelayMessage) string {
 	switch m.Event {
-	case "host.up", "host.down", "host.new", "host.conflict":
+	case "host.up", "host.down", "host.new", "host.conflict", "host.suspended", "host.resumed":
 	case "relay.updated":
 		// a relay announces its Ansible group vars (#139): relay id + origin-first chain + vars
 		if !relayIDShape.MatchString(m.RelayID) {
@@ -1796,6 +1818,13 @@ func eventShapeError(m RelayMessage) string {
 			if _, err := time.Parse(time.RFC3339, m.EnrolledAt); err != nil {
 				return "invalid enrolled_at"
 			}
+		}
+	case "host.suspended", "host.resumed":
+		if m.Status != "" && m.Status != "suspended" && m.Status != "resumed" {
+			return "invalid status"
+		}
+		if m.EnrolledAt != "" {
+			return "enrolled_at only belongs to host.new"
 		}
 	case "host.conflict":
 		for _, id := range []string{m.OldRelay, m.NewRelay} {
@@ -1856,6 +1885,27 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 				return false
 			}
 		}
+		return true
+	case "host.suspended", "host.resumed":
+		// Same rule as host.down: a child only reports on a host of its OWN subtree, never on a host
+		// connected here nor routed through another peer. The flag is informative: it is never used to
+		// refuse a task (the relay holding the agent decides).
+		if _, err := GetConnection(msg.Hostname); err == nil {
+			log.Printf("[SECURITY WARNING] event_forward %s refused: relay_id=%q hostname=%q is connected locally", msg.Event, conn.RelayID, msg.Hostname)
+			return false
+		}
+		prev, err := lookupHostRoute(msg.Hostname)
+		if err != nil || prev == "" {
+			log.Printf("[SECURITY WARNING] event_forward %s refused: relay_id=%q hostname=%q has no route", msg.Event, conn.RelayID, msg.Hostname)
+			return false
+		}
+		if prev != conn.RelayID {
+			if _, mine := conn.descendants[prev]; !mine {
+				log.Printf("[SECURITY WARNING] event_forward %s refused: relay_id=%q hostname=%q is routed through another relay", msg.Event, conn.RelayID, msg.Hostname)
+				return false
+			}
+		}
+		recordHostSuspended(msg.Hostname, msg.Event == "host.suspended")
 		return true
 	case "host.conflict":
 		emitConflict(HostConflict{Hostname: msg.Hostname, OldRelay: msg.OldRelay, NewRelay: msg.NewRelay, RelayChain: chain}, true)
