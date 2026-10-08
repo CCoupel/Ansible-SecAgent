@@ -2165,7 +2165,7 @@ volumes:
 **Propriétés du remplacement** :
 - **Atomique** : validation complète (chaînes, noms, conflits) AVANT tout commit
 - **Coalescé** : rafales 200ms coalesced, min gap 2s (evite trop de snapshots)
-- **Rate-limited** : 40 remplacements/60s par lien (close 4012 si dépassé)
+- **Rate-limited** : 40 snapshots/60s par identité `relay_id`, premier snapshot compris (close 4012 si dépassé ; v3.0.4, #156)
 - **Chaînes réelles** : chaque relay conserve la vraie chaîne de ses descendants (en mémoire, `storeRelayChain`), sans aplatissement
 
 **Stockage** : les chaînes sont volatiles (reconstruites à chaque snapshot) et servent à construire le snapshot envoyé aux ancêtres.

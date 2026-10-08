@@ -461,7 +461,7 @@ Lu dans le journal append-only `actions.log` (#161). `limit` : 1–200 (défaut 
 | `DELETE /api/admin/relays/{id}` | Supprime un relay |
 | `POST /api/admin/relays/{id}/revoke` | Révoque un relay (c'est la seule forme de révocation : il n'y a pas de sous-commande CLI `relays revoke`) |
 
-(`server/routers.go:91-95`, `handlers/admin_relays.go`.)
+(`server/routers.go:96-100`, `handlers/admin_relays.go`.)
 
 ### Clé de signature des liens (v3.0.4, #141) — racine seulement
 
