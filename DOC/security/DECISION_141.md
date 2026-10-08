@@ -304,8 +304,9 @@ En v3.0.4, la JTI du jeton de lien est dans `link_tokens`, plus dans `relay_node
 2. Message `link_keys` poussé automatiquement vers les relays connectés.
 3. Vérifier via `keys link-status` que **tous** les relays sont `confirmed` (et `relays status` : `link_trust.seq ≥ seq_rotation`).
 4. **Mettre à jour `REPEATER_ROOT_LINK_KEY_FILE` de CHAQUE relay non racine avec la NOUVELLE clé publique** (`keys link-pubkey` sur la racine), **avant** `retire-link-previous`. Tant que `previous` existe, l'ancien fichier épinglé est encore accepté (il égale la clé précédente) ; **dès le retrait, il n'est plus ni la courante ni la précédente** : le prochain démarrage du relay (même fortuit : redémarrage du conteneur, mise à jour d'image) est **refusé** en boucle, fail closed voulu, avec `link trust anchor: pinned root link key disagrees with the persisted link_trust (outside a valid rotation chain)` (`ErrAnchorMismatch`). Constaté en qualification réelle (2026-10-08) : le lien déjà établi survit jusqu'au redémarrage, puis l'enfant ne repart plus.
-5. **Seulement après** : `keys retire-link-previous`.
-6. Si le retrait a déjà eu lieu avec un fichier périmé : remplacer le fichier par la clé courante (`keys link-pubkey`) et redémarrer le relay ; si l'ancre persistée est elle-même obsolète, `state link-trust reset --yes` (relay arrêté) puis redémarrer.
+5. **Re-minter le jeton de chaque lien AVANT le retrait** (`tokens create --role relay-child|relay-parent --sub … --aud …` sur la racine) et le remplacer sur le relay porteur (`REPEATER_UPSTREAM_TOKEN[_FILE]`, redémarrage) : le `kid` d'un jeton émis avant la rotation désigne l'ancienne clé, qui n'est plus ni `current` ni `previous` après le retrait (`auth/linkjwt.go:251-258`, `jwt_unknown_kid`).
+6. **Seulement après** (fichier épinglé ET jeton remplacés, lien `connected`) : `keys retire-link-previous`.
+7. Si le retrait a déjà eu lieu avec un fichier périmé : remplacer le fichier par la clé courante (`keys link-pubkey`) et redémarrer le relay ; si l'ancre persistée est elle-même obsolète, `state link-trust reset --yes` (relay arrêté) puis redémarrer.
 
 ### Montée de version v3.0.3 → v3.0.4 (rupture de liens, pas des agents)
 
