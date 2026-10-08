@@ -1684,8 +1684,8 @@ Configuration sur le parent (via API admin) :
 POST /api/admin/relays
 {
   "relay_id": "dmz1",
-  "url": "wss://dmz1.internal:7772",
-  "token": "${REPEATER_UPSTREAM_TOKEN_DMZ1}",
+  "urls": ["wss://dmz1.internal:7772"],
+  "token": "${RELAY_PARENT_TOKEN_DMZ1}",   // jeton relay-parent (sub=central, aud=dmz1) minté sur la racine
   "mode": "push"
 }
 ```
@@ -2069,8 +2069,8 @@ Configuration sur le parent via API admin (voir §23.6 pour l'authentification) 
 POST /api/admin/relays
 {
   "relay_id": "dmz1",
-  "url": "wss://dmz1.internal:7772",
-  "token": "${REPEATER_UPSTREAM_TOKEN_DMZ1}",
+  "urls": ["wss://dmz1.internal:7772"],
+  "token": "${RELAY_PARENT_TOKEN_DMZ1}",   // jeton relay-parent (sub=central, aud=dmz1) minté sur la racine
   "mode": "push"
 }
 ```
