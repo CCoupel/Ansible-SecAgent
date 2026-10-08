@@ -12,7 +12,8 @@ Le Compose est fourni avec la release (`secagent-compose-<version>.tar.gz`, imag
 |---|---|
 | `docker-compose.server.yml` | relay racine ; `docker-compose.child.yml` en surcharge pour un relay enfant |
 | `.env.example` → `.env` | variables d'interpolation non secrètes (version, chemins, adresse de publication admin) |
-| `prod.env.example` | **mode d'emploi des secrets** (v3.0.4, #196) : un FICHIER par secret dans `secrets/` (`jwt_secret_key`, `admin_token`, `rsa_master_key`, `repeater_upstream_token` pour un enfant), montés en `secrets:` Compose (`mode: 0400`, UID 10001) et lus par `*_FILE` ; **plus aucun secret en variable d'environnement** (invisibles dans `docker inspect`) ; `secrets/` **jamais dans le dépôt** (ignoré par git). Ce fichier n'est plus lu par Compose. |
+| `prod.env.example` | **mode d'emploi des secrets** (v3.0.4, #196) : un FICHIER par secret dans `secrets/` (`jwt_secret_key`, `admin_token`, `rsa_master_key`, `repeater_upstream_token` pour un enfant), monté en `secrets:` Compose et lu par `*_FILE` ; **plus aucun secret en variable d'environnement** (invisibles dans `docker inspect`). **Règle réelle : hors Swarm Compose monte le fichier de l'hôte et ignore `uid`/`gid`/`mode` ; chaque fichier doit appartenir à l'UID 10001 du conteneur, en mode 0400 (ou 0600)**. Ce fichier n'est plus lu par Compose. |
+| `preflight-secrets.sh` | **à lancer avant `docker compose up`** sur chaque hôte : vérifie propriétaire, mode, type (régulier, non lien), taille de chaque secret (et la clé publique racine avec `--child`) ; `--fix` corrige (sudo), `--write NOM` crée un secret depuis stdin (0400, UID 10001, valeur jamais affichée) |
 | `tools/test_shared_storage.py` | qualification du stockage partagé |
 
 `JWT_SECRET_KEY`, `ADMIN_TOKEN` et `RSA_MASTER_KEY` (fichiers `secrets/…`) sont **identiques sur tous les nœuds candidats** d'un relay. Ne jamais définir en plus la variable directe : les deux ensemble = refus de démarrer.
@@ -96,8 +97,8 @@ StartLimitBurst=5
 Le lien enfant → parent est authentifié par un **jeton de lien** Ed25519 signé par la **racine** et par une **ancre** : la clé publique de la racine, épinglée sur chaque relay non racine. Les jetons HS256 de v3.0.3 sont refusés ; **il n'y a pas de retour arrière** vers v3.0.3 (décision) et la rotation de `RSA_MASTER_KEY` est recommandée avant la mise en production.
 
 1. Sur la racine : `docker compose exec secagent-server secagent-server keys link-pubkey > root-link.pub` (PEM public sur stdout ; `root_id=<id> kid=<kid>` sur stderr = `REPEATER_ROOT_ID`). Copier `root-link.pub` sur l'hôte de l'enfant (`chmod 0644`), non secret mais jamais inscriptible par d'autres.
-2. Sur la racine : `… tokens create --role relay-child --sub <REPEATER_ID de l'enfant> --aud <relay_id du parent> [--expires 720h]` ; le jeton n'est affiché **qu'une fois** : l'écrire dans `secrets/repeater_upstream_token` (0400) de l'enfant.
-3. `.env` de l'enfant : `REPEATER_ID`, `REPEATER_UPSTREAM_URL`, `REPEATER_ROOT_ID`, `ROOT_LINK_KEY_FILE` ; puis `-f docker-compose.server.yml -f docker-compose.child.yml`.
+2. Sur la racine : `… tokens create --role relay-child --sub <REPEATER_ID de l'enfant> --aud <relay_id du parent> [--expires 720h]` ; le jeton n'est affiché **qu'une fois** : l'écrire avec `printf '%s' "$JETON" | sudo ./preflight-secrets.sh --write repeater_upstream_token` (0400, UID 10001) sur l'hôte de l'enfant.
+3. `.env` de l'enfant : `REPEATER_ID`, `REPEATER_UPSTREAM_URL`, `REPEATER_ROOT_ID`, `ROOT_LINK_KEY_FILE` ; `./preflight-secrets.sh --child` (code 0 exigé) ; puis `-f docker-compose.server.yml -f docker-compose.child.yml`.
 4. Rotation : `keys rotate-link` sur la racine, attendre que `keys link-status` confirme chaque relay, remplacer les jetons expirant, puis `keys retire-link-previous` (refusé `409 rotation_unconfirmed` tant que des relays n'ont pas confirmé). Révocation : `tokens revoke <id>` (lien fermé en 4010 à chaque niveau).
 
 ## Dimensionnement (parc > 3 000 hôtes)
@@ -112,7 +113,7 @@ Limites de tâches (#179) : chaque tâche admise réserve 5 Mio de budget stdout
 
 ## Premier déploiement
 
-1. Sur chaque hôte : `.env`, répertoire `secrets/` (voir `prod.env.example`), certificats, partage monté, `docker login ghcr.io` si l'image est privée.
+1. Sur chaque hôte : `.env`, répertoire `secrets/` (voir `prod.env.example`), **`./preflight-secrets.sh` (code 0 exigé : propriétaire UID 10001, mode 0400)**, certificats, partage monté, `docker login ghcr.io` si l'image est privée.
 2. **Initialiser l'état une seule fois**, depuis un seul hôte, avant de démarrer les autres :
    `docker compose run --rm --no-deps secagent-server state init` (nécessite `RSA_MASTER_KEY`).
 3. `docker compose -p secagent-prod-<relay_id> up -d` sur chaque hôte.

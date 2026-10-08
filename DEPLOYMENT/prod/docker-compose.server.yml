@@ -25,14 +25,18 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     # Secrets (#196, v3.0.4) : JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY, IDENTIQUES sur tous les noeuds candidats,
-    # fournis par FICHIER (`secrets:` ci-dessous, montes dans /run/secrets, mode 0400, UID du service) et plus par
-    # variable d'environnement : ils n'apparaissent plus dans `docker inspect` ni dans l'environnement du processus.
+    # fournis par FICHIER (`secrets:` ci-dessous, montes dans /run/secrets) et plus par variable d'environnement : ils
+    # n'apparaissent plus dans `docker inspect` ni dans l'environnement du processus.
+    # ATTENTION : hors Swarm, Compose monte le fichier de l'HOTE en bind mount et IGNORE uid/gid/mode (donc aucune de ces
+    # options ici : elles donneraient une fausse impression de protection). Le fichier GARDE son proprietaire et son mode
+    # d'hote : il doit APPARTENIR a l'UID 10001 (celui du conteneur) en mode 0400 (ou 0600), sinon le serveur refuse de
+    # demarrer. Creer/corriger avec ./preflight-secrets.sh (--write, --fix) et le LANCER AVANT `docker compose up`.
     # Ne JAMAIS definir en plus la variable directe (JWT_SECRET_KEY...) : les deux ensemble = refus de demarrer.
     # (l'ancien `env_file: prod.env` est supprime ; `docker exec ... secagent-server <cmd>` herite des *_FILE.)
     secrets:
-      - {source: jwt_secret_key, target: jwt_secret_key, uid: "10001", gid: "10001", mode: 0400}
-      - {source: admin_token,    target: admin_token,    uid: "10001", gid: "10001", mode: 0400}
-      - {source: rsa_master_key, target: rsa_master_key, uid: "10001", gid: "10001", mode: 0400}
+      - jwt_secret_key
+      - admin_token
+      - rsa_master_key
     environment:
       JWT_SECRET_KEY_FILE: /run/secrets/jwt_secret_key
       ADMIN_TOKEN_FILE: /run/secrets/admin_token
@@ -106,10 +110,11 @@ services:
         reservations: {cpus: "0.25", memory: 256m}
 
 # Fichiers de secrets (un secret par fichier, contenu brut, sans guillemets), crees HORS DEPOT dans SECRETS_DIR
-# (defaut ./secrets) sur CHAQUE hote, mode 0400 ou 0600, proprietaire = celui qui lance `docker compose` (ou 10001) :
-# jwt_secret_key, admin_token, rsa_master_key. Voir prod.env.example. Compose les copie dans /run/secrets avec
-# uid/gid/mode du service ci-dessus ; verification a la 1re mise en service : `docker compose exec secagent-server
-# stat -c '%a %u' /run/secrets/admin_token` -> `400 10001` (sinon le serveur refuse de demarrer).
+# (defaut ./secrets) sur CHAQUE hote : jwt_secret_key, admin_token, rsa_master_key. REGLE REELLE : proprietaire = UID 10001
+# (celui du conteneur), mode 0400 ou 0600, fichier regulier (ni lien, ni repertoire). Compose les monte en bind mount de
+# l'hote et ignore uid/gid/mode : rien ne corrige les droits a la place de l'operateur. Verifier AVANT `up` :
+#   sudo ./preflight-secrets.sh          (--fix pour corriger, --write NOM pour creer depuis stdin ; voir prod.env.example)
+# Controle apres demarrage : `docker compose exec secagent-server stat -c '%a %u' /run/secrets/admin_token` -> `400 10001`.
 secrets:
   jwt_secret_key:
     file: ${SECRETS_DIR:-./secrets}/jwt_secret_key

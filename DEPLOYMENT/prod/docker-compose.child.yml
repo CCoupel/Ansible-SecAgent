@@ -1,5 +1,6 @@
 # Surcharge pour un relay ENFANT (lien pull/push vers un relay parent) :
 #   docker compose -f docker-compose.server.yml -f docker-compose.child.yml up -d
+# Avant `up` : ./preflight-secrets.sh --child (proprietaire/mode des secrets, cle publique racine).
 # Les valeurs non secretes (URLs, identites, CA) restent dans .env, hors artefact. Les listes d'adresses
 # sont separees par des virgules (le parent peut etre actif/passif sur plusieurs hotes).
 #
@@ -11,11 +12,12 @@
 services:
   secagent-server:
     secrets:
-      - {source: repeater_upstream_token, target: repeater_upstream_token, uid: "10001", gid: "10001", mode: 0400}
+      - repeater_upstream_token      # fichier de l'HOTE (bind) : proprietaire UID 10001, mode 0400 ; uid/gid/mode Compose IGNORES
     environment:
       REPEATER_ID: ${REPEATER_ID:?REPEATER_ID est obligatoire pour un relay enfant}
       REPEATER_UPSTREAM_URL: ${REPEATER_UPSTREAM_URL:?REPEATER_UPSTREAM_URL (liste d'adresses du parent) est obligatoire}
-      # Jeton de lien : SECRET, par fichier (mode 0400). Ne pas definir REPEATER_UPSTREAM_TOKEN en plus (refus de demarrer).
+      # Jeton de lien : SECRET, par fichier (proprietaire 10001, mode 0400, voir preflight-secrets.sh --child). Ne pas definir
+      # REPEATER_UPSTREAM_TOKEN en plus (refus de demarrer).
       REPEATER_UPSTREAM_TOKEN_FILE: /run/secrets/repeater_upstream_token
       # Ancre de confiance : identite de la racine (== `root_id` de `keys link-pubkey`) et sa cle publique (NON secrete).
       REPEATER_ROOT_ID: ${REPEATER_ROOT_ID:?REPEATER_ROOT_ID (relay_id de la racine, affiche par `keys link-pubkey`) est obligatoire pour un relay enfant}
