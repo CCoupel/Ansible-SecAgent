@@ -558,3 +558,8 @@ footer .footer-brand { font-weight: 600; color: var(--text-secondary); margin-bo
 @media (max-width: 768px) {
   .repeater-modes { grid-template-columns: 1fr; }
 }
+
+/* Badges de nouveauté : couleur recalculée côté client selon le X de la version courante */
+.feature-new.badge-orange { background: rgba(238,119,0,0.15); border-color: rgba(238,119,0,0.45); color: #ee7700; }
+.feature-new.badge-blue   { background: rgba(60,120,220,0.15); border-color: rgba(60,120,220,0.4);  color: #5b9bf0; }
+.feature-new:empty { display: none; }

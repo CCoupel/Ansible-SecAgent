@@ -4,7 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ansible-SecAgent — Des agents pour Ansible</title>
-  <meta name="description" content="Exécutez des playbooks Ansible sur des hôtes derrière NAT, firewall ou DMZ. Connexions inversées, Zero Trust, TLS, JWT + RSA-4096.">
+  <meta name="current-major" content="3">
+  <meta name="description" content="Exécutez des playbooks Ansible sur des hôtes derrière NAT, firewall ou DMZ. Connexions inversées initiées par les agents, TLS partout, JWT + RSA-4096.">
   <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <script>mermaid.initialize({ startOnLoad: true, theme: 'default' });</script>
@@ -14,16 +15,16 @@
 <nav>
   <div class="nav-logo"><span class="logo-mark">S</span>Ansible-SecAgent</div>
   <ul class="nav-links">
-    <li><a href="#problem"      data-i18n="nav.problem">Problème</a></li>
-    <li><a href="#solution"     data-i18n="nav.solution">Solution</a></li>
+    <li><a href="#problem" data-i18n="nav.problem">Problème</a></li>
+    <li><a href="#solution" data-i18n="nav.solution">Solution</a></li>
     <li><a href="#nonintrusive" data-i18n="nav.compat">Compatibilité</a></li>
-    <li><a href="#security"     data-i18n="nav.security">Sécurité</a></li>
-    <li><a href="#proxy"        data-i18n="nav.proxy">Proxy/Gateway</a></li>
-    <li><a href="#hooks"        data-i18n="nav.hooks">Event Hooks</a></li>
-    <li><a href="#features"     data-i18n="nav.features">Fonctionnalités</a></li>
-    <li><a href="#mgmt"         data-i18n="nav.mgmt">Management</a></li>
+    <li><a href="#security" data-i18n="nav.security">Sécurité</a></li>
+    <li><a href="#relays" data-i18n="nav.relays">Relays</a></li>
+    <li><a href="#hooks" data-i18n="nav.hooks">Event Hooks</a></li>
+    <li><a href="#features" data-i18n="nav.features">Fonctionnalités</a></li>
+    <li><a href="#mgmt" data-i18n="nav.mgmt">Management</a></li>
     <li><a href="#architecture" data-i18n="nav.arch">Architecture</a></li>
-    <li><a href="#install"      data-i18n="nav.install">Installation</a></li>
+    <li><a href="#install" data-i18n="nav.install">Démarrer</a></li>
     <li><a href="https://github.com/CCoupel/Ansible-SecAgent">GitHub ↗</a></li>
   </ul>
   <div class="lang-switcher">
@@ -32,32 +33,26 @@
   </div>
 </nav>
 
-<!-- ══ HERO ══════════════════════════════════════════════════════════════ -->
 <section id="hero">
   <div class="container">
     <div class="hero-badges">
-      <span class="badge">Zero Trust</span>
-      <span class="badge">TLS Everywhere</span>
+      <span class="badge" data-i18n="hero.badge.tls">TLS partout</span>
       <span class="badge">JWT + RSA-4096</span>
-      <span class="badge blue"   data-i18n="hero.badge.native">Ansible natif</span>
+      <span class="badge blue" data-i18n="hero.badge.native">Ansible natif</span>
       <span class="badge orange">Open Source · Go</span>
-      <span class="badge green">v2.0.0</span>
-      <span class="badge teal"  data-i18n="hero.badge.proxy">Proxy Multi-zone</span>
+      <span class="badge green">v3.0.4</span>
+      <span class="badge teal" data-i18n="hero.badge.proxy">Relays chaînés</span>
       <span class="badge purple" data-i18n="hero.badge.hooks">Event Hooks</span>
     </div>
     <h1 data-i18n="hero.h1"><span class="hl-teal">Des agents</span><br>pour Ansible</h1>
-    <p class="subtitle" data-i18n="hero.subtitle">
-      Exécutez vos playbooks sur des hôtes derrière NAT, firewall ou DMZ.
-      Les agents initient eux-mêmes la connexion — vous n'ouvrez aucun port entrant.
-    </p>
+    <p class="subtitle" data-i18n="hero.subtitle">Exécutez vos playbooks sur des hôtes derrière NAT, firewall ou DMZ. Les agents initient eux-mêmes la connexion — vous n'ouvrez aucun port entrant sur les hôtes gérés.</p>
     <div class="cta-group">
-      <a href="#install"                              class="btn btn-primary" data-i18n="hero.cta.start">Démarrage rapide</a>
+      <a href="#install" class="btn btn-primary" data-i18n="hero.cta.start">Démarrer</a>
       <a href="https://github.com/CCoupel/Ansible-SecAgent" class="btn btn-outline" data-i18n="hero.cta.github">Voir sur GitHub</a>
     </div>
   </div>
 </section>
 
-<!-- ══ PROBLÈME ══════════════════════════════════════════════════════════ -->
 <section id="problem">
   <div class="container">
     <span class="section-tag" data-i18n="problem.tag">Le problème</span>
@@ -130,47 +125,39 @@
     <div class="arch-diagram" style="margin-top:2.5rem"><span class="c-ansible">Ansible Control Node</span> <span class="c-arrow">──SSH──▶</span> <span class="c-agent">Hôte cible</span>   <span style="color:#f85149">← BLOQUÉ derrière NAT/firewall</span></div>
   </div>
 </section>
-
-<!-- ══ SOLUTION ══════════════════════════════════════════════════════════ -->
 <section id="solution">
   <div class="container">
     <span class="section-tag" data-i18n="solution.tag">La solution</span>
     <h2 data-i18n="solution.title">Le modèle inversé Ansible-SecAgent</h2>
-    <p class="section-lead" data-i18n="solution.lead">
-      Ansible-SecAgent inverse le flux de contrôle. L'agent sur l'hôte cible initie une connexion WebSocket persistante vers le serveur relay. Ansible n'a besoin d'atteindre que le relay server — jamais les hôtes directement.
-    </p>
-
-    <!-- Deployment modes -->
+    <p class="section-lead" data-i18n="solution.lead">Ansible-SecAgent inverse le flux de contrôle. L'agent sur l'hôte cible initie une connexion WebSocket persistante (WSS) vers le serveur relay. Ansible n'a besoin d'atteindre que le relay — jamais les hôtes directement.</p>
     <div class="deploy-modes">
       <div class="deploy-card mono">
-        <span class="deploy-tag mono" data-i18n="deploy.mono.tag">Mononode</span>
-        <h3 data-i18n="deploy.mono.title">Simple &amp; rapide</h3>
-        <p data-i18n="deploy.mono.desc">Un seul serveur relay pour démarrer. Idéal pour les petites infrastructures ou pour valider la solution en quelques minutes.</p>
+        <span class="deploy-tag mono" data-i18n="deploy.mono.tag">Un serveur</span>
+        <h3 data-i18n="deploy.mono.title">Simple : un binaire Go</h3>
+        <p data-i18n="deploy.mono.desc">Un seul serveur relay suffit pour commencer. Pas de bus de messages, pas de base de données externe, pas de reverse proxy : l'état est un fichier et le TLS est natif.</p>
         <ul class="deploy-specs">
-          <li data-i18n="deploy.mono.s1">1 secagent-server (Go, 4.65 MiB)</li>
-          <li data-i18n="deploy.mono.s2">1 NATS JetStream (embarqué)</li>
-          <li data-i18n="deploy.mono.s3">1 Caddy (TLS automatique)</li>
-          <li data-i18n="deploy.mono.s4">SQLite inclus — zéro config DB</li>
-          <li data-i18n="deploy.mono.s5">docker compose up -d → prêt en 30s</li>
+          <li data-i18n="deploy.mono.s1"><code>secagent-server</code> écrit en Go</li>
+          <li data-i18n="deploy.mono.s2">Dispatch des tâches direct par WebSocket, une connexion par agent</li>
+          <li data-i18n="deploy.mono.s3">TLS natif, rechargement des certificats à chaud</li>
+          <li data-i18n="deploy.mono.s4">État dans un fichier authentifié (HMAC), secrets chiffrés (AES-256-GCM)</li>
         </ul>
       </div>
       <div class="deploy-card ha">
-        <span class="deploy-tag ha" data-i18n="deploy.ha.tag">Multi-nodes · HA</span>
-        <h3 data-i18n="deploy.ha.title">Scalable &amp; haute dispo</h3>
-        <p data-i18n="deploy.ha.desc">Plusieurs nodes relay derrière un load balancer. Les agents se connectent à n'importe quel node, le routage est transparent via cluster NATS.</p>
+        <span class="deploy-tag ha" data-i18n="deploy.ha.tag">Actif / passif</span>
+        <h3 data-i18n="deploy.ha.title">Haute disponibilité par verrou</h3>
+        <p data-i18n="deploy.ha.desc">Le même déploiement Docker Compose tourne sur plusieurs hôtes, sur un stockage partagé. Une seule instance détient le verrou et sert ; les autres attendent sans ouvrir aucun port, puis reprennent si elle disparaît. Les agents se reconnectent seuls.</p>
         <ul class="deploy-specs">
-          <li data-i18n="deploy.ha.s1">N secagent-server en parallèle</li>
-          <li data-i18n="deploy.ha.s2">Cluster NATS JetStream (3 nodes)</li>
-          <li data-i18n="deploy.ha.s3">Load balancer (Nginx / Ingress K8s)</li>
-          <li data-i18n="deploy.ha.s4">PostgreSQL externe (RDS/CloudSQL)</li>
-          <li data-i18n="deploy.ha.s5">Helm chart Kubernetes inclus</li>
+          <li data-i18n="deploy.ha.s1">Un seul maître par répertoire d'état (<code>relay.lock</code>)</li>
+          <li data-i18n="deploy.ha.s2">Instances secondaires : aucun port ouvert, aucun état chargé</li>
+          <li data-i18n="deploy.ha.s3">Les agents connaissent plusieurs adresses de relay</li>
+          <li data-i18n="deploy.ha.s4">Déploiement Docker Compose multi-hôtes</li>
         </ul>
       </div>
     </div>
+    <p class="section-lead" data-i18n="deploy.limits">Limite connue : l'actif/passif sur un stockage partagé entre deux hôtes réels n'a pas encore été vérifié en conditions réelles (voir « Limites connues » plus bas).</p>
   </div>
 </section>
 
-<!-- ══ NON-INTRUSIF ═══════════════════════════════════════════════════════ -->
 <section id="nonintrusive">
   <div class="container">
     <span class="section-tag" data-i18n="compat.tag">Compatibilité</span>
@@ -197,27 +184,14 @@
         <p data-i18n="compat.become.body"><code>become: true</code> et <code>become_user</code> fonctionnent comme avec SSH. Le become_pass est transmis de façon sécurisée, masqué dans tous les logs.</p>
       </div>
     </div>
-
-    <div class="arch-diagram" style="margin-top:2rem"><span style="color:var(--text-muted)"># ansible.cfg — <span data-i18n="compat.comment">seul changement requis</span></span>
-[defaults]
-<span class="c-relay">connection = relay</span>        <span style="color:var(--text-muted)"># was: ssh</span>
-<span class="c-relay">inventory  = relay_inventory.py</span>  <span style="color:var(--text-muted)"># dynamic, auto-populated</span>
-
-[relay_connection]
-server_url = https://relay.example.com
-token      = ${ANSIBLE_RELAY_TOKEN}</div>
+    <p class="section-lead" data-i18n="compat.cfg">Options du plugin (<code>ansible.cfg</code>, variables d'environnement, variables d'hôte) : voir la <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/plugins/PLUGINS_SPEC.md">spécification des plugins</a>.</p>
   </div>
 </section>
-
-<!-- ══ SÉCURITÉ ═══════════════════════════════════════════════════════════ -->
 <section id="security">
   <div class="container">
     <span class="section-tag" data-i18n="security.tag">Sécurité</span>
     <h2 data-i18n="security.title">Sécurité by design</h2>
-    <p class="section-lead" data-i18n="security.lead">
-      Ansible-SecAgent est conçu autour d'un modèle Zero Trust. Chaque décision d'architecture a une justification sécurité explicite, documentée dans les specs techniques.
-    </p>
-
+    <p class="section-lead" data-i18n="security.lead">Chaque décision d'architecture a une justification sécurité explicite, documentée dans le modèle de sécurité du projet. Ce modèle est évalué par des revues internes ; ce ne sont pas des audits externes ni une certification.</p>
     <div class="security-grid">
       <div class="sec-card">
         <h3>RSA-4096 <span data-i18n="security.per-agent">par agent</span></h3>
@@ -225,39 +199,43 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
       </div>
       <div class="sec-card">
         <h3 data-i18n="security.enrollment.title">Enrôlement contrôlé</h3>
-        <p data-i18n="security.enrollment.body">La clef publique de l'agent doit être pré-autorisée en base de données avant tout enrôlement. Zéro TOFU (Trust On First Use).</p>
+        <p data-i18n="security.enrollment.body">Tout enrôlement exige un jeton d'enrôlement créé par un administrateur, plus un challenge RSA-OAEP prouvant la possession de la clef privée. Sans jeton, le serveur répond 403.</p>
       </div>
       <div class="sec-card">
         <h3>JWT chiffré RSAES-OAEP</h3>
-        <p data-i18n="security.jwt.body">Le token JWT retourné à l'agent est chiffré avec sa clef publique RSA. Illisible sans la clef privée, même en cas d'interception réseau.</p>
+        <p data-i18n="security.jwt.body">Le JWT retourné à l'agent est chiffré avec sa clef publique RSA. Illisible sans la clef privée, même en cas d'interception réseau.</p>
       </div>
       <div class="sec-card">
         <h3>Blacklist JTI</h3>
-        <p data-i18n="security.jti.body">Révocation immédiate par JTI (JWT ID unique). La connexion WebSocket active est fermée avec le code 4001 — l'agent ne reconnecte pas automatiquement.</p>
+        <p data-i18n="security.jti.body">Révocation immédiate par JTI. La connexion WebSocket active est fermée avec le code 4001 et l'agent ne se reconnecte pas.</p>
       </div>
       <div class="sec-card">
         <h3>Dual-key JWT</h3>
-        <p data-i18n="security.dualkey.body">Rotation des secrets JWT sans interruption de service. Grace period configurable : les anciens tokens restent valides pendant la migration.</p>
+        <p data-i18n="security.dualkey.body">Rotation des secrets JWT sans interruption de service, avec une période de grâce pendant laquelle les anciens jetons restent valides.</p>
       </div>
       <div class="sec-card">
         <h3 data-i18n="security.tls.title">TLS obligatoire</h3>
-        <p data-i18n="security.tls.body">WSS (WebSocket over TLS) et HTTPS sur toutes les connexions. Terminaison TLS via Caddy. Aucun plain HTTP accepté.</p>
+        <p data-i18n="security.tls.body">WSS et HTTPS sur toutes les connexions, TLS natif dans le serveur. Aucun HTTP en clair en production.</p>
       </div>
       <div class="sec-card">
         <h3>become_pass masqué</h3>
-        <p data-i18n="security.become.body">Le mot de passe sudo/su est transmis via stdin chiffré et masqué dans tous les logs — agent, serveur et plugins Ansible.</p>
+        <p data-i18n="security.become.body">Le mot de passe sudo/su est transmis via stdin et masqué dans les journaux de l'agent, du serveur et du plugin Ansible.</p>
       </div>
       <div class="sec-card">
         <h3>AES-256-GCM</h3>
-        <p data-i18n="security.aes.body">Les secrets serveur (RSA keypair, JWT secrets) sont chiffrés en base de données via AES-256-GCM dérivé de RSA_MASTER_KEY.</p>
+        <p data-i18n="security.aes.body">L'état du serveur est authentifié par HMAC et ses secrets sont chiffrés en AES-256-GCM avec une clef maître (<code>RSA_MASTER_KEY</code>).</p>
       </div>
       <div class="sec-card new-badge">
-        <span class="feature-new" data-i18n="badge.new">NOUVEAU v2.0</span>
-        <h3 data-i18n="security.relay.title">4ème rôle JWT : relay</h3>
-        <p data-i18n="security.relay.body">Le rôle <code>relay</code> (distinct de agent/plugin/admin) authentifie les relay nodes en mode pull. Créé via <code>POST /api/admin/tokens</code> — jamais partagé avec les agents.</p>
+        <span class="feature-new" data-badge-version="v3.0.4"></span>
+        <h3 data-i18n="security.link.title">Liens entre relays signés</h3>
+        <p data-i18n="security.link.body">Les relays s'authentifient par des jetons Ed25519 émis par la racine et vérifiés avec sa clef publique épinglée. Plus de secret de signature partagé entre voisins.</p>
+      </div>
+      <div class="sec-card new-badge">
+        <span class="feature-new" data-badge-version="v3.0.4"></span>
+        <h3 data-i18n="security.rot.title">Rotation et révocation</h3>
+        <p data-i18n="security.rot.body">Rotation de la clef de lien de la racine avec double acceptation, révocation d'un jeton propagée de proche en proche, rotation hors ligne de la clef maître (<code>state rekey</code>).</p>
       </div>
     </div>
-
     <table class="sec-table">
       <thead>
         <tr>
@@ -270,7 +248,7 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
         <tr>
           <td data-i18n="sec.r1.t">Port entrant exposé</td>
           <td class="ko" data-i18n="sec.r1.s">Port 22 ouvert</td>
-          <td class="ok" data-i18n="sec.r1.r">Aucun port entrant</td>
+          <td class="ok" data-i18n="sec.r1.r">Aucun port entrant sur les hôtes gérés</td>
         </tr>
         <tr>
           <td data-i18n="sec.r2.t">Interception du token d'auth</td>
@@ -285,314 +263,164 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
         <tr>
           <td data-i18n="sec.r4.t">Agent non autorisé</td>
           <td class="ko" data-i18n="sec.r4.s">TOFU implicite possible</td>
-          <td class="ok" data-i18n="sec.r4.r">Pre-authorize obligatoire</td>
+          <td class="ok" data-i18n="sec.r4.r">Jeton d'enrôlement + challenge obligatoires</td>
         </tr>
         <tr>
           <td data-i18n="sec.r5.t">Rotation des secrets</td>
-          <td class="ko" data-i18n="sec.r5.s">Manuelle, downtime</td>
-          <td class="ok" data-i18n="sec.r5.r">Dual-key, grace period, zero downtime</td>
+          <td class="ko" data-i18n="sec.r5.s">Manuelle, avec interruption</td>
+          <td class="ok" data-i18n="sec.r5.r">Dual-key, période de grâce, sans interruption</td>
         </tr>
         <tr>
-          <td data-i18n="sec.r6.t">Fuite become_pass dans logs</td>
+          <td data-i18n="sec.r6.t">Fuite de become_pass dans les logs</td>
           <td class="ko" data-i18n="sec.r6.s">Risque selon configuration</td>
-          <td class="ok" data-i18n="sec.r6.r">Masqué dans tous les logs</td>
+          <td class="ok" data-i18n="sec.r6.r">Masqué dans les logs</td>
         </tr>
       </tbody>
     </table>
+    <p class="section-lead" style="margin-top:1.5rem"><a href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/security/SECURITY.md" data-i18n="security.doc">Lire le modèle de sécurité complet</a></p>
   </div>
 </section>
 
-<!-- ══ PROXY / GATEWAY MULTI-ZONE (v2.0) ════════════════════════════════ -->
-<section id="proxy">
+<section id="relays">
   <div class="container">
-    <span class="section-tag" data-i18n="proxy.tag">Nouveau v2.0</span>
-    <h2 data-i18n="proxy.title">Proxy/Gateway multi-zone — secagent_repeater</h2>
-    <p class="section-lead" data-i18n="proxy.lead">
-      Ansible-SecAgent v2.0 introduit le mode proxy : un serveur central agrège plusieurs zones réseau isolées (DMZ, cloud privé, sites edge) en un point d'entrée unique. Ansible n'a besoin d'atteindre qu'un seul endpoint pour piloter l'intégralité du parc.
-    </p>
-
-    <div class="deploy-modes">
-      <div class="deploy-card mono">
-        <span class="deploy-tag mono" data-i18n="proxy.pull.tag">Mode Pull</span>
-        <h3 data-i18n="proxy.pull.title">Les relays initient la connexion</h3>
-        <p data-i18n="proxy.pull.desc">Chaque relay DMZ ouvre une WebSocket persistante vers le proxy central via <code>WSS /ws/relay</code>. Le relay s'authentifie avec un JWT rôle <code>relay</code>. Aucune connexion entrante depuis le proxy vers les DMZ.</p>
-        <ul class="deploy-specs">
-          <li data-i18n="proxy.pull.s1">Connexion sortante uniquement depuis chaque DMZ</li>
-          <li data-i18n="proxy.pull.s2">JWT rôle <code>relay</code> dédié (distinct de agent/plugin/admin)</li>
-          <li data-i18n="proxy.pull.s3">Protocole WS : 10 types de messages bidirectionnels</li>
-          <li data-i18n="proxy.pull.s4">Fermeture propre codes 4010/4011</li>
-        </ul>
-      </div>
-      <div class="deploy-card ha">
-        <span class="deploy-tag ha" data-i18n="proxy.push.tag">Mode Push</span>
-        <h3 data-i18n="proxy.push.title">Le proxy initie les connexions REST</h3>
-        <p data-i18n="proxy.push.desc">Le proxy contacte directement des relays enregistrés en DB via HTTP REST. Inventaire agrégé automatiquement toutes les 30s (configurable via <code>PROXY_INVENTORY_POLL_INTERVAL</code>).</p>
-        <ul class="deploy-specs">
-          <li data-i18n="proxy.push.s1">Relays enregistrés via <code>POST /api/admin/relays</code></li>
-          <li data-i18n="proxy.push.s2">Poll inventaire toutes les 30s (configurable)</li>
-          <li data-i18n="proxy.push.s3">Table DB : relay_nodes + relay_routing</li>
-          <li data-i18n="proxy.push.s4">CLI : <code>secagent-server relays list|add|remove|status</code></li>
-        </ul>
-      </div>
-    </div>
-
-    <div class="compat-grid" style="margin-top:2rem">
-      <div class="compat-card">
-        <h3 data-i18n="proxy.f1.title">Inventaire agrégé</h3>
-        <p data-i18n="proxy.f1.body"><code>GET /api/inventory</code> agrège automatiquement les agents de tous les relays connectés et les agents directs. Un seul appel, visibilité complète du parc.</p>
-      </div>
-      <div class="compat-card">
-        <h3 data-i18n="proxy.f2.title">Routage transparent</h3>
-        <p data-i18n="proxy.f2.body"><code>/api/exec/{host}</code>, <code>/api/upload/{host}</code>, <code>/api/fetch/{host}</code> routés automatiquement vers le relay propriétaire de l'hôte via la table <code>relay_routing</code>.</p>
-      </div>
-      <div class="compat-card">
-        <h3 data-i18n="proxy.f3.title">Chaînage proxy→proxy</h3>
-        <p data-i18n="proxy.f3.body">Topologies hiérarchiques multi-niveaux supportées (<code>is_proxy: true</code> dans <code>relay_hello</code>). Protection anti-boucle via en-tête <code>X-Relay-Hops</code> (budget 8, HTTP 508 si épuisé).</p>
-      </div>
-      <div class="compat-card">
-        <h3 data-i18n="proxy.f4.title">Docker Compose multi-zones</h3>
-        <p data-i18n="proxy.f4.body">Topologie qualif incluse : proxy + 2 relays DMZ + agents simulés, réseaux isolés. Prêt en une commande.</p>
-      </div>
-    </div>
-
-    <div class="arch-diagram" style="margin-top:2rem">
-<span class="c-relay"># Démarrage mode repeater (proxy central)</span>
-<span class="t-prompt">$</span> <span class="t-cmd">PROXY_MODE=true \</span>
-<span>  PROXY_RELAYS='[{"url":"http://relay-dmz1:7770","mode":"push"}]' \</span>
-<span>  JWT_SECRET_KEY=&lt;key&gt; ADMIN_TOKEN=&lt;token&gt; ./secagent-server</span>
-
-<span class="c-relay"># Ou via Docker Compose multi-zones</span>
-<span class="t-prompt">$</span> <span class="t-cmd">cd DEPLOYMENT/qualif</span>
-<span class="t-prompt">$</span> <span class="t-cmd">docker compose -f docker-compose.proxy.yml up -d</span>
-<span class="t-dim"># → proxy + relay-dmz1 + relay-dmz2 + agents simulés démarrés</span>
-
-<span class="c-relay"># Gérer les relays depuis la CLI</span>
-<span class="t-prompt">$</span> <span class="t-cmd">secagent-server relays list --format table</span>
-<span class="t-head">ID    URL                    MODE   STATUS     AGENTS</span>
-<span class="t-ok">1     http://relay-dmz1:7770  push   connected  3</span>
-<span class="t-ok">2     http://relay-dmz2:7771  push   connected  2</span>
-    </div>
-  </div>
-</section>
-
-<!-- ══ EVENT HOOKS (v1.1) ════════════════════════════════════════════════ -->
-<section id="hooks">
-  <div class="container">
-    <span class="section-tag" data-i18n="hooks.tag">Nouveau v1.1</span>
-    <h2 data-i18n="hooks.title">Event Hooks — Actions configurables par JSON</h2>
-    <p class="section-lead" data-i18n="hooks.lead">
-      Déclenchez automatiquement des actions (notifications, scripts, appels API, écriture de fichiers) sur les événements de vos agents relay. Configuration zéro-code via un fichier JSON — hot-reload via SIGHUP.
-    </p>
-
+    <span class="section-tag" data-i18n="relays.tag">Relays chaînés</span>
+    <h2 data-i18n="relays.title">Plusieurs zones, un seul point d'entrée</h2>
+    <p class="section-lead" data-i18n="relays.lead">Une racine agrège des relays enfants placés dans vos DMZ, clouds privés ou sites distants. Ansible ne parle qu'à la racine ; les agents ne parlent qu'au relay de leur zone.</p>
     <div class="compat-grid">
       <div class="compat-card">
-        <h3 data-i18n="hooks.t1.title">4 types d'actions</h3>
-        <p data-i18n="hooks.t1.body"><code>shell</code> — exécute un script système<br><code>file</code> — écrit dans un fichier de log<br><code>api</code> — appel HTTP avec méthode configurable<br><code>webhook</code> — HTTP POST signé HMAC-SHA256</p>
+        
+        <h3 data-i18n="relays.c1.t">Topologie en arbre</h3>
+        <p data-i18n="relays.c1.b">Un relay enfant n'a qu'un seul parent. Le lien s'ouvre soit de l'enfant vers le parent (pull), soit du parent vers l'enfant (push) selon vos règles de pare-feu.</p>
       </div>
       <div class="compat-card">
-        <h3 data-i18n="hooks.t2.title">Événements disponibles</h3>
-        <p data-i18n="hooks.t2.body"><code>agent.connected</code> — connexion WSS établie<br><code>agent.disconnected</code> — déconnexion WSS<br><code>task.completed</code> — tâche terminée avec succès<br><code>task.failed</code> — tâche en erreur</p>
+        
+        <h3 data-i18n="relays.c2.t">Inventaire hiérarchique</h3>
+        <p data-i18n="relays.c2.b">Chaque relay devient un groupe Ansible portant son nom ; l'inventaire de la racine agrège toute la descendance. Les tâches sont routées vers le relay qui détient l'hôte.</p>
       </div>
       <div class="compat-card">
-        <h3 data-i18n="hooks.t3.title">Templates de variables</h3>
-        <p data-i18n="hooks.t3.body">Injectez des variables dynamiques dans vos actions : <code>{{.AgentID}}</code>, <code>{{.Hostname}}</code>, <code>{{.Event}}</code>, <code>{{.Timestamp}}</code>, <code>{{.Status}}</code></p>
+        
+        <h3 data-i18n="relays.c3.t">Un agent local reste local</h3>
+        <p data-i18n="relays.c3.b">Un agent connecté localement est prioritaire sur la table de routage : un autre relay ne peut pas le détourner en déclarant le même nom d'hôte.</p>
       </div>
       <div class="compat-card">
-        <h3 data-i18n="hooks.t4.title">Dispatcher asynchrone</h3>
-        <p data-i18n="hooks.t4.body">Queue interne de 1000 entrées, non-bloquant. Hot-reload via <code>SIGHUP</code> sans redémarrer le serveur. Log complet dans la table <code>action_log</code>.</p>
+        <span class="feature-new" data-badge-version="v3.0.4"></span>
+        <h3 data-i18n="relays.c4.t">Jetons de lien signés par la racine</h3>
+        <p data-i18n="relays.c4.b">Rôles <code>relay-child</code> et <code>relay-parent</code>, jetons EdDSA émis uniquement sur la racine, clef publique racine épinglée sur chaque relay non racine. Sans ancre, le lien est refusé.</p>
       </div>
-    </div>
-
-    <!-- Exemple de configuration -->
-    <div class="arch-diagram" style="margin-top:2rem">
-<span class="c-relay"># ~/.secagent/hooks.json</span>
-{
-  <span class="c-ansible">"hooks"</span>: [
-    {
-      <span class="c-ansible">"event"</span>: <span class="t-ok">"agent.connected"</span>,
-      <span class="c-ansible">"action"</span>: {
-        <span class="c-ansible">"type"</span>: <span class="t-ok">"shell"</span>,
-        <span class="c-ansible">"command"</span>: <span class="t-ok">"notify-send 'Agent connecté: {{.AgentID}}'"</span>
-      }
-    },
-    {
-      <span class="c-ansible">"event"</span>: <span class="t-ok">"task.completed"</span>,
-      <span class="c-ansible">"action"</span>: {
-        <span class="c-ansible">"type"</span>: <span class="t-ok">"api"</span>,
-        <span class="c-ansible">"url"</span>: <span class="t-ok">"https://mon-cmdb/api/update"</span>,
-        <span class="c-ansible">"method"</span>: <span class="t-ok">"POST"</span>
-      }
-    },
-    {
-      <span class="c-ansible">"event"</span>: <span class="t-ok">"agent.disconnected"</span>,
-      <span class="c-ansible">"action"</span>: {
-        <span class="c-ansible">"type"</span>: <span class="t-ok">"webhook"</span>,
-        <span class="c-ansible">"url"</span>: <span class="t-ok">"https://alerting.example.com/relay"</span>,
-        <span class="c-ansible">"secret"</span>: <span class="t-ok">"${HMAC_SECRET}"</span>
-      }
-    }
-  ]
-}
-
-<span class="c-relay"># Consulter les logs d'exécution</span>
-<span class="t-prompt">$</span> <span class="t-cmd">secagent-server hooks log --limit 10 --event agent.connected</span>
-<span class="t-prompt">$</span> <span class="t-cmd">secagent-server hooks status</span>
-<span class="c-relay"># Hot-reload sans redémarrage</span>
-<span class="t-prompt">$</span> <span class="t-cmd">kill -SIGHUP $(pgrep secagent-server)</span>
+      <div class="compat-card">
+        <span class="feature-new" data-badge-version="v3.0.4"></span>
+        <h3 data-i18n="relays.c5.t">Rotation et révocation propagées</h3>
+        <p data-i18n="relays.c5.b">Rotation de la clef de lien avec double acceptation et confirmation par chaque relay ; la révocation d'un jeton coupe le lien concerné à tous les niveaux.</p>
+      </div>
+      <div class="compat-card">
+        <span class="feature-new" data-badge-version="v3.0.4"></span>
+        <h3 data-i18n="relays.c6.t">Limites d'admission</h3>
+        <p data-i18n="relays.c6.b">Quotas de tâches par agent et par relay, budget mémoire pour la sortie des tâches, quota de snapshots de topologie par identité de relay. Un relay saturé répond 429/503 explicites plutôt que de s'effondrer.</p>
+      </div>
     </div>
   </div>
 </section>
 
-<!-- ══ FONCTIONNALITÉS ════════════════════════════════════════════════════ -->
+<section id="hooks">
+  <div class="container">
+    <span class="section-tag" data-i18n="hooks.tag">Event Hooks</span>
+    <h2 data-i18n="hooks.title">Event Hooks — Actions configurables par JSON</h2>
+    <p class="section-lead" data-i18n="hooks.lead">Déclenchez des actions (notification, script, appel API, écriture de fichier) sur les événements de votre parc, sans écrire de code : un fichier JSON suffit.</p>
+    <div class="compat-grid">
+      <div class="compat-card">
+        
+        <h3 data-i18n="hooks.c1.t">4 types d'actions</h3>
+        <p data-i18n="hooks.c1.b"><code>shell</code>, <code>file</code>, <code>api</code> et <code>webhook</code> (POST signé HMAC-SHA256).</p>
+      </div>
+      <div class="compat-card">
+        
+        <h3 data-i18n="hooks.c2.t">Événements d'hôte</h3>
+        <p data-i18n="hooks.c2.b"><code>host.up</code>, <code>host.down</code>, <code>host.new</code>, <code>host.conflict</code>, <code>host.suspended</code>, <code>host.resumed</code> et <code>relay.updated</code>, propagés le long de la chaîne de relays.</p>
+      </div>
+      <div class="compat-card">
+        
+        <h3 data-i18n="hooks.c3.t">Contexte de chaîne</h3>
+        <p data-i18n="hooks.c3.b">Variables <code>{{relay_chain}}</code> et <code>{{relay_origin}}</code>, filtre <code>relay_chain_contains</code> validé au chargement : une configuration mal formée est rejetée en bloc.</p>
+      </div>
+      <div class="compat-card">
+        
+        <h3 data-i18n="hooks.c4.t">Journal sans secrets</h3>
+        <p data-i18n="hooks.c4.b">Journal JSON Lines en ajout seul, secrets (HMAC, jetons, en-têtes) masqués. Rechargement de la configuration à chaud par <code>SIGHUP</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section id="features">
   <div class="container">
     <span class="section-tag" data-i18n="features.tag">Fonctionnalités</span>
     <h2 data-i18n="features.title">Implémentées par version</h2>
-    <p data-i18n="features.lead">Ansible-SecAgent est développé par phases incrémentales, chacune validée par tests automatisés et audit sécurité avant déploiement.</p>
-
+    <p class="section-lead" data-i18n="features.lead">Chaque version est livrée par jalons, avec ses notes de version et son journal des changements sur GitHub.</p>
     <div class="version-block">
-      <span class="version-tag">v0.1 — Agent Python MVP</span>
+      <span class="version-tag current">v3.0.4 — Liens de confiance signés et exploitation</span>
       <ul class="feature-list">
-        <li data-i18n="f01.1">Enrollment RSA-4096 : génération clef, POST /api/register, JWT OAEP</li>
-        <li data-i18n="f01.2">Connexion WSS persistante avec reconnexion backoff exponentiel (1s → 60s)</li>
-        <li data-i18n="f01.3">Exécution de commandes via subprocess (buffer stdout 5 MB, timeout, kill)</li>
-        <li data-i18n="f01.4">Transfert de fichiers : put_file et fetch_file (base64, limite 500 KB)</li>
-        <li data-i18n="f01.5">Élévation de privilèges : become via stdin, become_pass masqué dans logs</li>
-        <li data-i18n="f01.6">Registre async persisté JSON : reprise après redémarrage agent</li>
-        <li data-i18n="f01.7">Déploiement systemd : Restart=on-failure, User dédié, NoNewPrivileges</li>
+        <li data-i18n="f304.1">Jetons de lien relay ↔ relay signés Ed25519 par la racine, clef publique racine épinglée sur chaque relay non racine</li>
+        <li data-i18n="f304.2">Rotation de la clef de lien (<code>keys rotate-link</code>, double acceptation) et révocation propagée de proche en proche</li>
+        <li data-i18n="f304.3"><code>state rekey</code> : rotation hors ligne de <code>RSA_MASTER_KEY</code> avec sauvegarde et vérification ; <code>state link-trust reset</code> pour ré-épingler une ancre</li>
+        <li data-i18n="f304.4">Limites d'admission : tâches par agent et par relay, budget mémoire de sortie, quota de snapshots par identité de relay</li>
+        <li data-i18n="f304.5">Secrets par fichier (<code>*_FILE</code>) pour le serveur et le minion</li>
+        <li data-i18n="f304.6">Politique de connexion sortante des liens (anti-rebinding DNS, redirections jamais suivies)</li>
+        <li data-i18n="f304.7"><code>--version</code> sur <code>secagent-server</code> et <code>secagent-minion</code> ; les arguments inconnus sont refusés au lieu de démarrer</li>
+        <li data-i18n="f304.8">Suspension d'un agent visible dans l'inventaire des relays ancêtres</li>
+        <li data-i18n="f304.9">Correctif : la réponse d'une tâche synchrone durant plus de 15 s n'est plus coupée</li>
       </ul>
     </div>
-
     <div class="version-block">
-      <span class="version-tag">v0.2 — Server Python (FastAPI + NATS)</span>
+      <span class="version-tag">v3.0.3 — Actif/passif, état fichier, TLS natif</span>
       <ul class="feature-list">
-        <li data-i18n="f02.1">API REST FastAPI : /api/register, /api/exec, /api/upload, /api/fetch, /api/inventory</li>
-        <li data-i18n="f02.2">NATS JetStream : streams RELAY_TASKS + RELAY_RESULTS, routing inter-nodes HA</li>
-        <li data-i18n="f02.3">Auth JWT : rôles agent/plugin/admin, blacklist JTI, révocation WS code 4001</li>
-        <li data-i18n="f02.4">SQLite : tables agents, authorized_keys, blacklist avec schéma versionné</li>
-        <li data-i18n="f02.5">Inventaire dynamique : format JSON Ansible standard, filtre only_connected</li>
+        <li data-i18n="f303.1">Actif/passif dans <code>secagent-server</code> : verrou d'exclusivité, instances secondaires sans port ouvert</li>
+        <li data-i18n="f303.2">État dans un fichier authentifié (HMAC, anti-rejeu, secrets chiffrés) à la place de SQLite</li>
+        <li data-i18n="f303.3">TLS natif avec rechargement à chaud des certificats</li>
+        <li data-i18n="f303.4">Journal des actions de hooks en ajout seul, sans secrets</li>
+        <li data-i18n="f303.5">Correctifs de sécurité : renouvellement de jeton et enrôlement sans jeton, connexions WebSocket non authentifiées (versions antérieures concernées)</li>
       </ul>
     </div>
-
     <div class="version-block">
-      <span class="version-tag">v0.3 — Plugins Ansible</span>
+      <span class="version-tag">v3.0.2 — Événements et inventaire hiérarchique</span>
       <ul class="feature-list">
-        <li data-i18n="f03.1">Connection plugin : remplace SSH, exec_command / put_file / fetch_file natifs</li>
-        <li data-i18n="f03.2">become support : transmission become_pass au serveur relay</li>
-        <li data-i18n="f03.3">Inventory plugin : GET /api/inventory → hostvars + groupes Ansible</li>
-        <li data-i18n="f03.4">Configuration via ansible.cfg ou variables d'hôte (ansible_connection: relay)</li>
-        <li data-i18n="f03.5">Mapping HTTP → AnsibleConnectionError : 503 UNREACHABLE, 504 timeout</li>
+        <li data-i18n="f302.1">Propagation d'événements <code>host.*</code> le long de la chaîne de relays, avec variables <code>relay_chain</code> / <code>relay_origin</code></li>
+        <li data-i18n="f302.2">Inventaire hiérarchique : groupes Ansible nommés d'après les relays, <code>?relay=</code> pour limiter à une descendance</li>
+        <li data-i18n="f302.3">Variables de groupe (<code>RELAY_GROUP_VARS</code>) transmises le long de la chaîne</li>
       </ul>
     </div>
-
     <div class="version-block">
-      <span class="version-tag">v1.0 — Réécriture Go</span>
+      <span class="version-tag">v3.0.1 — Chaîne de relays</span>
       <ul class="feature-list">
-        <li data-i18n="f10.1">Serveur Go : binaire 4.65 MiB, 0 restart en production, goroutines</li>
-        <li data-i18n="f10.2">Agent Go : 94 tests PASS, 3 agents qualif connectés en continu</li>
-        <li data-i18n="f10.3">secagent-inventory : binaire Go standalone, 19 tests, format Ansible natif</li>
-        <li data-i18n="f10.4">SQLite via modernc (CGO-free), Gorilla WebSocket, JWT Go natif</li>
-        <li data-i18n="f10.5">Dockerfile multi-stage golang:alpine → alpine : image minimale</li>
+        <li data-i18n="f301.1">Topologie en arbre, liens pull (enfant → parent) et push (parent → enfant), handshake <code>relay_hello</code> / <code>relay_ack</code></li>
+        <li data-i18n="f301.2">Routage hiérarchique vers le relay qui détient l'hôte ; l'agent local reste prioritaire</li>
+        <li data-i18n="f301.3">Révocation d'un jeton de relay avec fermeture du lien actif</li>
       </ul>
     </div>
-
     <div class="version-block">
-      <span class="version-tag">v1.1 — CLI Management</span>
+      <span class="version-tag">v3.0.0 — Fondations</span>
       <ul class="feature-list">
-        <li data-i18n="f11.1">CLI cobra intégrée dans le binaire secagent-server (zéro binaire supplémentaire)</li>
-        <li data-i18n="f11.2">minions : list / get / suspend / resume / revoke / authorize / vars</li>
-        <li data-i18n="f11.3">security : keys status / rotate --grace Nh · tokens list · blacklist list</li>
-        <li data-i18n="f11.4">inventory list --only-connected · server status / stats</li>
-        <li data-i18n="f11.5">--format table|json|yaml sur toutes les commandes</li>
-        <li data-i18n="f11.6">Dual-key JWT : rotation sans interruption, grace period configurable</li>
-        <li data-i18n="f11.7">Message WS rekey : agents migrent vers le nouveau secret sans déconnexion</li>
-        <li data-i18n="f11.8">AES-256-GCM : chiffrement RSA keypair serveur et JWT secrets en DB</li>
-        <li data-i18n="f11.9">441 tests PASS, 0 fail · Audit sécurité : 0 CRITIQUE, 0 HAUT</li>
+        <li data-i18n="f300.1">Spécification du mode repeater (topologie en arbre) ; retrait de l'ancien mode proxy (<code>PROXY_MODE</code>)</li>
+        <li data-i18n="f300.2">Pas d'implémentation du repeater dans cette version : elle arrive en v3.0.1</li>
       </ul>
     </div>
-
     <div class="version-block">
-      <span class="version-tag">v1.2 — Ansible Container</span>
+      <span class="version-tag">v1.x – v2.x — Socle</span>
       <ul class="feature-list">
-        <li data-i18n="f12.1">Container relay-ansible : multi-stage build (Go builder + Python runtime)</li>
-        <li data-i18n="f12.2">secagent-inventory : binaire Go standalone intégré dans le container</li>
-        <li data-i18n="f12.3">Connection plugin relay.py : chargé depuis ansible_plugins/connection_plugins/</li>
-        <li data-i18n="f12.4">ExecCommand handler : relaie commandes Ansible vers agents via WebSocket bloquant</li>
-        <li data-i18n="f12.5">Inventory filtering : par défaut retourne tous les minions, relay_status : "connected" | "disconnected"</li>
-        <li data-i18n="f12.6">End-to-end validation : ansible all -m ping, ansible-playbook, dynamic inventory ✅</li>
-        <li data-i18n="f12.7">Network : relay-ansible sur ansible_server_default (connecté à relay-api)</li>
-        <li data-i18n="f12.8">Dockerfile : golang:1.25-alpine (Stage 1) → python:3.11-slim (Stage 2)</li>
-        <li data-i18n="f12.9">Phase 11 COMPLETE : tous les composants Ansible natif + relay intégrés et testés ✅</li>
-      </ul>
-    </div>
-
-    <div class="version-block">
-      <span class="version-tag">v1.1.0 — Event Hooks Unifiés</span>
-      <ul class="feature-list">
-        <li data-i18n="feh.1">Système de hooks unifié (<code>internal/hooks/</code>) — actions déclenchées par événements agent</li>
-        <li data-i18n="feh.2">4 types d'action : <code>webhook</code> (HMAC-SHA256), <code>shell</code> (subprocess + env SECAGENT_*), <code>file</code> (append O_CREATE), <code>api</code> (méthode configurable)</li>
-        <li data-i18n="feh.3">Moteur de template : <code>{{hostname}}</code>, <code>{{event}}</code>, <code>{{timestamp}}</code>, <code>{{status}}</code>, <code>{{enrolled_at}}</code></li>
-        <li data-i18n="feh.4">Dispatcher asynchrone (queue 1000, non-bloquant) avec hot-reload via SIGHUP</li>
-        <li data-i18n="feh.5">CLI : <code>secagent-server hooks status</code> et <code>hooks log --limit --event --hostname --format</code></li>
-        <li data-i18n="feh.6">Table <code>action_log</code> — trace toutes les exécutions d'actions en DB</li>
-        <li data-i18n="feh.7">Route <code>GET /api/admin/hooks/log</code> — consultation via API admin</li>
-      </ul>
-    </div>
-
-    <div class="version-block">
-      <span class="version-tag current">v2.0.0 — Proxy/Gateway multi-zone (secagent_repeater)</span>
-      <ul class="feature-list">
-        <li data-i18n="f20.1">Mode Proxy (<code>PROXY_MODE=true</code>) — agrégation multi-zones (DMZ, cloud privé, edge) en un point d'entrée unique</li>
-        <li data-i18n="f20.2">Mode pull : les relays initient la connexion vers le proxy via <code>WSS /ws/relay</code> (JWT rôle <code>relay</code>)</li>
-        <li data-i18n="f20.3">Mode push : le proxy contacte des relays enregistrés en DB via HTTP REST, poll inventaire 30s</li>
-        <li data-i18n="f20.4">Inventaire unifié : <code>GET /api/inventory</code> agrège agents de tous les relays + agents directs</li>
-        <li data-i18n="f20.5">Routage transparent : exec/upload/fetch routés automatiquement vers le relay propriétaire de l'hôte</li>
-        <li data-i18n="f20.6">Chaînage proxy→proxy : topologies hiérarchiques multi-niveaux avec protection anti-boucle (<code>X-Relay-Hops</code>)</li>
-        <li data-i18n="f20.7">Endpoints admin relays : POST/GET/DELETE/status sur <code>/api/admin/relays</code></li>
-        <li data-i18n="f20.8">CLI : <code>secagent-server relays list|get|status|add|remove</code></li>
-        <li data-i18n="f20.9">Docker Compose multi-zones : proxy + 2 relays DMZ + agents simulés — 917/920 tests PASS, QA VALIDATED</li>
+        <li data-i18n="fbase.1">Agent <code>secagent-minion</code> : enrôlement RSA-4096, connexion WSS persistante, exécution par sous-processus, transferts de fichiers, <code>become</code></li>
+        <li data-i18n="fbase.2">Plugins Ansible (connexion et inventaire) en Python, <code>secagent-inventory</code> en Go</li>
+        <li data-i18n="fbase.3">CLI d'administration intégrée au binaire serveur (v1.1.0)</li>
+        <li data-i18n="fbase.4">Event Hooks configurables en JSON (v1.1.0)</li>
+        <li data-i18n="fbase.5">Mode proxy multi-zone (v2.0.0), remplacé par la chaîne de relays à partir de la v3</li>
       </ul>
     </div>
   </div>
 </section>
 
-<!-- ══ MANAGEMENT ════════════════════════════════════════════════════════ -->
 <section id="mgmt">
   <div class="container">
     <span class="section-tag" data-i18n="mgmt.tag">Management</span>
     <h2 data-i18n="mgmt.title">Administrez depuis le terminal</h2>
-    <p class="section-lead" data-i18n="mgmt.lead">
-      La CLI cobra est intégrée directement dans le binaire <code>secagent-server</code>.
-      Accessible depuis un container Docker ou un pod Kubernetes — sans binaire supplémentaire.
-    </p>
-
-    <!-- Terminal demo -->
-    <div class="terminal-demo">
-      <div class="terminal-bar">
-        <span class="dot dot-red"></span>
-        <span class="dot dot-yellow"></span>
-        <span class="dot dot-green"></span>
-        <span class="terminal-title">secagent-server — management CLI</span>
-      </div>
-      <div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">docker exec relay-api secagent-server minions list --format table</span>
-
-<span class="t-head">HOSTNAME          STATUS       LAST SEEN            VERSION   IP</span>
-<span class="t-ok">qualif-host-01    connected    2026-03-06 14:32     v1.1.0    192.168.1.101</span>
-<span class="t-ok">qualif-host-02    connected    2026-03-06 14:32     v1.1.0    192.168.1.102</span>
-<span class="t-ok">qualif-host-03    connected    2026-03-06 14:31     v1.1.0    192.168.1.103</span>
-<span class="t-warn">prod-web-01       suspended    2026-03-06 09:15     v1.1.0    10.0.1.10</span>
-<span class="t-ok">prod-db-01        connected    2026-03-06 14:32     v1.1.0    10.0.1.20</span>
-<span class="t-dim">5 agents  (4 connected, 1 suspended)</span>
-
-<span class="t-prompt">$</span> <span class="t-cmd">docker exec relay-api secagent-server security keys status --format table</span>
-
-<span class="t-head">KEY           SECRET                STATUS     EXPIRES</span>
-<span class="t-ok">current       jwt_secret_current    active     2026-04-05 14:00</span>
-<span class="t-dim">previous      jwt_secret_previous   grace      2026-03-07 14:00  (grace 24h)</span>
-<span class="t-ok">RSA keypair   rsa-4096              encrypted  (AES-256-GCM in DB)</span></div>
-    </div>
-
-    <!-- Command cards -->
+    <p class="section-lead" data-i18n="mgmt.lead">La CLI cobra est intégrée au binaire <code>secagent-server</code> : aucun binaire supplémentaire. Elle s'utilise depuis le conteneur ou l'hôte du serveur.</p>
     <div class="cmd-grid">
       <div class="cmd-card">
         <div class="cmd-card-head">
@@ -601,599 +429,265 @@ token      = ${ANSIBLE_RELAY_TOKEN}</div>
         </div>
         <p data-i18n="mgmt.agents.desc">Listez, suspendez, révoquez et autorisez les agents. Gérez leurs variables d'inventaire.</p>
         <pre><code>secagent-server minions list
-secagent-server minions get my-host
-secagent-server minions suspend my-host
-secagent-server minions resume  my-host
-secagent-server minions revoke  my-host
-secagent-server minions authorize new-host \
-  --pubkey "$(cat pubkey.pem)"
-secagent-server minions vars set my-host \
-  env=prod region=eu-west</code></pre>
+secagent-server minions suspend &lt;hôte&gt;
+secagent-server minions resume  &lt;hôte&gt;
+secagent-server minions revoke  &lt;hôte&gt;
+secagent-server minions vars set &lt;hôte&gt; clé=valeur</code></pre>
       </div>
-
+      <div class="cmd-card">
+        <div class="cmd-card-head">
+          <span class="cmd-icon">🎫</span>
+          <h3 data-i18n="mgmt.tokens.title">Jetons</h3>
+        </div>
+        <p data-i18n="mgmt.tokens.desc">Créez les jetons d'enrôlement et les jetons de lien, listez-les, révoquez-les.</p>
+        <pre><code>secagent-server tokens create --role enrollment …
+secagent-server tokens create --role relay-child …
+secagent-server tokens list
+secagent-server tokens revoke &lt;id&gt;</code></pre>
+      </div>
       <div class="cmd-card">
         <div class="cmd-card-head">
           <span class="cmd-icon">🔐</span>
-          <h3 data-i18n="mgmt.security.title">Sécurité &amp; clefs</h3>
+          <h3 data-i18n="mgmt.security.title">Clefs et rotations</h3>
         </div>
-        <p data-i18n="mgmt.security.desc">Rotation des secrets JWT zero downtime, gestion des tokens actifs et de la blacklist JTI.</p>
-        <pre><code># Rotation JWT (grace period configurable)
-secagent-server security keys rotate --grace 24h
-
-# État des clefs
-secagent-server security keys status
-
-# Tokens actifs et blacklist
-secagent-server security tokens list
-secagent-server security blacklist list
-secagent-server security blacklist purge</code></pre>
+        <p data-i18n="mgmt.security.desc">Rotation des secrets JWT, clef de lien de la racine, clef maître de l'état.</p>
+        <pre><code>secagent-server security keys rotate
+secagent-server keys link-pubkey
+secagent-server keys rotate-link
+secagent-server keys link-status
+secagent-server keys retire-link-previous
+secagent-server state rekey</code></pre>
       </div>
-
       <div class="cmd-card">
         <div class="cmd-card-head">
           <span class="cmd-icon">📋</span>
-          <h3 data-i18n="mgmt.inventory.title">Inventaire</h3>
+          <h3 data-i18n="mgmt.inventory.title">Inventaire et statut</h3>
         </div>
-        <p data-i18n="mgmt.inventory.desc">Visualisez les agents connectés et leurs facts directement depuis la CLI.</p>
-        <pre><code># Agents connectés uniquement
-secagent-server inventory list --only-connected
-
-# Format JSON (compatible Ansible)
-secagent-server inventory list --format json
-
-# Format YAML
-secagent-server inventory list --format yaml</code></pre>
-      </div>
-
-      <div class="cmd-card">
-        <div class="cmd-card-head">
-          <span class="cmd-icon">📊</span>
-          <h3 data-i18n="mgmt.server.title">Statut serveur</h3>
-        </div>
-        <p data-i18n="mgmt.server.desc">Consultez l'état du serveur relay : uptime, connexions actives, tâches exécutées, mémoire.</p>
-        <pre><code># État général
-secagent-server server status --format table
-
-# Statistiques détaillées
-secagent-server server stats --format json
-
-# Exemple de sortie :
-# UPTIME    AGENTS  TASKS 24H  MEMORY
-# 3d 14h    4 / 5   127        12 MB</code></pre>
+        <p data-i18n="mgmt.inventory.desc">Visualisez les agents et l'état du serveur, et consultez le journal des hooks.</p>
+        <pre><code>secagent-server inventory list
+secagent-server server status
+secagent-server server stats
+secagent-server hooks status
+secagent-server hooks log</code></pre>
       </div>
     </div>
-
-    <div class="access-note">
-      <strong data-i18n="mgmt.access.label">Accès :</strong>
-      <span data-i18n="mgmt.access.body"> La CLI lit les variables d'environnement du container (<code>ADMIN_TOKEN</code>, <code>JWT_SECRET_KEY</code>). Aucune configuration supplémentaire requise.</span>
-      <pre style="margin-top:0.75rem"><code># Docker
-docker exec relay-api secagent-server &lt;commande&gt;
-
-# Kubernetes
-kubectl exec -n ansible-relay deploy/relay-api -- secagent-server &lt;commande&gt;</code></pre>
-    </div>
+    <p class="section-lead"><span data-i18n="mgmt.more">Détail des commandes et options :</span> <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/server/MANAGEMENT_CLI_SPECS.md">MANAGEMENT_CLI_SPECS.md</a></p>
   </div>
 </section>
 
-<!-- ══ ROADMAP ════════════════════════════════════════════════════════════ -->
 <section id="roadmap">
   <div class="container">
-    <span class="section-tag">Roadmap</span>
-    <h2 data-i18n="roadmap.title">À venir</h2>
-    <p data-i18n="roadmap.lead">Les phases suivantes sont spécifiées dans ARCHITECTURE.md et prêtes à démarrer.</p>
-
+    <span class="section-tag" data-i18n="roadmap.tag">Roadmap</span>
+    <h2 data-i18n="roadmap.title">Prochainement</h2>
+    <p data-i18n="roadmap.lead">Le jalon « v3.0.5 — Durcissement et dettes issues de v3.0.4 » regroupe les thèmes suivants. Il s'agit de travaux planifiés, sans date annoncée.</p>
     <div class="timeline">
       <div class="tl-item">
-        <div class="tl-dot done"></div>
+        <div class="tl-dot"></div>
         <div class="tl-content">
-          <h3 data-i18n="roadmap.v11.title">✅ v1.1.0 — Event Hooks Unifiés <span class="tl-badge-done">LIVRÉ</span></h3>
-          <p data-i18n="roadmap.v11.body">Hooks configurables via JSON (shell, webhook, file, api), dispatcher asynchrone, hot-reload SIGHUP, CLI hooks status/log, table action_log.</p>
+          <h3 data-i18n="rm.a.title">Durcissement des secrets et de la clef maître</h3>
+          <p data-i18n="rm.a.body">Longueur minimale partout et dérivation de la clef de chiffrement de l'état par une fonction dédiée.</p>
         </div>
       </div>
       <div class="tl-item">
-        <div class="tl-dot done"></div>
+        <div class="tl-dot"></div>
         <div class="tl-content">
-          <h3 data-i18n="roadmap.v20.title">✅ v2.0.0 — Proxy/Gateway multi-zone <span class="tl-badge-done">LIVRÉ</span></h3>
-          <p data-i18n="roadmap.v20.body">Mode proxy/repeater (pull + push), inventaire agrégé multi-zones, routage transparent, chaînage proxy→proxy, JWT rôle relay, Docker Compose multi-zones. 917/920 tests validés.</p>
+          <h3 data-i18n="rm.b.title">Moins de fragilité à l'expiration des jetons d'agent</h3>
+          <p data-i18n="rm.b.body">Éviter l'arrêt en masse des agents lorsque le JWT d'agent (1 h) expire.</p>
         </div>
       </div>
       <div class="tl-item">
-        <div class="tl-dot future"></div>
+        <div class="tl-dot"></div>
         <div class="tl-content">
-          <h3 data-i18n="roadmap.k8s.title">Production Kubernetes</h3>
-          <p data-i18n="roadmap.k8s.body">Helm chart complet : Deployment relay-api (replicas 3), StatefulSet NATS JetStream (cluster, PVC 20Gi fast-ssd), Ingress nginx avec TLS cert-manager, Secrets K8s pour JWT_SECRET_KEY et ADMIN_TOKEN. PostgreSQL externe (RDS/CloudSQL) en remplacement de SQLite.</p>
+          <h3 data-i18n="rm.c.title">Chaîne de livraison et exploitation</h3>
+          <p data-i18n="rm.c.body">Attestation des images publiées, messages de démarrage plus explicites sur une ancre périmée, <code>--version</code> pour <code>secagent-inventory</code>.</p>
         </div>
       </div>
       <div class="tl-item">
-        <div class="tl-dot future"></div>
+        <div class="tl-dot"></div>
         <div class="tl-content">
-          <h3 data-i18n="roadmap.hardening.title">Documentation &amp; Hardening</h3>
-          <p data-i18n="roadmap.hardening.body">Rate limiting sur les endpoints sensibles (/api/register, /api/exec), audit logs structurés (JSON, syslog), RBAC granulaire par hostgroup, métriques Prometheus / Grafana dashboard, runbook opérationnel.</p>
+          <h3 data-i18n="rm.d.title">Dettes de test, de CI et de documentation</h3>
+          <p data-i18n="rm.d.body">Regroupées dans le jalon « v3.0.5 — Durcissement et dettes issues de v3.0.4 ».</p>
         </div>
       </div>
-      <div class="tl-item">
-        <div class="tl-dot future"></div>
-        <div class="tl-content">
-          <h3 data-i18n="roadmap.freeipa.title">Plugin FreeIPA</h3>
-          <p data-i18n="roadmap.freeipa.body">Intégration enterprise : enrollment via ipa-client-install, authentification mTLS avec certificats signés par l'AC FreeIPA (Dogtag), révocation via CRL/OCSP, inventory plugin LDAP (hostgroups IPA → groupes Ansible natifs).</p>
-        </div>
-      </div>
+    </div>
+    <div class="warning-block" id="limits">
+      <h4 data-i18n="lim.title">Limites connues</h4>
+      <ul class="feature-list">
+        <li data-i18n="lim.1">Un relay qui monte en v3.0.4 ne peut pas revenir en v3.0.3 : l'état est migré et les liens relay ↔ relay sont coupés pendant la montée (prévoir une fenêtre annoncée).</li>
+        <li data-i18n="lim.2">Le JWT d'un agent dure 1 h sans renouvellement : après expiration, toute reconnexion repose sur le jeton d'enrôlement ; un jeton à usage unique ou expiré arrête l'agent (code 78). Utilisez un jeton réutilisable restreint par motif de nom d'hôte.</li>
+        <li data-i18n="lim.3">L'actif/passif sur un stockage partagé entre deux hôtes réels n'a pas été vérifié.</li>
+        <li data-i18n="lim.4">Sans changement du budget mémoire par défaut, un relay accepte au plus 204 tâches simultanées.</li>
+      </ul>
     </div>
   </div>
 </section>
 
-<!-- ══ ARCHITECTURE ══════════════════════════════════════════════════════ -->
 <section id="architecture">
   <div class="container">
     <span class="section-tag" data-i18n="arch.tag">Architecture</span>
     <h2 data-i18n="arch.title">Architecture</h2>
-    <p class="section-lead" data-i18n="arch.lead">
-      Deux topologies de déploiement selon vos besoins : un relay central pour les architectures simples, ou un repeater multi-zones pour les infrastructures segmentées (DMZ, cloud privé, sites edge).
-    </p>
-
+    <p class="section-lead" data-i18n="arch.lead">Go côté serveur et agent, WebSocket direct (WSS) entre agents et relays, état en fichier, plugins Ansible en Python. Détail dans le <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/HLD.md">High-Level Design</a> et les <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/ARCHITECTURE.md">spécifications techniques</a>.</p>
     <div class="arch-grid">
       <div class="arch-card">
-        <h3 data-i18n="arch.simple.title">Mode Standard</h3>
-        <p data-i18n="arch.simple.desc">Un relay central agrège les agents de votre infrastructure.</p>
+        <h3 data-i18n="arch.simple.title">Un relay racine, actif/passif</h3>
+        <p data-i18n="arch.simple.desc">Le plugin Ansible parle en REST à l'instance active ; les agents s'y connectent en WSS. L'instance secondaire n'ouvre aucun port tant qu'elle n'a pas le verrou.</p>
         <div class="mermaid">
 graph LR
-    ANS["🎯 Ansible\nOrchestrator"]
-    SRV["🖥️ secagent-server\nRelay"]
-    A1["💻 Agent\nLinux Host 1"]
-    A2["💻 Agent\nLinux Host 2"]
-    A3["💻 Agent\nLinux Host 3"]
-
-    ANS -->|"REST HTTP / JWT plugin"| SRV
-    A1 -->|"WSS — agent initie"| SRV
-    A2 -->|"WSS — agent initie"| SRV
-    A3 -->|"WSS — agent initie"| SRV
-
+    ANS["Ansible\n(plugins connexion + inventaire)"]
+    ACT["secagent-server\nactif (verrou)"]
+    PAS["secagent-server\nsecondaire"]
+    ST[("Stockage partagé\nrelay.state + relay.lock")]
+    A1["Agent hôte 1"]
+    A2["Agent hôte 2"]
+    A3["Agent hôte 3"]
+    ANS -->|"HTTPS, REST bloquant"| ACT
+    A1 -->|"WSS — l'agent initie"| ACT
+    A2 -->|"WSS — l'agent initie"| ACT
+    A3 -->|"WSS — l'agent initie"| ACT
+    ACT --- ST
+    PAS -.->|"attend le verrou"| ST
     style ANS fill:#4A90D9,stroke:#2171B5,color:#fff
-    style SRV fill:#E8A838,stroke:#C07C1A,color:#fff
+    style ACT fill:#E8A838,stroke:#C07C1A,color:#fff
+    style PAS fill:#B8B8B8,stroke:#888,color:#fff
+    style ST fill:#6C757D,stroke:#495057,color:#fff
     style A1 fill:#5BA85A,stroke:#3D7A3C,color:#fff
     style A2 fill:#5BA85A,stroke:#3D7A3C,color:#fff
     style A3 fill:#5BA85A,stroke:#3D7A3C,color:#fff
         </div>
       </div>
-
       <div class="arch-card arch-card--wide">
-        <h3 data-i18n="arch.pull.title">Mode Pull — le repeater se connecte aux relays</h3>
-        <p data-i18n="arch.pull.desc">Le repeater initie les connexions REST vers chaque relay DMZ. Convient quand le repeater a accès aux zones isolées.</p>
+        <h3 data-i18n="arch.pull.title">Chaîne en mode pull</h3>
+        <p data-i18n="arch.pull.desc">L'enfant ouvre le lien vers son parent : aucune connexion entrante n'est nécessaire dans la DMZ.</p>
         <div class="mermaid">
 graph TB
-    ANS["🎯 Ansible\nOrchestrator"]
-
-    subgraph TRUST["☁️ Zone de confiance"]
-        REP["🔀 Repeater\nsecagent-server"]
+    ANS["Ansible"]
+    subgraph ROOT["Zone de confiance"]
+        RT["Relay racine\n(émet les jetons de lien)"]
     end
-
-    subgraph DMZ1["🔒 DMZ Zone 1"]
-        R1["🖥️ Relay DMZ1"]
-        B1["💻 Agent A"]
-        B2["💻 Agent B"]
-        B1 -->|"WSS\n(agent→relay)"| R1
-        B2 -->|"WSS\n(agent→relay)"| R1
+    subgraph DMZ1["DMZ 1"]
+        R1["Relay enfant dmz1"]
+        B1["Agent A"]
+        B2["Agent B"]
     end
-
-    subgraph DMZ2["🔒 DMZ Zone 2"]
-        R2["🖥️ Relay DMZ2"]
-        B3["💻 Agent C"]
-        B4["💻 Agent D"]
-        B3 -->|"WSS\n(agent→relay)"| R2
-        B4 -->|"WSS\n(agent→relay)"| R2
+    subgraph DMZ2["DMZ 2"]
+        R2["Relay enfant dmz2"]
+        B3["Agent C"]
     end
-
-    ANS -->|"REST / JWT plugin"| REP
-    REP -->|"REST — repeater initie"| R1
-    REP -->|"REST — repeater initie"| R2
-
+    ANS -->|"HTTPS"| RT
+    R1 -->|"WSS — l'enfant initie (pull)"| RT
+    R2 -->|"WSS — l'enfant initie (pull)"| RT
+    B1 -->|"WSS"| R1
+    B2 -->|"WSS"| R1
+    B3 -->|"WSS"| R2
     style ANS fill:#4A90D9,stroke:#2171B5,color:#fff
-    style REP fill:#9B59B6,stroke:#7D3C98,color:#fff
+    style RT fill:#9B59B6,stroke:#7D3C98,color:#fff
     style R1 fill:#E8A838,stroke:#C07C1A,color:#fff
     style R2 fill:#E8A838,stroke:#C07C1A,color:#fff
     style B1 fill:#5BA85A,stroke:#3D7A3C,color:#fff
     style B2 fill:#5BA85A,stroke:#3D7A3C,color:#fff
     style B3 fill:#5BA85A,stroke:#3D7A3C,color:#fff
-    style B4 fill:#5BA85A,stroke:#3D7A3C,color:#fff
         </div>
       </div>
-
       <div class="arch-card arch-card--wide">
-        <h3 data-i18n="arch.push.title">Mode Push — les relays se connectent au repeater</h3>
-        <p data-i18n="arch.push.desc">Chaque relay DMZ initie une connexion WSS persistante vers le repeater. Idéal quand les DMZ ont des règles firewall strictes (pas d'entrée).</p>
+        <h3 data-i18n="arch.push.title">Chaîne en mode push</h3>
+        <p data-i18n="arch.push.desc">Le parent ouvre le lien vers l'enfant, quand c'est le sens autorisé par votre pare-feu.</p>
         <div class="mermaid">
 graph TB
-    ANS["🎯 Ansible\nOrchestrator"]
-
-    subgraph TRUST["☁️ Zone de confiance"]
-        REP["🔀 Repeater\nsecagent-server"]
+    ANS["Ansible"]
+    subgraph ROOT["Zone de confiance"]
+        RT["Relay racine"]
     end
-
-    subgraph DMZ1["🔒 DMZ Zone 1"]
-        R1["🖥️ Relay DMZ1"]
-        B1["💻 Agent A"]
-        B2["💻 Agent B"]
-        B1 -->|"WSS\n(agent→relay)"| R1
-        B2 -->|"WSS\n(agent→relay)"| R1
+    subgraph DMZ1["Zone 1"]
+        R1["Relay enfant z1"]
+        B1["Agent A"]
     end
-
-    subgraph DMZ2["🔒 DMZ Zone 2"]
-        R2["🖥️ Relay DMZ2"]
-        B3["💻 Agent C"]
-        B4["💻 Agent D"]
-        B3 -->|"WSS\n(agent→relay)"| R2
-        B4 -->|"WSS\n(agent→relay)"| R2
+    subgraph DMZ2["Zone 2"]
+        R2["Relay enfant z2"]
+        B2["Agent B"]
     end
-
-    ANS -->|"REST / JWT plugin"| REP
-    R1 -->|"WSS — relay initie"| REP
-    R2 -->|"WSS — relay initie"| REP
-
+    ANS -->|"HTTPS"| RT
+    RT -->|"WSS — le parent initie (push)"| R1
+    RT -->|"WSS — le parent initie (push)"| R2
+    B1 -->|"WSS"| R1
+    B2 -->|"WSS"| R2
     style ANS fill:#4A90D9,stroke:#2171B5,color:#fff
-    style REP fill:#9B59B6,stroke:#7D3C98,color:#fff
+    style RT fill:#9B59B6,stroke:#7D3C98,color:#fff
     style R1 fill:#E8A838,stroke:#C07C1A,color:#fff
     style R2 fill:#E8A838,stroke:#C07C1A,color:#fff
     style B1 fill:#5BA85A,stroke:#3D7A3C,color:#fff
     style B2 fill:#5BA85A,stroke:#3D7A3C,color:#fff
-    style B3 fill:#5BA85A,stroke:#3D7A3C,color:#fff
-    style B4 fill:#5BA85A,stroke:#3D7A3C,color:#fff
         </div>
       </div>
-
       <div class="arch-card arch-card--wide">
-        <h3 data-i18n="arch.chain.title">Chaînage — repeater intermédiaire</h3>
-        <p data-i18n="arch.chain.desc">Un repeater intermédiaire agrège ses relays locaux et se connecte à un repeater central. Topologies multi-niveaux sans exposition directe des DMZ profondes.</p>
+        <h3 data-i18n="arch.chain.title">Arbre à plusieurs niveaux</h3>
+        <p data-i18n="arch.chain.desc">Un relay intermédiaire agrège ses descendants. Un relay n'a qu'un parent ; une boucle est refusée.</p>
         <div class="mermaid">
 graph TB
-    ANS["🎯 Ansible\nOrchestrator"]
-
-    subgraph TRUST["☁️ Zone de confiance"]
-        REP1["🔀 Repeater Central"]
-    end
-
-    subgraph DMZ_MID["🔒 DMZ Intermédiaire"]
-        REP2["🔀 Repeater\nIntermédiaire"]
-        R1["🖥️ Relay"]
-        B1["💻 Agent A"]
-        B2["💻 Agent B"]
-        B1 -->|WSS| R1
-        B2 -->|WSS| R1
-        R1 -->|WSS| REP2
-    end
-
-    subgraph DMZ_DEEP["🔒 DMZ Profonde"]
-        R2["🖥️ Relay"]
-        B3["💻 Agent C"]
-        B4["💻 Agent D"]
-        B3 -->|WSS| R2
-        B4 -->|WSS| R2
-        R2 -->|WSS| REP2
-    end
-
-    ANS -->|"REST / JWT plugin"| REP1
-    REP2 -->|"WSS — repeater initie"| REP1
-
+    ANS["Ansible"]
+    RT["Relay racine"]
+    MID["Relay intermédiaire"]
+    LEAF["Relay feuille"]
+    A1["Agent A"]
+    A2["Agent B"]
+    A3["Agent C"]
+    ANS -->|"HTTPS"| RT
+    MID -->|"WSS (pull)"| RT
+    LEAF -->|"WSS (pull)"| MID
+    A1 -->|"WSS"| MID
+    A2 -->|"WSS"| LEAF
+    A3 -->|"WSS"| RT
     style ANS fill:#4A90D9,stroke:#2171B5,color:#fff
-    style REP1 fill:#9B59B6,stroke:#7D3C98,color:#fff
-    style REP2 fill:#8E44AD,stroke:#6C3483,color:#fff
-    style R1 fill:#E8A838,stroke:#C07C1A,color:#fff
-    style R2 fill:#E8A838,stroke:#C07C1A,color:#fff
-    style B1 fill:#5BA85A,stroke:#3D7A3C,color:#fff
-    style B2 fill:#5BA85A,stroke:#3D7A3C,color:#fff
-    style B3 fill:#5BA85A,stroke:#3D7A3C,color:#fff
-    style B4 fill:#5BA85A,stroke:#3D7A3C,color:#fff
+    style RT fill:#9B59B6,stroke:#7D3C98,color:#fff
+    style MID fill:#8E44AD,stroke:#6C3483,color:#fff
+    style LEAF fill:#E8A838,stroke:#C07C1A,color:#fff
+    style A1 fill:#5BA85A,stroke:#3D7A3C,color:#fff
+    style A2 fill:#5BA85A,stroke:#3D7A3C,color:#fff
+    style A3 fill:#5BA85A,stroke:#3D7A3C,color:#fff
         </div>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ══ INSTALLATION ═══════════════════════════════════════════════════════ -->
 <section id="install">
   <div class="container">
-    <span class="section-tag" data-i18n="install.tag">Installation</span>
-    <h2 data-i18n="install.title">Démarrage rapide</h2>
-    <p data-i18n="install.lead">Choisissez votre méthode de déploiement.</p>
-
-    <!-- Cycle d'enrollment — commun à toutes les méthodes -->
-    <div class="enroll-flow">
-      <strong data-i18n="ins.enroll.title">Cycle d'enrollment :</strong>
-      <span data-i18n="ins.enroll.body"> l'agent génère sa paire RSA-4096 au <strong>premier démarrage</strong> et la stocke dans <code>/etc/secagent-minion/id_rsa</code> (mode 0600). Il tente immédiatement de s'enroller auprès du serveur — mais le serveur refuse tant que la clef publique n'est pas pré-autorisée. L'agent retente automatiquement avec un backoff exponentiel.</span>
-    </div>
-
-    <div class="install-tabs">
-      <div class="itab-nav">
-        <button class="itab-btn active" onclick="showTab('docker', this)" data-i18n="install.tab.docker">Docker Compose</button>
-        <button class="itab-btn"        onclick="showTab('k8s',    this)" data-i18n="install.tab.k8s">Kubernetes (Helm)</button>
-        <button class="itab-btn"        onclick="showTab('manual', this)" data-i18n="install.tab.manual">Binaires</button>
-      </div>
-
-      <!-- TAB DOCKER -->
-      <div id="tab-docker" class="itab-content active">
-        <div class="qs-steps">
-          <div class="qs-step">
-            <div class="step-num">1</div>
-            <div>
-              <h3 data-i18n="ins.d.s1">Cloner le dépôt et configurer les variables</h3>
-              <pre><code>git clone https://github.com/CCoupel/Ansible-SecAgent.git
-cd Ansible-SecAgent/DEPLOYMENT/qualif
-
-export JWT_SECRET_KEY="$(openssl rand -hex 32)"
-export ADMIN_TOKEN="$(openssl rand -hex 16)"
-export RSA_MASTER_KEY="$(openssl rand -hex 32)"</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">2</div>
-            <div>
-              <h3 data-i18n="ins.d.s2">Démarrer le relay (relay-api + NATS + Caddy)</h3>
-              <pre><code>docker compose up -d
-docker compose ps   # relay-api, nats, caddy doivent être "Up"</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">3</div>
-            <div>
-              <h3 data-i18n="ins.d.s3">Démarrer l'agent sur l'hôte cible</h3>
-              <pre><code># Sur l'hôte cible — via SSH, provisioning, USB…
-docker run -d --name secagent-minion \
-  -e RELAY_SERVER_URL=wss://relay.example.com \
-  -e RELAY_HOSTNAME=my-host \
-  -v /etc/secagent-minion:/etc/secagent-minion \
-  ghcr.io/ccoupel/secagent-minion:latest
-# → Génère /etc/secagent-minion/id_rsa (RSA-4096)
-# → Tente l'enrollment → 403 → retente en backoff</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">4</div>
-            <div>
-              <h3 data-i18n="ins.d.s4">Autoriser l'agent (pre-authorize)</h3>
-              <pre><code># Récupérer la clef publique depuis l'hôte cible
-PUB=$(ssh user@my-host openssl rsa -in /etc/secagent-minion/id_rsa -pubout 2>/dev/null)
-
-# Enregistrer la clef sur le relay
-docker exec relay-api secagent-server minions authorize my-host --pubkey "$PUB"
-# → L'agent retente et se connecte via WSS</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">5</div>
-            <div>
-              <h3 data-i18n="ins.d.s5">Lancer un playbook Ansible</h3>
-              <pre><code>ansible-playbook site.yml   # Aucune modification du playbook requise
-
-# Vérifier les agents connectés
-docker exec relay-api secagent-server minions list --format table</code></pre>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- TAB KUBERNETES -->
-      <div id="tab-k8s" class="itab-content">
-        <div class="qs-steps">
-          <div class="qs-step">
-            <div class="step-num">1</div>
-            <div>
-              <h3 data-i18n="ins.k.s1">Créer le namespace et les secrets</h3>
-              <pre><code>kubectl create namespace ansible-relay
-kubectl create secret generic relay-secrets -n ansible-relay \
-  --from-literal=JWT_SECRET_KEY="$(openssl rand -hex 32)" \
-  --from-literal=ADMIN_TOKEN="$(openssl rand -hex 16)" \
-  --from-literal=RSA_MASTER_KEY="$(openssl rand -hex 32)"</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">2</div>
-            <div>
-              <h3 data-i18n="ins.k.s2">Déployer via Helm</h3>
-              <pre><code>helm upgrade --install ansible-relay ./helm/ansible-relay \
-  -n ansible-relay \
-  --set ingress.host=relay.example.com \
-  --set replicaCount=3</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">3</div>
-            <div>
-              <h3 data-i18n="ins.k.s3">Vérifier le déploiement</h3>
-              <pre><code>kubectl get pods -n ansible-relay
-kubectl exec -n ansible-relay deploy/relay-api -- \
-  secagent-server server status --format table</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">4</div>
-            <div>
-              <h3 data-i18n="ins.k.s4">Autoriser les agents et gérer les clefs</h3>
-              <pre><code>kubectl exec -n ansible-relay deploy/relay-api -- \
-  secagent-server minions authorize my-host --pubkey "$(cat pubkey.pem)"
-
-kubectl exec -n ansible-relay deploy/relay-api -- \
-  secagent-server minions list --format table
-
-# Rotation JWT zero-downtime
-kubectl exec -n ansible-relay deploy/relay-api -- \
-  secagent-server security keys rotate --grace 24h</code></pre>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- TAB BINAIRES -->
-      <div id="tab-manual" class="itab-content">
-        <div class="qs-steps">
-          <div class="qs-step">
-            <div class="step-num">1</div>
-            <div>
-              <h3 data-i18n="ins.m.s1">Compiler depuis les sources</h3>
-              <pre><code>git clone https://github.com/CCoupel/Ansible-SecAgent.git
-cd Ansible-SecAgent/GO
-go build -o secagent-server    ./cmd/server
-go build -o secagent-minion    ./cmd/agent
-go build -o secagent-inventory ./cmd/inventory</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">2</div>
-            <div>
-              <h3 data-i18n="ins.m.s2">Démarrer NATS JetStream</h3>
-              <pre><code>nats-server -js -p 4222 &
-# ou : docker run -d --rm -p 4222:4222 nats:latest -js</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">3</div>
-            <div>
-              <h3 data-i18n="ins.m.s3">Démarrer le serveur relay</h3>
-              <pre><code>export JWT_SECRET_KEY="$(openssl rand -hex 32)"
-export ADMIN_TOKEN="$(openssl rand -hex 16)"
-export RSA_MASTER_KEY="$(openssl rand -hex 32)"
-export NATS_URL="nats://localhost:4222"
-
-./secagent-server serve --addr :8080</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">4</div>
-            <div>
-              <h3 data-i18n="ins.m.s4">Déployer l'agent sur l'hôte cible (systemd)</h3>
-              <pre><code># Sur l'hôte cible — via SSH, provisioning, USB…
-cp secagent-minion /usr/local/bin/
-cp secagent-minion.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now secagent-minion
-# → Génère /etc/secagent-minion/id_rsa (RSA-4096)
-# → Tente l'enrollment → 403 → retente en backoff</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">5</div>
-            <div>
-              <h3 data-i18n="ins.m.s5">Autoriser l'agent</h3>
-              <pre><code>PUB=$(ssh user@my-host openssl rsa -in /etc/secagent-minion/id_rsa -pubout 2>/dev/null)
-
-./secagent-server minions authorize my-host --pubkey "$PUB"
-# → L'agent retente et se connecte. JWT stocké dans /etc/secagent-minion/token.jwt</code></pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ══ REPEATER — INSTALLATION ════════════════════════════════════════════ -->
-<section id="install-repeater" class="install-repeater-section">
-  <div class="container">
-    <span class="section-tag repeater-tag" data-i18n="repeater.install.tag">Mode Repeater v2.0</span>
-    <h2 data-i18n="repeater.install.title">Déployer en mode Repeater multi-zones</h2>
-    <p data-i18n="repeater.install.lead">Le mode Repeater agrège plusieurs relays DMZ derrière un point d'entrée unique. Les agents restent dans leurs zones isolées — Ansible ne voit qu'un seul serveur.</p>
-
+    <span class="section-tag" data-i18n="install.tag">Démarrer</span>
+    <h2 data-i18n="install.title">Démarrer</h2>
+    <p class="section-lead" data-i18n="install.lead">Trois guides d'installation complets, maintenus avec le code. Commencez par le serveur, puis les relays enfants si vous en avez besoin, puis les agents.</p>
     <div class="repeater-modes">
       <div class="repeater-mode-card">
-        <div class="repeater-mode-badge" data-i18n="repeater.docker.badge">Docker Compose</div>
-        <h3 data-i18n="repeater.docker.title">Démarrage rapide — Docker multi-zones</h3>
-        <div class="qs-steps">
-          <div class="qs-step">
-            <div class="step-num">1</div>
-            <div>
-              <h3 data-i18n="rep.d.s1">Cloner et configurer</h3>
-              <pre><code>git clone https://github.com/CCoupel/Ansible-SecAgent.git
-cd Ansible-SecAgent/DEPLOYMENT/qualif
-
-export JWT_SECRET_KEY="$(openssl rand -hex 32)"
-export ADMIN_TOKEN="$(openssl rand -hex 16)"</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">2</div>
-            <div>
-              <h3 data-i18n="rep.d.s2">Démarrer la topologie multi-zones</h3>
-              <pre><code># Proxy central + Relay DMZ1 + Relay DMZ2
-docker compose -f docker-compose.proxy.yml up -d
-
-# Vérifier les 3 services
-docker compose -f docker-compose.proxy.yml ps</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">3</div>
-            <div>
-              <h3 data-i18n="rep.d.s3">Vérifier l'inventaire agrégé</h3>
-              <pre><code># Le proxy voit les agents des 2 zones
-curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  http://localhost:7770/api/agents
-
-# Ou via CLI
-docker exec proxy secagent-server inventory list --format table</code></pre>
-            </div>
-          </div>
-        </div>
+        <h3 data-i18n="ins.agent.title">Agent (hôtes gérés)</h3>
+        <p data-i18n="ins.agent.body">Le <code>secagent-minion</code> s'installe en service systemd sur chaque hôte. Il s'enrôle avec un jeton créé sur le serveur, puis garde sa connexion WSS ouverte. Aucun port entrant à ouvrir.</p>
+        <p><a class="btn btn-outline" href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/project/INSTALL_AGENT.md" data-i18n="ins.agent.link">Guide d'installation de l'agent</a></p>
       </div>
-
       <div class="repeater-mode-card">
-        <div class="repeater-mode-badge repeater-badge-manual" data-i18n="repeater.manual.badge">Binaires</div>
-        <h3 data-i18n="repeater.manual.title">Déploiement manuel — production</h3>
-        <div class="qs-steps">
-          <div class="qs-step">
-            <div class="step-num">1</div>
-            <div>
-              <h3 data-i18n="rep.m.s1">Démarrer le repeater (point d'entrée central)</h3>
-              <pre><code>JWT_SECRET_KEY="$(openssl rand -hex 32)" \
-ADMIN_TOKEN="$(openssl rand -hex 16)" \
-PROXY_MODE=true \
-./secagent-server</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">2</div>
-            <div>
-              <h3 data-i18n="rep.m.s2">Démarrer les relays dans chaque DMZ</h3>
-              <pre><code># Sur chaque serveur relay en zone isolée
-JWT_SECRET_KEY="$(openssl rand -hex 32)" \
-ADMIN_TOKEN="$(openssl rand -hex 16)" \
-./secagent-server</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">3</div>
-            <div>
-              <h3 data-i18n="rep.m.s3">Enregistrer les relays (mode push) ou les laisser se connecter (mode pull)</h3>
-              <pre><code># Mode push : le repeater contacte les relays
-./secagent-server relays add \
-  --url http://relay-dmz1:7770 \
-  --mode push
-
-# Mode pull : les relays se connectent au repeater
-# (configurer RELAY_UPSTREAM_URL sur chaque relay)
-export RELAY_UPSTREAM_URL=wss://repeater.example.com/ws/relay
-./secagent-server  # sur le relay DMZ</code></pre>
-            </div>
-          </div>
-          <div class="qs-step">
-            <div class="step-num">4</div>
-            <div>
-              <h3 data-i18n="rep.m.s4">Vérifier le statut</h3>
-              <pre><code>./secagent-server relays status --format table
-./secagent-server inventory list --format table</code></pre>
-            </div>
-          </div>
-        </div>
+        <h3 data-i18n="ins.server.title">Serveur (relay racine)</h3>
+        <p data-i18n="ins.server.body">Le <code>secagent-server</code> se déploie avec Docker Compose, sur un ou plusieurs hôtes en actif/passif sur un stockage partagé. Les secrets sont fournis par fichiers ; l'état est initialisé une fois.</p>
+        <p><a class="btn btn-outline" href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/project/INSTALL_SERVER.md" data-i18n="ins.server.link">Guide d'installation du serveur</a></p>
+      </div>
+      <div class="repeater-mode-card">
+        <h3 data-i18n="ins.relay.title">Relays enfants</h3>
+        <p data-i18n="ins.relay.body">Un relay enfant s'ancre sur la clef publique de la racine et reçoit un jeton de lien signé par elle. Il s'installe dans la zone qu'il dessert (DMZ, cloud privé, site distant) et agrège les agents de cette zone.</p>
+        <p><a class="btn btn-outline" href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/project/INSTALL_RELAY.md" data-i18n="ins.relay.link">Guide d'installation d'un relay</a></p>
       </div>
     </div>
+    <p class="section-lead" style="margin-top:2rem">
+      <a class="btn btn-primary" href="https://github.com/CCoupel/Ansible-SecAgent/releases" data-i18n="install.rel">Releases (v3.0.4)</a>
+      <a class="btn btn-outline" href="https://github.com/CCoupel/Ansible-SecAgent/tree/main/DOC" data-i18n="install.doc">Documentation</a>
+    </p>
   </div>
 </section>
 
 <footer>
   <div class="container">
     <div class="footer-inner">
-      <span>Ansible-SecAgent — Open Source · MIT License</span>
+      <span>Ansible-SecAgent v3.0.4 — Open Source · MIT License</span>
       <div class="footer-links">
-        <a href="https://github.com/CCoupel/Ansible-SecAgent"                              data-i18n="footer.github">GitHub</a>
-        <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/master/ARCHITECTURE.md" data-i18n="footer.specs">Specs techniques</a>
-        <a href="https://github.com/CCoupel/Ansible-SecAgent/issues"                      data-i18n="footer.issues">Issues</a>
+        <a href="https://github.com/CCoupel/Ansible-SecAgent" data-i18n="footer.github">GitHub</a>
+        <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/ARCHITECTURE.md" data-i18n="footer.specs">Specs techniques</a>
+        <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/security/SECURITY.md" data-i18n="footer.security">Sécurité</a>
+        <a href="https://github.com/CCoupel/Ansible-SecAgent/releases" data-i18n="footer.releases">Releases</a>
+        <a href="https://github.com/CCoupel/Ansible-SecAgent/issues" data-i18n="footer.issues">Issues</a>
       </div>
     </div>
   </div>
@@ -1201,463 +695,491 @@ export RELAY_UPSTREAM_URL=wss://repeater.example.com/ws/relay
 
 <script>
 const T = {
-  fr: {
-    "nav.problem":"Problème","nav.solution":"Solution","nav.compat":"Compatibilité",
-    "nav.security":"Sécurité","nav.proxy":"Proxy/Gateway","nav.hooks":"Event Hooks",
-    "nav.features":"Fonctionnalités","nav.mgmt":"Management","nav.arch":"Architecture","nav.install":"Installation",
-    "hero.badge.native":"Ansible natif","hero.badge.proxy":"Proxy Multi-zone","hero.badge.hooks":"Event Hooks",
-    "badge.new":"NOUVEAU v2.0",
-    "hero.h1":'<span class="hl-teal">Des agents</span><br>pour Ansible',
-    "hero.subtitle":"Exécutez vos playbooks sur des hôtes derrière NAT, firewall ou DMZ. Les agents initient eux-mêmes la connexion — vous n'ouvrez aucun port entrant.",
-    "hero.cta.start":"Démarrage rapide","hero.cta.github":"Voir sur GitHub",
-    "problem.tag":"Le problème",
-    "problem.title":"8 risques que vous prenez à chaque playbook",
-    "problem.lead":"Ansible est un outil remarquable. Mais son modèle SSH classique crée des angles morts sécurité et des dettes opérationnelles que la plupart des équipes découvrent trop tard.",
-    "problem.blast.title":"Une machine compromise, toute votre infra exposée",
-    "problem.blast.body":"Votre Control Node centralise les accès SSH à tous vos hôtes. Un token CI/CD leaké, une dépendance malveillante, un accès mal révoqué — et c'est l'ensemble de votre parc qui est à portée d'un attaquant. En une seule étape. Sans alarme.",
-    "problem.blast.quote":"La surface d'attaque croît linéairement avec la taille de votre infra.",
-    "problem.revoke.title":"Révoquer une clef SSH : une urgence à 3h du matin",
-    "problem.revoke.body":"Une clef volée. L'horloge tourne. Vous devez la supprimer sur 300 hôtes, maintenant. Avec SSH classique, c'est une opération manuelle, hôte par hôte, qui prend des heures — sans blacklist centrale, sans expiration automatique.",
-    "problem.revoke.quote":"La rotation de clefs n'est pas un événement planifié. C'est une urgence.",
-    "problem.audit.title":"Qui a lancé quoi, sur quoi, et quand ?",
-    "problem.audit.body":"Ansible n'a pas de log d'audit centralisé. Les traces restent sur le Control Node — modifiables, supprimables. En cas d'incident ou de contrôle ISO 27001, NIS2 ou SOC2, vous ne pouvez pas prouver qu'une configuration a été appliquée, ni par qui.",
-    "problem.audit.quote":"L'auditeur pose la question. Vous cherchez dans des logs dispersés sur plusieurs machines.",
-    "problem.rbac.title":"Tout le monde peut tout faire",
-    "problem.rbac.body":"Ansible n'a pas de RBAC natif. Sur un Control Node standard, quiconque a accès peut lancer n'importe quel playbook sur n'importe quel hôte. AWX apporte du contrôle d'accès — au prix d'une stack lourde, d'une base de données et d'une interface à maintenir.",
-    "problem.rbac.quote":"Vos droits sont gérés dans Azure AD. Votre automation n'a aucun contrôle d'accès.",
-    "problem.drift.title":"Votre infra dérive. Vous ne le savez pas.",
-    "problem.drift.body":"Ansible pousse une configuration, puis rien. Entre deux runs, un admin fait un changement manuel, un paquet se met à jour, une règle firewall est modifiée. Votre infra dérive silencieusement de l'état décrit dans vos playbooks — et vous ne le saurez qu'au prochain incident.",
-    "problem.drift.quote":"Push-and-forget n'est pas de la gestion de configuration. C'est de l'espoir.",
-    "problem.offline.title":"Un hôte offline ? La tâche disparaît.",
-    "problem.offline.body":"Un redémarrage inattendu, une coupure réseau — si un hôte est indisponible au moment du playbook, la tâche échoue et n'est jamais rejouée. En rolling deploy sur 50 machines, il suffit d'une qui redémarre pour avoir un parc partiellement patché, sans alerte.",
-    "problem.offline.quote":"Votre fenêtre de maintenance a 4 heures. 3 hôtes n'ont pas reçu le patch. Vous ne le savez pas.",
-    "problem.lateral.title":"Un hôte compromis peut attaquer votre Control Node",
-    "problem.lateral.body":"C'est votre Control Node qui initie les connexions SSH vers les hôtes. Un hôte compromis connaît son adresse IP — et cette machine détient les clefs SSH de tout votre parc. Compromettre un hôte → cibler le Control Node → accéder à l'intégralité de l'infrastructure.",
-    "problem.lateral.quote":"Vous avez segmenté vos hôtes. Mais le Control Node est le dénominateur commun de tous vos segments.",
-    "problem.network.title":"Multi-cloud, multi-site : une dette réseau permanente",
-    "problem.network.body":"Production, DMZ, disaster recovery, cloud A, cloud B, sites edge — chaque segment doit avoir une route vers le Control Node. VPN site-à-site, peering cloud, tunnels SSH : chaque connexion est une règle firewall de plus, une surface d'attaque de plus, une configuration à maintenir.",
-    "problem.network.quote":"Votre infra est multi-cloud. Votre automation ne devrait pas exiger un réseau plat entre tous vos environnements.",
-    "solution.tag":"La solution",
-    "solution.title":"Le modèle inversé Ansible-SecAgent",
-    "solution.lead":"Ansible-SecAgent inverse le flux de contrôle. L'agent sur l'hôte cible initie une connexion WebSocket persistante vers le serveur relay. Ansible n'a besoin d'atteindre que le relay server — jamais les hôtes directement.",
-    "deploy.mono.tag":"Mononode","deploy.mono.title":"Simple &amp; rapide",
-    "deploy.mono.desc":"Un seul serveur relay pour démarrer. Idéal pour les petites infrastructures ou pour valider la solution en quelques minutes.",
-    "deploy.mono.s1":"1 secagent-server (Go, 4.65 MiB)","deploy.mono.s2":"1 NATS JetStream (embarqué)",
-    "deploy.mono.s3":"1 Caddy (TLS automatique)","deploy.mono.s4":"SQLite inclus — zéro config DB",
-    "deploy.mono.s5":"docker compose up -d → prêt en 30s",
-    "deploy.ha.tag":"Multi-nodes · HA","deploy.ha.title":"Scalable &amp; haute dispo",
-    "deploy.ha.desc":"Plusieurs nodes relay derrière un load balancer. Les agents se connectent à n'importe quel node, le routage est transparent via cluster NATS.",
-    "deploy.ha.s1":"N secagent-server en parallèle","deploy.ha.s2":"Cluster NATS JetStream (3 nodes)",
-    "deploy.ha.s3":"Load balancer (Nginx / Ingress K8s)","deploy.ha.s4":"PostgreSQL externe (RDS/CloudSQL)",
-    "deploy.ha.s5":"Helm chart Kubernetes inclus",
-    "compat.tag":"Compatibilité","compat.title":"Votre Ansible existant, inchangé",
-    "compat.lead":"Ansible-SecAgent s'intègre comme un plugin Ansible standard. Vos playbooks, rôles et collections fonctionnent sans modification. La transition est progressive : SSH reste disponible en parallèle.",
-    "compat.playbooks.title":"Playbooks inchangés",
-    "compat.playbooks.body":"Tous vos playbooks, rôles et collections Ansible Galaxy fonctionnent sans modification. Changez juste <code>connection: relay</code> dans ansible.cfg.",
-    "compat.ssh.title":"SSH toujours disponible",
-    "compat.ssh.body":"Ansible-SecAgent ne supprime pas SSH. Les deux coexistent. Idéal pour une migration progressive : passez hôte par hôte sans rupture de service.",
-    "compat.inventory.title":"Inventaire dynamique",
-    "compat.inventory.body":"Le plugin inventory liste automatiquement tous les agents connectés avec leurs facts. Vos inventaires statiques restent compatibles en parallèle.",
-    "compat.become.title":"become / sudo supporté",
-    "compat.become.body":"<code>become: true</code> et <code>become_user</code> fonctionnent comme avec SSH. Le become_pass est transmis de façon sécurisée, masqué dans tous les logs.",
-    "compat.comment":"seul changement requis",
-    "security.tag":"Sécurité","security.title":"Sécurité by design",
-    "security.lead":"Ansible-SecAgent est conçu autour d'un modèle Zero Trust. Chaque décision d'architecture a une justification sécurité explicite, documentée dans les specs techniques.",
-    "security.per-agent":"par agent","security.enrollment.title":"Enrôlement contrôlé",
-    "security.rsa.body":"Chaque agent génère sa paire de clefs RSA-4096 au premier démarrage. La clef privée ne quitte jamais l'hôte.",
-    "security.enrollment.body":"La clef publique de l'agent doit être pré-autorisée en base de données avant tout enrôlement. Zéro TOFU (Trust On First Use).",
-    "security.jwt.body":"Le token JWT retourné à l'agent est chiffré avec sa clef publique RSA. Illisible sans la clef privée, même en cas d'interception réseau.",
-    "security.jti.body":"Révocation immédiate par JTI (JWT ID unique). La connexion WebSocket active est fermée avec le code 4001 — l'agent ne reconnecte pas automatiquement.",
-    "security.dualkey.body":"Rotation des secrets JWT sans interruption de service. Grace period configurable : les anciens tokens restent valides pendant la migration.",
-    "security.tls.title":"TLS obligatoire",
-    "security.tls.body":"WSS (WebSocket over TLS) et HTTPS sur toutes les connexions. Terminaison TLS via Caddy. Aucun plain HTTP accepté.",
-    "security.become.body":"Le mot de passe sudo/su est transmis via stdin chiffré et masqué dans tous les logs — agent, serveur et plugins Ansible.",
-    "security.aes.body":"Les secrets serveur (RSA keypair, JWT secrets) sont chiffrés en base de données via AES-256-GCM dérivé de RSA_MASTER_KEY.",
-    "security.relay.title":"4ème rôle JWT : relay",
-    "security.relay.body":"Le rôle <code>relay</code> (distinct de agent/plugin/admin) authentifie les relay nodes en mode pull. Créé via <code>POST /api/admin/tokens</code> — jamais partagé avec les agents.",
-    "security.table.threat":"Vecteur d'attaque","security.table.ssh":"SSH classique",
-    "sec.r1.t":"Port entrant exposé","sec.r1.s":"Port 22 ouvert","sec.r1.r":"Aucun port entrant",
-    "sec.r2.t":"Interception du token d'auth","sec.r2.s":"Clef SSH en clair sur disque","sec.r2.r":"JWT chiffré RSA-OAEP",
-    "sec.r3.t":"Agent compromis → propagation","sec.r3.s":"Clef SSH donne accès direct","sec.r3.r":"JTI révocable immédiatement",
-    "sec.r4.t":"Agent non autorisé","sec.r4.s":"TOFU implicite possible","sec.r4.r":"Pre-authorize obligatoire",
-    "sec.r5.t":"Rotation des secrets","sec.r5.s":"Manuelle, downtime","sec.r5.r":"Dual-key, grace period, zero downtime",
-    "sec.r6.t":"Fuite become_pass dans logs","sec.r6.s":"Risque selon configuration","sec.r6.r":"Masqué dans tous les logs",
-    "features.tag":"Fonctionnalités","features.title":"Implémentées par version",
-    "features.lead":"Ansible-SecAgent est développé par phases incrémentales, chacune validée par tests automatisés et audit sécurité avant déploiement.",
-    "f01.1":"Enrollment RSA-4096 : génération clef, POST /api/register, JWT OAEP",
-    "f01.2":"Connexion WSS persistante avec reconnexion backoff exponentiel (1s → 60s)",
-    "f01.3":"Exécution de commandes via subprocess (buffer stdout 5 MB, timeout, kill)",
-    "f01.4":"Transfert de fichiers : put_file et fetch_file (base64, limite 500 KB)",
-    "f01.5":"Élévation de privilèges : become via stdin, become_pass masqué dans logs",
-    "f01.6":"Registre async persisté JSON : reprise après redémarrage agent",
-    "f01.7":"Déploiement systemd : Restart=on-failure, User dédié, NoNewPrivileges",
-    "f02.1":"API REST FastAPI : /api/register, /api/exec, /api/upload, /api/fetch, /api/inventory",
-    "f02.2":"NATS JetStream : streams RELAY_TASKS + RELAY_RESULTS, routing inter-nodes HA",
-    "f02.3":"Auth JWT : rôles agent/plugin/admin, blacklist JTI, révocation WS code 4001",
-    "f02.4":"SQLite : tables agents, authorized_keys, blacklist avec schéma versionné",
-    "f02.5":"Inventaire dynamique : format JSON Ansible standard, filtre only_connected",
-    "f03.1":"Connection plugin : remplace SSH, exec_command / put_file / fetch_file natifs",
-    "f03.2":"become support : transmission become_pass au serveur relay",
-    "f03.3":"Inventory plugin : GET /api/inventory → hostvars + groupes Ansible",
-    "f03.4":"Configuration via ansible.cfg ou variables d'hôte (ansible_connection: relay)",
-    "f03.5":"Mapping HTTP → AnsibleConnectionError : 503 UNREACHABLE, 504 timeout",
-    "f10.1":"Serveur Go : binaire 4.65 MiB, 0 restart en production, goroutines",
-    "f10.2":"Agent Go : 94 tests PASS, 3 agents qualif connectés en continu",
-    "f10.3":"secagent-inventory : binaire Go standalone, 19 tests, format Ansible natif",
-    "f10.4":"SQLite via modernc (CGO-free), Gorilla WebSocket, JWT Go natif",
-    "f10.5":"Dockerfile multi-stage golang:alpine → alpine : image minimale",
-    "f11.1":"CLI cobra intégrée dans le binaire secagent-server (zéro binaire supplémentaire)",
-    "f11.2":"minions : list / get / suspend / resume / revoke / authorize / vars",
-    "f11.3":"security : keys status / rotate --grace Nh · tokens list · blacklist list",
-    "f11.4":"inventory list --only-connected · server status / stats",
-    "f11.5":"--format table|json|yaml sur toutes les commandes",
-    "f11.6":"Dual-key JWT : rotation sans interruption, grace period configurable",
-    "f11.7":"Message WS rekey : agents migrent vers le nouveau secret sans déconnexion",
-    "f11.8":"AES-256-GCM : chiffrement RSA keypair serveur et JWT secrets en DB",
-    "f11.9":"441 tests PASS, 0 fail · Audit sécurité : 0 CRITIQUE, 0 HAUT",
-    "f12.1":"Container relay-ansible : multi-stage build (Go builder + Python runtime)",
-    "f12.2":"secagent-inventory : binaire Go standalone intégré dans le container",
-    "f12.3":"Connection plugin relay.py : chargé depuis ansible_plugins/connection_plugins/",
-    "f12.4":"ExecCommand handler : relaie commandes Ansible vers agents via WebSocket bloquant",
-    "f12.5":"Inventory filtering : par défaut retourne tous les minions, relay_status : \"connected\" | \"disconnected\"",
-    "f12.6":"End-to-end validation : ansible all -m ping, ansible-playbook, dynamic inventory ✅",
-    "f12.7":"Network : relay-ansible sur ansible_server_default (connecté à relay-api)",
-    "f12.8":"Dockerfile : golang:1.25-alpine (Stage 1) → python:3.11-slim (Stage 2)",
-    "f12.9":"Phase 11 COMPLETE : tous les composants Ansible natif + relay intégrés et testés ✅",
-    "feh.1":"Système de hooks unifié (internal/hooks/) — actions déclenchées par événements agent",
-    "feh.2":"4 types d'action : webhook (HMAC-SHA256), shell (subprocess + env SECAGENT_*), file (append O_CREATE), api (méthode configurable)",
-    "feh.3":"Moteur de template : {{hostname}}, {{event}}, {{timestamp}}, {{status}}, {{enrolled_at}}",
-    "feh.4":"Dispatcher asynchrone (queue 1000, non-bloquant) avec hot-reload via SIGHUP",
-    "feh.5":"CLI : secagent-server hooks status et hooks log --limit --event --hostname --format",
-    "feh.6":"Table action_log — trace toutes les exécutions d'actions en DB",
-    "feh.7":"Route GET /api/admin/hooks/log — consultation via API admin",
-    "f20.1":"Mode Proxy (PROXY_MODE=true) — agrégation multi-zones (DMZ, cloud privé, edge) en un point d'entrée unique",
-    "f20.2":"Mode pull : les relays initient la connexion vers le proxy via WSS /ws/relay (JWT rôle relay)",
-    "f20.3":"Mode push : le proxy contacte des relays enregistrés en DB via HTTP REST, poll inventaire 30s",
-    "f20.4":"Inventaire unifié : GET /api/inventory agrège agents de tous les relays + agents directs",
-    "f20.5":"Routage transparent : exec/upload/fetch routés automatiquement vers le relay propriétaire de l'hôte",
-    "f20.6":"Chaînage proxy→proxy : topologies hiérarchiques multi-niveaux avec protection anti-boucle (X-Relay-Hops)",
-    "f20.7":"Endpoints admin relays : POST/GET/DELETE/status sur /api/admin/relays",
-    "f20.8":"CLI : secagent-server relays list|get|status|add|remove",
-    "f20.9":"Docker Compose multi-zones : proxy + 2 relays DMZ + agents simulés — 917/920 tests PASS, QA VALIDATED",
-    "proxy.tag":"Nouveau v2.0","proxy.title":"Proxy/Gateway multi-zone — secagent_repeater",
-    "proxy.lead":"Ansible-SecAgent v2.0 introduit le mode proxy : un serveur central agrège plusieurs zones réseau isolées (DMZ, cloud privé, sites edge) en un point d'entrée unique. Ansible n'a besoin d'atteindre qu'un seul endpoint pour piloter l'intégralité du parc.",
-    "proxy.pull.tag":"Mode Pull","proxy.pull.title":"Les relays initient la connexion",
-    "proxy.pull.desc":"Chaque relay DMZ ouvre une WebSocket persistante vers le proxy central via WSS /ws/relay. Le relay s'authentifie avec un JWT rôle relay. Aucune connexion entrante depuis le proxy vers les DMZ.",
-    "proxy.pull.s1":"Connexion sortante uniquement depuis chaque DMZ",
-    "proxy.pull.s2":"JWT rôle relay dédié (distinct de agent/plugin/admin)",
-    "proxy.pull.s3":"Protocole WS : 10 types de messages bidirectionnels",
-    "proxy.pull.s4":"Fermeture propre codes 4010/4011",
-    "proxy.push.tag":"Mode Push","proxy.push.title":"Le proxy initie les connexions REST",
-    "proxy.push.desc":"Le proxy contacte directement des relays enregistrés en DB via HTTP REST. Inventaire agrégé automatiquement toutes les 30s.",
-    "proxy.push.s1":"Relays enregistrés via POST /api/admin/relays",
-    "proxy.push.s2":"Poll inventaire toutes les 30s (configurable)",
-    "proxy.push.s3":"Table DB : relay_nodes + relay_routing",
-    "proxy.push.s4":"CLI : secagent-server relays list|add|remove|status",
-    "proxy.f1.title":"Inventaire agrégé","proxy.f1.body":"GET /api/inventory agrège automatiquement les agents de tous les relays connectés et les agents directs.",
-    "proxy.f2.title":"Routage transparent","proxy.f2.body":"/api/exec/{host}, /api/upload/{host}, /api/fetch/{host} routés automatiquement vers le relay propriétaire de l'hôte.",
-    "proxy.f3.title":"Chaînage proxy→proxy","proxy.f3.body":"Topologies hiérarchiques multi-niveaux supportées. Protection anti-boucle via X-Relay-Hops (budget 8, HTTP 508 si épuisé).",
-    "proxy.f4.title":"Docker Compose multi-zones","proxy.f4.body":"Topologie qualif incluse : proxy + 2 relays DMZ + agents simulés, réseaux isolés. Prêt en une commande.",
-    "hooks.tag":"Nouveau v1.1","hooks.title":"Event Hooks — Actions configurables par JSON",
-    "hooks.lead":"Déclenchez automatiquement des actions sur les événements de vos agents relay. Configuration zéro-code via un fichier JSON — hot-reload via SIGHUP.",
-    "hooks.t1.title":"4 types d'actions","hooks.t1.body":"shell — exécute un script système\nfile — écrit dans un fichier de log\napi — appel HTTP avec méthode configurable\nwebhook — HTTP POST signé HMAC-SHA256",
-    "hooks.t2.title":"Événements disponibles","hooks.t2.body":"agent.connected — connexion WSS établie\nagent.disconnected — déconnexion WSS\ntask.completed — tâche terminée avec succès\ntask.failed — tâche en erreur",
-    "hooks.t3.title":"Templates de variables","hooks.t3.body":"Injectez des variables dynamiques : {{.AgentID}}, {{.Hostname}}, {{.Event}}, {{.Timestamp}}, {{.Status}}",
-    "hooks.t4.title":"Dispatcher asynchrone","hooks.t4.body":"Queue interne de 1000 entrées, non-bloquant. Hot-reload via SIGHUP. Log complet dans la table action_log.",
-    "roadmap.v11.title":"✅ v1.1.0 — Event Hooks Unifiés","roadmap.v11.body":"Hooks configurables via JSON (shell, webhook, file, api), dispatcher asynchrone, hot-reload SIGHUP, CLI hooks status/log, table action_log.",
-    "roadmap.v20.title":"✅ v2.0.0 — Proxy/Gateway multi-zone","roadmap.v20.body":"Mode proxy/repeater (pull + push), inventaire agrégé multi-zones, routage transparent, chaînage proxy→proxy, JWT rôle relay, Docker Compose multi-zones. 917/920 tests validés.",
-    "roadmap.title":"À venir",
-    "roadmap.lead":"Les phases suivantes sont spécifiées dans ARCHITECTURE.md et prêtes à démarrer.",
-    "roadmap.k8s.title":"Production Kubernetes",
-    "roadmap.k8s.body":"Helm chart complet : Deployment relay-api (replicas 3), StatefulSet NATS JetStream (cluster, PVC 20Gi fast-ssd), Ingress nginx avec TLS cert-manager, Secrets K8s. PostgreSQL externe (RDS/CloudSQL) en remplacement de SQLite.",
-    "roadmap.hardening.title":"Documentation &amp; Hardening",
-    "roadmap.hardening.body":"Rate limiting sur les endpoints sensibles, audit logs structurés (JSON, syslog), RBAC granulaire par hostgroup, métriques Prometheus / Grafana dashboard, runbook opérationnel.",
-    "roadmap.freeipa.title":"Plugin FreeIPA",
-    "roadmap.freeipa.body":"Intégration enterprise : enrollment via ipa-client-install, mTLS avec certificats FreeIPA (Dogtag), révocation CRL/OCSP, inventory plugin LDAP (hostgroups IPA → groupes Ansible natifs).",
-    "install.tag":"Installation","install.title":"Démarrage rapide",
-    "install.lead":"Choisissez votre méthode de déploiement.",
-    "install.tab.docker":"Docker Compose","install.tab.manual":"Binaires","install.tab.k8s":"Kubernetes (Helm)",
-    "repeater.install.tag":"Mode Repeater v2.0","repeater.install.title":"Déployer en mode Repeater multi-zones",
-    "repeater.install.lead":"Le mode Repeater agrège plusieurs relays DMZ derrière un point d'entrée unique. Les agents restent dans leurs zones isolées — Ansible ne voit qu'un seul serveur.",
-    "repeater.docker.badge":"Docker Compose","repeater.docker.title":"Démarrage rapide — Docker multi-zones",
-    "repeater.manual.badge":"Binaires","repeater.manual.title":"Déploiement manuel — production",
-    "rep.d.s1":"Cloner et configurer","rep.d.s2":"Démarrer la topologie multi-zones","rep.d.s3":"Vérifier l'inventaire agrégé",
-    "rep.m.s1":"Démarrer le repeater (point d'entrée central)","rep.m.s2":"Démarrer les relays dans chaque DMZ",
-    "rep.m.s3":"Enregistrer les relays (push) ou les laisser se connecter (pull)","rep.m.s4":"Vérifier le statut",
-    "ins.proxy.intro.title":"Mode Proxy/Gateway multi-zone (v2.0) :","ins.proxy.intro.body":" un serveur central agrège plusieurs relays DMZ. Les agents des zones isolées se connectent à leur relay local — le proxy fait le pont vers Ansible.",
-    "ins.proxy.s1":"Compiler les binaires","ins.proxy.s2":"Démarrer le serveur proxy (point d'entrée central)",
-    "ins.proxy.s3":"Démarrer les relays DMZ (un par zone)","ins.proxy.s4":"Enregistrer les relays depuis le proxy",
-    "ins.proxy.s5":"Ou : Docker Compose multi-zones (qualif)",
-    "ins.enroll.title":"Cycle d'enrollment :",
-    "ins.enroll.body":" l'agent génère sa paire RSA-4096 au <strong>premier démarrage</strong> et la stocke dans <code>/etc/secagent-minion/id_rsa</code> (mode 0600). Il tente immédiatement de s'enroller auprès du serveur — mais le serveur refuse tant que la clef publique n'est pas pré-autorisée. L'agent retente automatiquement avec un backoff exponentiel.",
-    "ins.d.s1":"Cloner le dépôt et configurer","ins.d.s2":"Démarrer le serveur (relay-api + NATS + Caddy)",
-    "ins.d.s3":"Déployer l'agent sur l'hôte cible","ins.d.s4":"Autoriser l'agent (pre-authorize)",
-    "ins.d.s5":"Lancer un playbook Ansible",
-    "ins.m.s1":"Compiler depuis les sources","ins.m.s2":"Démarrer NATS JetStream",
-    "ins.m.s3":"Démarrer le serveur relay","ins.m.s4":"Déployer l'agent sur l'hôte cible",
-    "ins.m.s5":"Autoriser l'agent (pre-authorize)",
-    "ins.k.s1":"Créer le namespace et les secrets","ins.k.s2":"Déployer via Helm",
-    "ins.k.s3":"Vérifier le déploiement","ins.k.s4":"Gérer les agents et les clefs",
-    "mgmt.tag":"Management",
-    "mgmt.title":"Administrez depuis le terminal",
-    "mgmt.lead":"La CLI cobra est intégrée directement dans le binaire <code>secagent-server</code>. Accessible depuis un container Docker ou un pod Kubernetes — sans binaire supplémentaire.",
-    "mgmt.agents.title":"Gestion des agents",
-    "mgmt.agents.desc":"Listez, suspendez, révoquez et autorisez les agents. Gérez leurs variables d'inventaire.",
-    "mgmt.security.title":"Sécurité &amp; clefs",
-    "mgmt.security.desc":"Rotation des secrets JWT zero downtime, gestion des tokens actifs et de la blacklist JTI.",
-    "mgmt.inventory.title":"Inventaire",
-    "mgmt.inventory.desc":"Visualisez les agents connectés et leurs facts directement depuis la CLI.",
-    "mgmt.server.title":"Statut serveur",
-    "mgmt.server.desc":"Consultez l'état du serveur relay : uptime, connexions actives, tâches exécutées, mémoire.",
-    "mgmt.access.label":"Accès :",
-    "mgmt.access.body":" La CLI lit les variables d'environnement du container (<code>ADMIN_TOKEN</code>, <code>JWT_SECRET_KEY</code>). Aucune configuration supplémentaire requise.",
-    "arch.tag":"Architecture",
-    "arch.title":"Architecture",
-    "arch.lead":"Deux topologies de déploiement selon vos besoins : un relay central pour les architectures simples, ou un repeater multi-zones pour les infrastructures segmentées.",
-    "arch.simple.title":"Mode Standard",
-    "arch.simple.desc":"Un relay central agrège les agents de votre infrastructure.",
-    "arch.pull.title":"Mode Pull — le repeater se connecte aux relays",
-    "arch.pull.desc":"Le repeater initie les connexions REST vers chaque relay DMZ. Convient quand le repeater a accès aux zones isolées.",
-    "arch.push.title":"Mode Push — les relays se connectent au repeater",
-    "arch.push.desc":"Chaque relay DMZ initie une connexion WSS persistante vers le repeater. Idéal quand les DMZ ont des règles firewall strictes (pas d'entrée).",
-    "arch.chain.title":"Chaînage — repeater intermédiaire",
-    "arch.chain.desc":"Un repeater intermédiaire agrège ses relays locaux et se connecte à un repeater central. Topologies multi-niveaux sans exposition directe des DMZ profondes.",
-    "footer.github":"GitHub","footer.specs":"Specs techniques","footer.issues":"Issues"
-  },
-  en: {
-    "nav.problem":"Problem","nav.solution":"Solution","nav.compat":"Compatibility",
-    "nav.security":"Security","nav.proxy":"Proxy/Gateway","nav.hooks":"Event Hooks",
-    "nav.features":"Features","nav.mgmt":"Management","nav.arch":"Architecture","nav.install":"Install",
-    "hero.badge.native":"Ansible native","hero.badge.proxy":"Multi-zone Proxy","hero.badge.hooks":"Event Hooks",
-    "badge.new":"NEW v2.0",
-    "hero.h1":'<span class="hl-teal">Agents</span><br>for Ansible',
-    "hero.subtitle":"Run your playbooks on hosts behind NAT, firewalls or DMZ. Agents initiate the connection themselves — you open zero inbound ports.",
-    "hero.cta.start":"Quick start","hero.cta.github":"View on GitHub",
-    "problem.tag":"The problem",
-    "problem.title":"8 risks you take with every playbook",
-    "problem.lead":"Ansible is a remarkable tool. But its classic SSH model creates security blind spots and operational debt that most teams discover too late.",
-    "problem.blast.title":"One machine compromised, your entire infra exposed",
-    "problem.blast.body":"Your Control Node centralizes SSH access to all your hosts. A leaked CI/CD token, a malicious dependency, a poorly revoked access — and your entire fleet is within reach of an attacker. In a single step. Without an alarm.",
-    "problem.blast.quote":"The attack surface grows linearly with the size of your infrastructure.",
-    "problem.revoke.title":"Revoking an SSH key: a 3am emergency",
-    "problem.revoke.body":"A key is stolen. The clock is ticking. You need to remove it from 300 hosts, right now. With classic SSH, that's a manual operation, host by host, taking hours — no central blacklist, no automatic expiration.",
-    "problem.revoke.quote":"Key rotation isn't a planned event. It's an emergency.",
-    "problem.audit.title":"Who ran what, on what, and when?",
-    "problem.audit.body":"Ansible has no centralized audit log. Traces stay on the Control Node — editable, deletable. In case of an incident or ISO 27001, NIS2, or SOC2 audit, you can't prove a configuration was applied, or by whom.",
-    "problem.audit.quote":"The auditor asks the question. You search through logs scattered across multiple machines.",
-    "problem.rbac.title":"Everyone can do everything",
-    "problem.rbac.body":"Ansible has no native RBAC. On a standard Control Node, anyone with access can run any playbook against any host. AWX adds access control — at the cost of a heavy stack, a database, and an interface to maintain.",
-    "problem.rbac.quote":"Your permissions are managed in Azure AD. Your automation has no access control.",
-    "problem.drift.title":"Your infra is drifting. You don't know it.",
-    "problem.drift.body":"Ansible pushes a configuration, then nothing. Between runs, an admin makes a manual change, a package auto-updates, a firewall rule is modified. Your infra silently drifts from the state in your playbooks — and you'll only find out at the next incident.",
-    "problem.drift.quote":"Push-and-forget isn't configuration management. It's hope.",
-    "problem.offline.title":"A host offline? The task vanishes.",
-    "problem.offline.body":"An unexpected reboot, a network outage — if a host is unavailable at playbook time, the task fails and is never retried. In a rolling deploy across 50 machines, one that reboots at the wrong time leaves your fleet partially patched, with no alert.",
-    "problem.offline.quote":"Your maintenance window is 4 hours. 3 hosts didn't get the patch. You don't know it.",
-    "problem.lateral.title":"A compromised host can attack your Control Node",
-    "problem.lateral.body":"Your Control Node initiates SSH connections to hosts. A compromised host knows its IP — and that machine holds SSH keys to your entire fleet. Compromise a host → target the Control Node → access the entire infrastructure.",
-    "problem.lateral.quote":"You've segmented your hosts. But the Control Node is the common denominator of all your segments.",
-    "problem.network.title":"Multi-cloud, multi-site: permanent network debt",
-    "problem.network.body":"Production, DMZ, disaster recovery, cloud A, cloud B, edge sites — every segment needs a route to the Control Node. Site-to-site VPNs, cloud peering, SSH tunnels: each connection is one more firewall rule, one more attack surface, one more configuration to maintain.",
-    "problem.network.quote":"Your infra is multi-cloud. Your automation shouldn't require a flat network between all your environments.",
-    "solution.tag":"The solution",
-    "solution.title":"The Ansible-SecAgent reversed model",
-    "solution.lead":"Ansible-SecAgent inverts the control flow. The agent on the target host initiates a persistent WebSocket connection to the relay server. Ansible only needs to reach the relay server — never the hosts directly.",
-    "deploy.mono.tag":"Single-node","deploy.mono.title":"Simple &amp; fast",
-    "deploy.mono.desc":"A single relay server to get started. Ideal for small infrastructures or to validate the solution in minutes.",
-    "deploy.mono.s1":"1 secagent-server (Go, 4.65 MiB)","deploy.mono.s2":"1 NATS JetStream (embedded)",
-    "deploy.mono.s3":"1 Caddy (automatic TLS)","deploy.mono.s4":"SQLite included — zero DB config",
-    "deploy.mono.s5":"docker compose up -d → ready in 30s",
-    "deploy.ha.tag":"Multi-node · HA","deploy.ha.title":"Scalable &amp; high availability",
-    "deploy.ha.desc":"Multiple relay nodes behind a load balancer. Agents connect to any node, routing is transparent via the NATS cluster.",
-    "deploy.ha.s1":"N secagent-server nodes in parallel","deploy.ha.s2":"NATS JetStream cluster (3 nodes)",
-    "deploy.ha.s3":"Load balancer (Nginx / K8s Ingress)","deploy.ha.s4":"External PostgreSQL (RDS/CloudSQL)",
-    "deploy.ha.s5":"Kubernetes Helm chart included",
-    "compat.tag":"Compatibility","compat.title":"Your existing Ansible, unchanged",
-    "compat.lead":"Ansible-SecAgent integrates as a standard Ansible plugin. Your playbooks, roles, and collections work without modification. The transition is incremental: SSH remains available side by side.",
-    "compat.playbooks.title":"Playbooks unchanged",
-    "compat.playbooks.body":"All your playbooks, roles, and Ansible Galaxy collections work without modification. Just change <code>connection: relay</code> in ansible.cfg.",
-    "compat.ssh.title":"SSH still available",
-    "compat.ssh.body":"Ansible-SecAgent doesn't remove SSH. Both coexist. Ideal for incremental migration: move host by host without disruption.",
-    "compat.inventory.title":"Dynamic inventory",
-    "compat.inventory.body":"The inventory plugin automatically lists all connected agents with their facts. Your existing static inventories remain compatible in parallel.",
-    "compat.become.title":"become / sudo supported",
-    "compat.become.body":"<code>become: true</code> and <code>become_user</code> work just like SSH. The become_pass is transmitted securely, masked in all logs.",
-    "compat.comment":"only change required",
-    "security.tag":"Security","security.title":"Security by design",
-    "security.lead":"Ansible-SecAgent is built around a Zero Trust model. Every architectural decision has an explicit security justification, documented in the technical specs.",
-    "security.per-agent":"per agent","security.enrollment.title":"Controlled enrollment",
-    "security.rsa.body":"Each agent generates its own RSA-4096 keypair on first start. The private key never leaves the host.",
-    "security.enrollment.body":"The agent's public key must be pre-authorized in the database before any enrollment. Zero TOFU (Trust On First Use).",
-    "security.jwt.body":"The JWT token returned to the agent is encrypted with its RSA public key. Unreadable without the private key, even if intercepted on the network.",
-    "security.jti.body":"Immediate revocation by JTI (unique JWT ID). The active WebSocket connection is closed with code 4001 — the agent does not reconnect automatically.",
-    "security.dualkey.body":"JWT secret rotation without service interruption. Configurable grace period: old tokens remain valid during migration.",
-    "security.tls.title":"Mandatory TLS",
-    "security.tls.body":"WSS (WebSocket over TLS) and HTTPS on all connections. TLS termination via Caddy. No plain HTTP accepted.",
-    "security.become.body":"The sudo/su escalation password is transmitted via encrypted stdin and masked in all logs — agent, server, and Ansible plugins.",
-    "security.aes.body":"Server secrets (RSA keypair, JWT secrets) are encrypted in the database via AES-256-GCM derived from RSA_MASTER_KEY.",
-    "security.table.threat":"Attack vector","security.table.ssh":"Classic SSH",
-    "sec.r1.t":"Exposed inbound port","sec.r1.s":"Port 22 open","sec.r1.r":"Zero inbound ports",
-    "sec.r2.t":"Auth token interception","sec.r2.s":"SSH key in plaintext on disk","sec.r2.r":"JWT encrypted RSA-OAEP",
-    "sec.r3.t":"Compromised agent → lateral movement","sec.r3.s":"SSH key gives direct access","sec.r3.r":"JTI revocable immediately",
-    "sec.r4.t":"Unauthorized agent","sec.r4.s":"Implicit TOFU possible","sec.r4.r":"Pre-authorize mandatory",
-    "sec.r5.t":"Secret rotation","sec.r5.s":"Manual, with downtime","sec.r5.r":"Dual-key, grace period, zero downtime",
-    "sec.r6.t":"become_pass leak in logs","sec.r6.s":"Risk depending on configuration","sec.r6.r":"Masked in all logs",
-    "security.relay.title":"4th JWT role: relay",
-    "security.relay.body":"The <code>relay</code> role (distinct from agent/plugin/admin) authenticates relay nodes in pull mode. Created via <code>POST /api/admin/tokens</code> — never shared with agents.",
-    "features.tag":"Features","features.title":"Implemented by version",
-    "features.lead":"Ansible-SecAgent is developed in incremental phases, each validated by automated tests and a security audit before deployment.",
-    "f01.1":"RSA-4096 enrollment: key generation, POST /api/register, JWT OAEP",
-    "f01.2":"Persistent WSS connection with exponential backoff reconnect (1s → 60s)",
-    "f01.3":"Command execution via subprocess (5 MB stdout buffer, timeout, kill)",
-    "f01.4":"File transfer: put_file and fetch_file (base64, 500 KB limit)",
-    "f01.5":"Privilege escalation: become via stdin, become_pass masked in logs",
-    "f01.6":"Persistent async registry JSON: resume after agent restart",
-    "f01.7":"systemd deployment: Restart=on-failure, dedicated User, NoNewPrivileges",
-    "f02.1":"FastAPI REST API: /api/register, /api/exec, /api/upload, /api/fetch, /api/inventory",
-    "f02.2":"NATS JetStream: RELAY_TASKS + RELAY_RESULTS streams, HA inter-node routing",
-    "f02.3":"JWT auth: agent/plugin/admin roles, JTI blacklist, WS revocation code 4001",
-    "f02.4":"SQLite: agents, authorized_keys, blacklist tables with versioned schema",
-    "f02.5":"Dynamic inventory: standard Ansible JSON format, only_connected filter",
-    "f03.1":"Connection plugin: replaces SSH, native exec_command / put_file / fetch_file",
-    "f03.2":"become support: become_pass transmitted to relay server",
-    "f03.3":"Inventory plugin: GET /api/inventory → hostvars + Ansible groups",
-    "f03.4":"Configuration via ansible.cfg or host variables (ansible_connection: relay)",
-    "f03.5":"HTTP → AnsibleConnectionError mapping: 503 UNREACHABLE, 504 timeout",
-    "f10.1":"Go server: 4.65 MiB binary, 0 restarts in production, goroutines",
-    "f10.2":"Go agent: 94 tests PASS, 3 qualif agents connected continuously",
-    "f10.3":"secagent-inventory: standalone Go binary, 19 tests, native Ansible format",
-    "f10.4":"SQLite via modernc (CGO-free), Gorilla WebSocket, native Go JWT",
-    "f10.5":"Multi-stage Dockerfile golang:alpine → alpine: minimal image",
-    "f11.1":"cobra CLI integrated in secagent-server binary (zero extra binary)",
-    "f11.2":"minions: list / get / suspend / resume / revoke / authorize / vars",
-    "f11.3":"security: keys status / rotate --grace Nh · tokens list · blacklist list",
-    "f11.4":"inventory list --only-connected · server status / stats",
-    "f11.5":"--format table|json|yaml on all commands",
-    "f11.6":"Dual-key JWT: zero-downtime rotation, configurable grace period",
-    "f11.7":"WS rekey message: agents migrate to new secret without disconnection",
-    "f11.8":"AES-256-GCM: server RSA keypair and JWT secrets encrypted in DB",
-    "f11.9":"441 tests PASS, 0 fail · Security audit: 0 CRITICAL, 0 HIGH",
-    "f12.1":"relay-ansible container: multi-stage build (Go builder + Python runtime)",
-    "f12.2":"secagent-inventory: standalone Go binary integrated in container",
-    "f12.3":"Connection plugin relay.py: loaded from ansible_plugins/connection_plugins/",
-    "f12.4":"ExecCommand handler: relays Ansible commands to agents via blocking WebSocket",
-    "f12.5":"Inventory filtering: by default returns all minions, relay_status: \"connected\" | \"disconnected\"",
-    "f12.6":"End-to-end validation: ansible all -m ping, ansible-playbook, dynamic inventory ✅",
-    "f12.7":"Network: relay-ansible on ansible_server_default (connected to relay-api)",
-    "f12.8":"Dockerfile: golang:1.25-alpine (Stage 1) → python:3.11-slim (Stage 2)",
-    "f12.9":"Phase 11 COMPLETE: all native Ansible components + relay integrated and tested ✅",
-    "feh.1":"Unified hook system (internal/hooks/) — actions triggered by agent events",
-    "feh.2":"4 action types: webhook (HMAC-SHA256), shell (subprocess + SECAGENT_* env), file (append O_CREATE), api (configurable method)",
-    "feh.3":"Template engine: {{hostname}}, {{event}}, {{timestamp}}, {{status}}, {{enrolled_at}}",
-    "feh.4":"Async dispatcher (queue 1000, non-blocking) with hot-reload via SIGHUP",
-    "feh.5":"CLI: secagent-server hooks status and hooks log --limit --event --hostname --format",
-    "feh.6":"action_log table — traces all action executions in DB",
-    "feh.7":"Route GET /api/admin/hooks/log — admin API access to logs",
-    "f20.1":"Proxy mode (PROXY_MODE=true) — multi-zone aggregation (DMZ, private cloud, edge) into a single entry point",
-    "f20.2":"Pull mode: relays initiate connection to proxy via WSS /ws/relay (JWT role relay)",
-    "f20.3":"Push mode: proxy contacts DB-registered relays via HTTP REST, 30s inventory poll",
-    "f20.4":"Unified inventory: GET /api/inventory aggregates agents from all relays + direct agents",
-    "f20.5":"Transparent routing: exec/upload/fetch auto-routed to the relay owning the host",
-    "f20.6":"Proxy→proxy chaining: multi-level topologies with loop protection (X-Relay-Hops)",
-    "f20.7":"Admin relay endpoints: POST/GET/DELETE/status on /api/admin/relays",
-    "f20.8":"CLI: secagent-server relays list|get|status|add|remove",
-    "f20.9":"Multi-zone Docker Compose: proxy + 2 DMZ relays + simulated agents — 917/920 tests PASS, QA VALIDATED",
-    "proxy.tag":"New in v2.0","proxy.title":"Multi-zone Proxy/Gateway — secagent_repeater",
-    "proxy.lead":"Ansible-SecAgent v2.0 introduces proxy mode: a central server aggregates multiple isolated network zones (DMZ, private cloud, edge sites) into a single entry point. Ansible only needs to reach one endpoint to manage your entire fleet.",
-    "proxy.pull.tag":"Pull Mode","proxy.pull.title":"Relays initiate the connection",
-    "proxy.pull.desc":"Each DMZ relay opens a persistent WebSocket to the central proxy via WSS /ws/relay. The relay authenticates with a JWT role relay. No inbound connection from proxy to DMZ.",
-    "proxy.pull.s1":"Outbound-only connections from each DMZ",
-    "proxy.pull.s2":"Dedicated relay JWT role (distinct from agent/plugin/admin)",
-    "proxy.pull.s3":"WS protocol: 10 bidirectional message types",
-    "proxy.pull.s4":"Clean close codes 4010/4011",
-    "proxy.push.tag":"Push Mode","proxy.push.title":"Proxy initiates REST connections",
-    "proxy.push.desc":"The proxy contacts DB-registered relays via HTTP REST. Inventory automatically aggregated every 30s.",
-    "proxy.push.s1":"Relays registered via POST /api/admin/relays",
-    "proxy.push.s2":"Inventory poll every 30s (configurable)",
-    "proxy.push.s3":"DB tables: relay_nodes + relay_routing",
-    "proxy.push.s4":"CLI: secagent-server relays list|add|remove|status",
-    "proxy.f1.title":"Aggregated inventory","proxy.f1.body":"GET /api/inventory automatically aggregates agents from all connected relays and direct agents. One call, full fleet visibility.",
-    "proxy.f2.title":"Transparent routing","proxy.f2.body":"/api/exec/{host}, /api/upload/{host}, /api/fetch/{host} automatically routed to the relay owning the host via relay_routing.",
-    "proxy.f3.title":"Proxy→proxy chaining","proxy.f3.body":"Multi-level hierarchical topologies supported. Loop protection via X-Relay-Hops header (budget 8, HTTP 508 if exhausted).",
-    "proxy.f4.title":"Multi-zone Docker Compose","proxy.f4.body":"Included qualif topology: proxy + 2 DMZ relays + simulated agents, isolated networks. Ready in one command.",
-    "hooks.tag":"New in v1.1","hooks.title":"Event Hooks — JSON-configured actions",
-    "hooks.lead":"Automatically trigger actions (notifications, scripts, API calls, file writes) on relay agent events. Zero-code config via JSON — hot-reload via SIGHUP.",
-    "hooks.t1.title":"4 action types","hooks.t1.body":"shell — run a system script\nfile — write to a log file\napi — HTTP call with configurable method\nwebhook — HTTP POST signed HMAC-SHA256",
-    "hooks.t2.title":"Available events","hooks.t2.body":"agent.connected — WSS connection established\nagent.disconnected — WSS disconnection\ntask.completed — task completed successfully\ntask.failed — task in error",
-    "hooks.t3.title":"Variable templates","hooks.t3.body":"Inject dynamic variables in your actions: {{.AgentID}}, {{.Hostname}}, {{.Event}}, {{.Timestamp}}, {{.Status}}",
-    "hooks.t4.title":"Async dispatcher","hooks.t4.body":"Internal queue of 1000 entries, non-blocking. Hot-reload via SIGHUP without server restart. Full log in action_log table.",
-    "roadmap.v11.title":"✅ v1.1.0 — Unified Event Hooks","roadmap.v11.body":"JSON-configured hooks (shell, webhook, file, api), async dispatcher, SIGHUP hot-reload, hooks status/log CLI, action_log table.",
-    "roadmap.v20.title":"✅ v2.0.0 — Multi-zone Proxy/Gateway","roadmap.v20.body":"Proxy/repeater mode (pull + push), multi-zone aggregated inventory, transparent routing, proxy→proxy chaining, relay JWT role, multi-zone Docker Compose. 917/920 tests validated.",
-    "roadmap.title":"Coming next",
-    "roadmap.lead":"The following phases are specified in ARCHITECTURE.md and ready to start.",
-    "roadmap.k8s.title":"Production Kubernetes",
-    "roadmap.k8s.body":"Full Helm chart: relay-api Deployment (3 replicas), NATS JetStream StatefulSet (cluster, 20Gi fast-ssd PVC), nginx Ingress with cert-manager TLS, K8s Secrets. External PostgreSQL (RDS/CloudSQL) replacing SQLite.",
-    "roadmap.hardening.title":"Documentation &amp; Hardening",
-    "roadmap.hardening.body":"Rate limiting on sensitive endpoints, structured audit logs (JSON, syslog), granular RBAC per hostgroup, Prometheus metrics / Grafana dashboard, operational runbook.",
-    "roadmap.freeipa.title":"FreeIPA Plugin",
-    "roadmap.freeipa.body":"Enterprise integration: enrollment via ipa-client-install, mTLS with FreeIPA CA-signed certificates (Dogtag), CRL/OCSP revocation, LDAP inventory plugin (IPA hostgroups → native Ansible groups).",
-    "install.tag":"Installation","install.title":"Quick start",
-    "install.lead":"Choose your deployment method.",
-    "install.tab.docker":"Docker Compose","install.tab.manual":"Binaries","install.tab.k8s":"Kubernetes (Helm)",
-    "repeater.install.tag":"Repeater Mode v2.0","repeater.install.title":"Deploy in Multi-Zone Repeater Mode",
-    "repeater.install.lead":"Repeater mode aggregates multiple DMZ relays behind a single entry point. Agents stay in their isolated zones — Ansible sees only one server.",
-    "repeater.docker.badge":"Docker Compose","repeater.docker.title":"Quick start — Multi-zone Docker",
-    "repeater.manual.badge":"Binaries","repeater.manual.title":"Manual deployment — production",
-    "rep.d.s1":"Clone and configure","rep.d.s2":"Start multi-zone topology","rep.d.s3":"Verify aggregated inventory",
-    "rep.m.s1":"Start the repeater (central entry point)","rep.m.s2":"Start relays in each DMZ",
-    "rep.m.s3":"Register relays (push) or let them connect (pull)","rep.m.s4":"Check status",
-    "ins.proxy.intro.title":"Multi-zone Proxy/Gateway mode (v2.0):","ins.proxy.intro.body":" a central server aggregates multiple DMZ relays. Agents in isolated zones connect to their local relay — the proxy bridges to Ansible.",
-    "ins.proxy.s1":"Build binaries","ins.proxy.s2":"Start the proxy server (central entry point)",
-    "ins.proxy.s3":"Start DMZ relays (one per zone)","ins.proxy.s4":"Register relays from the proxy",
-    "ins.proxy.s5":"Or: multi-zone Docker Compose (qualif)",
-    "ins.enroll.title":"Enrollment flow:",
-    "ins.enroll.body":" the agent generates its RSA-4096 keypair on <strong>first start</strong> and stores it at <code>/etc/secagent-minion/id_rsa</code> (mode 0600). It immediately attempts enrollment — but the server rejects it until the public key is pre-authorized. The agent retries automatically with exponential backoff.",
-    "ins.d.s1":"Clone the repo and configure","ins.d.s2":"Start the server (relay-api + NATS + Caddy)",
-    "ins.d.s3":"Deploy the agent on the target host","ins.d.s4":"Authorize the agent (pre-authorize)",
-    "ins.d.s5":"Run an Ansible playbook",
-    "ins.m.s1":"Build from source","ins.m.s2":"Start NATS JetStream",
-    "ins.m.s3":"Start the relay server","ins.m.s4":"Deploy the agent on the target host",
-    "ins.m.s5":"Authorize the agent (pre-authorize)",
-    "ins.k.s1":"Create namespace and secrets","ins.k.s2":"Deploy via Helm",
-    "ins.k.s3":"Verify deployment","ins.k.s4":"Manage agents and keys",
-    "mgmt.tag":"Management",
-    "mgmt.title":"Administer from the terminal",
-    "mgmt.lead":"The cobra CLI is built directly into the <code>secagent-server</code> binary. Accessible from a Docker container or a Kubernetes pod — no extra binary required.",
-    "mgmt.agents.title":"Agent management",
-    "mgmt.agents.desc":"List, suspend, revoke, and authorize agents. Manage their inventory variables.",
-    "mgmt.security.title":"Security &amp; keys",
-    "mgmt.security.desc":"Zero-downtime JWT secret rotation, management of active tokens and JTI blacklist.",
-    "mgmt.inventory.title":"Inventory",
-    "mgmt.inventory.desc":"View connected agents and their facts directly from the CLI.",
-    "mgmt.server.title":"Server status",
-    "mgmt.server.desc":"Check relay server state: uptime, active connections, tasks executed, memory.",
-    "mgmt.access.label":"Access:",
-    "mgmt.access.body":" The CLI reads environment variables from the container (<code>ADMIN_TOKEN</code>, <code>JWT_SECRET_KEY</code>). No extra configuration required.",
-    "arch.tag":"Architecture",
-    "arch.title":"Architecture",
-    "arch.lead":"Two deployment topologies to fit your needs: a central relay for simple architectures, or a multi-zone repeater for segmented infrastructures (DMZ, private cloud, edge sites).",
-    "arch.simple.title":"Standard Mode",
-    "arch.simple.desc":"A central relay aggregates your infrastructure agents.",
-    "arch.pull.title":"Pull Mode — repeater connects to relays",
-    "arch.pull.desc":"The repeater initiates REST connections to each DMZ relay. Best when the repeater has network access to isolated zones.",
-    "arch.push.title":"Push Mode — relays connect to the repeater",
-    "arch.push.desc":"Each DMZ relay initiates a persistent WSS connection to the repeater. Ideal for strict firewall rules where no inbound connection is allowed.",
-    "arch.chain.title":"Chaining — intermediate repeater",
-    "arch.chain.desc":"An intermediate repeater aggregates its local relays and connects upstream to a central repeater. Multi-level topologies without exposing deep DMZ segments.",
-    "footer.github":"GitHub","footer.specs":"Technical specs","footer.issues":"Issues"
-  }
+ "fr": {
+  "arch.chain.desc": "Un relay intermédiaire agrège ses descendants. Un relay n'a qu'un parent ; une boucle est refusée.",
+  "arch.chain.title": "Arbre à plusieurs niveaux",
+  "arch.lead": "Go côté serveur et agent, WebSocket direct (WSS) entre agents et relays, état en fichier, plugins Ansible en Python. Détail dans le <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/HLD.md\">High-Level Design</a> et les <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/ARCHITECTURE.md\">spécifications techniques</a>.",
+  "arch.pull.desc": "L'enfant ouvre le lien vers son parent : aucune connexion entrante n'est nécessaire dans la DMZ.",
+  "arch.pull.title": "Chaîne en mode pull",
+  "arch.push.desc": "Le parent ouvre le lien vers l'enfant, quand c'est le sens autorisé par votre pare-feu.",
+  "arch.push.title": "Chaîne en mode push",
+  "arch.simple.desc": "Le plugin Ansible parle en REST à l'instance active ; les agents s'y connectent en WSS. L'instance secondaire n'ouvre aucun port tant qu'elle n'a pas le verrou.",
+  "arch.simple.title": "Un relay racine, actif/passif",
+  "arch.tag": "Architecture",
+  "arch.title": "Architecture",
+  "compat.become.body": "<code>become: true</code> et <code>become_user</code> fonctionnent comme avec SSH. Le become_pass est transmis de façon sécurisée, masqué dans tous les logs.",
+  "compat.become.title": "become / sudo supporté",
+  "compat.cfg": "Options du plugin (<code>ansible.cfg</code>, variables d'environnement, variables d'hôte) : voir la <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/plugins/PLUGINS_SPEC.md\">spécification des plugins</a>.",
+  "compat.inventory.body": "Le plugin inventory liste automatiquement tous les agents connectés avec leurs facts. Vos inventaires statiques restent compatibles en parallèle.",
+  "compat.inventory.title": "Inventaire dynamique",
+  "compat.lead": "Ansible-SecAgent s'intègre comme un plugin Ansible standard. Vos playbooks, rôles et collections fonctionnent sans modification. La transition est progressive : SSH reste disponible en parallèle.",
+  "compat.playbooks.body": "Tous vos playbooks, rôles et collections Ansible Galaxy fonctionnent sans modification. Changez juste <code>connection: relay</code> dans ansible.cfg.",
+  "compat.playbooks.title": "Playbooks inchangés",
+  "compat.ssh.body": "Ansible-SecAgent ne supprime pas SSH. Les deux coexistent. Idéal pour une migration progressive : passez hôte par hôte sans rupture de service.",
+  "compat.ssh.title": "SSH toujours disponible",
+  "compat.tag": "Compatibilité",
+  "compat.title": "Votre Ansible existant, inchangé",
+  "deploy.ha.desc": "Le même déploiement Docker Compose tourne sur plusieurs hôtes, sur un stockage partagé. Une seule instance détient le verrou et sert ; les autres attendent sans ouvrir aucun port, puis reprennent si elle disparaît. Les agents se reconnectent seuls.",
+  "deploy.ha.s1": "Un seul maître par répertoire d'état (<code>relay.lock</code>)",
+  "deploy.ha.s2": "Instances secondaires : aucun port ouvert, aucun état chargé",
+  "deploy.ha.s3": "Les agents connaissent plusieurs adresses de relay",
+  "deploy.ha.s4": "Déploiement Docker Compose multi-hôtes",
+  "deploy.ha.tag": "Actif / passif",
+  "deploy.ha.title": "Haute disponibilité par verrou",
+  "deploy.limits": "Limite connue : l'actif/passif sur un stockage partagé entre deux hôtes réels n'a pas encore été vérifié en conditions réelles (voir « Limites connues » plus bas).",
+  "deploy.mono.desc": "Un seul serveur relay suffit pour commencer. Pas de bus de messages, pas de base de données externe, pas de reverse proxy : l'état est un fichier et le TLS est natif.",
+  "deploy.mono.s1": "<code>secagent-server</code> écrit en Go",
+  "deploy.mono.s2": "Dispatch des tâches direct par WebSocket, une connexion par agent",
+  "deploy.mono.s3": "TLS natif, rechargement des certificats à chaud",
+  "deploy.mono.s4": "État dans un fichier authentifié (HMAC), secrets chiffrés (AES-256-GCM)",
+  "deploy.mono.tag": "Un serveur",
+  "deploy.mono.title": "Simple : un binaire Go",
+  "f300.1": "Spécification du mode repeater (topologie en arbre) ; retrait de l'ancien mode proxy (<code>PROXY_MODE</code>)",
+  "f300.2": "Pas d'implémentation du repeater dans cette version : elle arrive en v3.0.1",
+  "f301.1": "Topologie en arbre, liens pull (enfant → parent) et push (parent → enfant), handshake <code>relay_hello</code> / <code>relay_ack</code>",
+  "f301.2": "Routage hiérarchique vers le relay qui détient l'hôte ; l'agent local reste prioritaire",
+  "f301.3": "Révocation d'un jeton de relay avec fermeture du lien actif",
+  "f302.1": "Propagation d'événements <code>host.*</code> le long de la chaîne de relays, avec variables <code>relay_chain</code> / <code>relay_origin</code>",
+  "f302.2": "Inventaire hiérarchique : groupes Ansible nommés d'après les relays, <code>?relay=</code> pour limiter à une descendance",
+  "f302.3": "Variables de groupe (<code>RELAY_GROUP_VARS</code>) transmises le long de la chaîne",
+  "f303.1": "Actif/passif dans <code>secagent-server</code> : verrou d'exclusivité, instances secondaires sans port ouvert",
+  "f303.2": "État dans un fichier authentifié (HMAC, anti-rejeu, secrets chiffrés) à la place de SQLite",
+  "f303.3": "TLS natif avec rechargement à chaud des certificats",
+  "f303.4": "Journal des actions de hooks en ajout seul, sans secrets",
+  "f303.5": "Correctifs de sécurité : renouvellement de jeton et enrôlement sans jeton, connexions WebSocket non authentifiées (versions antérieures concernées)",
+  "f304.1": "Jetons de lien relay ↔ relay signés Ed25519 par la racine, clef publique racine épinglée sur chaque relay non racine",
+  "f304.2": "Rotation de la clef de lien (<code>keys rotate-link</code>, double acceptation) et révocation propagée de proche en proche",
+  "f304.3": "<code>state rekey</code> : rotation hors ligne de <code>RSA_MASTER_KEY</code> avec sauvegarde et vérification ; <code>state link-trust reset</code> pour ré-épingler une ancre",
+  "f304.4": "Limites d'admission : tâches par agent et par relay, budget mémoire de sortie, quota de snapshots par identité de relay",
+  "f304.5": "Secrets par fichier (<code>*_FILE</code>) pour le serveur et le minion",
+  "f304.6": "Politique de connexion sortante des liens (anti-rebinding DNS, redirections jamais suivies)",
+  "f304.7": "<code>--version</code> sur <code>secagent-server</code> et <code>secagent-minion</code> ; les arguments inconnus sont refusés au lieu de démarrer",
+  "f304.8": "Suspension d'un agent visible dans l'inventaire des relays ancêtres",
+  "f304.9": "Correctif : la réponse d'une tâche synchrone durant plus de 15 s n'est plus coupée",
+  "fbase.1": "Agent <code>secagent-minion</code> : enrôlement RSA-4096, connexion WSS persistante, exécution par sous-processus, transferts de fichiers, <code>become</code>",
+  "fbase.2": "Plugins Ansible (connexion et inventaire) en Python, <code>secagent-inventory</code> en Go",
+  "fbase.3": "CLI d'administration intégrée au binaire serveur (v1.1.0)",
+  "fbase.4": "Event Hooks configurables en JSON (v1.1.0)",
+  "fbase.5": "Mode proxy multi-zone (v2.0.0), remplacé par la chaîne de relays à partir de la v3",
+  "features.lead": "Chaque version est livrée par jalons, avec ses notes de version et son journal des changements sur GitHub.",
+  "features.tag": "Fonctionnalités",
+  "features.title": "Implémentées par version",
+  "footer.github": "GitHub",
+  "footer.issues": "Issues",
+  "footer.releases": "Releases",
+  "footer.security": "Sécurité",
+  "footer.specs": "Specs techniques",
+  "hero.badge.hooks": "Event Hooks",
+  "hero.badge.native": "Ansible natif",
+  "hero.badge.proxy": "Relays chaînés",
+  "hero.badge.tls": "TLS partout",
+  "hero.cta.github": "Voir sur GitHub",
+  "hero.cta.start": "Démarrer",
+  "hero.h1": "<span class=\"hl-teal\">Des agents</span><br>pour Ansible",
+  "hero.subtitle": "Exécutez vos playbooks sur des hôtes derrière NAT, firewall ou DMZ. Les agents initient eux-mêmes la connexion — vous n'ouvrez aucun port entrant sur les hôtes gérés.",
+  "hooks.c1.b": "<code>shell</code>, <code>file</code>, <code>api</code> et <code>webhook</code> (POST signé HMAC-SHA256).",
+  "hooks.c1.t": "4 types d'actions",
+  "hooks.c2.b": "<code>host.up</code>, <code>host.down</code>, <code>host.new</code>, <code>host.conflict</code>, <code>host.suspended</code>, <code>host.resumed</code> et <code>relay.updated</code>, propagés le long de la chaîne de relays.",
+  "hooks.c2.t": "Événements d'hôte",
+  "hooks.c3.b": "Variables <code>{{relay_chain}}</code> et <code>{{relay_origin}}</code>, filtre <code>relay_chain_contains</code> validé au chargement : une configuration mal formée est rejetée en bloc.",
+  "hooks.c3.t": "Contexte de chaîne",
+  "hooks.c4.b": "Journal JSON Lines en ajout seul, secrets (HMAC, jetons, en-têtes) masqués. Rechargement de la configuration à chaud par <code>SIGHUP</code>.",
+  "hooks.c4.t": "Journal sans secrets",
+  "hooks.lead": "Déclenchez des actions (notification, script, appel API, écriture de fichier) sur les événements de votre parc, sans écrire de code : un fichier JSON suffit.",
+  "hooks.tag": "Event Hooks",
+  "hooks.title": "Event Hooks — Actions configurables par JSON",
+  "ins.agent.body": "Le <code>secagent-minion</code> s'installe en service systemd sur chaque hôte. Il s'enrôle avec un jeton créé sur le serveur, puis garde sa connexion WSS ouverte. Aucun port entrant à ouvrir.",
+  "ins.agent.link": "Guide d'installation de l'agent",
+  "ins.agent.title": "Agent (hôtes gérés)",
+  "ins.relay.body": "Un relay enfant s'ancre sur la clef publique de la racine et reçoit un jeton de lien signé par elle. Il s'installe dans la zone qu'il dessert (DMZ, cloud privé, site distant) et agrège les agents de cette zone.",
+  "ins.relay.link": "Guide d'installation d'un relay",
+  "ins.relay.title": "Relays enfants",
+  "ins.server.body": "Le <code>secagent-server</code> se déploie avec Docker Compose, sur un ou plusieurs hôtes en actif/passif sur un stockage partagé. Les secrets sont fournis par fichiers ; l'état est initialisé une fois.",
+  "ins.server.link": "Guide d'installation du serveur",
+  "ins.server.title": "Serveur (relay racine)",
+  "install.doc": "Documentation",
+  "install.lead": "Trois guides d'installation complets, maintenus avec le code. Commencez par le serveur, puis les relays enfants si vous en avez besoin, puis les agents.",
+  "install.rel": "Releases (v3.0.4)",
+  "install.tag": "Démarrer",
+  "install.title": "Démarrer",
+  "lim.1": "Un relay qui monte en v3.0.4 ne peut pas revenir en v3.0.3 : l'état est migré et les liens relay ↔ relay sont coupés pendant la montée (prévoir une fenêtre annoncée).",
+  "lim.2": "Le JWT d'un agent dure 1 h sans renouvellement : après expiration, toute reconnexion repose sur le jeton d'enrôlement ; un jeton à usage unique ou expiré arrête l'agent (code 78). Utilisez un jeton réutilisable restreint par motif de nom d'hôte.",
+  "lim.3": "L'actif/passif sur un stockage partagé entre deux hôtes réels n'a pas été vérifié.",
+  "lim.4": "Sans changement du budget mémoire par défaut, un relay accepte au plus 204 tâches simultanées.",
+  "lim.title": "Limites connues",
+  "mgmt.agents.desc": "Listez, suspendez, révoquez et autorisez les agents. Gérez leurs variables d'inventaire.",
+  "mgmt.agents.title": "Gestion des agents",
+  "mgmt.inventory.desc": "Visualisez les agents et l'état du serveur, et consultez le journal des hooks.",
+  "mgmt.inventory.title": "Inventaire et statut",
+  "mgmt.lead": "La CLI cobra est intégrée au binaire <code>secagent-server</code> : aucun binaire supplémentaire. Elle s'utilise depuis le conteneur ou l'hôte du serveur.",
+  "mgmt.more": "Détail des commandes et options :",
+  "mgmt.security.desc": "Rotation des secrets JWT, clef de lien de la racine, clef maître de l'état.",
+  "mgmt.security.title": "Clefs et rotations",
+  "mgmt.tag": "Management",
+  "mgmt.title": "Administrez depuis le terminal",
+  "mgmt.tokens.desc": "Créez les jetons d'enrôlement et les jetons de lien, listez-les, révoquez-les.",
+  "mgmt.tokens.title": "Jetons",
+  "nav.arch": "Architecture",
+  "nav.compat": "Compatibilité",
+  "nav.features": "Fonctionnalités",
+  "nav.hooks": "Event Hooks",
+  "nav.install": "Démarrer",
+  "nav.mgmt": "Management",
+  "nav.problem": "Problème",
+  "nav.relays": "Relays",
+  "nav.security": "Sécurité",
+  "nav.solution": "Solution",
+  "problem.audit.body": "Ansible n'a pas de log d'audit centralisé. Les traces restent sur le Control Node — modifiables, supprimables. En cas d'incident ou de contrôle ISO 27001, NIS2 ou SOC2, vous ne pouvez pas prouver qu'une configuration a été appliquée, ni par qui.",
+  "problem.audit.quote": "L'auditeur pose la question. Vous cherchez dans des logs dispersés sur plusieurs machines.",
+  "problem.audit.title": "Qui a lancé quoi, sur quoi, et quand ?",
+  "problem.blast.body": "Votre Control Node centralise les accès SSH à tous vos hôtes. Un token CI/CD leaké, une dépendance malveillante, un accès mal révoqué — et c'est l'ensemble de votre parc qui est à portée d'un attaquant. En une seule étape. Sans alarme.",
+  "problem.blast.quote": "La surface d'attaque croît linéairement avec la taille de votre infra.",
+  "problem.blast.title": "Une machine compromise, toute votre infra exposée",
+  "problem.drift.body": "Ansible pousse une configuration, puis rien. Entre deux runs, un admin fait un changement manuel, un paquet se met à jour, une règle firewall est modifiée. Votre infra dérive silencieusement de l'état décrit dans vos playbooks — et vous ne le saurez qu'au prochain incident.",
+  "problem.drift.quote": "Push-and-forget n'est pas de la gestion de configuration. C'est de l'espoir.",
+  "problem.drift.title": "Votre infra dérive. Vous ne le savez pas.",
+  "problem.lateral.body": "C'est votre Control Node qui initie les connexions SSH vers les hôtes. Un hôte compromis connaît son adresse IP — et cette machine détient les clefs SSH de tout votre parc. Compromettre un hôte → cibler le Control Node → accéder à l'intégralité de l'infrastructure.",
+  "problem.lateral.quote": "Vous avez segmenté vos hôtes. Mais le Control Node est le dénominateur commun de tous vos segments.",
+  "problem.lateral.title": "Un hôte compromis peut attaquer votre Control Node",
+  "problem.lead": "Ansible est un outil remarquable. Mais son modèle SSH classique crée des angles morts sécurité et des dettes opérationnelles que la plupart des équipes découvrent trop tard.",
+  "problem.network.body": "Production, DMZ, disaster recovery, cloud A, cloud B, sites edge — chaque segment doit avoir une route vers le Control Node. VPN site-à-site, peering cloud, tunnels SSH : chaque connexion est une règle firewall de plus, une surface d'attaque de plus, une configuration à maintenir.",
+  "problem.network.quote": "Votre infra est multi-cloud. Votre automation ne devrait pas exiger un réseau plat entre tous vos environnements.",
+  "problem.network.title": "Multi-cloud, multi-site : une dette réseau permanente",
+  "problem.offline.body": "Un redémarrage inattendu, une coupure réseau — si un hôte est indisponible au moment du playbook, la tâche échoue et n'est jamais rejouée. En rolling deploy sur 50 machines, il suffit d'une qui redémarre pour avoir un parc partiellement patché, sans alerte.",
+  "problem.offline.quote": "Votre fenêtre de maintenance a 4 heures. 3 hôtes n'ont pas reçu le patch. Vous ne le savez pas.",
+  "problem.offline.title": "Un hôte offline ? La tâche disparaît.",
+  "problem.rbac.body": "Ansible n'a pas de RBAC natif. Sur un Control Node standard, quiconque a accès peut lancer n'importe quel playbook sur n'importe quel hôte. AWX apporte du contrôle d'accès — au prix d'une stack lourde, d'une base de données et d'une interface à maintenir.",
+  "problem.rbac.quote": "Vos droits sont gérés dans Azure AD. Votre automation n'a aucun contrôle d'accès.",
+  "problem.rbac.title": "Tout le monde peut tout faire",
+  "problem.revoke.body": "Une clef volée. L'horloge tourne. Vous devez la supprimer sur 300 hôtes, maintenant. Avec SSH classique, c'est une opération manuelle, hôte par hôte, qui prend des heures — sans blacklist centrale, sans expiration automatique.",
+  "problem.revoke.quote": "La rotation de clefs n'est pas un événement planifié. C'est une urgence.",
+  "problem.revoke.title": "Révoquer une clef SSH : une urgence à 3h du matin",
+  "problem.tag": "Le problème",
+  "problem.title": "8 risques que vous prenez à chaque playbook",
+  "relays.c1.b": "Un relay enfant n'a qu'un seul parent. Le lien s'ouvre soit de l'enfant vers le parent (pull), soit du parent vers l'enfant (push) selon vos règles de pare-feu.",
+  "relays.c1.t": "Topologie en arbre",
+  "relays.c2.b": "Chaque relay devient un groupe Ansible portant son nom ; l'inventaire de la racine agrège toute la descendance. Les tâches sont routées vers le relay qui détient l'hôte.",
+  "relays.c2.t": "Inventaire hiérarchique",
+  "relays.c3.b": "Un agent connecté localement est prioritaire sur la table de routage : un autre relay ne peut pas le détourner en déclarant le même nom d'hôte.",
+  "relays.c3.t": "Un agent local reste local",
+  "relays.c4.b": "Rôles <code>relay-child</code> et <code>relay-parent</code>, jetons EdDSA émis uniquement sur la racine, clef publique racine épinglée sur chaque relay non racine. Sans ancre, le lien est refusé.",
+  "relays.c4.t": "Jetons de lien signés par la racine",
+  "relays.c5.b": "Rotation de la clef de lien avec double acceptation et confirmation par chaque relay ; la révocation d'un jeton coupe le lien concerné à tous les niveaux.",
+  "relays.c5.t": "Rotation et révocation propagées",
+  "relays.c6.b": "Quotas de tâches par agent et par relay, budget mémoire pour la sortie des tâches, quota de snapshots de topologie par identité de relay. Un relay saturé répond 429/503 explicites plutôt que de s'effondrer.",
+  "relays.c6.t": "Limites d'admission",
+  "relays.lead": "Une racine agrège des relays enfants placés dans vos DMZ, clouds privés ou sites distants. Ansible ne parle qu'à la racine ; les agents ne parlent qu'au relay de leur zone.",
+  "relays.tag": "Relays chaînés",
+  "relays.title": "Plusieurs zones, un seul point d'entrée",
+  "rm.a.body": "Longueur minimale partout et dérivation de la clef de chiffrement de l'état par une fonction dédiée.",
+  "rm.a.title": "Durcissement des secrets et de la clef maître",
+  "rm.b.body": "Éviter l'arrêt en masse des agents lorsque le JWT d'agent (1 h) expire.",
+  "rm.b.title": "Moins de fragilité à l'expiration des jetons d'agent",
+  "rm.c.body": "Attestation des images publiées, messages de démarrage plus explicites sur une ancre périmée, <code>--version</code> pour <code>secagent-inventory</code>.",
+  "rm.c.title": "Chaîne de livraison et exploitation",
+  "rm.d.body": "Regroupées dans le jalon « v3.0.5 — Durcissement et dettes issues de v3.0.4 ».",
+  "rm.d.title": "Dettes de test, de CI et de documentation",
+  "roadmap.lead": "Le jalon « v3.0.5 — Durcissement et dettes issues de v3.0.4 » regroupe les thèmes suivants. Il s'agit de travaux planifiés, sans date annoncée.",
+  "roadmap.tag": "Roadmap",
+  "roadmap.title": "Prochainement",
+  "sec.r1.r": "Aucun port entrant sur les hôtes gérés",
+  "sec.r1.s": "Port 22 ouvert",
+  "sec.r1.t": "Port entrant exposé",
+  "sec.r2.r": "JWT chiffré RSA-OAEP",
+  "sec.r2.s": "Clef SSH en clair sur disque",
+  "sec.r2.t": "Interception du token d'auth",
+  "sec.r3.r": "JTI révocable immédiatement",
+  "sec.r3.s": "Clef SSH donne accès direct",
+  "sec.r3.t": "Agent compromis → propagation",
+  "sec.r4.r": "Jeton d'enrôlement + challenge obligatoires",
+  "sec.r4.s": "TOFU implicite possible",
+  "sec.r4.t": "Agent non autorisé",
+  "sec.r5.r": "Dual-key, période de grâce, sans interruption",
+  "sec.r5.s": "Manuelle, avec interruption",
+  "sec.r5.t": "Rotation des secrets",
+  "sec.r6.r": "Masqué dans les logs",
+  "sec.r6.s": "Risque selon configuration",
+  "sec.r6.t": "Fuite de become_pass dans les logs",
+  "security.aes.body": "L'état du serveur est authentifié par HMAC et ses secrets sont chiffrés en AES-256-GCM avec une clef maître (<code>RSA_MASTER_KEY</code>).",
+  "security.become.body": "Le mot de passe sudo/su est transmis via stdin et masqué dans les journaux de l'agent, du serveur et du plugin Ansible.",
+  "security.doc": "Lire le modèle de sécurité complet",
+  "security.dualkey.body": "Rotation des secrets JWT sans interruption de service, avec une période de grâce pendant laquelle les anciens jetons restent valides.",
+  "security.enrollment.body": "Tout enrôlement exige un jeton d'enrôlement créé par un administrateur, plus un challenge RSA-OAEP prouvant la possession de la clef privée. Sans jeton, le serveur répond 403.",
+  "security.enrollment.title": "Enrôlement contrôlé",
+  "security.jti.body": "Révocation immédiate par JTI. La connexion WebSocket active est fermée avec le code 4001 et l'agent ne se reconnecte pas.",
+  "security.jwt.body": "Le JWT retourné à l'agent est chiffré avec sa clef publique RSA. Illisible sans la clef privée, même en cas d'interception réseau.",
+  "security.lead": "Chaque décision d'architecture a une justification sécurité explicite, documentée dans le modèle de sécurité du projet. Ce modèle est évalué par des revues internes ; ce ne sont pas des audits externes ni une certification.",
+  "security.link.body": "Les relays s'authentifient par des jetons Ed25519 émis par la racine et vérifiés avec sa clef publique épinglée. Plus de secret de signature partagé entre voisins.",
+  "security.link.title": "Liens entre relays signés",
+  "security.per-agent": "par agent",
+  "security.rot.body": "Rotation de la clef de lien de la racine avec double acceptation, révocation d'un jeton propagée de proche en proche, rotation hors ligne de la clef maître (<code>state rekey</code>).",
+  "security.rot.title": "Rotation et révocation",
+  "security.rsa.body": "Chaque agent génère sa paire de clefs RSA-4096 au premier démarrage. La clef privée ne quitte jamais l'hôte.",
+  "security.table.ssh": "SSH classique",
+  "security.table.threat": "Vecteur d'attaque",
+  "security.tag": "Sécurité",
+  "security.title": "Sécurité by design",
+  "security.tls.body": "WSS et HTTPS sur toutes les connexions, TLS natif dans le serveur. Aucun HTTP en clair en production.",
+  "security.tls.title": "TLS obligatoire",
+  "solution.lead": "Ansible-SecAgent inverse le flux de contrôle. L'agent sur l'hôte cible initie une connexion WebSocket persistante (WSS) vers le serveur relay. Ansible n'a besoin d'atteindre que le relay — jamais les hôtes directement.",
+  "solution.tag": "La solution",
+  "solution.title": "Le modèle inversé Ansible-SecAgent"
+ },
+ "en": {
+  "arch.chain.desc": "An intermediate relay aggregates its descendants. A relay has a single parent; a loop is refused.",
+  "arch.chain.title": "Multi-level tree",
+  "arch.lead": "Go on server and agent, direct WebSocket (WSS) between agents and relays, file-based state, Ansible plugins in Python. Details in the <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/HLD.md\">High-Level Design</a> and the <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/ARCHITECTURE.md\">technical specifications</a>.",
+  "arch.pull.desc": "The child opens the link to its parent: no inbound connection is needed in the DMZ.",
+  "arch.pull.title": "Chain in pull mode",
+  "arch.push.desc": "The parent opens the link to the child, when that is the direction your firewall allows.",
+  "arch.push.title": "Chain in push mode",
+  "arch.simple.desc": "The Ansible plugin talks REST to the active instance; agents connect to it over WSS. The secondary instance opens no port until it holds the lock.",
+  "arch.simple.title": "One root relay, active/passive",
+  "arch.tag": "Architecture",
+  "arch.title": "Architecture",
+  "compat.become.body": "<code>become: true</code> and <code>become_user</code> work just like SSH. The become_pass is transmitted securely, masked in all logs.",
+  "compat.become.title": "become / sudo supported",
+  "compat.cfg": "Plugin options (<code>ansible.cfg</code>, environment variables, host variables): see the <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/plugins/PLUGINS_SPEC.md\">plugins specification</a>.",
+  "compat.inventory.body": "The inventory plugin automatically lists all connected agents with their facts. Your existing static inventories remain compatible in parallel.",
+  "compat.inventory.title": "Dynamic inventory",
+  "compat.lead": "Ansible-SecAgent integrates as a standard Ansible plugin. Your playbooks, roles, and collections work without modification. The transition is incremental: SSH remains available side by side.",
+  "compat.playbooks.body": "All your playbooks, roles, and Ansible Galaxy collections work without modification. Just change <code>connection: relay</code> in ansible.cfg.",
+  "compat.playbooks.title": "Playbooks unchanged",
+  "compat.ssh.body": "Ansible-SecAgent doesn't remove SSH. Both coexist. Ideal for incremental migration: move host by host without disruption.",
+  "compat.ssh.title": "SSH still available",
+  "compat.tag": "Compatibility",
+  "compat.title": "Your existing Ansible, unchanged",
+  "deploy.ha.desc": "The same Docker Compose deployment runs on several hosts over shared storage. Only one instance holds the lock and serves; the others wait without opening any port and take over if it disappears. Agents reconnect on their own.",
+  "deploy.ha.s1": "A single master per state directory (<code>relay.lock</code>)",
+  "deploy.ha.s2": "Secondary instances: no open port, no state loaded",
+  "deploy.ha.s3": "Agents know several relay addresses",
+  "deploy.ha.s4": "Multi-host Docker Compose deployment",
+  "deploy.ha.tag": "Active / passive",
+  "deploy.ha.title": "Availability through a lock",
+  "deploy.limits": "Known limit: active/passive over shared storage between two real hosts has not yet been verified under real conditions (see “Known limits” below).",
+  "deploy.mono.desc": "One relay server is enough to start. No message bus, no external database, no reverse proxy: the state is a file and TLS is built in.",
+  "deploy.mono.s1": "<code>secagent-server</code> written in Go",
+  "deploy.mono.s2": "Direct task dispatch over WebSocket, one connection per agent",
+  "deploy.mono.s3": "Built-in TLS, hot certificate reload",
+  "deploy.mono.s4": "State in an authenticated file (HMAC), secrets encrypted (AES-256-GCM)",
+  "deploy.mono.tag": "One server",
+  "deploy.mono.title": "Simple: one Go binary",
+  "f300.1": "Repeater mode specification (tree topology); removal of the former proxy mode (<code>PROXY_MODE</code>)",
+  "f300.2": "No repeater implementation in this version: it arrives in v3.0.1",
+  "f301.1": "Tree topology, pull (child → parent) and push (parent → child) links, <code>relay_hello</code> / <code>relay_ack</code> handshake",
+  "f301.2": "Hierarchical routing to the relay that holds the host; the local agent keeps priority",
+  "f301.3": "Relay token revocation with closure of the active link",
+  "f302.1": "<code>host.*</code> event propagation along the relay chain, with <code>relay_chain</code> / <code>relay_origin</code> variables",
+  "f302.2": "Hierarchical inventory: Ansible groups named after relays, <code>?relay=</code> to limit to a subtree",
+  "f302.3": "Group variables (<code>RELAY_GROUP_VARS</code>) transmitted along the chain",
+  "f303.1": "Active/passive in <code>secagent-server</code>: exclusivity lock, secondary instances with no open port",
+  "f303.2": "State in an authenticated file (HMAC, replay protection, encrypted secrets) replacing SQLite",
+  "f303.3": "Built-in TLS with hot certificate reload",
+  "f303.4": "Append-only hook action log with no secrets",
+  "f303.5": "Security fixes: token refresh and tokenless enrollment, unauthenticated WebSocket connections (earlier versions affected)",
+  "f304.1": "Relay ↔ relay link tokens signed Ed25519 by the root, root public key pinned on every non-root relay",
+  "f304.2": "Link-key rotation (<code>keys rotate-link</code>, dual acceptance) and revocation propagated hop by hop",
+  "f304.3": "<code>state rekey</code>: offline <code>RSA_MASTER_KEY</code> rotation with backup and verification; <code>state link-trust reset</code> to re-pin an anchor",
+  "f304.4": "Admission limits: tasks per agent and per relay, output memory budget, snapshot quota per relay identity",
+  "f304.5": "Secrets from files (<code>*_FILE</code>) for the server and the minion",
+  "f304.6": "Outbound link dial policy (DNS-rebinding protection, redirects never followed)",
+  "f304.7": "<code>--version</code> on <code>secagent-server</code> and <code>secagent-minion</code>; unknown arguments are refused instead of starting",
+  "f304.8": "An agent's suspension is visible in ancestor relays' inventory",
+  "f304.9": "Fix: the response of a synchronous task running longer than 15 s is no longer cut off",
+  "fbase.1": "<code>secagent-minion</code> agent: RSA-4096 enrollment, persistent WSS connection, subprocess execution, file transfers, <code>become</code>",
+  "fbase.2": "Ansible plugins (connection and inventory) in Python, <code>secagent-inventory</code> in Go",
+  "fbase.3": "Administration CLI built into the server binary (v1.1.0)",
+  "fbase.4": "JSON-configurable Event Hooks (v1.1.0)",
+  "fbase.5": "Multi-zone proxy mode (v2.0.0), replaced by the relay chain from v3 on",
+  "features.lead": "Each version ships in milestones, with release notes and a changelog on GitHub.",
+  "features.tag": "Features",
+  "features.title": "Implemented by version",
+  "footer.github": "GitHub",
+  "footer.issues": "Issues",
+  "footer.releases": "Releases",
+  "footer.security": "Security",
+  "footer.specs": "Technical specs",
+  "hero.badge.hooks": "Event Hooks",
+  "hero.badge.native": "Native Ansible",
+  "hero.badge.proxy": "Chained relays",
+  "hero.badge.tls": "TLS everywhere",
+  "hero.cta.github": "View on GitHub",
+  "hero.cta.start": "Get started",
+  "hero.h1": "<span class=\"hl-teal\">Agents</span><br>for Ansible",
+  "hero.subtitle": "Run your playbooks on hosts behind NAT, firewalls or DMZs. Agents open the connection themselves — you open no inbound port on the managed hosts.",
+  "hooks.c1.b": "<code>shell</code>, <code>file</code>, <code>api</code> and <code>webhook</code> (HMAC-SHA256 signed POST).",
+  "hooks.c1.t": "4 action types",
+  "hooks.c2.b": "<code>host.up</code>, <code>host.down</code>, <code>host.new</code>, <code>host.conflict</code>, <code>host.suspended</code>, <code>host.resumed</code> and <code>relay.updated</code>, propagated along the relay chain.",
+  "hooks.c2.t": "Host events",
+  "hooks.c3.b": "<code>{{relay_chain}}</code> and <code>{{relay_origin}}</code> variables, a <code>relay_chain_contains</code> filter validated at load time: a malformed configuration is rejected as a whole.",
+  "hooks.c3.t": "Chain context",
+  "hooks.c4.b": "Append-only JSON Lines log, secrets (HMAC, tokens, headers) masked. Configuration hot-reload with <code>SIGHUP</code>.",
+  "hooks.c4.t": "Secret-free log",
+  "hooks.lead": "Trigger actions (notification, script, API call, file write) on your fleet's events without writing code: a JSON file is enough.",
+  "hooks.tag": "Event Hooks",
+  "hooks.title": "Event Hooks — JSON-configurable actions",
+  "ins.agent.body": "The <code>secagent-minion</code> installs as a systemd service on every host. It enrolls with a token created on the server, then keeps its WSS connection open. No inbound port to open.",
+  "ins.agent.link": "Agent installation guide",
+  "ins.agent.title": "Agent (managed hosts)",
+  "ins.relay.body": "A child relay anchors on the root's public key and receives a link token signed by it. It is installed in the zone it serves (DMZ, private cloud, remote site) and aggregates that zone's agents.",
+  "ins.relay.link": "Relay installation guide",
+  "ins.relay.title": "Child relays",
+  "ins.server.body": "The <code>secagent-server</code> deploys with Docker Compose, on one or several hosts in active/passive mode over shared storage. Secrets are provided as files; the state is initialized once.",
+  "ins.server.link": "Server installation guide",
+  "ins.server.title": "Server (root relay)",
+  "install.doc": "Documentation",
+  "install.lead": "Three complete installation guides, maintained with the code. Start with the server, then child relays if you need them, then agents.",
+  "install.rel": "Releases (v3.0.4)",
+  "install.tag": "Get started",
+  "install.title": "Get started",
+  "lim.1": "A relay upgraded to v3.0.4 cannot go back to v3.0.3: the state is migrated and relay ↔ relay links are cut during the upgrade (plan an announced window).",
+  "lim.2": "An agent's JWT lasts 1 h with no renewal: after expiry, any reconnection relies on the enrollment token; a single-use or expired token stops the agent (code 78). Use a reusable token restricted by hostname pattern.",
+  "lim.3": "Active/passive over shared storage between two real hosts has not been verified.",
+  "lim.4": "With the default memory budget unchanged, a relay accepts at most 204 simultaneous tasks.",
+  "lim.title": "Known limits",
+  "mgmt.agents.desc": "List, suspend, revoke and authorize agents. Manage their inventory variables.",
+  "mgmt.agents.title": "Agent management",
+  "mgmt.inventory.desc": "View agents and server state, and read the hooks log.",
+  "mgmt.inventory.title": "Inventory and status",
+  "mgmt.lead": "The cobra CLI is built into the <code>secagent-server</code> binary: no extra binary. It runs from the server's container or host.",
+  "mgmt.more": "Command and option details:",
+  "mgmt.security.desc": "JWT secret rotation, root link key, state master key.",
+  "mgmt.security.title": "Keys and rotations",
+  "mgmt.tag": "Management",
+  "mgmt.title": "Administer from the terminal",
+  "mgmt.tokens.desc": "Create enrollment and link tokens, list them, revoke them.",
+  "mgmt.tokens.title": "Tokens",
+  "nav.arch": "Architecture",
+  "nav.compat": "Compatibility",
+  "nav.features": "Features",
+  "nav.hooks": "Event Hooks",
+  "nav.install": "Get started",
+  "nav.mgmt": "Management",
+  "nav.problem": "Problem",
+  "nav.relays": "Relays",
+  "nav.security": "Security",
+  "nav.solution": "Solution",
+  "problem.audit.body": "Ansible has no centralized audit log. Traces stay on the Control Node — editable, deletable. In case of an incident or ISO 27001, NIS2, or SOC2 audit, you can't prove a configuration was applied, or by whom.",
+  "problem.audit.quote": "The auditor asks the question. You search through logs scattered across multiple machines.",
+  "problem.audit.title": "Who ran what, on what, and when?",
+  "problem.blast.body": "Your Control Node centralizes SSH access to all your hosts. A leaked CI/CD token, a malicious dependency, a poorly revoked access — and your entire fleet is within reach of an attacker. In a single step. Without an alarm.",
+  "problem.blast.quote": "The attack surface grows linearly with the size of your infrastructure.",
+  "problem.blast.title": "One machine compromised, your entire infra exposed",
+  "problem.drift.body": "Ansible pushes a configuration, then nothing. Between runs, an admin makes a manual change, a package auto-updates, a firewall rule is modified. Your infra silently drifts from the state in your playbooks — and you'll only find out at the next incident.",
+  "problem.drift.quote": "Push-and-forget isn't configuration management. It's hope.",
+  "problem.drift.title": "Your infra is drifting. You don't know it.",
+  "problem.lateral.body": "Your Control Node initiates SSH connections to hosts. A compromised host knows its IP — and that machine holds SSH keys to your entire fleet. Compromise a host → target the Control Node → access the entire infrastructure.",
+  "problem.lateral.quote": "You've segmented your hosts. But the Control Node is the common denominator of all your segments.",
+  "problem.lateral.title": "A compromised host can attack your Control Node",
+  "problem.lead": "Ansible is a remarkable tool. But its classic SSH model creates security blind spots and operational debt that most teams discover too late.",
+  "problem.network.body": "Production, DMZ, disaster recovery, cloud A, cloud B, edge sites — every segment needs a route to the Control Node. Site-to-site VPNs, cloud peering, SSH tunnels: each connection is one more firewall rule, one more attack surface, one more configuration to maintain.",
+  "problem.network.quote": "Your infra is multi-cloud. Your automation shouldn't require a flat network between all your environments.",
+  "problem.network.title": "Multi-cloud, multi-site: permanent network debt",
+  "problem.offline.body": "An unexpected reboot, a network outage — if a host is unavailable at playbook time, the task fails and is never retried. In a rolling deploy across 50 machines, one that reboots at the wrong time leaves your fleet partially patched, with no alert.",
+  "problem.offline.quote": "Your maintenance window is 4 hours. 3 hosts didn't get the patch. You don't know it.",
+  "problem.offline.title": "A host offline? The task vanishes.",
+  "problem.rbac.body": "Ansible has no native RBAC. On a standard Control Node, anyone with access can run any playbook against any host. AWX adds access control — at the cost of a heavy stack, a database, and an interface to maintain.",
+  "problem.rbac.quote": "Your permissions are managed in Azure AD. Your automation has no access control.",
+  "problem.rbac.title": "Everyone can do everything",
+  "problem.revoke.body": "A key is stolen. The clock is ticking. You need to remove it from 300 hosts, right now. With classic SSH, that's a manual operation, host by host, taking hours — no central blacklist, no automatic expiration.",
+  "problem.revoke.quote": "Key rotation isn't a planned event. It's an emergency.",
+  "problem.revoke.title": "Revoking an SSH key: a 3am emergency",
+  "problem.tag": "The problem",
+  "problem.title": "8 risks you take with every playbook",
+  "relays.c1.b": "A child relay has exactly one parent. The link is opened either from child to parent (pull) or from parent to child (push), depending on your firewall rules.",
+  "relays.c1.t": "Tree topology",
+  "relays.c2.b": "Each relay becomes an Ansible group named after it; the root's inventory aggregates the whole subtree. Tasks are routed to the relay that holds the host.",
+  "relays.c2.t": "Hierarchical inventory",
+  "relays.c3.b": "A locally connected agent takes priority over the routing table: another relay cannot hijack it by declaring the same hostname.",
+  "relays.c3.t": "A local agent stays local",
+  "relays.c4.b": "<code>relay-child</code> and <code>relay-parent</code> roles, EdDSA tokens issued on the root only, root public key pinned on every non-root relay. Without an anchor, the link is refused.",
+  "relays.c4.t": "Root-signed link tokens",
+  "relays.c5.b": "Link-key rotation with dual acceptance and confirmation by every relay; revoking a token closes the affected link at every level.",
+  "relays.c5.t": "Propagated rotation and revocation",
+  "relays.c6.b": "Task quotas per agent and per relay, a memory budget for task output, a topology-snapshot quota per relay identity. A saturated relay answers explicit 429/503 instead of collapsing.",
+  "relays.c6.t": "Admission limits",
+  "relays.lead": "A root aggregates child relays placed in your DMZs, private clouds or remote sites. Ansible only talks to the root; agents only talk to the relay of their zone.",
+  "relays.tag": "Chained relays",
+  "relays.title": "Several zones, one entry point",
+  "rm.a.body": "Minimum length everywhere and derivation of the state encryption key through a dedicated function.",
+  "rm.a.title": "Hardening of secrets and the master key",
+  "rm.b.body": "Avoid mass agent shutdowns when the agent JWT (1 h) expires.",
+  "rm.b.title": "Less fragility when agent tokens expire",
+  "rm.c.body": "Attestation of published images, clearer startup errors on a stale anchor, <code>--version</code> for <code>secagent-inventory</code>.",
+  "rm.c.title": "Supply chain and operations",
+  "rm.d.body": "Grouped in the “v3.0.5 — Durcissement et dettes issues de v3.0.4” milestone.",
+  "rm.d.title": "Test, CI and documentation debt",
+  "roadmap.lead": "The “v3.0.5 — Durcissement et dettes issues de v3.0.4” milestone groups the following themes. These are planned items with no announced date.",
+  "roadmap.tag": "Roadmap",
+  "roadmap.title": "Coming next",
+  "sec.r1.r": "No inbound port on managed hosts",
+  "sec.r1.s": "Port 22 open",
+  "sec.r1.t": "Exposed inbound port",
+  "sec.r2.r": "RSA-OAEP encrypted JWT",
+  "sec.r2.s": "SSH key in clear on disk",
+  "sec.r2.t": "Auth token interception",
+  "sec.r3.r": "JTI revocable immediately",
+  "sec.r3.s": "SSH key gives direct access",
+  "sec.r3.t": "Compromised agent → spread",
+  "sec.r4.r": "Enrollment token + challenge required",
+  "sec.r4.s": "Implicit TOFU possible",
+  "sec.r4.t": "Unauthorized agent",
+  "sec.r5.r": "Dual-key, grace period, no downtime",
+  "sec.r5.s": "Manual, with downtime",
+  "sec.r5.t": "Secret rotation",
+  "sec.r6.r": "Masked in logs",
+  "sec.r6.s": "Risk depends on setup",
+  "sec.r6.t": "become_pass leak in logs",
+  "security.aes.body": "The server state is HMAC-authenticated and its secrets are encrypted with AES-256-GCM under a master key (<code>RSA_MASTER_KEY</code>).",
+  "security.become.body": "The sudo/su password is passed via stdin and masked in the agent, server and Ansible plugin logs.",
+  "security.doc": "Read the full security model",
+  "security.dualkey.body": "JWT secret rotation without service interruption, with a grace period during which old tokens remain valid.",
+  "security.enrollment.body": "Every enrollment requires an enrollment token created by an administrator, plus an RSA-OAEP challenge proving possession of the private key. Without a token the server answers 403.",
+  "security.enrollment.title": "Controlled enrollment",
+  "security.jti.body": "Immediate revocation by JTI. The active WebSocket connection is closed with code 4001 and the agent does not reconnect.",
+  "security.jwt.body": "The JWT returned to the agent is encrypted with its RSA public key. Unreadable without the private key, even if intercepted on the network.",
+  "security.lead": "Every architecture decision has an explicit security rationale, documented in the project's security model. It is assessed through internal reviews; these are not external audits or a certification.",
+  "security.link.body": "Relays authenticate with Ed25519 tokens issued by the root and verified against its pinned public key. No signing secret shared between neighbours.",
+  "security.link.title": "Signed relay links",
+  "security.per-agent": "per agent",
+  "security.rot.body": "Root link-key rotation with dual acceptance, token revocation propagated hop by hop, offline master-key rotation (<code>state rekey</code>).",
+  "security.rot.title": "Rotation and revocation",
+  "security.rsa.body": "Each agent generates its RSA-4096 key pair at first start. The private key never leaves the host.",
+  "security.table.ssh": "Classic SSH",
+  "security.table.threat": "Attack vector",
+  "security.tag": "Security",
+  "security.title": "Security by design",
+  "security.tls.body": "WSS and HTTPS on every connection, with TLS built into the server. No plain HTTP in production.",
+  "security.tls.title": "Mandatory TLS",
+  "solution.lead": "Ansible-SecAgent reverses the control flow. The agent on the target host opens a persistent WebSocket (WSS) connection to the relay server. Ansible only needs to reach the relay — never the hosts directly.",
+  "solution.tag": "The solution",
+  "solution.title": "The Ansible-SecAgent reversed model"
+ }
 };
 
-let lang = localStorage.getItem('ar-lang') || 'fr';
+let lang = 'fr';
+try { lang = localStorage.getItem('ar-lang') || 'fr'; } catch (e) {}
+const CURRENT_MAJOR = parseInt(document.querySelector('meta[name="current-major"]').content, 10);
+
+function applyBadges() {
+  document.querySelectorAll('[data-badge-version]').forEach(el => {
+    const v = el.dataset.badgeVersion;
+    const diff = CURRENT_MAJOR - parseInt(v.match(/^v(\d+)/)[1], 10);
+    if (diff >= 2) { el.remove(); return; }
+    el.classList.toggle('badge-orange', diff === 0);
+    el.classList.toggle('badge-blue', diff === 1);
+    el.textContent = diff === 0 ? (lang === 'fr' ? 'Nouveau ' : 'New ') + v : v;
+  });
+}
 
 function setLang(l) {
   lang = l;
-  localStorage.setItem('ar-lang', l);
+  try { localStorage.setItem('ar-lang', l); } catch (e) {}
   document.documentElement.lang = l;
   document.querySelectorAll('[data-lang]').forEach(btn =>
     btn.classList.toggle('active', btn.dataset.lang === l));
   applyT();
+  applyBadges();
 }
 
 function applyT() {
@@ -1666,13 +1188,6 @@ function applyT() {
     const v = d[el.dataset.i18n];
     if (v !== undefined) el.innerHTML = v;
   });
-}
-
-function showTab(tab, btn) {
-  document.querySelectorAll('.itab-content').forEach(c => c.classList.remove('active'));
-  document.querySelectorAll('.itab-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('tab-' + tab).classList.add('active');
-  btn.classList.add('active');
 }
 
 setLang(lang);
