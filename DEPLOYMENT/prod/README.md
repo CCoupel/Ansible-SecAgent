@@ -98,7 +98,7 @@ Le lien enfant → parent est authentifié par un **jeton de lien** Ed25519 sign
 
 1. Sur la racine : `docker compose exec secagent-server secagent-server keys link-pubkey > root-link.pub` (PEM public sur stdout ; `root_id=<id> kid=<kid>` sur stderr = `REPEATER_ROOT_ID`). Copier `root-link.pub` sur l'hôte de l'enfant (`chmod 0644`), non secret mais jamais inscriptible par d'autres.
 2. Sur la racine : `… tokens create --role relay-child --sub <REPEATER_ID de l'enfant> --aud <relay_id du parent> [--expires 720h]` ; le jeton n'est affiché **qu'une fois** : l'écrire avec `printf '%s' "$JETON" | sudo ./preflight-secrets.sh --write repeater_upstream_token` (0400, UID 10001) sur l'hôte de l'enfant.
-3. `.env` de l'enfant : `REPEATER_ID`, `REPEATER_UPSTREAM_URL`, `REPEATER_ROOT_ID`, `ROOT_LINK_KEY_FILE` ; `./preflight-secrets.sh --child` (code 0 exigé) ; puis `-f docker-compose.server.yml -f docker-compose.child.yml`.
+3. `.env` de l'enfant : `REPEATER_ID`, `REPEATER_UPSTREAM_URL`, `REPEATER_ROOT_ID`, `ROOT_LINK_KEY_FILE` ; `set -a; . ./.env; set +a` (le script lit `SECRETS_DIR` et `ROOT_LINK_KEY_FILE` dans l'environnement, pas dans `.env`) puis `./preflight-secrets.sh --child` (code 0 exigé) ; puis `-f docker-compose.server.yml -f docker-compose.child.yml`.
 4. Rotation : `keys rotate-link` sur la racine, attendre que `keys link-status` confirme chaque relay, re-minter le jeton de chaque lien (signé par la nouvelle clé) et le remplacer avec le fichier de clé publique épinglé sur chaque relay (redémarrage), puis `keys retire-link-previous` (refusé `409 rotation_unconfirmed` tant que des relays n'ont pas confirmé). Révocation : `tokens revoke <id>` (lien fermé en 4010 à chaque niveau).
 
 ## Dimensionnement (parc > 3 000 hôtes)

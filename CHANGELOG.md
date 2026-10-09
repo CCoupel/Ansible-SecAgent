@@ -9,6 +9,9 @@ All notable changes to this project will be documented in this file.
 ### Added
 - (future features for next milestone)
 
+### Documentation
+- **Guides d'installation et de configuration v3.0.4** : `DOC/project/INSTALL_AGENT.md` (agent `secagent-minion` : binaire de la release, `SHA256SUMS`, enrôlement, unité systemd, `*_FILE`, JWT d'1 h, codes de sortie 77/78), `DOC/project/INSTALL_SERVER.md` (serveur racine : archive Compose, secrets, PKI, `state init`, CLI, limites d'admission, sauvegarde, montée depuis la v3.0.3) et `DOC/project/INSTALL_RELAY.md` (relays enfants : ancre épinglée, jetons de lien, politique de dial, rotation, révocation, `state link-trust reset`). `QUICKSTART.md`, `DEPLOYMENT.md` et le README y renvoient ; les listes de rôles de jetons y incluent `relay-child`.
+
 ---
 
 ## [v3.0.4] — 2026-10-08 — Jetons de lien relay signés par la racine (#141, #146)

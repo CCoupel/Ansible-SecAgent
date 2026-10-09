@@ -31,7 +31,7 @@ docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent
 docker compose -p secagent-qualif -f docker-compose.server.yml up -d
 curl -s --cacert tls/tls.crt https://localhost:7770/health
 
-# 3. Jetons (CLI du serveur ; rôles : enrollment | plugin | relay-parent)
+# 3. Jetons (CLI du serveur ; rôles : enrollment | plugin | relay-child | relay-parent)
 docker compose -p secagent-qualif -f docker-compose.server.yml exec \
   -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
   secagent-server-a secagent-server tokens create --role enrollment --expires 1h
@@ -77,6 +77,7 @@ ansible-secagent/
 │   ├── inventory/INVENTORY_SPEC.md  - Specs secagent-inventory
 │   └── project/                     - Guides opérationnels
 │       ├── DEPLOYMENT.md
+│       ├── INSTALL_AGENT.md / INSTALL_SERVER.md / INSTALL_RELAY.md
 │       └── QUICKSTART.md
 │
 ├── README.md                    # Ce fichier
@@ -88,7 +89,8 @@ ansible-secagent/
 | Document | Contenu |
 |----------|---------|
 | **ARCHITECTURE.md** | Spécifications techniques détaillées (protocoles, formats, sécurité) |
-| **DEPLOYMENT.md** | Guide complet de déploiement (server + minions) |
+| **INSTALL_AGENT.md**, **INSTALL_SERVER.md**, **INSTALL_RELAY.md** (`DOC/project/`) | Guides d'installation et de configuration : agent, serveur racine, relays enfants |
+| **DEPLOYMENT.md** | Guide complet de déploiement (server + minions), montées de version, rotations |
 | **HLD.md** | Architecture haut niveau et flux de messages |
 | **CLAUDE.md** | Instructions projet pour Claude Code |
 
