@@ -576,7 +576,7 @@ footer .footer-brand { font-weight: 600; color: var(--text-secondary); margin-bo
 /* Nav : ne jamais élargir le document ; les liens défilent dans leur zone si l'espace manque */
 nav { gap: 1rem; }
 .nav-logo, .lang-switcher { flex: 0 0 auto; }
-.nav-links { flex: 1 1 auto; min-width: 0; justify-content: center; overflow-x: auto; scrollbar-width: none; }
+.nav-links { flex: 1 1 auto; min-width: 0; justify-content: flex-start; overflow-x: auto; scrollbar-width: none; }
 .nav-links::-webkit-scrollbar { display: none; }
 @media (max-width: 1320px) {
   nav { padding: 0 1rem; }
@@ -589,3 +589,7 @@ nav { gap: 1rem; }
 pre { overflow-x: auto; max-width: 100%; }
 .feature-list li, .compat-card p, .repeater-mode-card p { min-width: 0; overflow-wrap: anywhere; }
 :not(pre) > code { overflow-wrap: anywhere; white-space: normal; }
+
+/* Centrage sans perdre les premiers liens quand la barre déborde (marges auto = centrage « sûr ») */
+.nav-links > li:first-child { margin-left: auto; }
+.nav-links > li:last-child { margin-right: auto; }
