@@ -8,7 +8,7 @@
   <meta name="description" content="Exécutez des playbooks Ansible sur des hôtes derrière NAT, firewall ou DMZ. Connexions inversées initiées par les agents, TLS partout, JWT + RSA-4096.">
   <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-  <script>mermaid.initialize({ startOnLoad: true, theme: 'default' });</script>
+  <script>if (window.mermaid) mermaid.initialize({ startOnLoad: false, theme: 'default' });</script>
 </head>
 <body>
 
@@ -122,7 +122,7 @@
 
     </div>
 
-    <div class="arch-diagram" style="margin-top:2.5rem"><span class="c-ansible">Ansible Control Node</span> <span class="c-arrow">──SSH──▶</span> <span class="c-agent">Hôte cible</span>   <span style="color:#f85149">← BLOQUÉ derrière NAT/firewall</span></div>
+    <div class="arch-diagram" style="margin-top:2.5rem"><span class="c-ansible">Ansible Control Node</span> <span class="c-arrow">──SSH──▶</span> <span class="c-agent" data-i18n="problem.arch.src">Hôte cible</span>   <span style="color:#f85149" data-i18n="problem.arch.blocked">← BLOQUÉ derrière NAT/firewall</span></div>
   </div>
 </section>
 <section id="solution">
@@ -163,13 +163,13 @@
     <span class="section-tag" data-i18n="compat.tag">Compatibilité</span>
     <h2 data-i18n="compat.title">Votre Ansible existant, inchangé</h2>
     <p class="section-lead" data-i18n="compat.lead">
-      Ansible-SecAgent s'intègre comme un plugin Ansible standard. Vos playbooks, rôles et collections fonctionnent sans modification. La transition est progressive : SSH reste disponible en parallèle.
+      Ansible-SecAgent s'intègre à Ansible par un plugin de connexion et par l'inventaire externe <code>secagent-inventory</code>. Vos playbooks et rôles restent écrits comme aujourd'hui : c'est le transport qui change. SSH reste disponible en parallèle.
     </p>
 
     <div class="compat-grid">
       <div class="compat-card">
-        <h3 data-i18n="compat.playbooks.title">Playbooks inchangés</h3>
-        <p data-i18n="compat.playbooks.body">Tous vos playbooks, rôles et collections Ansible Galaxy fonctionnent sans modification. Changez juste <code>connection: relay</code> dans ansible.cfg.</p>
+        <h3 data-i18n="compat.playbooks.title">Playbooks et rôles</h3>
+        <p data-i18n="compat.playbooks.body">La forme de vos playbooks et rôles ne change pas ; seule la connexion change (<code>ansible_connection: relay</code>). Limites actuelles : hôtes Linux uniquement, fichiers transférés inférieurs à 500 Ko.</p>
       </div>
       <div class="compat-card">
         <h3 data-i18n="compat.ssh.title">SSH toujours disponible</h3>
@@ -177,11 +177,11 @@
       </div>
       <div class="compat-card">
         <h3 data-i18n="compat.inventory.title">Inventaire dynamique</h3>
-        <p data-i18n="compat.inventory.body">Le plugin inventory liste automatiquement tous les agents connectés avec leurs facts. Vos inventaires statiques restent compatibles en parallèle.</p>
+        <p data-i18n="compat.inventory.body">Le binaire Go <code>secagent-inventory</code> (inventaire externe Ansible) liste les agents avec leur statut et leur chaîne de relays ; les groupes portent le nom de vos relays. Vos inventaires statiques restent utilisables en parallèle.</p>
       </div>
       <div class="compat-card">
         <h3 data-i18n="compat.become.title">become / sudo supporté</h3>
-        <p data-i18n="compat.become.body"><code>become: true</code> et <code>become_user</code> fonctionnent comme avec SSH. Le become_pass est transmis de façon sécurisée, masqué dans tous les logs.</p>
+        <p data-i18n="compat.become.body"><code>become</code> est supporté ; le mot de passe est transmis via stdin et masqué dans les journaux.</p>
       </div>
     </div>
     <p class="section-lead" data-i18n="compat.cfg">Options du plugin (<code>ansible.cfg</code>, variables d'environnement, variables d'hôte) : voir la <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/plugins/PLUGINS_SPEC.md">spécification des plugins</a>.</p>
@@ -215,10 +215,10 @@
       </div>
       <div class="sec-card">
         <h3 data-i18n="security.tls.title">TLS obligatoire</h3>
-        <p data-i18n="security.tls.body">WSS et HTTPS sur toutes les connexions, TLS natif dans le serveur. Aucun HTTP en clair en production.</p>
+        <p data-i18n="security.tls.body">WSS pour les agents et les liens entre relays, HTTPS pour l'API, TLS natif dans le serveur. L'API d'administration n'accepte le HTTP qu'en boucle locale ; ailleurs, TLS est exigé.</p>
       </div>
       <div class="sec-card">
-        <h3>become_pass masqué</h3>
+        <h3 data-i18n="security.become.title">become_pass masqué</h3>
         <p data-i18n="security.become.body">Le mot de passe sudo/su est transmis via stdin et masqué dans les journaux de l'agent, du serveur et du plugin Ansible.</p>
       </div>
       <div class="sec-card">
@@ -357,7 +357,7 @@
     <h2 data-i18n="features.title">Implémentées par version</h2>
     <p class="section-lead" data-i18n="features.lead">Chaque version est livrée par jalons, avec ses notes de version et son journal des changements sur GitHub.</p>
     <div class="version-block">
-      <span class="version-tag current">v3.0.4 — Liens de confiance signés et exploitation</span>
+      <span class="version-tag current"><span data-i18n="fv.v3_0_4">v3.0.4 — Liens de confiance signés et exploitation</span></span>
       <ul class="feature-list">
         <li data-i18n="f304.1">Jetons de lien relay ↔ relay signés Ed25519 par la racine, clef publique racine épinglée sur chaque relay non racine</li>
         <li data-i18n="f304.2">Rotation de la clef de lien (<code>keys rotate-link</code>, double acceptation) et révocation propagée de proche en proche</li>
@@ -371,7 +371,7 @@
       </ul>
     </div>
     <div class="version-block">
-      <span class="version-tag">v3.0.3 — Actif/passif, état fichier, TLS natif</span>
+      <span class="version-tag"><span data-i18n="fv.v3_0_3">v3.0.3 — Actif/passif, état fichier, TLS natif</span></span>
       <ul class="feature-list">
         <li data-i18n="f303.1">Actif/passif dans <code>secagent-server</code> : verrou d'exclusivité, instances secondaires sans port ouvert</li>
         <li data-i18n="f303.2">État dans un fichier authentifié (HMAC, anti-rejeu, secrets chiffrés) à la place de SQLite</li>
@@ -381,7 +381,7 @@
       </ul>
     </div>
     <div class="version-block">
-      <span class="version-tag">v3.0.2 — Événements et inventaire hiérarchique</span>
+      <span class="version-tag"><span data-i18n="fv.v3_0_2">v3.0.2 — Événements et inventaire hiérarchique</span></span>
       <ul class="feature-list">
         <li data-i18n="f302.1">Propagation d'événements <code>host.*</code> le long de la chaîne de relays, avec variables <code>relay_chain</code> / <code>relay_origin</code></li>
         <li data-i18n="f302.2">Inventaire hiérarchique : groupes Ansible nommés d'après les relays, <code>?relay=</code> pour limiter à une descendance</li>
@@ -389,7 +389,7 @@
       </ul>
     </div>
     <div class="version-block">
-      <span class="version-tag">v3.0.1 — Chaîne de relays</span>
+      <span class="version-tag"><span data-i18n="fv.v3_0_1">v3.0.1 — Chaîne de relays</span></span>
       <ul class="feature-list">
         <li data-i18n="f301.1">Topologie en arbre, liens pull (enfant → parent) et push (parent → enfant), handshake <code>relay_hello</code> / <code>relay_ack</code></li>
         <li data-i18n="f301.2">Routage hiérarchique vers le relay qui détient l'hôte ; l'agent local reste prioritaire</li>
@@ -397,17 +397,17 @@
       </ul>
     </div>
     <div class="version-block">
-      <span class="version-tag">v3.0.0 — Fondations</span>
+      <span class="version-tag"><span data-i18n="fv.v3_0_0">v3.0.0 — Fondations</span></span>
       <ul class="feature-list">
         <li data-i18n="f300.1">Spécification du mode repeater (topologie en arbre) ; retrait de l'ancien mode proxy (<code>PROXY_MODE</code>)</li>
         <li data-i18n="f300.2">Pas d'implémentation du repeater dans cette version : elle arrive en v3.0.1</li>
       </ul>
     </div>
     <div class="version-block">
-      <span class="version-tag">v1.x – v2.x — Socle</span>
+      <span class="version-tag"><span data-i18n="fv.v1_x___v2_x">v1.x – v2.x — Socle</span></span>
       <ul class="feature-list">
         <li data-i18n="fbase.1">Agent <code>secagent-minion</code> : enrôlement RSA-4096, connexion WSS persistante, exécution par sous-processus, transferts de fichiers, <code>become</code></li>
-        <li data-i18n="fbase.2">Plugins Ansible (connexion et inventaire) en Python, <code>secagent-inventory</code> en Go</li>
+        <li data-i18n="fbase.2">Plugin de connexion Ansible en Python ; inventaire par le binaire Go <code>secagent-inventory</code> (inventaire externe Ansible)</li>
         <li data-i18n="fbase.3">CLI d'administration intégrée au binaire serveur (v1.1.0)</li>
         <li data-i18n="fbase.4">Event Hooks configurables en JSON (v1.1.0)</li>
         <li data-i18n="fbase.5">Mode proxy multi-zone (v2.0.0), remplacé par la chaîne de relays à partir de la v3</li>
@@ -429,10 +429,10 @@
         </div>
         <p data-i18n="mgmt.agents.desc">Listez, suspendez, révoquez et autorisez les agents. Gérez leurs variables d'inventaire.</p>
         <pre><code>secagent-server minions list
-secagent-server minions suspend &lt;hôte&gt;
-secagent-server minions resume  &lt;hôte&gt;
-secagent-server minions revoke  &lt;hôte&gt;
-secagent-server minions vars set &lt;hôte&gt; clé=valeur</code></pre>
+secagent-server minions suspend &lt;host&gt;
+secagent-server minions resume  &lt;host&gt;
+secagent-server minions revoke  &lt;host&gt;
+secagent-server minions vars set &lt;host&gt; key=value</code></pre>
       </div>
       <div class="cmd-card">
         <div class="cmd-card-head">
@@ -516,6 +516,8 @@ secagent-server hooks log</code></pre>
         <li data-i18n="lim.1">Un relay qui monte en v3.0.4 ne peut pas revenir en v3.0.3 : l'état est migré et les liens relay ↔ relay sont coupés pendant la montée (prévoir une fenêtre annoncée).</li>
         <li data-i18n="lim.2">Le JWT d'un agent dure 1 h sans renouvellement : après expiration, toute reconnexion repose sur le jeton d'enrôlement ; un jeton à usage unique ou expiré arrête l'agent (code 78). Utilisez un jeton réutilisable restreint par motif de nom d'hôte.</li>
         <li data-i18n="lim.3">L'actif/passif sur un stockage partagé entre deux hôtes réels n'a pas été vérifié.</li>
+        <li data-i18n="lim.5">Périmètre actuel : hôtes Linux uniquement.</li>
+        <li data-i18n="lim.6">Les fichiers transférés doivent rester inférieurs à 500 Ko.</li>
         <li data-i18n="lim.4">Sans changement du budget mémoire par défaut, un relay accepte au plus 204 tâches simultanées.</li>
       </ul>
     </div>
@@ -526,26 +528,26 @@ secagent-server hooks log</code></pre>
   <div class="container">
     <span class="section-tag" data-i18n="arch.tag">Architecture</span>
     <h2 data-i18n="arch.title">Architecture</h2>
-    <p class="section-lead" data-i18n="arch.lead">Go côté serveur et agent, WebSocket direct (WSS) entre agents et relays, état en fichier, plugins Ansible en Python. Détail dans le <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/HLD.md">High-Level Design</a> et les <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/ARCHITECTURE.md">spécifications techniques</a>.</p>
+    <p class="section-lead" data-i18n="arch.lead">Go côté serveur et agent, WebSocket direct (WSS) entre agents et relays, état en fichier, plugin de connexion Ansible en Python, inventaire par un binaire Go. Détail dans le <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/HLD.md">High-Level Design</a> et les <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/ARCHITECTURE.md">spécifications techniques</a>.</p>
     <div class="arch-grid">
       <div class="arch-card">
         <h3 data-i18n="arch.simple.title">Un relay racine, actif/passif</h3>
         <p data-i18n="arch.simple.desc">Le plugin Ansible parle en REST à l'instance active ; les agents s'y connectent en WSS. L'instance secondaire n'ouvre aucun port tant qu'elle n'a pas le verrou.</p>
-        <div class="mermaid">
+        <div class="mermaid" data-mm="0">
 graph LR
-    ANS["Ansible\n(plugins connexion + inventaire)"]
-    ACT["secagent-server\nactif (verrou)"]
-    PAS["secagent-server\nsecondaire"]
-    ST[("Stockage partagé\nrelay.state + relay.lock")]
-    A1["Agent hôte 1"]
-    A2["Agent hôte 2"]
-    A3["Agent hôte 3"]
-    ANS -->|"HTTPS, REST bloquant"| ACT
-    A1 -->|"WSS — l'agent initie"| ACT
-    A2 -->|"WSS — l'agent initie"| ACT
-    A3 -->|"WSS — l'agent initie"| ACT
+    ANS[&quot;Ansible\n(plugins connexion + inventaire)&quot;]
+    ACT[&quot;secagent-server\nactif (verrou)&quot;]
+    PAS[&quot;secagent-server\nsecondaire&quot;]
+    ST[(&quot;Stockage partagé\nrelay.state + relay.lock&quot;)]
+    A1[&quot;Agent hôte 1&quot;]
+    A2[&quot;Agent hôte 2&quot;]
+    A3[&quot;Agent hôte 3&quot;]
+    ANS --&gt;|&quot;HTTPS, REST bloquant&quot;| ACT
+    A1 --&gt;|&quot;WSS — l&#x27;agent initie&quot;| ACT
+    A2 --&gt;|&quot;WSS — l&#x27;agent initie&quot;| ACT
+    A3 --&gt;|&quot;WSS — l&#x27;agent initie&quot;| ACT
     ACT --- ST
-    PAS -.->|"attend le verrou"| ST
+    PAS -.-&gt;|&quot;attend le verrou&quot;| ST
     style ANS fill:#4A90D9,stroke:#2171B5,color:#fff
     style ACT fill:#E8A838,stroke:#C07C1A,color:#fff
     style PAS fill:#B8B8B8,stroke:#888,color:#fff
@@ -558,27 +560,27 @@ graph LR
       <div class="arch-card arch-card--wide">
         <h3 data-i18n="arch.pull.title">Chaîne en mode pull</h3>
         <p data-i18n="arch.pull.desc">L'enfant ouvre le lien vers son parent : aucune connexion entrante n'est nécessaire dans la DMZ.</p>
-        <div class="mermaid">
+        <div class="mermaid" data-mm="1">
 graph TB
-    ANS["Ansible"]
-    subgraph ROOT["Zone de confiance"]
-        RT["Relay racine\n(émet les jetons de lien)"]
+    ANS[&quot;Ansible&quot;]
+    subgraph ROOT[&quot;Zone de confiance&quot;]
+        RT[&quot;Relay racine\n(émet les jetons de lien)&quot;]
     end
-    subgraph DMZ1["DMZ 1"]
-        R1["Relay enfant dmz1"]
-        B1["Agent A"]
-        B2["Agent B"]
+    subgraph DMZ1[&quot;DMZ 1&quot;]
+        R1[&quot;Relay enfant dmz1&quot;]
+        B1[&quot;Agent A&quot;]
+        B2[&quot;Agent B&quot;]
     end
-    subgraph DMZ2["DMZ 2"]
-        R2["Relay enfant dmz2"]
-        B3["Agent C"]
+    subgraph DMZ2[&quot;DMZ 2&quot;]
+        R2[&quot;Relay enfant dmz2&quot;]
+        B3[&quot;Agent C&quot;]
     end
-    ANS -->|"HTTPS"| RT
-    R1 -->|"WSS — l'enfant initie (pull)"| RT
-    R2 -->|"WSS — l'enfant initie (pull)"| RT
-    B1 -->|"WSS"| R1
-    B2 -->|"WSS"| R1
-    B3 -->|"WSS"| R2
+    ANS --&gt;|&quot;HTTPS&quot;| RT
+    R1 --&gt;|&quot;WSS — l&#x27;enfant initie (pull)&quot;| RT
+    R2 --&gt;|&quot;WSS — l&#x27;enfant initie (pull)&quot;| RT
+    B1 --&gt;|&quot;WSS&quot;| R1
+    B2 --&gt;|&quot;WSS&quot;| R1
+    B3 --&gt;|&quot;WSS&quot;| R2
     style ANS fill:#4A90D9,stroke:#2171B5,color:#fff
     style RT fill:#9B59B6,stroke:#7D3C98,color:#fff
     style R1 fill:#E8A838,stroke:#C07C1A,color:#fff
@@ -591,25 +593,25 @@ graph TB
       <div class="arch-card arch-card--wide">
         <h3 data-i18n="arch.push.title">Chaîne en mode push</h3>
         <p data-i18n="arch.push.desc">Le parent ouvre le lien vers l'enfant, quand c'est le sens autorisé par votre pare-feu.</p>
-        <div class="mermaid">
+        <div class="mermaid" data-mm="2">
 graph TB
-    ANS["Ansible"]
-    subgraph ROOT["Zone de confiance"]
-        RT["Relay racine"]
+    ANS[&quot;Ansible&quot;]
+    subgraph ROOT[&quot;Zone de confiance&quot;]
+        RT[&quot;Relay racine&quot;]
     end
-    subgraph DMZ1["Zone 1"]
-        R1["Relay enfant z1"]
-        B1["Agent A"]
+    subgraph DMZ1[&quot;Zone 1&quot;]
+        R1[&quot;Relay enfant z1&quot;]
+        B1[&quot;Agent A&quot;]
     end
-    subgraph DMZ2["Zone 2"]
-        R2["Relay enfant z2"]
-        B2["Agent B"]
+    subgraph DMZ2[&quot;Zone 2&quot;]
+        R2[&quot;Relay enfant z2&quot;]
+        B2[&quot;Agent B&quot;]
     end
-    ANS -->|"HTTPS"| RT
-    RT -->|"WSS — le parent initie (push)"| R1
-    RT -->|"WSS — le parent initie (push)"| R2
-    B1 -->|"WSS"| R1
-    B2 -->|"WSS"| R2
+    ANS --&gt;|&quot;HTTPS&quot;| RT
+    RT --&gt;|&quot;WSS — le parent initie (push)&quot;| R1
+    RT --&gt;|&quot;WSS — le parent initie (push)&quot;| R2
+    B1 --&gt;|&quot;WSS&quot;| R1
+    B2 --&gt;|&quot;WSS&quot;| R2
     style ANS fill:#4A90D9,stroke:#2171B5,color:#fff
     style RT fill:#9B59B6,stroke:#7D3C98,color:#fff
     style R1 fill:#E8A838,stroke:#C07C1A,color:#fff
@@ -621,21 +623,21 @@ graph TB
       <div class="arch-card arch-card--wide">
         <h3 data-i18n="arch.chain.title">Arbre à plusieurs niveaux</h3>
         <p data-i18n="arch.chain.desc">Un relay intermédiaire agrège ses descendants. Un relay n'a qu'un parent ; une boucle est refusée.</p>
-        <div class="mermaid">
+        <div class="mermaid" data-mm="3">
 graph TB
-    ANS["Ansible"]
-    RT["Relay racine"]
-    MID["Relay intermédiaire"]
-    LEAF["Relay feuille"]
-    A1["Agent A"]
-    A2["Agent B"]
-    A3["Agent C"]
-    ANS -->|"HTTPS"| RT
-    MID -->|"WSS (pull)"| RT
-    LEAF -->|"WSS (pull)"| MID
-    A1 -->|"WSS"| MID
-    A2 -->|"WSS"| LEAF
-    A3 -->|"WSS"| RT
+    ANS[&quot;Ansible&quot;]
+    RT[&quot;Relay racine&quot;]
+    MID[&quot;Relay intermédiaire&quot;]
+    LEAF[&quot;Relay feuille&quot;]
+    A1[&quot;Agent A&quot;]
+    A2[&quot;Agent B&quot;]
+    A3[&quot;Agent C&quot;]
+    ANS --&gt;|&quot;HTTPS&quot;| RT
+    MID --&gt;|&quot;WSS (pull)&quot;| RT
+    LEAF --&gt;|&quot;WSS (pull)&quot;| MID
+    A1 --&gt;|&quot;WSS&quot;| MID
+    A2 --&gt;|&quot;WSS&quot;| LEAF
+    A3 --&gt;|&quot;WSS&quot;| RT
     style ANS fill:#4A90D9,stroke:#2171B5,color:#fff
     style RT fill:#9B59B6,stroke:#7D3C98,color:#fff
     style MID fill:#8E44AD,stroke:#6C3483,color:#fff
@@ -698,7 +700,7 @@ const T = {
  "fr": {
   "arch.chain.desc": "Un relay intermédiaire agrège ses descendants. Un relay n'a qu'un parent ; une boucle est refusée.",
   "arch.chain.title": "Arbre à plusieurs niveaux",
-  "arch.lead": "Go côté serveur et agent, WebSocket direct (WSS) entre agents et relays, état en fichier, plugins Ansible en Python. Détail dans le <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/HLD.md\">High-Level Design</a> et les <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/ARCHITECTURE.md\">spécifications techniques</a>.",
+  "arch.lead": "Go côté serveur et agent, WebSocket direct (WSS) entre agents et relays, état en fichier, plugin de connexion Ansible en Python, inventaire par un binaire Go. Détail dans le <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/HLD.md\">High-Level Design</a> et les <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/ARCHITECTURE.md\">spécifications techniques</a>.",
   "arch.pull.desc": "L'enfant ouvre le lien vers son parent : aucune connexion entrante n'est nécessaire dans la DMZ.",
   "arch.pull.title": "Chaîne en mode pull",
   "arch.push.desc": "Le parent ouvre le lien vers l'enfant, quand c'est le sens autorisé par votre pare-feu.",
@@ -707,14 +709,14 @@ const T = {
   "arch.simple.title": "Un relay racine, actif/passif",
   "arch.tag": "Architecture",
   "arch.title": "Architecture",
-  "compat.become.body": "<code>become: true</code> et <code>become_user</code> fonctionnent comme avec SSH. Le become_pass est transmis de façon sécurisée, masqué dans tous les logs.",
+  "compat.become.body": "<code>become</code> est supporté ; le mot de passe est transmis via stdin et masqué dans les journaux.",
   "compat.become.title": "become / sudo supporté",
   "compat.cfg": "Options du plugin (<code>ansible.cfg</code>, variables d'environnement, variables d'hôte) : voir la <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/plugins/PLUGINS_SPEC.md\">spécification des plugins</a>.",
-  "compat.inventory.body": "Le plugin inventory liste automatiquement tous les agents connectés avec leurs facts. Vos inventaires statiques restent compatibles en parallèle.",
+  "compat.inventory.body": "Le binaire Go <code>secagent-inventory</code> (inventaire externe Ansible) liste les agents avec leur statut et leur chaîne de relays ; les groupes portent le nom de vos relays. Vos inventaires statiques restent utilisables en parallèle.",
   "compat.inventory.title": "Inventaire dynamique",
-  "compat.lead": "Ansible-SecAgent s'intègre comme un plugin Ansible standard. Vos playbooks, rôles et collections fonctionnent sans modification. La transition est progressive : SSH reste disponible en parallèle.",
-  "compat.playbooks.body": "Tous vos playbooks, rôles et collections Ansible Galaxy fonctionnent sans modification. Changez juste <code>connection: relay</code> dans ansible.cfg.",
-  "compat.playbooks.title": "Playbooks inchangés",
+  "compat.lead": "Ansible-SecAgent s'intègre à Ansible par un plugin de connexion et par l'inventaire externe <code>secagent-inventory</code>. Vos playbooks et rôles restent écrits comme aujourd'hui : c'est le transport qui change. SSH reste disponible en parallèle.",
+  "compat.playbooks.body": "La forme de vos playbooks et rôles ne change pas ; seule la connexion change (<code>ansible_connection: relay</code>). Limites actuelles : hôtes Linux uniquement, fichiers transférés inférieurs à 500 Ko.",
+  "compat.playbooks.title": "Playbooks et rôles",
   "compat.ssh.body": "Ansible-SecAgent ne supprime pas SSH. Les deux coexistent. Idéal pour une migration progressive : passez hôte par hôte sans rupture de service.",
   "compat.ssh.title": "SSH toujours disponible",
   "compat.tag": "Compatibilité",
@@ -757,7 +759,7 @@ const T = {
   "f304.8": "Suspension d'un agent visible dans l'inventaire des relays ancêtres",
   "f304.9": "Correctif : la réponse d'une tâche synchrone durant plus de 15 s n'est plus coupée",
   "fbase.1": "Agent <code>secagent-minion</code> : enrôlement RSA-4096, connexion WSS persistante, exécution par sous-processus, transferts de fichiers, <code>become</code>",
-  "fbase.2": "Plugins Ansible (connexion et inventaire) en Python, <code>secagent-inventory</code> en Go",
+  "fbase.2": "Plugin de connexion Ansible en Python ; inventaire par le binaire Go <code>secagent-inventory</code> (inventaire externe Ansible)",
   "fbase.3": "CLI d'administration intégrée au binaire serveur (v1.1.0)",
   "fbase.4": "Event Hooks configurables en JSON (v1.1.0)",
   "fbase.5": "Mode proxy multi-zone (v2.0.0), remplacé par la chaîne de relays à partir de la v3",
@@ -769,6 +771,12 @@ const T = {
   "footer.releases": "Releases",
   "footer.security": "Sécurité",
   "footer.specs": "Specs techniques",
+  "fv.v1_x___v2_x": "v1.x – v2.x — Socle",
+  "fv.v3_0_0": "v3.0.0 — Fondations",
+  "fv.v3_0_1": "v3.0.1 — Chaîne de relays",
+  "fv.v3_0_2": "v3.0.2 — Événements et inventaire hiérarchique",
+  "fv.v3_0_3": "v3.0.3 — Actif/passif, état fichier, TLS natif",
+  "fv.v3_0_4": "v3.0.4 — Liens de confiance signés et exploitation",
   "hero.badge.hooks": "Event Hooks",
   "hero.badge.native": "Ansible natif",
   "hero.badge.proxy": "Relays chaînés",
@@ -806,6 +814,8 @@ const T = {
   "lim.2": "Le JWT d'un agent dure 1 h sans renouvellement : après expiration, toute reconnexion repose sur le jeton d'enrôlement ; un jeton à usage unique ou expiré arrête l'agent (code 78). Utilisez un jeton réutilisable restreint par motif de nom d'hôte.",
   "lim.3": "L'actif/passif sur un stockage partagé entre deux hôtes réels n'a pas été vérifié.",
   "lim.4": "Sans changement du budget mémoire par défaut, un relay accepte au plus 204 tâches simultanées.",
+  "lim.5": "Périmètre actuel : hôtes Linux uniquement.",
+  "lim.6": "Les fichiers transférés doivent rester inférieurs à 500 Ko.",
   "lim.title": "Limites connues",
   "mgmt.agents.desc": "Listez, suspendez, révoquez et autorisez les agents. Gérez leurs variables d'inventaire.",
   "mgmt.agents.title": "Gestion des agents",
@@ -829,6 +839,8 @@ const T = {
   "nav.relays": "Relays",
   "nav.security": "Sécurité",
   "nav.solution": "Solution",
+  "problem.arch.blocked": "← BLOQUÉ derrière NAT/firewall",
+  "problem.arch.src": "Hôte cible",
   "problem.audit.body": "Ansible n'a pas de log d'audit centralisé. Les traces restent sur le Control Node — modifiables, supprimables. En cas d'incident ou de contrôle ISO 27001, NIS2 ou SOC2, vous ne pouvez pas prouver qu'une configuration a été appliquée, ni par qui.",
   "problem.audit.quote": "L'auditeur pose la question. Vous cherchez dans des logs dispersés sur plusieurs machines.",
   "problem.audit.title": "Qui a lancé quoi, sur quoi, et quand ?",
@@ -902,6 +914,7 @@ const T = {
   "sec.r6.t": "Fuite de become_pass dans les logs",
   "security.aes.body": "L'état du serveur est authentifié par HMAC et ses secrets sont chiffrés en AES-256-GCM avec une clef maître (<code>RSA_MASTER_KEY</code>).",
   "security.become.body": "Le mot de passe sudo/su est transmis via stdin et masqué dans les journaux de l'agent, du serveur et du plugin Ansible.",
+  "security.become.title": "become_pass masqué",
   "security.doc": "Lire le modèle de sécurité complet",
   "security.dualkey.body": "Rotation des secrets JWT sans interruption de service, avec une période de grâce pendant laquelle les anciens jetons restent valides.",
   "security.enrollment.body": "Tout enrôlement exige un jeton d'enrôlement créé par un administrateur, plus un challenge RSA-OAEP prouvant la possession de la clef privée. Sans jeton, le serveur répond 403.",
@@ -919,7 +932,7 @@ const T = {
   "security.table.threat": "Vecteur d'attaque",
   "security.tag": "Sécurité",
   "security.title": "Sécurité by design",
-  "security.tls.body": "WSS et HTTPS sur toutes les connexions, TLS natif dans le serveur. Aucun HTTP en clair en production.",
+  "security.tls.body": "WSS pour les agents et les liens entre relays, HTTPS pour l'API, TLS natif dans le serveur. L'API d'administration n'accepte le HTTP qu'en boucle locale ; ailleurs, TLS est exigé.",
   "security.tls.title": "TLS obligatoire",
   "solution.lead": "Ansible-SecAgent inverse le flux de contrôle. L'agent sur l'hôte cible initie une connexion WebSocket persistante (WSS) vers le serveur relay. Ansible n'a besoin d'atteindre que le relay — jamais les hôtes directement.",
   "solution.tag": "La solution",
@@ -928,7 +941,7 @@ const T = {
  "en": {
   "arch.chain.desc": "An intermediate relay aggregates its descendants. A relay has a single parent; a loop is refused.",
   "arch.chain.title": "Multi-level tree",
-  "arch.lead": "Go on server and agent, direct WebSocket (WSS) between agents and relays, file-based state, Ansible plugins in Python. Details in the <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/HLD.md\">High-Level Design</a> and the <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/ARCHITECTURE.md\">technical specifications</a>.",
+  "arch.lead": "Go on server and agent, direct WebSocket (WSS) between agents and relays, file-based state, Ansible connection plugin in Python, inventory through a Go binary. Details in the <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/HLD.md\">High-Level Design</a> and the <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/ARCHITECTURE.md\">technical specifications</a>.",
   "arch.pull.desc": "The child opens the link to its parent: no inbound connection is needed in the DMZ.",
   "arch.pull.title": "Chain in pull mode",
   "arch.push.desc": "The parent opens the link to the child, when that is the direction your firewall allows.",
@@ -937,14 +950,14 @@ const T = {
   "arch.simple.title": "One root relay, active/passive",
   "arch.tag": "Architecture",
   "arch.title": "Architecture",
-  "compat.become.body": "<code>become: true</code> and <code>become_user</code> work just like SSH. The become_pass is transmitted securely, masked in all logs.",
+  "compat.become.body": "<code>become</code> is supported; the password is passed via stdin and masked in the logs.",
   "compat.become.title": "become / sudo supported",
   "compat.cfg": "Plugin options (<code>ansible.cfg</code>, environment variables, host variables): see the <a href=\"https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/plugins/PLUGINS_SPEC.md\">plugins specification</a>.",
-  "compat.inventory.body": "The inventory plugin automatically lists all connected agents with their facts. Your existing static inventories remain compatible in parallel.",
+  "compat.inventory.body": "The Go binary <code>secagent-inventory</code> (Ansible external inventory) lists agents with their status and relay chain; groups are named after your relays. Your static inventories remain usable alongside.",
   "compat.inventory.title": "Dynamic inventory",
-  "compat.lead": "Ansible-SecAgent integrates as a standard Ansible plugin. Your playbooks, roles, and collections work without modification. The transition is incremental: SSH remains available side by side.",
-  "compat.playbooks.body": "All your playbooks, roles, and Ansible Galaxy collections work without modification. Just change <code>connection: relay</code> in ansible.cfg.",
-  "compat.playbooks.title": "Playbooks unchanged",
+  "compat.lead": "Ansible-SecAgent plugs into Ansible through a connection plugin and the <code>secagent-inventory</code> external inventory. Your playbooks and roles are still written the way they are today: only the transport changes. SSH remains available alongside.",
+  "compat.playbooks.body": "The shape of your playbooks and roles does not change; only the connection does (<code>ansible_connection: relay</code>). Current limits: Linux hosts only, transferred files under 500 KB.",
+  "compat.playbooks.title": "Playbooks and roles",
   "compat.ssh.body": "Ansible-SecAgent doesn't remove SSH. Both coexist. Ideal for incremental migration: move host by host without disruption.",
   "compat.ssh.title": "SSH still available",
   "compat.tag": "Compatibility",
@@ -987,7 +1000,7 @@ const T = {
   "f304.8": "An agent's suspension is visible in ancestor relays' inventory",
   "f304.9": "Fix: the response of a synchronous task running longer than 15 s is no longer cut off",
   "fbase.1": "<code>secagent-minion</code> agent: RSA-4096 enrollment, persistent WSS connection, subprocess execution, file transfers, <code>become</code>",
-  "fbase.2": "Ansible plugins (connection and inventory) in Python, <code>secagent-inventory</code> in Go",
+  "fbase.2": "Ansible connection plugin in Python; inventory through the Go binary <code>secagent-inventory</code> (Ansible external inventory)",
   "fbase.3": "Administration CLI built into the server binary (v1.1.0)",
   "fbase.4": "JSON-configurable Event Hooks (v1.1.0)",
   "fbase.5": "Multi-zone proxy mode (v2.0.0), replaced by the relay chain from v3 on",
@@ -999,6 +1012,12 @@ const T = {
   "footer.releases": "Releases",
   "footer.security": "Security",
   "footer.specs": "Technical specs",
+  "fv.v1_x___v2_x": "v1.x – v2.x — Foundation",
+  "fv.v3_0_0": "v3.0.0 — Foundations",
+  "fv.v3_0_1": "v3.0.1 — Relay chain",
+  "fv.v3_0_2": "v3.0.2 — Events and hierarchical inventory",
+  "fv.v3_0_3": "v3.0.3 — Active/passive, file state, built-in TLS",
+  "fv.v3_0_4": "v3.0.4 — Signed trust links and operations",
   "hero.badge.hooks": "Event Hooks",
   "hero.badge.native": "Native Ansible",
   "hero.badge.proxy": "Chained relays",
@@ -1036,6 +1055,8 @@ const T = {
   "lim.2": "An agent's JWT lasts 1 h with no renewal: after expiry, any reconnection relies on the enrollment token; a single-use or expired token stops the agent (code 78). Use a reusable token restricted by hostname pattern.",
   "lim.3": "Active/passive over shared storage between two real hosts has not been verified.",
   "lim.4": "With the default memory budget unchanged, a relay accepts at most 204 simultaneous tasks.",
+  "lim.5": "Current scope: Linux hosts only.",
+  "lim.6": "Transferred files must stay under 500 KB.",
   "lim.title": "Known limits",
   "mgmt.agents.desc": "List, suspend, revoke and authorize agents. Manage their inventory variables.",
   "mgmt.agents.title": "Agent management",
@@ -1059,6 +1080,8 @@ const T = {
   "nav.relays": "Relays",
   "nav.security": "Security",
   "nav.solution": "Solution",
+  "problem.arch.blocked": "← BLOCKED behind NAT/firewall",
+  "problem.arch.src": "Target host",
   "problem.audit.body": "Ansible has no centralized audit log. Traces stay on the Control Node — editable, deletable. In case of an incident or ISO 27001, NIS2, or SOC2 audit, you can't prove a configuration was applied, or by whom.",
   "problem.audit.quote": "The auditor asks the question. You search through logs scattered across multiple machines.",
   "problem.audit.title": "Who ran what, on what, and when?",
@@ -1132,6 +1155,7 @@ const T = {
   "sec.r6.t": "become_pass leak in logs",
   "security.aes.body": "The server state is HMAC-authenticated and its secrets are encrypted with AES-256-GCM under a master key (<code>RSA_MASTER_KEY</code>).",
   "security.become.body": "The sudo/su password is passed via stdin and masked in the agent, server and Ansible plugin logs.",
+  "security.become.title": "become_pass masked",
   "security.doc": "Read the full security model",
   "security.dualkey.body": "JWT secret rotation without service interruption, with a grace period during which old tokens remain valid.",
   "security.enrollment.body": "Every enrollment requires an enrollment token created by an administrator, plus an RSA-OAEP challenge proving possession of the private key. Without a token the server answers 403.",
@@ -1149,7 +1173,7 @@ const T = {
   "security.table.threat": "Attack vector",
   "security.tag": "Security",
   "security.title": "Security by design",
-  "security.tls.body": "WSS and HTTPS on every connection, with TLS built into the server. No plain HTTP in production.",
+  "security.tls.body": "WSS for agents and relay links, HTTPS for the API, TLS built into the server. The administration API only accepts HTTP on loopback; elsewhere TLS is required.",
   "security.tls.title": "Mandatory TLS",
   "solution.lead": "Ansible-SecAgent reverses the control flow. The agent on the target host opens a persistent WebSocket (WSS) connection to the relay server. Ansible only needs to reach the relay — never the hosts directly.",
   "solution.tag": "The solution",
@@ -1159,6 +1183,7 @@ const T = {
 
 let lang = 'fr';
 try { lang = localStorage.getItem('ar-lang') || 'fr'; } catch (e) {}
+const MM = {"fr": ["graph LR\n    ANS[\"Ansible\\n(plugins connexion + inventaire)\"]\n    ACT[\"secagent-server\\nactif (verrou)\"]\n    PAS[\"secagent-server\\nsecondaire\"]\n    ST[(\"Stockage partagé\\nrelay.state + relay.lock\")]\n    A1[\"Agent hôte 1\"]\n    A2[\"Agent hôte 2\"]\n    A3[\"Agent hôte 3\"]\n    ANS -->|\"HTTPS, REST bloquant\"| ACT\n    A1 -->|\"WSS — l'agent initie\"| ACT\n    A2 -->|\"WSS — l'agent initie\"| ACT\n    A3 -->|\"WSS — l'agent initie\"| ACT\n    ACT --- ST\n    PAS -.->|\"attend le verrou\"| ST\n    style ANS fill:#4A90D9,stroke:#2171B5,color:#fff\n    style ACT fill:#E8A838,stroke:#C07C1A,color:#fff\n    style PAS fill:#B8B8B8,stroke:#888,color:#fff\n    style ST fill:#6C757D,stroke:#495057,color:#fff\n    style A1 fill:#5BA85A,stroke:#3D7A3C,color:#fff\n    style A2 fill:#5BA85A,stroke:#3D7A3C,color:#fff\n    style A3 fill:#5BA85A,stroke:#3D7A3C,color:#fff", "graph TB\n    ANS[\"Ansible\"]\n    subgraph ROOT[\"Zone de confiance\"]\n        RT[\"Relay racine\\n(émet les jetons de lien)\"]\n    end\n    subgraph DMZ1[\"DMZ 1\"]\n        R1[\"Relay enfant dmz1\"]\n        B1[\"Agent A\"]\n        B2[\"Agent B\"]\n    end\n    subgraph DMZ2[\"DMZ 2\"]\n        R2[\"Relay enfant dmz2\"]\n        B3[\"Agent C\"]\n    end\n    ANS -->|\"HTTPS\"| RT\n    R1 -->|\"WSS — l'enfant initie (pull)\"| RT\n    R2 -->|\"WSS — l'enfant initie (pull)\"| RT\n    B1 -->|\"WSS\"| R1\n    B2 -->|\"WSS\"| R1\n    B3 -->|\"WSS\"| R2\n    style ANS fill:#4A90D9,stroke:#2171B5,color:#fff\n    style RT fill:#9B59B6,stroke:#7D3C98,color:#fff\n    style R1 fill:#E8A838,stroke:#C07C1A,color:#fff\n    style R2 fill:#E8A838,stroke:#C07C1A,color:#fff\n    style B1 fill:#5BA85A,stroke:#3D7A3C,color:#fff\n    style B2 fill:#5BA85A,stroke:#3D7A3C,color:#fff\n    style B3 fill:#5BA85A,stroke:#3D7A3C,color:#fff", "graph TB\n    ANS[\"Ansible\"]\n    subgraph ROOT[\"Zone de confiance\"]\n        RT[\"Relay racine\"]\n    end\n    subgraph DMZ1[\"Zone 1\"]\n        R1[\"Relay enfant z1\"]\n        B1[\"Agent A\"]\n    end\n    subgraph DMZ2[\"Zone 2\"]\n        R2[\"Relay enfant z2\"]\n        B2[\"Agent B\"]\n    end\n    ANS -->|\"HTTPS\"| RT\n    RT -->|\"WSS — le parent initie (push)\"| R1\n    RT -->|\"WSS — le parent initie (push)\"| R2\n    B1 -->|\"WSS\"| R1\n    B2 -->|\"WSS\"| R2\n    style ANS fill:#4A90D9,stroke:#2171B5,color:#fff\n    style RT fill:#9B59B6,stroke:#7D3C98,color:#fff\n    style R1 fill:#E8A838,stroke:#C07C1A,color:#fff\n    style R2 fill:#E8A838,stroke:#C07C1A,color:#fff\n    style B1 fill:#5BA85A,stroke:#3D7A3C,color:#fff\n    style B2 fill:#5BA85A,stroke:#3D7A3C,color:#fff", "graph TB\n    ANS[\"Ansible\"]\n    RT[\"Relay racine\"]\n    MID[\"Relay intermédiaire\"]\n    LEAF[\"Relay feuille\"]\n    A1[\"Agent A\"]\n    A2[\"Agent B\"]\n    A3[\"Agent C\"]\n    ANS -->|\"HTTPS\"| RT\n    MID -->|\"WSS (pull)\"| RT\n    LEAF -->|\"WSS (pull)\"| MID\n    A1 -->|\"WSS\"| MID\n    A2 -->|\"WSS\"| LEAF\n    A3 -->|\"WSS\"| RT\n    style ANS fill:#4A90D9,stroke:#2171B5,color:#fff\n    style RT fill:#9B59B6,stroke:#7D3C98,color:#fff\n    style MID fill:#8E44AD,stroke:#6C3483,color:#fff\n    style LEAF fill:#E8A838,stroke:#C07C1A,color:#fff\n    style A1 fill:#5BA85A,stroke:#3D7A3C,color:#fff\n    style A2 fill:#5BA85A,stroke:#3D7A3C,color:#fff\n    style A3 fill:#5BA85A,stroke:#3D7A3C,color:#fff"], "en": ["graph LR\n    ANS[\"Ansible\\n(plugins connexion + inventaire)\"]\n    ACT[\"secagent-server\\nactive (lock)\"]\n    PAS[\"secagent-server\\nsecondary\"]\n    ST[(\"Shared storage\\nrelay.state + relay.lock\")]\n    A1[\"Host 1 agent\"]\n    A2[\"Host 2 agent\"]\n    A3[\"Host 3 agent\"]\n    ANS -->|\"HTTPS, blocking REST\"| ACT\n    A1 -->|\"WSS — agent initiates\"| ACT\n    A2 -->|\"WSS — agent initiates\"| ACT\n    A3 -->|\"WSS — agent initiates\"| ACT\n    ACT --- ST\n    PAS -.->|\"waits for the lock\"| ST\n    style ANS fill:#4A90D9,stroke:#2171B5,color:#fff\n    style ACT fill:#E8A838,stroke:#C07C1A,color:#fff\n    style PAS fill:#B8B8B8,stroke:#888,color:#fff\n    style ST fill:#6C757D,stroke:#495057,color:#fff\n    style A1 fill:#5BA85A,stroke:#3D7A3C,color:#fff\n    style A2 fill:#5BA85A,stroke:#3D7A3C,color:#fff\n    style A3 fill:#5BA85A,stroke:#3D7A3C,color:#fff", "graph TB\n    ANS[\"Ansible\"]\n    subgraph ROOT[\"Trust zone\"]\n        RT[\"Root relay\\n(issues link tokens)\"]\n    end\n    subgraph DMZ1[\"DMZ 1\"]\n        R1[\"Child relay dmz1\"]\n        B1[\"Agent A\"]\n        B2[\"Agent B\"]\n    end\n    subgraph DMZ2[\"DMZ 2\"]\n        R2[\"Child relay dmz2\"]\n        B3[\"Agent C\"]\n    end\n    ANS -->|\"HTTPS\"| RT\n    R1 -->|\"WSS — child initiates (pull)\"| RT\n    R2 -->|\"WSS — child initiates (pull)\"| RT\n    B1 -->|\"WSS\"| R1\n    B2 -->|\"WSS\"| R1\n    B3 -->|\"WSS\"| R2\n    style ANS fill:#4A90D9,stroke:#2171B5,color:#fff\n    style RT fill:#9B59B6,stroke:#7D3C98,color:#fff\n    style R1 fill:#E8A838,stroke:#C07C1A,color:#fff\n    style R2 fill:#E8A838,stroke:#C07C1A,color:#fff\n    style B1 fill:#5BA85A,stroke:#3D7A3C,color:#fff\n    style B2 fill:#5BA85A,stroke:#3D7A3C,color:#fff\n    style B3 fill:#5BA85A,stroke:#3D7A3C,color:#fff", "graph TB\n    ANS[\"Ansible\"]\n    subgraph ROOT[\"Trust zone\"]\n        RT[\"Root relay\"]\n    end\n    subgraph DMZ1[\"Zone 1\"]\n        R1[\"Child relay z1\"]\n        B1[\"Agent A\"]\n    end\n    subgraph DMZ2[\"Zone 2\"]\n        R2[\"Child relay z2\"]\n        B2[\"Agent B\"]\n    end\n    ANS -->|\"HTTPS\"| RT\n    RT -->|\"WSS — parent initiates (push)\"| R1\n    RT -->|\"WSS — parent initiates (push)\"| R2\n    B1 -->|\"WSS\"| R1\n    B2 -->|\"WSS\"| R2\n    style ANS fill:#4A90D9,stroke:#2171B5,color:#fff\n    style RT fill:#9B59B6,stroke:#7D3C98,color:#fff\n    style R1 fill:#E8A838,stroke:#C07C1A,color:#fff\n    style R2 fill:#E8A838,stroke:#C07C1A,color:#fff\n    style B1 fill:#5BA85A,stroke:#3D7A3C,color:#fff\n    style B2 fill:#5BA85A,stroke:#3D7A3C,color:#fff", "graph TB\n    ANS[\"Ansible\"]\n    RT[\"Root relay\"]\n    MID[\"Intermediate relay\"]\n    LEAF[\"Leaf relay\"]\n    A1[\"Agent A\"]\n    A2[\"Agent B\"]\n    A3[\"Agent C\"]\n    ANS -->|\"HTTPS\"| RT\n    MID -->|\"WSS (pull)\"| RT\n    LEAF -->|\"WSS (pull)\"| MID\n    A1 -->|\"WSS\"| MID\n    A2 -->|\"WSS\"| LEAF\n    A3 -->|\"WSS\"| RT\n    style ANS fill:#4A90D9,stroke:#2171B5,color:#fff\n    style RT fill:#9B59B6,stroke:#7D3C98,color:#fff\n    style MID fill:#8E44AD,stroke:#6C3483,color:#fff\n    style LEAF fill:#E8A838,stroke:#C07C1A,color:#fff\n    style A1 fill:#5BA85A,stroke:#3D7A3C,color:#fff\n    style A2 fill:#5BA85A,stroke:#3D7A3C,color:#fff\n    style A3 fill:#5BA85A,stroke:#3D7A3C,color:#fff"]};
 const CURRENT_MAJOR = parseInt(document.querySelector('meta[name="current-major"]').content, 10);
 
 function applyBadges() {
@@ -1180,6 +1205,14 @@ function setLang(l) {
     btn.classList.toggle('active', btn.dataset.lang === l));
   applyT();
   applyBadges();
+  renderDiagrams();
+}
+
+async function renderDiagrams() {
+  if (!window.mermaid) return;
+  const nodes = [...document.querySelectorAll('.mermaid[data-mm]')];
+  nodes.forEach(n => { n.removeAttribute('data-processed'); n.textContent = MM[lang][+n.dataset.mm]; });
+  try { await mermaid.run({ nodes }); } catch (e) {}
 }
 
 function applyT() {

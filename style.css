@@ -563,3 +563,12 @@ footer .footer-brand { font-weight: 600; color: var(--text-secondary); margin-bo
 .feature-new.badge-orange { background: rgba(238,119,0,0.15); border-color: rgba(238,119,0,0.45); color: #ee7700; }
 .feature-new.badge-blue   { background: rgba(60,120,220,0.15); border-color: rgba(60,120,220,0.4);  color: #5b9bf0; }
 .feature-new:empty { display: none; }
+
+/* Mobile : pas de débordement horizontal de la page */
+@media (max-width: 640px) {
+  .arch-diagram, .diagram { white-space: pre-wrap; padding: 1rem; }
+  table.sec-table { display: block; overflow-x: auto; max-width: 100%; }
+  .cmd-grid > *, .compat-grid > *, .arch-grid > *, .repeater-modes > *, .deploy-modes > * { min-width: 0; }
+  pre { overflow-x: auto; max-width: 100%; }
+  code { overflow-wrap: anywhere; }
+}
