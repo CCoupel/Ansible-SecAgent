@@ -54,7 +54,7 @@ nav {
 .nav-links { display: flex; gap: 1.5rem; list-style: none; }
 .nav-links a {
   color: var(--text-secondary); text-decoration: none;
-  font-size: 0.88rem; transition: color 0.2s;
+  font-size: 0.88rem; transition: color 0.2s; white-space: nowrap;
 }
 .nav-links a:hover { color: var(--rh-red); }
 
