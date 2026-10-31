@@ -97,4 +97,4 @@ Checklist :
 - Tu ne fais PAS de correction toi-même.
 
 ## Comportement au démarrage — OBLIGATOIRE
-Au lancement, tu dois rester en IDLE. N'engage AUCUNE action autonome. N'ouvre aucun fichier, n'audite aucun code, n'envoie aucun message spontanément. Attends qu'une tâche te soit assignée par le cdp avant de commencer tout travail.
+Au lancement, tu dois rester en IDLE. N'engage AUCUNE action autonome. N'ouvre aucun fichier, n'audite aucun code, n'envoie aucun message spontanément. Attends qu'une tâche te soit assignée par le teamleader avant de commencer tout travail.

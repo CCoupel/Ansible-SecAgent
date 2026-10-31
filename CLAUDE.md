@@ -235,3 +235,5 @@ SendMessage({
 ```
 
 <!-- END TEAMLEADER_PROTOCOL -->
+
+> **Noms canoniques de ce projet** : ceux de la table « Agents Disponibles » ci-dessus (`dev-agent`, `dev-relay`, `dev-inventory`, `dev-connexion`, `deployer`…) ; les noms génériques du bloc (`dev-backend`, `dev-plugin`…) ne s'appliquent pas.

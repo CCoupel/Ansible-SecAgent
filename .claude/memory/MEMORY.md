@@ -3,16 +3,16 @@
 > Source de vérité au démarrage de session (lue par `/start-session`). Mise à jour par `/end-session`.
 
 ## Version et environnements
-- **Version produit : v3.0.3 publiée le 2026-10-07** (tag `v3.0.3` sur `cbd4eca`, release GitHub, images `ghcr.io/ccoupel/secagent-server` et `secagent-minion` : tags `3.0.3`, `v3.0.3`, `latest`, paquets publics, provenance + SBOM). Tags existants : v1.0.0, v2.0.0, v3.0.3 (pas de tags v3.0.0 à v3.0.2).
-- **`main`** = `a8a0aab` (PR #198 : milestone/v3.0.3 fusionnée en merge commit), CI verte. **Le `schedule` de `failover.yml` est volontairement commenté** : à réactiver par une PR séparée (code v3.0.3 maintenant sur main).
+- **Version produit : v3.0.4 publiée le 2026-10-08** (release GitHub « Latest », site gh-pages à jour). v3.0.3 publiée le 2026-10-07 (`cbd4eca`). Tags : v1.0.0, v2.0.0, v3.0.3, v3.0.4.
+- **`main`** = `ef553d4` (PR #235 mergée, CI verte). Branche de travail : `milestone/v3.0.4` (commit local `0d4933e` de synchro du template, non poussé). **Le `schedule` de `failover.yml` est volontairement commenté** : à réactiver par une PR séparée.
 - **Architecture v3.0.3** : relay actif/passif, un seul maître par STATE_DIR partagé (NFS), secondaires sans aucun port ; état = fichier `relay.state` (HMAC, secrets `enc:`) + `relay.lock` ; plus de SQLite, CGO, NATS, Caddy ni Kubernetes (K8s abandonné, #136 fermée). TLS natif (7770/7772), admin 7771 en boucle locale par défaut. Clients multi-adresses (`internal/endpoints`). Détail : `DOC/server/STATE_SPEC.md`, `SERVER_SPEC.md`, `DOC/security/SECURITY.md` (avis 1 à 3).
 - **Qualif** : 192.168.1.218 (srv8, Docker 29.2.1, accès `docker -H tcp://192.168.1.218:2375`, API non authentifiée = choix utilisateur sur son LAN). **Chaîne v3.0.3 EN SERVICE** (projet compose `secagent-qualif` : racine actif/passif a/b, enfant pull, minions). L'ancienne qualif v2 (projet `qualif`) est ARRÊTÉE (pas supprimée) et sauvegardée dans `/home/cyril/secagent-qualif-v2-backup-20261007-091343` (contient des secrets : ne jamais commiter). L'hôte héberge MooseFS (projet `chunks`, `/opt/MFS`) : **ne JAMAIS toucher**. Images de qualif par artefact de CI + `docker load` (`chain-test.sh load-images`), sans registre.
-- **Prod** : Docker Compose multi-hôtes (`DEPLOYMENT/prod/`), `tag@sha256` obligatoire. Pas encore déployée.
-- **Template Claude** : v3.10.0 (`c620b20`, voir `.claude/project-config.json`).
+- **Prod** : Docker Compose (`DEPLOYMENT/prod/`), `tag@sha256` obligatoire. **Hôte = 192.168.1.218** (même hôte que la qualif, choix utilisateur 2026-10-31), projet compose `secagent-prod-*` distinct, collisions de ports à vérifier. **Jamais déployée.** Accès enregistré dans `project-config.json` → `infrastructure.environments[].access`.
+- **Template Claude** : v3.29.1 (`3347a2e`, voir `.claude/project-config.json` → `template_version`).
 
 ## Milestones GitHub
 - v3.0.0 à v3.0.3 fermés (v3.0.3 : 34 issues, #157 épique fermée).
-- **v3.0.4 « Confiance et signature des liens »** (ouvert, 11 issues) : #141 signature des tokens par la racine, #146 rôles JWT relay-child/relay-parent, #151 SSRF (restes : DNS rebinding), #156 rate limit snapshots par relay_id, #179, #180, #189, **#194** démarrage serveur sous charge (probe des listeners), **#196** secrets en variables d'environnement (support `*_FILE`, minions root, log `tls=false`), **#197** compléments de qualif (hooks en réel, essai CA négatif, multi-hôtes réel, suite d'intégration ~190 s, somme du CLI Docker statique, tests de temporisation instables). #152 à fermer après vérification.
+- **v3.0.4 « Confiance et signature des liens »** (ouvert, 1 issue restante / 10 fermées — à clore). **v3.0.5 « Durcissement et dettes issues de v3.0.4 »** ouvert, 23 issues. Historique v3.0.4 (11 issues) : #141 signature des tokens par la racine, #146 rôles JWT relay-child/relay-parent, #151 SSRF (restes : DNS rebinding), #156 rate limit snapshots par relay_id, #179, #180, #189, **#194** démarrage serveur sous charge (probe des listeners), **#196** secrets en variables d'environnement (support `*_FILE`, minions root, log `tls=false`), **#197** compléments de qualif (hooks en réel, essai CA négatif, multi-hôtes réel, suite d'intégration ~190 s, somme du CLI Docker statique, tests de temporisation instables). #152 à fermer après vérification.
 
 ## Décisions et failles v3.0.3 (à ne pas redécouvrir)
 - Failles v1/v2 corrigées en v3.0.3 seulement (pas de hotfix v2, qualif v2 compensée par restriction réseau) : `/ws/agent` sans token, **`POST /api/token/refresh` non authentifiée (route SUPPRIMÉE, 404)**, **`POST /api/register` sans jeton (403 `enrollment_token_required`)**, ré-enrôlement d'un révoqué avec jeton réutilisable (**drapeau `revoked` persistant, 403 `agent_revoked`, levée par `DELETE /api/admin/minions/{h}`**). Retour arrière : un binaire antérieur à #193 refuse un état contenant `revoked:true` ou bascule sur `.prev` (perte silencieuse de révocation) : documenté.
@@ -26,6 +26,7 @@
 - `docker.exe` (Windows) seul disponible dans WSL ; il ne reçoit pas `DOCKER_HOST` : utiliser `-H`. Le démon Docker local est arrêté : ne pas le démarrer.
 
 ## À trancher / suivis
+- Écart CI C11 (template v3.29.1) : pas de script CI unique `commands.ci` → `infra` en v3.0.5. Alerte modèle : `doc-updater` en haiku dans le template (CLAUDE.md exige sonnet : le passer au spawn).
 - Réactiver le `schedule` de `failover.yml` (PR séparée). Visibilité des paquets GHCR (publics aujourd'hui).
 - Nettoyage qualif : jeton plugin `q4-qa` (8 h) et fichiers `/tmp/q4_*.mark` dans les minions ; `/tmp/qualif-v200` (v2) ; décision sur la suppression des volumes de la v2 (utilisateur).
 - Historique git : trois `.exe` obsolètes restent dans l'historique (purge `git filter-repo` = décision utilisateur, destructif).
