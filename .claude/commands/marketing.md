@@ -279,12 +279,14 @@ c) Regenerer la roadmap uniquement
 
 Agent ponctuel — non spawné au `/start-session`, spawné à la demande. Orchestré par le CDP
 en deux dispatches distincts (`PREPARE` puis `PUBLISH`), en parallèle du déploiement PROD —
-voir `agents/cdp.template.md` Phase 6 et `agents/marketing-release.template.md` pour le détail du protocole :
+voir `agents/context/CDP_PHASES_RELEASE.md` (Phase 6) et `agents/marketing-release.template.md` pour le détail du protocole :
 
 ```
 Task({
   name: "marketing-release",
-  prompt: "Lis .claude/agents/context/TEAMMATES_PROTOCOL.md puis .claude/agents/marketing-release.template.md (et .claude/agents/marketing-release.md s'il existe — adaptations projet). Tu fais partie de ansible-secagent-team sur Ansible-SecAgent. Mets-toi en IDLE après avoir envoyé ACTIF — le teamleader t'enverra ta tâche."
+  subagent_type: "marketing-release",
+  model: <modèle résolu>, effort: <effort résolu>,   // TEAMMATES_PROTOCOL.md section 7 : compagnon marketing-release.md > marketing-release.template.md
+  prompt: "Lis .claude/agents/context/TEAMMATES_PROTOCOL.template.md puis .claude/agents/marketing-release.template.md (et .claude/agents/marketing-release.md s'il existe — adaptations projet). Tu fais partie de ansible-secagent-team sur Ansible-SecAgent. Mets-toi en IDLE après avoir envoyé ACTIF — le teamleader t'enverra ta tâche."
 })
 ```
 

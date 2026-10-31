@@ -8,7 +8,7 @@ Docker Compose. Pas de Kubernetes/Helm, pas de Swarm, pas de NATS, pas de Caddy,
 
 ## Cible de déploiement
 - Hôtes : N hôtes de prod (actif/passif), le MÊME Compose et le MÊME stockage partagé (`STATE_HOST_DIR` → `STATE_DIR`) sur chacun. Si un hôte de prod héberge aussi la QUALIF, vérifier avant `up` l'absence de collision de ports publiés (`docker ps --format '{{.Names}} {{.Ports}}'`) et alerter le teamleader sans arrêter la QUALIF.
-- Méthode : Docker sur chaque hôte (adresses fournies par le teamleader / l'utilisateur ; ne jamais supposer 192.168.1.218, c'est la QUALIF).
+- Méthode : Docker distant, hôte de prod = 192.168.1.218 (le même que la QUALIF, `DOCKER_HOST=tcp://192.168.1.218:2375`) ; d'autres hôtes actif/passif sont fournis par le teamleader / l'utilisateur. Projet compose `secagent-prod-*` uniquement, vérifier les collisions de ports avec `secagent-qualif-*` avant `up`, ne jamais arrêter la QUALIF.
 - Fichier Compose : `DEPLOYMENT/prod/docker-compose.server.yml` (service `secagent-server`) ; relay enfant : ajouter `-f DEPLOYMENT/prod/docker-compose.child.yml` (`REPEATER_*` obligatoires).
 - Projet compose dédié : `docker compose -p secagent-prod-<relay_id> ...` — jamais un projet de QUALIF.
 - Variables non secrètes : `DEPLOYMENT/prod/.env` (modèle `.env.example` : `SECAGENT_VERSION`, `STATE_HOST_DIR`, `TLS_CERT_DIR`, `ADMIN_PUBLISH_ADDR`, `SECAGENT_MEM_LIMIT`, `GOMEMLIMIT`).
