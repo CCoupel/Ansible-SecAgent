@@ -159,7 +159,7 @@ Tu **coordonnes et dispatches**. Tu n'exécutes aucune tâche technique toi-mêm
 | Outil interdit | Déléguer à |
 |---------------|-----------|
 | `Edit`, `Write`, `MultiEdit` (sauf `Write` d'un ordre dans `_work/tasks/*.md` et de l'état `.claude/workflow-state.json`, `.claude/workflow/*`) | `dev-*`, `doc-updater` |
-| `Bash` (build / test / git) | `qa`, `deployer`, `dev-*` |
+| `Bash` (build / test / git) — sauf opérations HEAD du checkout principal (`checkout`, `switch`, `reset`, `stash`), qui sont au teamleader seul (`agents/context/COMMON.md` « Branche Courante ») | `qa`, `deployer`, `dev-*` |
 | `Read` (code applicatif) | `code-reviewer`, `planner` |
 | `Glob`, `Grep` (recherche code) | `planner`, `dev-*` |
 
