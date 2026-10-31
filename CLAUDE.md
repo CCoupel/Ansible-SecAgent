@@ -88,7 +88,7 @@ ansible-secagent/
 - Tests GO : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v`
 - Tests Python : pytest, fichier `test_<module>.py` par module
 - Commits : conventionnel (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`) ; **trailer exact en dernière ligne** : `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` (contrôlé sur tous les commits avant un push) ; jamais `git commit --amend` en arbre partagé
-- Push : **jamais sans feu vert explicite de l'utilisateur**, toujours délégué à `deployer` (SHA complet explicite, jamais `HEAD`, jamais de force, jamais `main` hors PR validée) ; un tag publie (GHCR + release) : confirmation dédiée
+- Push : **jamais sans feu vert explicite de l'utilisateur**, toujours délégué à `deployer` (SHA complet explicite, jamais `HEAD`, jamais de force, jamais `main` hors PR validée) ; un tag publie (GHCR + release) : confirmation dédiée ; exception : les commits produits par `/init-project` (init et synchronisation du template) sont reportés sur `main` hors cycle par la commande elle-même (cherry-pick, jamais de merge de la branche milestone, jamais de force) — `init-project.md` §7
 - Environnement de l'utilisateur : aucun agent n'installe quoi que ce soit hors du scratchpad (ni WSL, ni `~/.local`), ne démarre Docker Desktop, ne modifie la config système ; kills par PID enregistré seulement (jamais `pkill`/`killall` par nom)
 - Agents de documentation : toujours lancés avec un modèle suffisant (`model: sonnet`) ; leurs « vérifié » sont revérifiés contre le code (`qa`, `security-reviewer`)
 
