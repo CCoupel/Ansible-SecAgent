@@ -306,7 +306,7 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 		}
 	}
 	n := &node{t: t, id: spec.ID, adminTok: "admin-" + spec.ID + "-secret-token", jwtSecret: "jwt-signing-secret-of-" + spec.ID + "-0123456789", logs: &syncBuf{}, bin: spec.NodeBinary}
-	masterKey := "integration-master-key-" + spec.ID
+	masterKey := "integration-master-key-0123456789-" + spec.ID
 	stateDir := filepath.Join(t.TempDir(), "state")
 	n.stateDir = stateDir
 	n.hooksPath = filepath.Join(t.TempDir(), "hooks.json")

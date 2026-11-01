@@ -40,7 +40,7 @@ func TestStartPushDialers_AStoredLineForbiddenByThePolicyIsNeverDialed(t *testin
 			nil, map[string]string{"mixed": "deny"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("RSA_MASTER_KEY", "main-test-master-key")
+			t.Setenv("RSA_MASTER_KEY", "main-test-master-key-0123456789abcdef")
 			st, err := storage.OpenTemp()
 			if err != nil {
 				t.Fatal(err)

@@ -25,7 +25,7 @@ func TestHooksShellEnvironmentIsAnAllowList(t *testing.T) {
 	waitFor(t, "the shell hook ran", func() bool { b, _ := os.ReadFile(envOut); return strings.Contains(string(b), "SECAGENT_EVENT=") })
 	b, _ := os.ReadFile(envOut)
 	text := string(b)
-	for _, leak := range []string{n.adminTok, n.jwtSecret, "integration-master-key-envnode", "server-only-value", "server-only-secret",
+	for _, leak := range []string{n.adminTok, n.jwtSecret, "integration-master-key-0123456789-envnode", "server-only-value", "server-only-secret",
 		"ADMIN_TOKEN", "JWT_SECRET_KEY", "RSA_MASTER_KEY", "REPEATER_UPSTREAM_TOKEN", "FOO="} {
 		if strings.Contains(text, leak) {
 			t.Errorf("the hook process sees %q:\n%s", leak, text)

@@ -43,7 +43,7 @@ func seedRelay(t *testing.T, st *storage.Store, id, mode, url, tokenField string
 }
 
 func TestStartPushDialers_OnlyPushNodesWithASealedToken(t *testing.T) {
-	t.Setenv("RSA_MASTER_KEY", "main-test-master-key")
+	t.Setenv("RSA_MASTER_KEY", "main-test-master-key-0123456789abcdef")
 	st, err := storage.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +82,7 @@ func TestStartPushDialers_SkipsUndecryptableAndInvalidRows(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 
-	t.Setenv("RSA_MASTER_KEY", "k1")
+	t.Setenv("RSA_MASTER_KEY", "k1-0123456789abcdef0123456789abcdef")
 	sealed, _ := handlers.SealPushToken("dmz1", "child-jwt")
 	t.Setenv("RSA_MASTER_KEY", "") // key lost: the sealed row cannot be opened
 	seedRelay(t, st, "dmz1", "push", "wss://dmz1:7772", sealed)
@@ -106,7 +106,7 @@ func (v *validatingStarter) Start(t repeater.DialTarget) error {
 }
 
 func TestStartPushDialers_ForbiddenStoredAddressIsNeverDialed(t *testing.T) {
-	t.Setenv("RSA_MASTER_KEY", "main-test-master-key")
+	t.Setenv("RSA_MASTER_KEY", "main-test-master-key-0123456789abcdef")
 	st, err := storage.OpenTemp()
 	if err != nil {
 		t.Fatal(err)

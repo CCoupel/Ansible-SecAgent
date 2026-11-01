@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	rekeyOld = "rekey-old-master-key"
+	rekeyOld = "rekey-old-master-key-0123456789abcdef"
 	rekeyNew = "rekey-new-master-key-0123456789abcdef"
 )
 

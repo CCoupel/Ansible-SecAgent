@@ -28,7 +28,7 @@ func TestLinkTrustReset_AllowsRePinningOnANewRoot(t *testing.T) {
 	}
 
 	// offline reset (the node is stopped: its lock is gone), then the new anchor is accepted
-	res, err := state.ResetLinkTrust(state.LinkTrustResetOptions{Dir: relay1.stateDir, MasterKey: "integration-master-key-relay1", Operator: "test"})
+	res, err := state.ResetLinkTrust(state.LinkTrustResetOptions{Dir: relay1.stateDir, MasterKey: "integration-master-key-0123456789-relay1", Operator: "test"})
 	if err != nil || !res.Changed || res.BackupFile == "" {
 		t.Fatalf("reset: %+v %v", res, err)
 	}

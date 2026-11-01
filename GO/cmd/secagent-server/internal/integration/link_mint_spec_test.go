@@ -165,7 +165,7 @@ func TestLinkMint_ThePrivateKeyIsEncryptedAtRestAndNeverLogged(t *testing.T) {
 	assertNoSecrets(t, logs, tok, root.adminTok, root.jwtSecret)
 
 	// T10c: nor in `state verify`, nor in any API answer
-	rep, err := state.VerifyFile(filepath.Join(root.stateDir, state.StateFile), state.VerifyOptions{MasterKey: "integration-master-key-root"})
+	rep, err := state.VerifyFile(filepath.Join(root.stateDir, state.StateFile), state.VerifyOptions{MasterKey: "integration-master-key-0123456789-root"})
 	if err != nil {
 		t.Fatalf("state verify: %v", err)
 	}

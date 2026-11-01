@@ -58,7 +58,7 @@ func TestRekeyBinary_RealNodesRootAndNonRoot(t *testing.T) {
 	agentTok := root.enrollAgent("agent-r")
 	connectMinionWithToken(t, root, "agent-r", agentTok)
 	root.mintParentToken("x") // a token minted on the root: the state holds a link registry entry too
-	oldRoot, oldChild := "integration-master-key-root", "integration-master-key-relay1"
+	oldRoot, oldChild := "integration-master-key-0123456789-root", "integration-master-key-0123456789-relay1"
 	newRoot, newChild := "NEWKEY-root-0123456789-abcdef-0123456789", "NEWKEY-child-0123456789-abcdef-0123456789"
 	state := filepath.Join(root.stateDir, "relay.state")
 
@@ -179,7 +179,7 @@ func TestRekeyBinary_RollbackByRestoreWithTheOldKey(t *testing.T) {
 	bin := serverBinary(t)
 	n := startNode(t, nodeSpec{ID: "solo"})
 	n.enrollAgent("agent-s")
-	old, nw := "integration-master-key-solo", "NEWKEY-solo-0123456789-abcdef-0123456789"
+	old, nw := "integration-master-key-0123456789-solo", "NEWKEY-solo-0123456789-abcdef-0123456789"
 	n.stop()
 	sp := filepath.Join(n.stateDir, "relay.state")
 	h0 := rekeyFileHash(t, sp)
@@ -296,7 +296,7 @@ func TestRekeyBinary_NewKeyMinimumIs32Bytes(t *testing.T) {
 	bin := serverBinary(t)
 	n := startNode(t, nodeSpec{ID: "solo"})
 	n.stop()
-	old := "integration-master-key-solo" // 27 bytes: shorter than the minimum, and fine as a CURRENT key
+	old := "integration-master-key-0123456789-solo" // the CURRENT key is not subject to the minimum (a historical key must stay openable); only the NEW one is
 	sp := filepath.Join(n.stateDir, "relay.state")
 	h0 := rekeyFileHash(t, sp)
 	env := func(k string) []string { return []string{"RSA_MASTER_KEY=" + old, "NEW_RSA_MASTER_KEY=" + k} }

@@ -158,7 +158,7 @@ func startMain(t *testing.T, env map[string]string) *serverProc {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	seedState(t, stateDir, "proc-test-master-key")
+	seedState(t, stateDir, "proc-test-master-key-0123456789abcdef")
 	base := map[string]string{
 		runMainEnv:                "1",
 		"TLS_DISABLE":             "true",
@@ -166,7 +166,7 @@ func startMain(t *testing.T, env map[string]string) *serverProc {
 		"ADMIN_INSECURE_HTTP_ACK": "i-understand-the-risk",
 		"JWT_SECRET_KEY":          "proc-test-secret",
 		"ADMIN_TOKEN":             "proc-test-admin",
-		"RSA_MASTER_KEY":          "proc-test-master-key",
+		"RSA_MASTER_KEY":          "proc-test-master-key-0123456789abcdef",
 		"STATE_DIR":               stateDir,
 		"RELAY_HOOKS_CONFIG":      filepath.Join(dir, "absent-hooks.json"),
 		"PATH":                    os.Getenv("PATH"),
@@ -306,7 +306,7 @@ func TestMainProcess_StateStartupRefusals(t *testing.T) {
 	})
 	t.Run("tampered state", func(t *testing.T) {
 		dir := t.TempDir()
-		seedState(t, dir, "proc-test-master-key")
+		seedState(t, dir, "proc-test-master-key-0123456789abcdef")
 		path := filepath.Join(dir, state.StateFile)
 		b, _ := os.ReadFile(path)
 		if err := os.WriteFile(path, bytes.Replace(b, []byte(`"write_seq":1`), []byte(`"write_seq":9`), 1), 0o600); err != nil {
@@ -443,7 +443,7 @@ func TestStateInitNeedsNoServerSecretsInTheEnvironment(t *testing.T) {
 			"PATH=" + os.Getenv("PATH"),
 			runMainEnv + "=1",
 			"SECAGENT_TEST_ARGS=state init --state-dir " + dir,
-			"RSA_MASTER_KEY=process-test-master-key",
+			"RSA_MASTER_KEY=process-test-master-key-0123456789abcdef",
 		}
 		out, err := cmd.CombinedOutput()
 		return string(out), err
@@ -490,11 +490,11 @@ func TestStateVerifyProcessExitCodes(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		return exitCode(err), string(out)
 	}
-	if code, out := run("process-key", "state", "init", "--state-dir", dir); code != 0 {
+	if code, out := run("process-key-0123456789abcdef0123456789", "state", "init", "--state-dir", dir); code != 0 {
 		t.Fatalf("init: %d\n%s", code, out)
 	}
 	state := filepath.Join(dir, "relay.state")
-	if code, out := run("process-key", "state", "verify", state); code != 0 || !strings.Contains(out, "verdict: OK") {
+	if code, out := run("process-key-0123456789abcdef0123456789", "state", "verify", state); code != 0 || !strings.Contains(out, "verdict: OK") {
 		t.Fatalf("verify: %d\n%s", code, out)
 	}
 	if code, out := run("wrong-key", "state", "verify", state); code != 2 || !strings.Contains(out, "REFUSED") {
@@ -503,11 +503,11 @@ func TestStateVerifyProcessExitCodes(t *testing.T) {
 	if code, _ := run("", "state", "verify", state); code != 6 {
 		t.Fatalf("no key: %d (want 6)", code)
 	}
-	if code, _ := run("process-key", "state", "verify", filepath.Join(dir, "absent")); code != 5 {
+	if code, _ := run("process-key-0123456789abcdef0123456789", "state", "verify", filepath.Join(dir, "absent")); code != 5 {
 		t.Fatalf("absent: %d (want 5)", code)
 	}
 	// restore from itself into the same directory: no lock, authentic source
-	if code, out := run("process-key", "state", "restore", "--from", state, "--state-dir", dir); code != 0 || !strings.Contains(out, "state restored") {
+	if code, out := run("process-key-0123456789abcdef0123456789", "state", "restore", "--from", state, "--state-dir", dir); code != 0 || !strings.Contains(out, "state restored") {
 		t.Fatalf("restore: %d\n%s", code, out)
 	}
 }

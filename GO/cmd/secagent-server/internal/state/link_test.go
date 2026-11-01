@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const linkMaster = "link-test-master-key"
+const linkMaster = "link-test-master-key-0123456789abcdef"
 
 // v1File is a schema_version 1 file as v3.0.3 wrote it: a payload without link_tokens / link_trust.
 func v1File(t testing.TB, c codec, p *Payload, seq uint64) []byte {

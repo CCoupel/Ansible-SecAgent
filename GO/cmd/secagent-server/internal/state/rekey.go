@@ -47,10 +47,6 @@ var (
 	ErrRekeyVerify = errors.New("state rekey: the rewritten state failed its end-to-end verification")
 )
 
-// MinNewMasterKeyBytes is the minimum length of the NEW master key accepted by Rekey. It is not applied to
-// the current key (historical keys may be shorter and must stay openable) nor to `state init`.
-const MinNewMasterKeyBytes = 32
-
 // ValidateNewMasterKey applies the rules on the new key of a rekey: not empty, not shorter than
 // MinNewMasterKeyBytes, different from the current one.
 func ValidateNewMasterKey(oldKey, newKey string) error {

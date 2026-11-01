@@ -14,7 +14,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/state"
 )
 
-const toolsKey = "state-tools-master-key"
+const toolsKey = "state-tools-master-key-0123456789abcdef"
 
 // toolsState builds a real state with two generations in a temporary directory.
 func toolsState(t *testing.T) string {
