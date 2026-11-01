@@ -163,3 +163,33 @@ func TestSecD2_4_AHistoricalShortKeyStaysOpenableByTheToolsAndIsRekeyable(t *tes
 		t.Error("the old short key must no longer open the rekeyed state")
 	}
 }
+
+// M4 (security review): a length check alone accepts a predictable key. Minimum cheap entropy check:
+// at least 12 distinct characters and no repeated pattern; `openssl rand -base64 48` always passes.
+func TestSecD2_M4_APredictableKeyOf32BytesIsRefused(t *testing.T) {
+	for name, key := range map[string]string{
+		"one character repeated":   strings.Repeat("a", 32),
+		"short pattern repeated":   strings.Repeat("abcd", 8),
+		"two characters repeated":  strings.Repeat("ab", 24),
+		"fewer than 12 distinct":   "abcdefghijk" + strings.Repeat("a", 30),
+		"digits sequence repeated": strings.Repeat("0123456789", 4),
+	} {
+		if len(key) < 32 {
+			t.Fatalf("%s: fixture is too short (%d)", name, len(key))
+		}
+		if ValidateMasterKeyLength(key) == nil {
+			t.Errorf("%s: a predictable %d-byte key must be refused at start", name, len(key))
+		}
+		if Init(InitOptions{Dir: t.TempDir(), MasterKey: key, RSABits: 2048}) == nil {
+			t.Errorf("%s: a predictable %d-byte key must be refused by state init", name, len(key))
+		}
+	}
+	for _, key := range []string{
+		"Tq9vXr2LmZk8WcYb4HnJ7sUd1EoGfAp5iBx3NtVw6QyKzRaMlSjCh0e+/=", // random base64, 48 bytes decoded
+		"v304-master-key-of-at-least-32-bytes!!",
+	} {
+		if err := ValidateMasterKeyLength(key); err != nil {
+			t.Errorf("a random-looking key must pass: %v", err)
+		}
+	}
+}

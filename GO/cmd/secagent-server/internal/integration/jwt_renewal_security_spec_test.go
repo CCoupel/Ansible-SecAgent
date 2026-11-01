@@ -66,3 +66,51 @@ func TestSecH3_AReplacedConnectionDoesNotLeaveASecondLoopRunning(t *testing.T) {
 		t.Errorf("the new link received %d frames in %s", got, window)
 	}
 }
+
+// H3 with the revocation close (4001): after the cut, the loop of that connection is gone — no renewal
+// is logged for the host over several periods, and the stored JTI does not move.
+func TestSecH3_The4001RevocationCloseEndsTheLoop(t *testing.T) {
+	parallel(t)
+	n := startNode(t, nodeSpec{ID: "root", Env: renewalEnv(shortTTL, shortInterval)})
+	host := "renew-4001"
+	m := connectMinionWithToken(t, n, host, n.enrollAgent(host))
+	waitRekeys(t, m, 1)
+	if code, _ := n.admin("POST", "/api/admin/revoke/"+host, nil); code != 200 {
+		t.Fatalf("revoke: %d", code)
+	}
+	if code, ended := m.closeCode(10 * time.Second); !ended || code != 4001 {
+		t.Fatalf("expected close 4001, got %d (ended=%v)", code, ended)
+	}
+	time.Sleep(2 * time.Second)
+	frozen, jti := rekeysSentLogged(n, host), agentJTI(n, host)
+	time.Sleep(4 * 2 * time.Second)
+	if got := rekeysSentLogged(n, host); got != frozen {
+		t.Errorf("H3: %d renewal(s) issued after the 4001 close", got-frozen)
+	}
+	if got := agentJTI(n, host); got != jti {
+		t.Errorf("H3: stored JTI moved after the 4001 close (%q → %q)", jti, got)
+	}
+}
+
+// Start-up warning (plan: "aucun jeton d'enrôlement réutilisable actif"): logged when no reusable
+// enrollment token is active, silent once one exists; the token value is never printed.
+func TestSpec217_StartupWarnsWhenNoReusableEnrollmentTokenIsActive(t *testing.T) {
+	parallel(t)
+	n := startNode(t, nodeSpec{ID: "root"})
+	n.logs.expectLog(t, "no reusable enrollment token is active", "a fresh state has no reusable enrollment token: the start must warn")
+
+	code, m := n.admin("POST", "/api/admin/tokens", map[string]any{"role": "enrollment", "reusable": true, "hostname_pattern": ".*", "created_by": "test"})
+	if code != 201 {
+		t.Fatalf("reusable enrollment token: %d %v", code, m)
+	}
+	tok, _ := m["token"].(string)
+	n.restart()
+	before := n.logs.count("no reusable enrollment token is active")
+	time.Sleep(500 * time.Millisecond)
+	if n.logs.count("no reusable enrollment token is active") != before || before != 1 {
+		t.Errorf("with a reusable token active the start must not warn again (warnings: %d, expected the single one of the first start)", n.logs.count("no reusable enrollment token is active"))
+	}
+	if tok != "" && n.logs.has(tok) {
+		t.Error("the enrollment token is in the logs")
+	}
+}
