@@ -14,10 +14,14 @@ RUN go mod download
 
 COPY . .
 
+# Version affichee par `secagent-server --version` : `dev` par defaut (builds locaux et CI), la release passe
+# `--build-arg VERSION=X.Y.Z` (release.yml). Constante par tag : le build reste deterministe.
+ARG VERSION=dev
+
 # Pur Go, sans CGO (l'etat du relay est un fichier, plus de SQLite : v3.0.3).
 # -trimpath et -buildvcs=false : le binaire ne depend ni du chemin de build ni de l'etat git.
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -buildvcs=false -ldflags="-s -w" -o secagent-server ./cmd/secagent-server
+    go build -trimpath -buildvcs=false -ldflags="-s -w -X secagent-server/cmd/secagent-server/internal/cli.Version=${VERSION}" -o secagent-server ./cmd/secagent-server
 
 # ---- Runtime -----------------------------------------------------------------------------------
 FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc

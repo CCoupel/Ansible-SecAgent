@@ -4,7 +4,7 @@
   "org": "CCoupel",
   "project": "Ansible-SecAgent",
   "description": "Système d'exécution de playbooks Ansible sur hôtes distants sans connexion SSH entrante (modèle connexions inversées, agents clients)",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "initialized_at": "2026-05-22T00:00:00Z",
   "initialized_from": "analysis",
   "stack": {

@@ -31,7 +31,7 @@ docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent
 docker compose -p secagent-qualif -f docker-compose.server.yml up -d
 curl -s --cacert tls/tls.crt https://localhost:7770/health
 
-# 3. Jetons (CLI du serveur ; rôles : enrollment | plugin | relay-parent)
+# 3. Jetons (CLI du serveur ; rôles : enrollment | plugin | relay-child | relay-parent)
 docker compose -p secagent-qualif -f docker-compose.server.yml exec \
   -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
   secagent-server-a secagent-server tokens create --role enrollment --expires 1h
@@ -42,7 +42,7 @@ L'agent (`secagent-minion`) se configure par variables d'environnement
 `GET /api/inventory` exige un jeton **plugin**. Voir [DEPLOYMENT/README.md](./DEPLOYMENT/README.md)
 pour un guide complet.
 
-## Structure du Projet v3.0.3
+## Structure du Projet v3.0.4
 
 ```
 ansible-secagent/
@@ -77,6 +77,7 @@ ansible-secagent/
 │   ├── inventory/INVENTORY_SPEC.md  - Specs secagent-inventory
 │   └── project/                     - Guides opérationnels
 │       ├── DEPLOYMENT.md
+│       ├── INSTALL_AGENT.md / INSTALL_SERVER.md / INSTALL_RELAY.md
 │       └── QUICKSTART.md
 │
 ├── README.md                    # Ce fichier
@@ -88,17 +89,18 @@ ansible-secagent/
 | Document | Contenu |
 |----------|---------|
 | **ARCHITECTURE.md** | Spécifications techniques détaillées (protocoles, formats, sécurité) |
-| **DEPLOYMENT.md** | Guide complet de déploiement (server + minions) |
+| **INSTALL_AGENT.md**, **INSTALL_SERVER.md**, **INSTALL_RELAY.md** (`DOC/project/`) | Guides d'installation et de configuration : agent, serveur racine, relays enfants |
+| **DEPLOYMENT.md** | Guide complet de déploiement (server + minions), montées de version, rotations |
 | **HLD.md** | Architecture haut niveau et flux de messages |
 | **CLAUDE.md** | Instructions projet pour Claude Code |
 
 ## Concept
 
-### Flux d'Exécution v3.0.3
+### Flux d'Exécution v3.0.4
 
 ```
 ┌─────────────┐        ┌──────────────┐        ┌──────────────┐
-│   Ansible   │        │  Relay v3.0.3│        │  Relay Agent │
+│   Ansible   │        │  Relay v3.0.4│        │  Relay Agent │
 │  Control    │───────▶│  Server      │◀──────▶│  (Minion)    │
 │  Machine    │        │  (GO, TLS)   │        │  (GO)        │
 └─────────────┘        └──────────────┘        └──────────────┘
@@ -128,7 +130,7 @@ ansible-secagent/
 | **Scaling** | N connexions SSH | 1 WebSocket par agent |
 | **NAT Friendly** | Difficile | Natif (agents derrière NAT) |
 
-## Stack Technique v3.0.3
+## Stack Technique v3.0.4
 
 - **Agent (secagent-minion)** : GO, gorilla/websocket, subprocess, RSA-4096, JWT
 - **Serveur (secagent-server)** : GO, net/http natif, TLS natif, état fichier (STATE_DIR), verrou actif/passif
@@ -159,8 +161,9 @@ Voir [DOC/security/SECURITY.md](./DOC/security/SECURITY.md) pour le modèle comp
 - ✅ **Phase 14** : Stabilité v3.0.2-3.0.3 (event propagation, group vars, topologie dynamique)
   - ✅ v3.0.2 : Événements origin-first, inventory hiérarchique, group vars validés
   - ✅ v3.0.3 : État fichier (retiré NATS), TLS natif, Compose multi-hôtes, verrou HA
+  - ⏳ v3.0.4 : jetons de lien signés par la racine, ancre épinglée, rotation/révocation, `state rekey` (fusionnée, tag non posé)
 
-**Version actuelle : v3.0.3** — GO rewrite 100%, state file HA
+**Dernière version publiée : v3.0.3** — GO rewrite 100%, state file HA. **v3.0.4** (jetons de lien EdDSA signés par la racine, `state rekey`, limites de concurrence) est fusionnée dans `main` mais pas encore publiée : voir `docs/releases/v3.0.4.md`.
 
 ## Contacts & Support
 

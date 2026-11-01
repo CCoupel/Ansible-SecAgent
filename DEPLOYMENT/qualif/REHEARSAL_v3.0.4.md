@@ -34,7 +34,7 @@
 | Minions pendant la fenêtre | restent connectés à leur relay ; tâches vers dmz1 en échec pendant la coupure |
 | Enfant sans ancre (pas de `REPEATER_ROOT_LINK_KEY_FILE`) | refus de tout lien entrant, close 4010 `link_trust_missing`, `[SECURITY WARNING]` |
 | Lien avec ancien jeton HS256 | refus permanent, log explicite |
-| `chain-test.sh link-rotation` | kid change, `previous` ouvert puis retiré, dmz1 confirme avant le retrait, lien reconnecté, smoke OK |
+| `chain-test.sh link-rotation` | kid change, dmz1 confirme, fichier épinglé de l'enfant mis à jour avec la nouvelle clé AVANT `retire-link-previous`, `previous` retiré, l'enfant redémarre et se reconnecte, smoke OK (qualif réelle 2026-10-08 : sans la mise à jour du fichier épinglé, l'enfant ne redémarre plus) |
 | `chain-test.sh link-revoke` | lien fermé en 4010, pas de reconnexion avec le jeton révoqué, rétabli avec un nouveau jeton |
 | Bascule de la racine (`failover`, puis `failover-test.sh run kill`) | nouveau maître avec la même clé (même `kid`), liens rétablis, hooks `host.up` journalisés |
 | `backup-restore` sous v3.0.4 | état v2 restauré, minion déjà enrôlé reconnecté sans ré-enrôlement |

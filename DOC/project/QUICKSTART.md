@@ -1,4 +1,4 @@
-# Ansible-SecAgent — Quick Start v3.0.3
+# Ansible-SecAgent — Quick Start v3.0.4
 
 **Durée estimée** : 15 minutes
 **Prérequis** : Docker 20.10+, Docker Compose 2.0+, openssl, le binaire `secagent-minion` (archive de release), `jq`
@@ -90,7 +90,7 @@ ENR=$(srv tokens create --role enrollment --hostname-pattern 'qualif-host-.*' --
 echo "$ENR"
 ```
 
-> Un jeton n'est affiché qu'**une seule fois**. Rôles possibles : `enrollment`, `plugin`, `relay-parent`
+> Un jeton n'est affiché qu'**une seule fois**. Rôles possibles : `enrollment`, `plugin`, `relay-child`, `relay-parent` (les deux derniers sont des jetons de lien, créés sur la racine seulement)
 > (il n'existe pas de rôle `agent` ou `admin`). Le jeton d'enrôlement est à usage unique sauf `--reusable`.
 
 Démarrer l'agent (binaire `secagent-minion`, sur l'hôte ou dans un conteneur). Il n'a **aucun fichier de
@@ -192,7 +192,7 @@ docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent
 
 ## 📚 Prochaines Étapes
 
-1. **Déployer en production** : voir [DEPLOYMENT/README.md](../../DEPLOYMENT/README.md) et [DEPLOYMENT/prod/README.md](../../DEPLOYMENT/prod/README.md)
+1. **Installer et configurer** : guides [agent](INSTALL_AGENT.md), [serveur racine](INSTALL_SERVER.md) et [relays enfants](INSTALL_RELAY.md). **Déployer en production** : voir [DEPLOYMENT/README.md](../../DEPLOYMENT/README.md) et [DEPLOYMENT/prod/README.md](../../DEPLOYMENT/prod/README.md)
 2. **Écrire des playbooks** : utiliser le plugin de connexion `relay` (voir [PLUGINS_SPEC](../plugins/PLUGINS_SPEC.md))
 3. **Configurer les hooks** : voir [DOC/server/HOOKS_SPEC.md](../server/HOOKS_SPEC.md)
 

@@ -1,0 +1,24 @@
+# Hooks de qualif (#197) : `hooks.json` est livre par un VOLUME NOMME (`secagent_hooks`), jamais par `configs: file:`
+# ni par un bind mount. Hors Swarm, Compose monte les `configs`/`secrets` `file:` en BIND MOUNT du chemin du CLIENT :
+# contre un demon Docker distant le chemin est resolu sur l'hote distant et le conteneur ne se cree pas
+# (« bind source path does not exist », qualif reelle 192.168.1.218). Le volume est alimente par
+# `chain-test.sh push-hooks` (conteneur ephemere, flux tar sur stdin) ; chain-test.sh ajoute toujours ce fichier.
+# Le journal des hooks est ecrit dans /run/secagent/events.log (tmpfs de chaque conteneur).
+x-hooks: &hooks
+  environment:
+    RELAY_HOOKS_CONFIG: /etc/secagent-hooks/hooks.json
+  volumes:
+    - type: volume
+      source: secagent_hooks
+      target: /etc/secagent-hooks
+      read_only: true
+
+services:
+  secagent-server-a: *hooks
+  secagent-server-b: *hooks
+  secagent-child: *hooks
+
+volumes:
+  secagent_hooks:
+    external: true
+    name: ${SECAGENT_HOOKS_VOLUME:-secagent-qualif_hooks}
