@@ -217,39 +217,71 @@ func TestAgentJTICheck_ReplacedJTIIsKeptUntilTheCurrentOneIsUsed(t *testing.T) {
 	}
 }
 
-// N1 (#217): the replaced JTI is accepted only when the agent has no live connection; with one, the
-// handshake is refused and the live connection stays registered.
-func TestAgentJTICheck_ReplacedJTIIsRefusedWhileAConnectionIsLive(t *testing.T) {
+// N1 (#217): without a live connection the replaced JTI is accepted.
+func TestAgentJTICheck_ReplacedJTIIsAcceptedWithoutALiveConnection(t *testing.T) {
 	st := newMemStore(t)
 	ctx := context.Background()
-	if _, err := st.RegisterAgent(ctx, "n1-host", "pem", "j1"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.UpdateTokenJTIUnlessRevoked(ctx, "n1-host", "j2"); err != nil {
-		t.Fatal(err)
-	}
-	check := agentJTICheck(st)
-
-	live := &ws.AgentConnection{Hostname: "n1-host"}
-	ws.RegisterConnection("n1-host", live)
-	err := check("n1-host", "j1", false)
-	if err == nil || !strings.Contains(err.Error(), "token_replaced") {
-		t.Fatalf("the replaced JTI must be refused while a connection is live: %v", err)
-	}
-	if got, gerr := ws.GetConnection("n1-host"); gerr != nil || got != live {
-		t.Fatalf("the live connection must stay registered: %v", gerr)
-	}
-	if err := check("n1-host", "j2", false); err != nil { // the current JTI is always fine
-		t.Fatalf("current JTI: %v", err)
-	}
-	ws.UnregisterConnection("n1-host")
-
-	// no live connection: the agent that never got j2 can come back with j1
 	if _, err := st.RegisterAgent(ctx, "n1-host", "pem", "k1"); err != nil {
 		t.Fatal(err)
 	}
 	_, _ = st.UpdateTokenJTIUnlessRevoked(ctx, "n1-host", "k2")
-	if err := check("n1-host", "k1", true); err != nil {
+	if err := agentJTICheck(st)("n1-host", "k1", true); err != nil {
 		t.Fatalf("without a live connection the replaced JTI is accepted: %v", err)
+	}
+}
+
+// N1 with the probe, through the real handshake: a live connection that answers the ping makes the
+// replaced JTI be refused (401) and stays registered; one that does not answer within the probe delay
+// is dropped and the replaced JTI is accepted.
+func TestWiring_ReplacedJTIProbeDecidesBetweenALiveAndADeadConnection(t *testing.T) {
+	n, _, _, wsAddr := startNode(t, func(c *Config) { c.AgentWSProbeTimeout = time.Second })
+	ctx := context.Background()
+	secret := serverJWTSecret()
+
+	// enroll with j1, then a rekey makes j2 current; the agent connects with j2; a later rekey makes
+	// j3 current and j2 the replaced JTI that a stale holder (or the agent after a cut) presents
+	connect := func(host string) *websocket.Conn {
+		if _, err := n.store.RegisterAgent(ctx, host, "pem", "j1"); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = n.store.UpdateTokenJTIUnlessRevoked(ctx, host, "j2")
+		c, status, err := dialAgentWS(wsAddr, signAgentToken(t, secret, host, "j2"))
+		if err != nil {
+			t.Fatalf("current token must connect: %v (%d)", err, status)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		_, _ = n.store.UpdateTokenJTIUnlessRevoked(ctx, host, "j3")
+		return c
+	}
+
+	// responsive agent: its client keeps reading, so gorilla answers the ping
+	live := connect("n1-live")
+	go func() {
+		for {
+			if _, _, err := live.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+	if c, status, err := dialAgentWS(wsAddr, signAgentToken(t, secret, "n1-live", "j2")); err == nil || status != http.StatusUnauthorized {
+		if c != nil {
+			_ = c.Close()
+		}
+		t.Fatalf("a responsive live connection must make the replaced JTI be refused: status %d err %v", status, err)
+	}
+	if _, gerr := ws.GetConnection("n1-live"); gerr != nil {
+		t.Fatalf("the live connection must stay registered: %v", gerr)
+	}
+
+	// dead agent: its client never reads, so no pong
+	_ = connect("n1-dead") // its client never reads: no pong
+	start := time.Now()
+	c, status, err := dialAgentWS(wsAddr, signAgentToken(t, secret, "n1-dead", "j2"))
+	if err != nil {
+		t.Fatalf("a connection that does not answer the probe must let the replaced JTI in: status %d err %v", status, err)
+	}
+	_ = c.Close()
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("the handshake waited %s for the probe (probe delay 1 s)", d)
 	}
 }

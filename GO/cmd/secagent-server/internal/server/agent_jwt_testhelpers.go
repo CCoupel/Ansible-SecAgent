@@ -9,4 +9,6 @@ import "time"
 func init() {
 	minAgentJWTTTL = 2 * time.Second
 	minAgentJWTInterval = 500 * time.Millisecond
+	minAgentWSPingInterval = 200 * time.Millisecond
+	minAgentWSProbeTimeout = 100 * time.Millisecond
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/handlers"
@@ -170,6 +171,9 @@ func queueUpstream(ch chan<- repeater.Event, ev repeater.Event) {
 	}
 }
 
+// agentProbeTimeout is how long a handshake waits for a live connection to answer the N1 probe.
+var agentProbeTimeout = func() *atomic.Int64 { v := new(atomic.Int64); v.Store(int64(DefaultAgentWSProbeTimeout)); return v }()
+
 // agentJTICheck builds the /ws/agent handshake check (#169, SECURITY.md §4/§5) on top of the
 // store. A token is refused when its JTI is blacklisted (revoked agent), when the agent is
 // unknown, or when its JTI is no longer the agent's current one (replaced by a re-enrollment, a
@@ -210,9 +214,13 @@ func agentJTICheck(store *storage.Store) func(hostname, jti string, usedPrevious
 			// The agent still holds the JWT that was replaced and has not used the new one. That is only
 			// plausible when its connection is gone: while a live connection exists, the holder of the
 			// replaced JWT is not the agent that received the new one, and accepting it would replace the
-			// live connection (N1). The reason is logged, never sent.
+			// live connection (N1). The reason is logged, never sent. A connection that looks alive is
+			// probed first (ping, short delay): one that does not answer is a cut the relay has not
+			// noticed yet, it is dropped and the legitimate agent comes back in.
 			if _, err := ws.GetConnection(hostname); err == nil {
-				return fmt.Errorf("token_replaced: replaced JTI refused while a live connection exists")
+				if ws.ProbeConnection(hostname, time.Duration(agentProbeTimeout.Load())) {
+					return fmt.Errorf("token_replaced: replaced JTI refused while a live connection exists")
+				}
 			}
 		default:
 			return fmt.Errorf("token_replaced")

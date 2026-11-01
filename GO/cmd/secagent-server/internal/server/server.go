@@ -125,6 +125,13 @@ func Build(cfg Config) (node *Node, err error) {
 		return nil, jerr
 	}
 	handlers.ConfigureAgentJWT(agentJWTTTL)
+	wsPing, wsProbe, werr := ResolveAgentWS(cfg.AgentWSPingInterval, cfg.AgentWSProbeTimeout)
+	if werr != nil {
+		return nil, werr
+	}
+	ws.SetAgentKeepalive(wsPing)
+	agentProbeTimeout.Store(int64(wsProbe))
+	log.Printf("[INIT] AGENT_WS_PING_INTERVAL: %s (read deadline %s), AGENT_WS_PROBE_TIMEOUT: %s", wsPing, 2*wsPing, wsProbe)
 	log.Printf("[INIT] AGENT_JWT_TTL: %s, renewed every %s", agentJWTTTL, agentJWTRenew)
 
 	// Load the state file BEFORE anything else: a missing state refuses to start (never created

@@ -31,6 +31,9 @@ type AgentConnection struct {
 	Hostname string
 	Conn     *websocket.Conn
 	mu       sync.RWMutex
+
+	lastAlive atomic.Int64 // UnixNano of the last pong / frame received (keepalive, probe)
+	probe     probeState
 }
 
 // Message represents a message sent over the WebSocket
@@ -525,7 +528,10 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 		go runRenewal(renewCtx, hostname, exp)
 	}
 
+	stopKeepalive := startKeepalive(agentConn)
+
 	defer func() {
+		stopKeepalive()
 		stopRenewal()
 		unregisterIfCurrent(hostname, agentConn)
 		_ = conn.Close()
@@ -540,6 +546,7 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			break
 		}
+		agentConn.extendReadDeadline()
 		HandleMessage(msg, hostname)
 	}
 }

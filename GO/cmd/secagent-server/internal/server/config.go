@@ -68,6 +68,13 @@ type Config struct {
 	AgentJWTTTL           time.Duration
 	AgentJWTRenewInterval time.Duration
 
+	// AgentWSPingInterval is AGENT_WS_PING_INTERVAL (0 = 30 s): the relay pings every agent connection
+	// this often and closes one that sends nothing for twice as long. AgentWSProbeTimeout is
+	// AGENT_WS_PROBE_TIMEOUT (0 = 5 s): how long a handshake carrying the replaced JTI waits for the
+	// live connection of that host to answer a ping (N1). Validated by ResolveAgentWS.
+	AgentWSPingInterval time.Duration
+	AgentWSProbeTimeout time.Duration
+
 	// Listen addresses; empty = the defaults above.
 	APIAddr   string
 	AdminAddr string
@@ -195,6 +202,41 @@ func envDuration(name string) (time.Duration, bool, error) {
 		return 0, true, fmt.Errorf("%s: %q is not a duration (for example 24h, 90m)", name, v)
 	}
 	return d, true, nil
+}
+
+// Environment variables, defaults and bounds of the agent connection keepalive (#217, N1).
+const (
+	EnvAgentWSPingInterval = "AGENT_WS_PING_INTERVAL"
+	EnvAgentWSProbeTimeout = "AGENT_WS_PROBE_TIMEOUT"
+
+	DefaultAgentWSPingInterval = 30 * time.Second
+	DefaultAgentWSProbeTimeout = 5 * time.Second
+	maxAgentWSPingInterval     = 5 * time.Minute
+	maxAgentWSProbeTimeout     = 30 * time.Second
+)
+
+// Minimums: variables only so that a `testhelpers` binary can lower them (agent_jwt_testhelpers.go).
+var (
+	minAgentWSPingInterval = 5 * time.Second
+	minAgentWSProbeTimeout = time.Second
+)
+
+// ResolveAgentWS applies the defaults (ping 30 s, probe 5 s) and validates the pair: ping in
+// [5 s, 5 min], probe in [1 s, 30 s].
+func ResolveAgentWS(ping, probe time.Duration) (time.Duration, time.Duration, error) {
+	if ping == 0 {
+		ping = DefaultAgentWSPingInterval
+	}
+	if probe == 0 {
+		probe = DefaultAgentWSProbeTimeout
+	}
+	if ping < minAgentWSPingInterval || ping > maxAgentWSPingInterval {
+		return 0, 0, fmt.Errorf("%s: %s is out of range (must be between %s and %s)", EnvAgentWSPingInterval, ping, minAgentWSPingInterval, maxAgentWSPingInterval)
+	}
+	if probe < minAgentWSProbeTimeout || probe > maxAgentWSProbeTimeout {
+		return 0, 0, fmt.Errorf("%s: %s is out of range (must be between %s and %s)", EnvAgentWSProbeTimeout, probe, minAgentWSProbeTimeout, maxAgentWSProbeTimeout)
+	}
+	return ping, probe, nil
 }
 
 // Environment variables of the task admission limits (#179).
@@ -325,6 +367,22 @@ func ConfigFromEnv() (Config, error) {
 	}
 	interval, intervalSet, err := envDuration(EnvAgentJWTRenewInterval)
 	if err != nil {
+		return Config{}, err
+	}
+	for _, v := range []struct {
+		name string
+		dst  *time.Duration
+	}{{EnvAgentWSPingInterval, &cfg.AgentWSPingInterval}, {EnvAgentWSProbeTimeout, &cfg.AgentWSProbeTimeout}} {
+		d, set, derr := envDuration(v.name)
+		if derr != nil {
+			return Config{}, derr
+		}
+		if set && d == 0 {
+			return Config{}, fmt.Errorf("%s: an explicit zero duration is refused (unset the variable for the default)", v.name)
+		}
+		*v.dst = d
+	}
+	if _, _, err := ResolveAgentWS(cfg.AgentWSPingInterval, cfg.AgentWSProbeTimeout); err != nil {
 		return Config{}, err
 	}
 	if (ttlSet && ttl == 0) || (intervalSet && interval == 0) {
