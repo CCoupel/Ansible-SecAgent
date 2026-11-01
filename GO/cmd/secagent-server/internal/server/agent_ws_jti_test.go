@@ -234,7 +234,7 @@ func TestAgentJTICheck_ReplacedJTIIsAcceptedWithoutALiveConnection(t *testing.T)
 // replaced JTI be refused (401) and stays registered; one that does not answer within the probe delay
 // is dropped and the replaced JTI is accepted.
 func TestWiring_ReplacedJTIProbeDecidesBetweenALiveAndADeadConnection(t *testing.T) {
-	n, _, _, wsAddr := startNode(t, func(c *Config) { c.AgentWSProbeTimeout = time.Second })
+	n, _, _, wsAddr := startNode(t, func(c *Config) { c.AgentWSProbeTimeout = time.Second; c.AgentWSPingInterval = 5 * time.Second })
 	ctx := context.Background()
 	secret := serverJWTSecret()
 
@@ -275,6 +275,8 @@ func TestWiring_ReplacedJTIProbeDecidesBetweenALiveAndADeadConnection(t *testing
 
 	// dead agent: its client never reads, so no pong
 	_ = connect("n1-dead") // its client never reads: no pong
+	// N2: the probe concludes "dead" only after one ping interval without any sign of life
+	time.Sleep(5200 * time.Millisecond)
 	start := time.Now()
 	c, status, err := dialAgentWS(wsAddr, signAgentToken(t, secret, "n1-dead", "j2"))
 	if err != nil {

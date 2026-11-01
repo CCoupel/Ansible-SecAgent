@@ -33,6 +33,8 @@ type AgentConnection struct {
 	mu       sync.RWMutex
 
 	lastAlive atomic.Int64 // UnixNano of the last pong / frame received (keepalive, probe)
+	sigOnce   sync.Once
+	aliveSig  chan struct{} // see sig()
 	probe     probeState
 }
 

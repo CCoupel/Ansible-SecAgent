@@ -37,8 +37,20 @@ func SetAgentKeepalive(interval time.Duration) {
 	keepalive.Store(&keepaliveParams{interval: interval})
 }
 
+// sig returns the wake-up channel of the probe (created on first use: connections are built by literal).
+func (c *AgentConnection) sig() chan struct{} {
+	c.sigOnce.Do(func() { c.aliveSig = make(chan struct{}, 1) })
+	return c.aliveSig
+}
+
 // markAlive records that the peer of c just sent something (pong or any frame).
-func (c *AgentConnection) markAlive() { c.lastAlive.Store(time.Now().UnixNano()) }
+func (c *AgentConnection) markAlive() {
+	c.lastAlive.Store(time.Now().UnixNano())
+	select { // wake a probe waiting for a sign of life (B12); never blocks
+	case c.sig() <- struct{}{}:
+	default:
+	}
+}
 
 // startKeepalive arms the read deadline and the ping timer of c; the returned function stops them.
 // Without keepalive configuration it does nothing.
@@ -55,18 +67,25 @@ func startKeepalive(c *AgentConnection) (stop func()) {
 		c.markAlive()
 		return conn.SetReadDeadline(time.Now().Add(deadline))
 	})
+	// The callback reads `timer` under tmu and the assignment happens under tmu too, so a callback that
+	// fired before the assignment finished (impossible with a real interval, but not by construction) waits.
+	var tmu sync.Mutex
 	var timer *time.Timer
 	var stopped atomic.Bool
+	tmu.Lock()
 	timer = time.AfterFunc(p.interval, func() {
 		if stopped.Load() {
 			return
 		}
 		_ = conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(p.interval))
+		tmu.Lock()
+		defer tmu.Unlock()
 		if !stopped.Load() {
 			timer.Reset(p.interval)
 		}
 	})
-	return func() { stopped.Store(true); timer.Stop() }
+	tmu.Unlock()
+	return func() { stopped.Store(true); tmu.Lock(); timer.Stop(); tmu.Unlock() }
 }
 
 // extendReadDeadline is called after every frame received: traffic proves the peer is alive.
@@ -77,17 +96,29 @@ func (c *AgentConnection) extendReadDeadline() {
 	}
 }
 
+// MaxConcurrentProbes caps the probes in flight on the whole relay (B11): a probe holds a handshake for
+// up to AGENT_WS_PROBE_TIMEOUT, so an unbounded number would let replayed JWTs pin the accept path.
+// Past the cap a handshake carrying the replaced JTI is refused (401) without probing.
+const MaxConcurrentProbes = 64
+
+var probeSlots = make(chan struct{}, MaxConcurrentProbes)
+
+// lastProbeCapLog rate-limits the "probe cap reached" journal line (once per 10 s).
+var lastProbeCapLog atomic.Int64
+
 type probeState struct {
 	mu     sync.Mutex
 	doneAt time.Time
 	alive  bool
 }
 
-// ProbeConnection checks that the live connection of hostname still answers: it sends a ping and waits
-// at most timeout for any sign of life (pong or frame). A connection that does not answer is closed
-// (its handler then unregisters it) and false is returned. It also returns false when there is no
-// connection. Concurrent probes of the same host share one result (single-flight): the handshake is
-// blocked for at most the probe delay.
+// ProbeConnection decides whether the live connection of hostname is dead (false) or must be kept
+// (true). It concludes "dead" only when BOTH hold (N2): the last sign of life (pong or frame) is at
+// least one ping interval old — at least one ping went unanswered — AND the connection does not answer
+// a probe ping within timeout. In every other case (recent sign of life, probe answered, probe cap
+// reached) it returns true and the connection is kept. A dead connection is closed (its handler then
+// unregisters it). No connection at all returns false. Concurrent probes of the same host share one
+// result (single-flight), so a handshake waits at most the probe delay.
 func ProbeConnection(hostname string, timeout time.Duration) bool {
 	c, err := GetConnection(hostname)
 	if err != nil {
@@ -99,19 +130,41 @@ func ProbeConnection(hostname string, timeout time.Duration) bool {
 	if c.probe.doneAt.After(arrived) { // a probe finished while we waited for the lock: same answer
 		return c.probe.alive
 	}
+	if p := keepalive.Load(); p != nil && time.Since(time.Unix(0, c.lastAlive.Load())) < p.interval {
+		return true // recent sign of life: the connection is fine, no probe
+	}
+	select {
+	case probeSlots <- struct{}{}:
+		defer func() { <-probeSlots }()
+	default:
+		if now := time.Now().UnixNano(); now-lastProbeCapLog.Load() > int64(10*time.Second) {
+			lastProbeCapLog.Store(now)
+			log.Printf("[WARN] agent probe cap reached (%d in flight): replaced-JTI handshakes are refused without probing", MaxConcurrentProbes)
+		}
+		return true
+	}
 	started := time.Now()
+	for len(c.sig()) > 0 { // drop stale signals
+		<-c.sig()
+	}
 	alive := false
 	if err := c.Conn.WriteControl(websocket.PingMessage, nil, started.Add(timeout)); err == nil {
-		tick := time.NewTicker(20 * time.Millisecond)
-		defer tick.Stop()
-		for end := started.Add(timeout); time.Now().Before(end); {
+		end := time.NewTimer(timeout)
+		defer end.Stop()
+		for !alive {
 			if c.lastAlive.Load() >= started.UnixNano() {
 				alive = true
 				break
 			}
-			<-tick.C
+			select {
+			case <-c.sig():
+			case <-end.C:
+				alive = c.lastAlive.Load() >= started.UnixNano()
+				goto done
+			}
 		}
 	}
+done:
 	if !alive {
 		log.Printf("[WARN] agent connection did not answer the probe, dropped: hostname=%q", hostname)
 		_ = c.Conn.Close()
