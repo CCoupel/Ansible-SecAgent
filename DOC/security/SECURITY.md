@@ -260,12 +260,35 @@ Admin                    Server                        Agents connectés
   │                        │ [blacklist JTIs pré-rotation]│
 ```
 
+### Cycle de vie du JWT d'agent et renouvellement (v3.0.5, #217)
+
+Le JWT d'un agent n'est vérifié qu'à l'ouverture de la WebSocket (signature, `exp`, JTI courant, non révoqué). Sans renouvellement, un agent dont la connexion tombe après l'expiration de son JWT (relay redémarré, bascule) serait refusé en 401 et devrait se ré-enrôler avec un jeton d'enrôlement qu'il n'a généralement plus : arrêt en masse de la flotte.
+
+Le relay **renouvelle donc le JWT de chaque agent connecté sur sa WebSocket authentifiée**, par la trame `rekey` existante (`{"type":"rekey","token_encrypted":…}`, JWT chiffré RSA-OAEP avec la clé publique de l'agent, voir `DOC/contracts/WEBSOCKET.md`). Aucune route n'est ajoutée : la surface d'attaque (#192) est inchangée.
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `AGENT_JWT_TTL` | `24h` (était 1 h codé en dur) | durée de vie du JWT d'agent ; maximum 7 jours |
+| `AGENT_JWT_RENEW_INTERVAL` | `TTL/3` | période de renouvellement ; au plus `TTL/2` (deux renouvellements manqués d'affilée avant l'expiration) |
+
+Règles (invariants testés) :
+
+- **Révocation respectée (#193)** : un agent `revoked` ne reçoit jamais de renouvellement (`[SECURITY WARNING]` dans le journal) ; la boucle de sa connexion s'arrête.
+- **JTI avant envoi** : le nouveau JTI est écrit dans l'état **avant** d'envoyer la trame ; état en lecture seule (instance non maître) ⇒ rien n'est envoyé, un avertissement est journalisé, nouvel essai plus tard. L'ancien JTI est « remplacé » : refusé en HTTP 401 à toute reconnexion (corps générique `unauthorized` ; le motif `token_replaced` n'apparaît que dans le journal du relay). Un seul JTI courant par hôte.
+- **Pas de rafale** : une échéance par connexion (dès que `TTL − intervalle` s'est écoulé depuis l'émission) avec une gigue de ±10 % de l'intervalle, pas de balayage global ; au plus une écriture d'état par agent et par période (parc > 3 000 hôtes).
+- **Rotation de `JWT_SECRET_KEY`** : la rotation et le renouvellement passent par la même primitive ; deux `rekey` rapprochés ⇒ le dernier JTI gagne.
+- Jamais le JWT dans les journaux ; le JTI y est tronqué (8 caractères).
+
+Tolérance d'indisponibilité du relay sans ré-enrôlement : `TTL − intervalle` (≈ 16 h par défaut, contre moins d'une heure en v3.0.4). Au-delà, l'agent doit se ré-enrôler : le relay avertit au démarrage (`[WARN] no reusable enrollment token is active`) s'il n'existe aucun jeton d'enrôlement **réutilisable** non expiré. En production, créer un jeton `--reusable --hostname-pattern <regex> --expires 90d` (voir `DOC/project/DEPLOYMENT.md`).
+
 ### Gestion du 401 par les agents hors-ligne
 
 Un agent qui se reconnecte après la deadline avec un ancien JWT reçoit HTTP 401.
 Il déclenche automatiquement un ré-enrollment complet (`POST /api/register` avec `RELAY_ENROLLMENT_TOKEN`) puis se reconnecte. Un code de fermeture ne déclenche jamais de ré-enrôlement. Sans jeton d'enrôlement configuré, ou si le serveur répond `403`, le minion s'arrête avec le code 78.
 
 ### Stockage des secrets
+
+**`RSA_MASTER_KEY` : 32 octets minimum (v3.0.5, #214).** La clé AES-256 des secrets scellés est le SHA-256 de `RSA_MASTER_KEY` (sans sel ni facteur de travail) : sûr pour une clé aléatoire d'au moins 32 octets, faible pour une clé courte et devinable. Une clé plus courte est donc **refusée**, pas seulement signalée : à `state init`, au démarrage du serveur et comme nouvelle clé de `state rekey` (la longueur compte en **octets**). Le message d'erreur donne le remède et ne reproduit jamais la clé. Générer une clé : `openssl rand -base64 48`. La dérivation n'est **pas** modifiée (pas de HKDF, pas de changement de `schema_version`) : un état écrit en v3.0.4 avec une clé d'au moins 32 octets est lu tel quel. Un déploiement existant dont la clé est plus courte doit exécuter `secagent-server state rekey` (nœud arrêté, `NEW_RSA_MASTER_KEY_FILE`) **avant** la montée en v3.0.5 ; la clé *actuelle* de `state rekey` et des outils de lecture (`state verify`) n'est pas soumise au minimum.
 
 Tous les secrets du serveur sont stockés en DB chiffrés (AES-256-GCM) :
 

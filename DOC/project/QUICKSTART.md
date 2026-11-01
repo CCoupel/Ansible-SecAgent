@@ -28,7 +28,8 @@ chmod 0644 tls/tls.key
 # Secrets du serveur (hors dépôt)
 cp qualif.env.example qualif.env
 # Renseigner dans qualif.env : JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY
-#   (chaînes aléatoires, ex. `openssl rand -hex 32` ; RSA_MASTER_KEY est un secret
+#   (chaînes aléatoires, ex. `openssl rand -hex 32` ; RSA_MASTER_KEY : 32 octets minimum, sinon
+#    `state init` et le démarrage sont refusés (`openssl rand -base64 48` convient) ; c'est un secret
 #    dont dérivent l'HMAC de l'état et le chiffrement AES-GCM de ses secrets, pas une clef RSA)
 
 # Image candidate (voir l'en-tête de docker-compose.server.yml) et répertoire TLS
