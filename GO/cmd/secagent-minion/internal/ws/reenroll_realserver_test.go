@@ -73,7 +73,7 @@ func TestReEnrollAgainstARealServer(t *testing.T) {
 	// the relay state, created by the real `secagent-server state init` (RSA-4096 generation: heavy-tailed duration under load)
 	stateDir := filepath.Join(dir, "state")
 	initCmd := exec.Command(bin, "state", "init")
-	initCmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "RSA_MASTER_KEY=realserver-master-key", "STATE_DIR=" + stateDir}
+	initCmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "RSA_MASTER_KEY=Rs7-qK2mXv9LpT4wZc8Bn3Hd6Fj1Yg5A", "STATE_DIR=" + stateDir}
 	if out, err := initCmd.CombinedOutput(); err != nil {
 		t.Fatalf("state init: %v\n%s", err, out)
 	}
@@ -83,7 +83,7 @@ func TestReEnrollAgainstARealServer(t *testing.T) {
 	srv.Env = []string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + dir,
 		"JWT_SECRET_KEY=realserver-jwt-secret", "ADMIN_TOKEN=" + adminToken,
-		"RSA_MASTER_KEY=realserver-master-key", "STATE_DIR=" + stateDir,
+		"RSA_MASTER_KEY=Rs7-qK2mXv9LpT4wZc8Bn3Hd6Fj1Yg5A", "STATE_DIR=" + stateDir,
 		"RELAY_STATUS_FILE=" + filepath.Join(dir, "status.json"), // local health file, outside STATE_DIR
 		"RELAY_HOOKS_CONFIG=" + filepath.Join(dir, "absent-hooks.json"), "TLS_DISABLE=true",
 		"API_ADDR=" + api, "ADMIN_ADDR=" + adminAddr, "WS_ADDR=" + wsAddr,

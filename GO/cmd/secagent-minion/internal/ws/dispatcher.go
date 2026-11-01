@@ -240,6 +240,12 @@ type Dispatcher struct {
 	// rekeyCount compte les JWT renouvelés par rekey depuis le démarrage (journal : jamais le jeton).
 	rekeyCount atomic.Uint64
 
+	// Relance de persistance du JWT (M4 #217) : une seule goroutine à la fois, arrêtée par un
+	// nouveau rekey, la fermeture de la connexion ou l'arrêt du processus.
+	persistMu            sync.Mutex
+	persistCancel        context.CancelFunc
+	persistRetryInterval time.Duration // 0 = persistRetryDefault
+
 	// wsRotor ordonne les adresses WS ; enrollRotor (EnrollConfig.Rotor) celles d'enrôlement. Les
 	// deux listes sont appariées par position : la dernière bonne instance est partagée.
 	wsRotor *endpoints.Rotor
@@ -355,7 +361,7 @@ func (d *Dispatcher) updateJWT(token string) {
 // Ordre : déchiffrement → persistance (token.jwt, 0600) → updateJWT. Si la persistance échoue,
 // le JWT est tout de même adopté en mémoire : le serveur a déjà remplacé le JTI, l'ancien JWT
 // serait refusé en 401 à la reconnexion.
-func (d *Dispatcher) handleRekey(raw []byte) {
+func (d *Dispatcher) handleRekey(ctx context.Context, raw []byte) {
 	var msg RekeyMsg
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		log.Printf("[WS] Bad rekey message: %v", err)
@@ -376,10 +382,70 @@ func (d *Dispatcher) handleRekey(raw []byte) {
 			log.Printf("[SECURITY] rekey: failed to decrypt new token: %v", err)
 			return
 		}
-		log.Printf("[ERROR] rekey: new JWT not persisted (%v) — kept in memory only", pe.Err)
+		log.Printf("[ERROR] rekey: new JWT not persisted (%v) — kept in memory only, retrying", pe.Err)
+		d.updateJWT(newJWT)
+		d.startPersistRetry(ctx)
+		log.Printf("[SECURITY] JWT rotated — new token received (renewal #%d)", d.rekeyCount.Add(1))
+		return
 	}
+	d.stopPersistRetry() // un rekey persisté remplace toute écriture en attente
 	d.updateJWT(newJWT)
 	log.Printf("[SECURITY] JWT rotated — new token received (renewal #%d)", d.rekeyCount.Add(1))
+}
+
+// persistRetryDefault : période de relance de l'écriture de token.jwt après une PersistError.
+const persistRetryDefault = time.Minute
+
+// persistToken écrit le JWT sur disque (injectable pour les tests).
+var persistToken = enrollment.PersistToken
+
+func (d *Dispatcher) stopPersistRetry() {
+	d.persistMu.Lock()
+	defer d.persistMu.Unlock()
+	if d.persistCancel != nil {
+		d.persistCancel()
+		d.persistCancel = nil
+	}
+}
+
+// startPersistRetry relance l'écriture du JWT COURANT (en mémoire) toutes les ~1 min tant que le
+// fichier n'est pas à jour. S'arrête au succès, à un nouveau rekey ou à l'annulation de ctx
+// (fermeture de la connexion / arrêt du processus). Le jeton n'est jamais journalisé.
+func (d *Dispatcher) startPersistRetry(ctx context.Context) {
+	path := d.enrollCfg.JWTPath
+	if path == "" {
+		return
+	}
+	interval := d.persistRetryInterval
+	if interval <= 0 {
+		interval = persistRetryDefault
+	}
+	rctx, cancel := context.WithCancel(ctx)
+	d.persistMu.Lock()
+	if d.persistCancel != nil {
+		d.persistCancel()
+	}
+	d.persistCancel = cancel
+	d.persistMu.Unlock()
+
+	go func() {
+		defer cancel()
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-rctx.Done():
+				return
+			case <-t.C:
+			}
+			if err := persistToken(path, d.currentJWT()); err != nil {
+				log.Printf("[ERROR] rekey: JWT persistence retry failed: %v", err)
+				continue
+			}
+			log.Printf("[SECURITY] rekey: JWT persisted after retry")
+			return
+		}
+	}()
 }
 
 // Run ouvre la connexion WebSocket et entre dans la boucle de lecture.
@@ -620,6 +686,11 @@ func (d *Dispatcher) serve(ctx context.Context, conn *websocket.Conn, host strin
 		}
 	}()
 
+	// ctx propre à la connexion : arrête la relance de persistance à sa fermeture.
+	ctx, cancelConn := context.WithCancel(ctx)
+	defer cancelConn()
+	defer d.stopPersistRetry()
+
 	// Arrêt demandé (SIGTERM → ctx annulé) : fermer la socket débloque la lecture ci-dessous,
 	// sinon un minion connecté ne s'arrêterait qu'à la perte de la connexion.
 	stopWatch := make(chan struct{})
@@ -681,7 +752,7 @@ func (d *Dispatcher) serve(ctx context.Context, conn *websocket.Conn, host strin
 			// Rotation JWT sans interruption de connexion (§22 ARCHITECTURE.md).
 			// Traité en-ligne (pas de goroutine) : le JWT doit être mis à jour
 			// immédiatement avant tout envoi ultérieur.
-			d.handleRekey(raw)
+			d.handleRekey(ctx, raw)
 
 		case "exec":
 			var msg ExecMsg

@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"secagent-server/cmd/secagent-minion/internal/enrollment"
 )
 
 // generateTestKey2048 génère une clef RSA 2048-bit pour les tests (plus rapide que 4096).
@@ -622,7 +624,7 @@ func TestHandleRekeyPersistsBeforeUse(t *testing.T) {
 		return jwt, err
 	}
 
-	d.handleRekey(rekeyFrame(t, key, "renewed-1"))
+	d.handleRekey(context.Background(), rekeyFrame(t, key, "renewed-1"))
 
 	if onDiskAtUse != "renewed-1" {
 		t.Errorf("on-disk JWT before use: got %q", onDiskAtUse)
@@ -652,7 +654,7 @@ func TestHandleRekeyMalformedKeepsJWT(t *testing.T) {
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
-			d.handleRekey(raw)
+			d.handleRekey(context.Background(), raw)
 			if d.currentJWT() != "old-jwt" {
 				t.Errorf("JWT changed: %q", d.currentJWT())
 			}
@@ -671,9 +673,9 @@ func TestHandleRekeyTwoSuccessive(t *testing.T) {
 	path := t.TempDir() + "/token.jwt"
 	d, key := newRekeyDispatcher(t, path)
 
-	d.handleRekey(rekeyFrame(t, key, "renewed-1"))
-	d.handleRekey([]byte("{garbage")) // entre deux : sans effet
-	d.handleRekey(rekeyFrame(t, key, "renewed-2"))
+	d.handleRekey(context.Background(), rekeyFrame(t, key, "renewed-1"))
+	d.handleRekey(context.Background(), []byte("{garbage")) // entre deux : sans effet
+	d.handleRekey(context.Background(), rekeyFrame(t, key, "renewed-2"))
 
 	if d.currentJWT() != "renewed-2" {
 		t.Errorf("current JWT: %q", d.currentJWT())
@@ -695,7 +697,9 @@ func TestHandleRekeyPersistFailureKeptInMemory(t *testing.T) {
 	}
 	d, key := newRekeyDispatcher(t, blocker+"/sub/token.jwt") // parent = fichier : MkdirAll échoue
 
-	d.handleRekey(rekeyFrame(t, key, "renewed-mem"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.handleRekey(ctx, rekeyFrame(t, key, "renewed-mem"))
 
 	if d.currentJWT() != "renewed-mem" {
 		t.Errorf("current JWT: %q", d.currentJWT())
@@ -709,13 +713,111 @@ func TestHandleRekeyNeverLogsToken(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 	d, key := newRekeyDispatcher(t, t.TempDir()+"/token.jwt")
 
-	d.handleRekey(rekeyFrame(t, key, "SECRET-JWT-VALUE"))
-	d.handleRekey([]byte(`{"type":"rekey","token_encrypted":"SECRET-JWT-VALUE"}`))
+	d.handleRekey(context.Background(), rekeyFrame(t, key, "SECRET-JWT-VALUE"))
+	d.handleRekey(context.Background(), []byte(`{"type":"rekey","token_encrypted":"SECRET-JWT-VALUE"}`))
 
 	if strings.Contains(buf.String(), "SECRET-JWT-VALUE") {
 		t.Errorf("JWT leaked in logs: %s", buf.String())
 	}
 	if !strings.Contains(buf.String(), "renewal #1") {
 		t.Errorf("renewal counter missing from logs: %s", buf.String())
+	}
+}
+
+// M4 : échec d'écriture puis succès à la relance ; le JWT COURANT est écrit ; la relance s'arrête.
+func TestHandleRekeyPersistRetryFailThenSuccess(t *testing.T) {
+	path := t.TempDir() + "/token.jwt"
+	d, key := newRekeyDispatcher(t, path)
+	d.persistRetryInterval = 10 * time.Millisecond
+
+	origDec, origPersist := decryptAndSaveToken, persistToken
+	defer func() { decryptAndSaveToken, persistToken = origDec, origPersist }()
+	decryptAndSaveToken = func(enc string, k *rsa.PrivateKey, p string) (string, error) {
+		return "renewed-retry", &enrollment.PersistError{Err: errors.New("disk full")}
+	}
+	var calls atomic.Int32
+	var last atomic.Value
+	persistToken = func(p, jwt string) error {
+		last.Store(jwt)
+		if calls.Add(1) < 3 {
+			return errors.New("still failing")
+		}
+		return origPersist(p, jwt)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.handleRekey(ctx, rekeyFrame(t, key, "ignored"))
+
+	if d.currentJWT() != "renewed-retry" {
+		t.Fatalf("current JWT %q", d.currentJWT())
+	}
+	waitFor(t, "condition", func() bool { b, _ := os.ReadFile(path); return string(b) == "renewed-retry" })
+	if last.Load() != "renewed-retry" {
+		t.Errorf("retry wrote %v", last.Load())
+	}
+	time.Sleep(60 * time.Millisecond) // plus de relance après le succès
+	if n := calls.Load(); n != 3 {
+		t.Errorf("persist calls: %d, want 3", n)
+	}
+}
+
+// M4 : l'annulation du contexte (fermeture de connexion / arrêt) stoppe la relance.
+func TestHandleRekeyPersistRetryStopsOnCancel(t *testing.T) {
+	d, key := newRekeyDispatcher(t, t.TempDir()+"/token.jwt")
+	d.persistRetryInterval = 10 * time.Millisecond
+
+	origDec, origPersist := decryptAndSaveToken, persistToken
+	defer func() { decryptAndSaveToken, persistToken = origDec, origPersist }()
+	decryptAndSaveToken = func(string, *rsa.PrivateKey, string) (string, error) {
+		return "j", &enrollment.PersistError{Err: errors.New("ro")}
+	}
+	var calls atomic.Int32
+	persistToken = func(string, string) error { calls.Add(1); return errors.New("ro") }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d.handleRekey(ctx, rekeyFrame(t, key, "x"))
+	waitFor(t, "condition", func() bool { return calls.Load() >= 2 })
+	cancel()
+	time.Sleep(30 * time.Millisecond)
+	n := calls.Load()
+	time.Sleep(80 * time.Millisecond)
+	if calls.Load() != n {
+		t.Errorf("retry continued after cancel: %d -> %d", n, calls.Load())
+	}
+}
+
+// M4 : un rekey persisté avec succès remplace la relance en attente.
+func TestHandleRekeyNewRekeyStopsPendingRetry(t *testing.T) {
+	path := t.TempDir() + "/token.jwt"
+	d, key := newRekeyDispatcher(t, path)
+	d.persistRetryInterval = 10 * time.Millisecond
+
+	origDec, origPersist := decryptAndSaveToken, persistToken
+	defer func() { decryptAndSaveToken, persistToken = origDec, origPersist }()
+	fail := true
+	decryptAndSaveToken = func(enc string, k *rsa.PrivateKey, p string) (string, error) {
+		if fail {
+			return "first", &enrollment.PersistError{Err: errors.New("ro")}
+		}
+		return defaultDecryptAndSaveToken(enc, k, p)
+	}
+	var calls atomic.Int32
+	persistToken = func(string, string) error { calls.Add(1); return errors.New("ro") }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.handleRekey(ctx, rekeyFrame(t, key, "x"))
+	waitFor(t, "condition", func() bool { return calls.Load() >= 1 })
+	fail = false
+	d.handleRekey(ctx, rekeyFrame(t, key, "second"))
+	time.Sleep(30 * time.Millisecond)
+	n := calls.Load()
+	time.Sleep(80 * time.Millisecond)
+	if calls.Load() != n {
+		t.Errorf("stale retry still running")
+	}
+	if b, _ := os.ReadFile(path); string(b) != "second" {
+		t.Errorf("file %q", b)
 	}
 }
