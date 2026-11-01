@@ -12,7 +12,7 @@ Tu déploies les composants sur le serveur de qualification via Docker Compose.
 - Fichiers Compose (il n'existe PAS de `docker-compose.yml` ni de `docker-compose.qualif.yml`) :
   - `DEPLOYMENT/qualif/docker-compose.server.yml` : racine actif/passif, 2 instances `secagent-server-a` et `secagent-server-b` sur UN volume d'état partagé `secagent_state` (ports d'hôte du service b décalés : 8770/8771/8772) ;
   - `DEPLOYMENT/qualif/docker-compose.chain.yml` : chaîne de relais (#188), inclut le fichier ci-dessus et ajoute `secagent-child` (relay enfant pull), `minion-root`, `minion-child`.
-- Projet compose : `-p secagent-qualif` (serveur seul) ; la chaîne utilise `PROJECT` de `chain-test.sh` (défaut `secagent-chain`).
+- Projet compose : `-p secagent-qualif` (serveur seul) ; la chaîne utilise `PROJECT` de `chain-test.sh` (défaut `secagent-qualif`).
 - Secrets : `DEPLOYMENT/qualif/qualif.env` (copie de `qualif.env.example` : `JWT_SECRET_KEY`, `ADMIN_TOKEN`, `RSA_MASTER_KEY` ; secrets de QUALIF, jamais ceux de PROD, ignoré par git).
 
 ## Références
