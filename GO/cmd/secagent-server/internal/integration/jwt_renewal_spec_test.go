@@ -116,6 +116,19 @@ func dialAgent(t *testing.T, n *node, tok string) (conn *websocket.Conn, status 
 	return nil, resp.StatusCode, string(b)
 }
 
+// replacedRefusals counts the journal lines saying that a connection of host was refused because its
+// token was replaced: the 401 body is a bare {"error":"unauthorized"} (the reason is not revealed to the
+// client, only logged — SECURITY.md).
+func replacedRefusals(n *node, host string) int {
+	c := 0
+	for _, l := range strings.Split(plain(n.logs.String()), "\n") {
+		if strings.Contains(l, "agent connection refused: hostname="+host) && strings.Contains(l, "token_replaced") {
+			c++
+		}
+	}
+	return c
+}
+
 func agentJTI(n *node, host string) string {
 	s, _ := n.stateSection("agents")[host]["token_jti"].(string)
 	return s
@@ -178,16 +191,22 @@ func TestSpec217_I2_AReplacedJTIIsRefusedWith401TokenReplaced(t *testing.T) {
 	waitRekeys(t, m, 2)
 	jwts := rekeyJWTs(t, m)
 
+	refused := 0
 	for name, tok := range map[string]string{"the enrollment JWT": original, "the first renewed JWT": jwts[0]} {
 		conn, code, body := dialAgent(t, n, tok)
 		if conn != nil {
 			_ = conn.Close()
 			t.Fatalf("%s is replaced: it must be refused, got 101", name)
 		}
-		if code != http.StatusUnauthorized || !strings.Contains(body, "token_replaced") {
-			t.Errorf("%s: %d %q, want 401 token_replaced", name, code, body)
+		refused++
+		if code != http.StatusUnauthorized {
+			t.Errorf("%s: %d, want 401", name, code)
+		}
+		if strings.Contains(body, "token_replaced") {
+			t.Errorf("%s: the 401 body must not reveal the reason: %q", name, body)
 		}
 	}
+	waitFor(t, "the refusals are journalized as token_replaced", func() bool { return replacedRefusals(n, host) >= refused })
 	if _, ended := m.closeCode(100 * time.Millisecond); ended {
 		t.Error("refusing an old token must not cut the live link")
 	}
@@ -228,12 +247,12 @@ func TestSpec217_I3_RealMinionReconnectsAfterRelayRestartBeyondTTLWithoutEnrollm
 		}
 	}
 	// stay connected beyond the lifetime of the ENROLLMENT JWT
-	if rest := ttl + 2*time.Second - time.Since(start); rest > 0 {
-		time.Sleep(rest)
+	// stay connected until the ENROLLMENT JWT is really dead (its own exp, plus a margin for the clock
+	// granularity of exp in seconds and the load of the machine)
+	for exp := expOf(claimsOf(t, tokens[0])); time.Now().Unix() <= exp+3; {
+		time.Sleep(200 * time.Millisecond)
 	}
-	if exp := expOf(claimsOf(t, tokens[0])); time.Now().Unix() <= exp {
-		t.Fatalf("test precondition: the enrollment JWT must have expired (exp %d, now %d)", exp, time.Now().Unix())
-	}
+	_ = start
 
 	n.restart()
 	m.waitConnections(2, "the minion reconnected to the restarted relay")
@@ -257,7 +276,7 @@ func TestSpec217_I3_LatestRenewedJWTIsAcceptedAfterRestartButTheExpiredOneIsNot(
 	original := n.enrollAgent(host)
 	m := connectMinionWithToken(t, n, host, original)
 	waitRekeys(t, m, 2)
-	for time.Now().Unix() <= expOf(claimsOf(t, original)) {
+	for time.Now().Unix() <= expOf(claimsOf(t, original))+2 {
 		time.Sleep(200 * time.Millisecond)
 	}
 	waitRekeys(t, m, 3) // still renewing after the first token's death
@@ -339,11 +358,15 @@ func TestSpec217_I7_RotationAndRenewalDoNotConflictLastJTIWins(t *testing.T) {
 			seen[j] = true
 		}
 	}
-	if conn, code, body := dialAgent(t, n, rotation); conn != nil || code != http.StatusUnauthorized || !strings.Contains(body, "token_replaced") {
-		if conn != nil {
-			_ = conn.Close()
-		}
-		t.Errorf("the token the rotation issued was replaced by a later renewal: %d %q, want 401 token_replaced", code, body)
+	before401 := replacedRefusals(n, host)
+	conn, code, _ := dialAgent(t, n, rotation)
+	if conn != nil {
+		_ = conn.Close()
+		t.Errorf("the token the rotation issued was replaced by a later renewal: it must be refused")
+	} else if code != http.StatusUnauthorized {
+		t.Errorf("replaced rotation token: %d, want 401", code)
+	} else {
+		waitFor(t, "the refusal is journalized as token_replaced", func() bool { return replacedRefusals(n, host) > before401 })
 	}
 	// the latest frame wins (retry: a renewal may replace it between the read and the dial)
 	waitFor(t, "the latest issued JWT reconnects", func() bool {

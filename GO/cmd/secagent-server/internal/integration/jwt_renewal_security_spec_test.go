@@ -99,7 +99,7 @@ func TestSpec217_StartupWarnsWhenNoReusableEnrollmentTokenIsActive(t *testing.T)
 	n := startNode(t, nodeSpec{ID: "root"})
 	n.logs.expectLog(t, "no reusable enrollment token is active", "a fresh state has no reusable enrollment token: the start must warn")
 
-	code, m := n.admin("POST", "/api/admin/tokens", map[string]any{"role": "enrollment", "reusable": true, "hostname_pattern": ".*", "created_by": "test"})
+	code, m := n.admin("POST", "/api/admin/tokens", map[string]any{"role": "enrollment", "reusable": 1, "hostname_pattern": ".*", "created_by": "test"})
 	if code != 201 {
 		t.Fatalf("reusable enrollment token: %d %v", code, m)
 	}
