@@ -881,7 +881,5 @@ func TestPersistRetryResumesAfterReconnect(t *testing.T) {
 	go func() { _ = d.Run(ctx2) }()
 
 	waitFor(t, "write after reconnect", func() bool { b, _ := os.ReadFile(path); return string(b) == "renewed-b9" })
-	if d.persistPending.Load() {
-		t.Error("pending flag not cleared after successful write")
-	}
+	waitFor(t, "pending flag cleared after the write", func() bool { return !d.persistPending.Load() })
 }
