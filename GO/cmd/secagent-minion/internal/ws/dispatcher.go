@@ -26,6 +26,7 @@ import (
 	"log"
 	"log/slog"
 	"math"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -249,6 +250,11 @@ type Dispatcher struct {
 	// la connexion : la relance reprend à la reconnexion (B9).
 	persistPending atomic.Bool
 
+	// unauthRetryMax : réessais sur 401 avant ré-enrôlement (0 = défaut 3, < 0 = aucun).
+	// unauthRetryBase : délai du premier réessai (0 = 12 s).
+	unauthRetryMax  int
+	unauthRetryBase time.Duration
+
 	// wsRotor ordonne les adresses WS ; enrollRotor (EnrollConfig.Rotor) celles d'enrôlement. Les
 	// deux listes sont appariées par position : la dernière bonne instance est partagée.
 	wsRotor *endpoints.Rotor
@@ -306,6 +312,28 @@ func sleepCtx(ctx context.Context, delay time.Duration) error {
 // ConsecutiveAuthFailuresAlert est le nombre de cycles consécutifs sans connexion réussie à
 // partir duquel le minion journalise une erreur explicite (il continue d'essayer, avec backoff).
 const ConsecutiveAuthFailuresAlert = 5
+
+// Réessais sur 401 au handshake, JWT conservé, avant d'effacer token.jwt et de se ré-enrôler.
+// Un relais juge parfois encore vivante l'ancienne connexion de l'agent (JTI précédent refusé le
+// temps de la sonde / du pong) : le refus est alors transitoire. Durée totale par défaut
+// 12 + 24 + 48 s = 84 s (±20 % de jitter, donc ≥ 67 s), au-delà de la sonde du relais (~5 s) et du
+// délai de pong (~60 s). Borné : un agent révoqué (le relais répond le même 401 masqué) ne boucle
+// pas, il revient au comportement historique après unauthRetryMax réessais.
+const (
+	unauthRetryBaseDefault = 12 * time.Second
+	unauthRetryJitter      = 0.2
+)
+
+// unauthRetryMaxDefault : variable (et non constante) pour que les tests historiques, qui attendent
+// un ré-enrôlement immédiat, désactivent les réessais (valeur < 0) ; la production garde 3.
+var unauthRetryMaxDefault = 3
+
+// unauthRetryDelay donne le délai avant le réessai n (1 = premier) : base×2^(n-1), jitter ±20 %.
+func unauthRetryDelay(base time.Duration, n int) time.Duration {
+	d := float64(base) * math.Pow(2, float64(n-1))
+	d *= 1 + unauthRetryJitter*(2*rand.Float64()-1)
+	return time.Duration(d)
+}
 
 // NewDispatcher crée un Dispatcher avec le handler fourni.
 // maxConcurrent = 0 → utilise MaxConcurrentTasks (constante, défaut 10).
@@ -483,6 +511,15 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		wait = sleepCtx
 	}
 	authFailures := 0 // cycles consécutifs sans connexion WS réussie, côté authentification
+	retries401 := 0   // 401 consécutifs réessayés avec le même JWT
+	freshJWT := false // JWT obtenu par un ré-enrôlement et pas encore accepté : pas de réessai
+	maxRetries401, retryBase := d.unauthRetryMax, d.unauthRetryBase
+	if maxRetries401 == 0 {
+		maxRetries401 = unauthRetryMaxDefault
+	}
+	if retryBase <= 0 {
+		retryBase = unauthRetryBaseDefault
+	}
 
 	for {
 		d.connected.Store(false)
@@ -493,6 +530,8 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		}
 		if d.connected.Load() {
 			authFailures = 0 // le WS a fonctionné : on repart de zéro
+			retries401 = 0
+			freshJWT = false
 		}
 
 		// Vérification révocation (code WS 4001)
@@ -503,6 +542,19 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 
 		// Gestion du 401 : ré-enrôlement automatique
 		if isHTTP401(err) {
+			// 401 possiblement transitoire (ancienne connexion encore jugée vivante par le relais) :
+			// réessais bornés avec le MÊME JWT, backoff exponentiel + jitter. Pas de lecture du corps
+			// (motif masqué), pas de distinction révocation/remplacement : la borne suffit.
+			if !freshJWT && retries401 < maxRetries401 {
+				retries401++
+				delay := unauthRetryDelay(retryBase, retries401)
+				log.Printf("[WS] Handshake rejected (401) — keeping the JWT, retry %d/%d in %s", retries401, maxRetries401, delay.Round(time.Second))
+				if werr := wait(ctx, delay); werr != nil {
+					return werr
+				}
+				continue
+			}
+			retries401 = 0
 			authFailures++
 			if authFailures >= ConsecutiveAuthFailuresAlert {
 				log.Printf("[ERROR] %d consecutive authentication cycles without a working WebSocket (JWT refused after re-enrollment) — still retrying with backoff; check the server and the minion enrollment", authFailures)
@@ -524,6 +576,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 				continue
 			}
 			d.updateJWT(newJWT)
+			freshJWT = true
 			log.Printf("[SECURITY] Re-enrollment after JWT rejection (401) — reconnecting")
 			// pas de reconnect.Reset() ici : seul un handshake WS réussi remet le backoff à zéro
 			if delay := reconnect.Cycle(); delay > 0 {
@@ -725,10 +778,15 @@ func (d *Dispatcher) serve(ctx context.Context, conn *websocket.Conn, host strin
 		log.Printf("[WS] Pong received")
 		return nil
 	})
+	// Comme le handler par défaut de gorilla : WriteControl est sûr à côté d'un écrivain concurrent
+	// et ne bloque pas la boucle de lecture derrière une grosse écriture (pas de sendMu).
 	conn.SetPingHandler(func(appData string) error {
-		sendMu.Lock()
-		defer sendMu.Unlock()
-		return conn.WriteMessage(websocket.PongMessage, []byte(appData))
+		err := conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(time.Second))
+		var ne net.Error
+		if errors.Is(err, websocket.ErrCloseSent) || (errors.As(err, &ne) && ne.Timeout()) {
+			return nil
+		}
+		return err
 	})
 
 	send := func(payload any) error {
