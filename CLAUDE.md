@@ -118,7 +118,7 @@ Séquence correcte :
 
 ## Agents Disponibles
 
-Équipe spécialisée du projet (9 agents permanents + team-lead/CDP fusionné) :
+Équipe spécialisée du projet (9 agents permanents + 1 ponctuel + team-lead/CDP fusionné) :
 
 | Nom | Rôle | Fichier | Spawn |
 |-----|------|---------|-------|
@@ -131,6 +131,7 @@ Séquence correcte :
 | `qa` | Exécution des tests, verdict GO/NOGO | `.claude/agents/qa.template.md` | permanent |
 | `security-reviewer` | Audit sécurité (TLS, JWT, become_pass, enrollment) | `.claude/agents/security-reviewer.md` | permanent |
 | `deployer` | BUILD / PUBLISH / DEPLOY QUALIF (Docker Compose 192.168.1.218) et PROD (Docker Compose, même hôte) | `.claude/agents/deploy.template.md` + compagnons `environments/deploy.{qualif,prod}.md` | permanent |
+| `marketing` | Communication de release (release notes, posts, site `gh-pages`) | `.claude/agents/marketing-release.template.md` | ponctuel |
 
 > **Convention template/compagnon** : `xxx.template.md` = template synchronisé (gitignoré, jamais édité) ;
 > `xxx.md` = compagnon projet tracké (périmètre, specs, règles propres à Ansible-SecAgent), à lire après le
@@ -138,10 +139,11 @@ Séquence correcte :
 > une définition projet autonome (pas de template équivalent).
 
 > **permanent** = spawné au `/start-session`, reste en IDLE toute la session.
+> **ponctuel** = spawné à la demande par sa commande ou sa phase (`marketing` : GATE 4d / `/marketing`), puis arrêté (`TaskStop`).
 
 Agents génériques additionnels livrés par le template (disponibles, **pas encore intégrés** au
 workflow `/start-session` ni au cycle CDP décrit ci-dessus — à activer manuellement si besoin) :
-`code-reviewer`, `doc-updater`, `infra`, `security`, `pr-reviewer`, `marketing-release`.
+`code-reviewer`, `doc-updater`, `infra`, `security`, `pr-reviewer`.
 
 <!-- BEGIN TEAMLEADER_PROTOCOL — maintenu par le template, ne pas modifier manuellement -->
 
@@ -172,7 +174,8 @@ Tu **coordonnes et dispatches**. Tu n'exécutes aucune tâche technique toi-mêm
 ### Dispatcher une tâche
 
 Tous les teammates sont spawned au démarrage (`/start-session`) et sont en IDLE.
-**Pendant la session : uniquement `SendMessage` — jamais de spawn.**
+**Pendant la session : uniquement `SendMessage` — jamais de spawn**, sauf les agents `ponctuel` de la table
+(`security`, `infra`, `marketing`…) : spawnés à la demande par leur commande ou leur phase, puis arrêtés (`TaskStop`).
 
 ```
 SendMessage({ to: "<nom-canonique>", content: "<tâche complète>" })
