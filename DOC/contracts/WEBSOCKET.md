@@ -122,6 +122,12 @@ L'agent envoie `SIGTERM` au subprocess associé au `task_id`. Le mapping `task_i
 
 ---
 
+### Keepalive de `/ws/agent` (v3.0.5)
+
+Le relais envoie un **ping WebSocket** à chaque agent connecté toutes les `AGENT_WS_PING_INTERVAL` (défaut `30s`, entre 5 s et 5 min) et ferme la connexion (puis la désenregistre : `host.down`, tâches en cours en erreur `agent_disconnected`) si **rien** n'arrive (ni pong, ni trame) pendant `2 × AGENT_WS_PING_INTERVAL`. Un agent qui lit sa socket répond par un pong automatiquement (gorilla, côté minion : aucun changement requis, à condition que sa boucle de lecture ne reste pas bloquée). Avant v3.0.5 le relais n'avait ni ping ni délai (coupure franche détectée par le keepalive TCP, ~150 s).
+
+**Sonde (N1)** : une reconnexion qui présente le JWT *précédent* (JTI remplacé, voir `rekey`) alors qu'une connexion paraît vivante pour l'hôte déclenche un ping de sonde ; sans réponse sous `AGENT_WS_PROBE_TIMEOUT` (défaut `5s`, entre 1 s et 30 s) l'ancienne connexion est fermée et la reconnexion est acceptée ; si elle répond, la reconnexion reçoit un 401. Une sonde à la fois par hôte ; le handshake attend au plus ce délai.
+
 ### `rekey` — Nouveau JWT pour l'agent
 
 ```json

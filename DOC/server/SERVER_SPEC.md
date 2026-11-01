@@ -279,6 +279,8 @@ secagent-server state init|verify <fichier>|restore --from <fichier>   # voir ST
 | `JWT_SECRET_KEY` | ✅ | Secret HMAC-HS256 pour signer les JWT agents |
 | `ADMIN_TOKEN` | ✅ | Token admin (port 7771) |
 | `AGENT_JWT_TTL` | — | Durée de vie du JWT des agents (durée Go : `24h`, `90m`…). Défaut **`24h`** (1 h codé en dur avant v3.0.5) ; entre 5 min et 7 jours ; valeur invalide, `0` ou hors bornes : démarrage refusé (#217) |
+| `AGENT_WS_PING_INTERVAL` | — | Période du ping WebSocket vers chaque agent (défaut `30s`, entre 5 s et 5 min) ; une connexion silencieuse pendant 2× cette durée est fermée (#217, N1). Zéro ou valeur mal formée : démarrage refusé |
+| `AGENT_WS_PROBE_TIMEOUT` | — | Délai de la sonde N1 : réponse attendue de la connexion vivante quand le JWT précédent arrive (défaut `5s`, entre 1 s et 30 s) |
 | `AGENT_JWT_RENEW_INTERVAL` | — | Période de renouvellement du JWT de chaque agent connecté, par la trame `rekey` sur sa WebSocket (gigue ±10 %). Défaut `AGENT_JWT_TTL`/3 ; entre 1 min et `AGENT_JWT_TTL`/2 (#217, `SECURITY.md` §5) |
 | `NATS_URL` | — | **Obsolète (#178)** : NATS est retiré ; si la variable est définie, un `[WARN]` est journalisé et elle est ignorée |
 | `STATE_DIR` | — | Répertoire du fichier d'état `relay.state` (défaut `/data`), créé par `secagent-server state init` — voir `STATE_SPEC.md` (#160) |
