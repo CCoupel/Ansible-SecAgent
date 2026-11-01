@@ -176,3 +176,31 @@ func TestSecH2_TheRetryAfterAFailedSendDeliversTheCurrentJTI(t *testing.T) {
 		t.Fatalf("the delivered JTI %v must be the current one, stored %+v", claims["jti"], a)
 	}
 }
+
+// B6: a non-positive lifetime is an explicit error, never a silent fallback to 24 h (a configuration bug
+// would otherwise issue tokens of a lifetime nobody chose).
+func TestSecB6_SignAgentJWTRefusesANonPositiveLifetime(t *testing.T) {
+	for _, ttl := range []time.Duration{0, -time.Second, -24 * time.Hour} {
+		if raw, jti, err := signAgentJWT("b6-host", "secret", ttl); err == nil || raw != "" || jti != "" {
+			t.Errorf("ttl %s: got (%q, %q, %v), want an error and no token", ttl, raw, jti, err)
+		}
+	}
+	if raw, jti, err := signAgentJWT("b6-host", "secret", time.Minute); err != nil || raw == "" || jti == "" {
+		t.Errorf("a positive lifetime must work: %v", err)
+	}
+}
+
+// B6 end to end: the issuing path writes nothing and sends nothing when the lifetime is invalid.
+func TestSecB6_NothingIsIssuedNorWrittenWithANonPositiveLifetime(t *testing.T) {
+	r := newRenewalRig(t, "b6-issue-host")
+	secret, _, _ := GetServerJWTSecrets()
+	if sendRekeyToAgent(context.Background(), r.host, secret, 0) || sendRekeyToAgent(context.Background(), r.host, secret, -time.Hour) {
+		t.Fatal("a non-positive lifetime must not issue a token")
+	}
+	if len(r.sent) != 0 {
+		t.Errorf("%d frame(s) sent", len(r.sent))
+	}
+	if a, _ := registerStore.GetAgent(context.Background(), r.host); a == nil || a.TokenJTI != "jti-initial-"+r.host {
+		t.Errorf("the stored JTI must be untouched: %+v", a)
+	}
+}

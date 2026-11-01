@@ -732,3 +732,32 @@ func TestSha256Hex_Deterministic(t *testing.T) {
 		t.Error("different inputs should produce different hashes")
 	}
 }
+
+// M5 (#217): the rotation grace never exceeds the agent JWT lifetime; an explicit longer value is refused.
+func TestAdminRotateKeys_GraceIsBoundedByTheAgentJWTTTL(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+	server.mu.Lock()
+	prev := server.JWTttl
+	server.JWTttl = 2 * time.Hour
+	server.mu.Unlock()
+	defer func() { server.mu.Lock(); server.JWTttl = prev; server.mu.Unlock() }()
+
+	w := httptest.NewRecorder()
+	AdminRotateKeys(w, adminReq("POST", "/api/admin/keys/rotate", map[string]string{"grace": "3h"}))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "grace_exceeds_agent_jwt_ttl") {
+		t.Fatalf("a grace above the JWT TTL must be refused: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// B6: an unusable lifetime is an error, never a silent default.
+func TestSignAgentJWT_RefusesANonPositiveTTL(t *testing.T) {
+	for _, ttl := range []time.Duration{0, -time.Hour} {
+		if _, _, err := signAgentJWT("h", "secret", ttl); err == nil {
+			t.Errorf("ttl %s must be refused", ttl)
+		}
+	}
+	if _, _, err := signAgentJWT("h", "secret", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+}

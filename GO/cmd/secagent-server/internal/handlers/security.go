@@ -52,13 +52,26 @@ func AdminRotateKeys(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse optional grace period (body optional — ignore decode errors)
+	// The grace period never outlives an agent JWT: an old-secret token is only useful until it expires,
+	// so a longer grace would only widen the replay window (M5, #217). Default: the JWT lifetime
+	// (24 h unless AGENT_JWT_TTL is lower); an explicit longer value is refused, not truncated.
+	server.mu.RLock()
+	maxGrace := effectiveJWTTTL(server.JWTttl)
+	server.mu.RUnlock()
 	graceDuration := 24 * time.Hour
+	if graceDuration > maxGrace {
+		graceDuration = maxGrace
+	}
 	var req RotateKeysRequest
 	if r.Body != nil && r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.Grace != "" {
 			d, err := time.ParseDuration(req.Grace)
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grace_duration"})
+				return
+			}
+			if d > maxGrace {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "grace_exceeds_agent_jwt_ttl"})
 				return
 			}
 			graceDuration = d
@@ -208,7 +221,7 @@ func issueRekey(ctx context.Context, hostname, jwtSecret string, jwtTTL time.Dur
 		log.Printf("sendRekeyToAgent: signAgentJWT %q: %v", hostname, err)
 		return time.Time{}, errRekeyNotSent
 	}
-	exp := time.Now().Add(effectiveJWTTTL(jwtTTL))
+	exp := time.Now().Add(jwtTTL)
 
 	// Encrypt JWT with agent's RSA public key (RSAES-OAEP SHA-256)
 	tokenEncrypted, err := encryptWithPublicKey(rawJWT, agent.PublicKeyPEM)
@@ -270,7 +283,9 @@ func effectiveJWTTTL(ttl time.Duration) time.Duration {
 
 // signAgentJWT signs a fresh agent JWT and returns (rawJWT, jti, error).
 func signAgentJWT(hostname, jwtSecret string, ttl time.Duration) (string, string, error) {
-	ttl = effectiveJWTTTL(ttl)
+	if ttl <= 0 {
+		return "", "", fmt.Errorf("agent JWT lifetime must be positive, got %s", ttl)
+	}
 	jti := uuid.New().String()
 	now := time.Now()
 	claims := jwt.MapClaims{

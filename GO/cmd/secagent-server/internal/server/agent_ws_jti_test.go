@@ -92,8 +92,9 @@ func TestWiring_AgentReplacedTokenIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := signAgentToken(t, serverJWTSecret(), "host-r", "jti-old")
-	// re-enrollment / refresh / rekey replace the current JTI
-	if _, err := n.store.UpdateTokenJTI(ctx, "host-r", "jti-new"); err != nil {
+	// a re-enrollment replaces the current JTI and forgets the old one (a rekey keeps it until the new
+	// one is used: TestAgentJTICheck_ReplacedJTIIsKeptUntilTheCurrentOneIsUsed)
+	if _, err := n.store.RegisterAgent(ctx, "host-r", "pem", "jti-new"); err != nil {
 		t.Fatal(err)
 	}
 	if _, status, err := dialAgentWS(wsAddr, old); err == nil || status != http.StatusUnauthorized {
@@ -146,7 +147,7 @@ func TestAgentJTICheck_Matrix(t *testing.T) {
 		{"blacklisted", "h", "bad", false, "token_revoked"},
 		{"blacklisted even in grace period", "h", "bad", true, "token_revoked"},
 		{"replaced token", "h", "older", false, "token_replaced"},
-		{"older token during rotation grace period is accepted", "h", "older", true, ""},
+		{"older token signed with the previous secret is refused too (M1)", "h", "older", true, "token_replaced"},
 		{"unknown agent", "nobody", "cur", false, "unknown_agent"},
 	}
 	for _, tc := range cases {
@@ -166,5 +167,51 @@ func TestAgentJTICheck_Matrix(t *testing.T) {
 	_ = closed.Close()
 	if err := agentJTICheck(closed)("h", "cur", false); err == nil {
 		t.Error("a store failure must refuse the connection")
+	}
+}
+
+// M1/M2 (#217): the JTI replaced by a rekey stays valid only until the current one serves a handshake.
+func TestAgentJTICheck_ReplacedJTIIsKeptUntilTheCurrentOneIsUsed(t *testing.T) {
+	st := newMemStore(t)
+	ctx := context.Background()
+	if _, err := st.RegisterAgent(ctx, "h", "pem", "j1"); err != nil {
+		t.Fatal(err)
+	}
+	check := agentJTICheck(st)
+	if _, err := st.UpdateTokenJTIUnlessRevoked(ctx, "h", "j2"); err != nil { // renewal: j1 -> prev
+		t.Fatal(err)
+	}
+	for _, usedPrev := range []bool{false, true} { // whichever secret signed it
+		if err := check("h", "j1", usedPrev); err != nil {
+			t.Fatalf("the replaced JTI must be accepted while j2 was never used (usedPrevious=%v): %v", usedPrev, err)
+		}
+	}
+	if err := check("h", "j2", false); err != nil { // first handshake with the current JTI
+		t.Fatal(err)
+	}
+	for _, usedPrev := range []bool{false, true} {
+		if err := check("h", "j1", usedPrev); err == nil || !strings.Contains(err.Error(), "token_replaced") {
+			t.Fatalf("j1 must be refused once j2 was used (usedPrevious=%v): %v", usedPrev, err)
+		}
+	}
+	a, _ := st.GetAgent(ctx, "h")
+	if a.PrevTokenJTI != "" || a.TokenJTI != "j2" {
+		t.Fatalf("state after confirmation: %+v", a)
+	}
+	// two renewals without a handshake: only the JTI right before the current one is kept
+	_, _ = st.UpdateTokenJTIUnlessRevoked(ctx, "h", "j3")
+	_, _ = st.UpdateTokenJTIUnlessRevoked(ctx, "h", "j4")
+	if err := check("h", "j2", false); err == nil {
+		t.Error("a JTI two generations old must be refused")
+	}
+	if err := check("h", "j3", false); err != nil {
+		t.Errorf("the previous generation is still accepted: %v", err)
+	}
+	// a re-enrollment forgets the replaced JTI
+	if _, err := st.RegisterAgent(ctx, "h", "pem", "j5"); err != nil {
+		t.Fatal(err)
+	}
+	if err := check("h", "j4", false); err == nil {
+		t.Error("an enrollment must drop the replaced JTI")
 	}
 }

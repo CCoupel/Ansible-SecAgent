@@ -233,15 +233,15 @@ func TestSpec217_MinionWithShortTTLReceivesAtLeastTwoRekeys(t *testing.T) {
 	}
 }
 
-// I2: the replaced JTI is refused (401 token_replaced) as soon as a rekey replaced it, while the
+// I2: a JTI replaced TWICE (older than the predecessor, which stays valid until the current one is used: M1/M2) is refused (401 token_replaced), while the
 // connection of the live agent goes on; exactly one JTI is current per host.
 func TestSpec217_I2_AReplacedJTIIsRefusedWith401TokenReplaced(t *testing.T) {
 	parallel(t)
-	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: renewalEnv(shortTTL, shortInterval)})
+	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: renewalEnv("16s", "4s")})
 	host := "renew-replaced"
 	original := n.enrollAgent(host)
 	m := connectMinionWithToken(t, n, host, original)
-	waitRekeys(t, m, 2)
+	waitRekeys(t, m, 3) // current = f3, predecessor = f2: the enrollment JWT and f1 are older
 	jwts := rekeyJWTs(t, m)
 
 	refused := 0
@@ -387,7 +387,7 @@ func TestSpec217_I1_ARevokedAgentNeverReceivesAJWT(t *testing.T) {
 }
 
 // I7: key rotation (AdminRotateKeys) then periodic renewal: every frame is a distinct JTI, the LAST
-// one is the single current one and reconnects; the one the rotation issued is refused once replaced.
+// one is the single current one and reconnects; the grace is bounded by the TTL (M5).
 func TestSpec217_I7_RotationAndRenewalDoNotConflictLastJTIWins(t *testing.T) {
 	parallel(t)
 	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: renewalEnv(shortTTL, shortInterval)})
@@ -411,12 +411,11 @@ func TestSpec217_I7_RotationAndRenewalDoNotConflictLastJTIWins(t *testing.T) {
 			before++
 		}
 	}
-	if code, rot := n.admin("POST", "/api/admin/keys/rotate", map[string]any{"grace": "1h"}); code != http.StatusOK {
+	if code, rot := n.admin("POST", "/api/admin/keys/rotate", map[string]any{"grace": "5s"}); code != http.StatusOK {
 		t.Fatalf("rotate: %d %v", code, rot)
 	}
 	waitRekeys(t, m, before+2) // the rotation's frame, then at least one renewal signed with the NEW secret
 	jwts := rekeyJWTs(t, m)
-	rotation := jwts[before]
 
 	seen := map[string]bool{}
 	for _, raw := range jwts {
@@ -425,16 +424,6 @@ func TestSpec217_I7_RotationAndRenewalDoNotConflictLastJTIWins(t *testing.T) {
 		} else {
 			seen[j] = true
 		}
-	}
-	before401 := replacedRefusals(n, host)
-	conn, code, _ := dialAgent(t, n, rotation)
-	if conn != nil {
-		_ = conn.Close()
-		t.Errorf("the token the rotation issued was replaced by a later renewal: it must be refused")
-	} else if code != http.StatusUnauthorized {
-		t.Errorf("replaced rotation token: %d, want 401", code)
-	} else {
-		waitFor(t, "the refusal is journalized as token_replaced", func() bool { return replacedRefusals(n, host) > before401 })
 	}
 	// the latest frame wins (retry: a renewal may replace it between the read and the dial)
 	waitFor(t, "the latest issued JWT reconnects", func() bool {

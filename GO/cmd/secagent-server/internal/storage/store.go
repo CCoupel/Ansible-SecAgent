@@ -24,6 +24,7 @@ type AgentRecord struct {
 	Hostname     string
 	PublicKeyPEM string
 	TokenJTI     string
+	PrevTokenJTI string // #217: the JTI replaced by TokenJTI, valid until TokenJTI is used at a handshake
 	EnrolledAt   time.Time
 	LastSeen     time.Time
 	Status       string // "connected", "disconnected"
@@ -226,7 +227,7 @@ func (s *Store) RevokeKey(ctx context.Context, hostname string) (bool, error) {
 // ========================================================================
 
 func (s *Store) agentRecord(a state.Agent) AgentRecord {
-	rec := AgentRecord{Hostname: a.Hostname, PublicKeyPEM: a.PublicKeyPEM, TokenJTI: a.TokenJTI, EnrolledAt: a.EnrolledAt,
+	rec := AgentRecord{Hostname: a.Hostname, PublicKeyPEM: a.PublicKeyPEM, TokenJTI: a.TokenJTI, PrevTokenJTI: a.PrevTokenJTI, EnrolledAt: a.EnrolledAt,
 		LastSeen: a.EnrolledAt, Status: "disconnected", Suspended: a.Suspended, Revoked: a.Revoked, Vars: varsJSON(a.Vars)}
 	if a.LastSeen != nil {
 		rec.LastSeen = *a.LastSeen
@@ -278,7 +279,7 @@ func putEnrolledAgent(tx *state.Tx, hostname, publicKeyPEM, tokenJTI string, now
 	if a.Revoked {
 		return ErrAgentRevoked
 	}
-	a.Hostname, a.PublicKeyPEM, a.TokenJTI, a.EnrolledAt = hostname, publicKeyPEM, tokenJTI, now
+	a.Hostname, a.PublicKeyPEM, a.TokenJTI, a.PrevTokenJTI, a.EnrolledAt = hostname, publicKeyPEM, tokenJTI, "", now
 	a.LastSeen = &now
 	return tx.PutAgent(a)
 }
@@ -412,13 +413,33 @@ func (s *Store) UpdateTokenJTI(ctx context.Context, hostname, tokenJTI string) (
 			return nil
 		}
 		found = true
-		a.TokenJTI = tokenJTI
+		a.PrevTokenJTI, a.TokenJTI = a.TokenJTI, tokenJTI
 		return tx.PutAgent(a)
 	})
 	if err != nil {
 		return false, fmt.Errorf("failed to update token JTI: %w", err)
 	}
 	return found, nil
+}
+
+// ConfirmTokenJTI records that jti, the agent's CURRENT JTI, was used at a handshake: the replaced one
+// (PrevTokenJTI) is no longer accepted. One write, and none when there is nothing to clear.
+func (s *Store) ConfirmTokenJTI(ctx context.Context, hostname, jti string) error {
+	if a, ok := s.snap().Agent(hostname); !ok || a.TokenJTI != jti || a.PrevTokenJTI == "" {
+		return nil
+	}
+	err := s.mutate(func(tx *state.Tx) error {
+		a, ok := tx.Agent(hostname)
+		if !ok || a.TokenJTI != jti || a.PrevTokenJTI == "" {
+			return nil
+		}
+		a.PrevTokenJTI = ""
+		return tx.PutAgent(a)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to confirm token JTI: %w", err)
+	}
+	return nil
 }
 
 // UpdateTokenJTIUnlessRevoked replaces the current JTI of an agent like UpdateTokenJTI, but the
@@ -437,7 +458,7 @@ func (s *Store) UpdateTokenJTIUnlessRevoked(ctx context.Context, hostname, token
 		if a.Revoked {
 			return ErrAgentRevoked
 		}
-		a.TokenJTI = tokenJTI
+		a.PrevTokenJTI, a.TokenJTI = a.TokenJTI, tokenJTI
 		return tx.PutAgent(a)
 	})
 	if errors.Is(err, ErrAgentRevoked) {

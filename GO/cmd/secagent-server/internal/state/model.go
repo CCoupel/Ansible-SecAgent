@@ -50,9 +50,14 @@ func IsSecretConfigKey(k string) bool { return secretConfigKeys[k] }
 // Agent is an enrolled minion. LastSeen/Status are volatile: they are only persisted when the
 // file is written for another reason (piggyback, see Options.Piggyback).
 type Agent struct {
-	Hostname     string    `json:"hostname"`
-	PublicKeyPEM string    `json:"public_key_pem"`
-	TokenJTI     string    `json:"token_jti,omitempty"`
+	Hostname     string `json:"hostname"`
+	PublicKeyPEM string `json:"public_key_pem"`
+	TokenJTI     string `json:"token_jti,omitempty"`
+	// PrevTokenJTI (v3.0.5, #217) is the JTI the current one replaced, kept until the current JTI is used
+	// at a handshake: an agent whose new JWT never arrived (rekey lost with the socket) can still come
+	// back with the one it holds. Optional at read (absent = none, schema_version unchanged); cleared by
+	// the first handshake with the current JTI and by every enrollment.
+	PrevTokenJTI string    `json:"prev_token_jti,omitempty"`
 	EnrolledAt   time.Time `json:"enrolled_at"`
 	Suspended    bool      `json:"suspended,omitempty"`
 	// Revoked (#193) is set by the revocation, in the same write as the JTI blacklist, and survives the

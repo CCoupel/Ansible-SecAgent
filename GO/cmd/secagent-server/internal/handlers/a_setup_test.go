@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"testing"
-	"time"
 
 	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/storage"
@@ -53,7 +52,7 @@ func TestMain(m *testing.M) {
 		server.mu.Lock()
 		server.PrivateKey = privKey
 		server.PublicPEM = pubPEM
-		server.JWTttl = time.Hour
+		server.JWTttl = DefaultAgentJWTTTL
 		server.mu.Unlock()
 
 		log.Println("[TEST] RSA-2048 keypair generated for unit tests")
