@@ -211,8 +211,10 @@ const (
 
 	DefaultAgentWSPingInterval = 30 * time.Second
 	DefaultAgentWSProbeTimeout = 5 * time.Second
-	maxAgentWSPingInterval     = 5 * time.Minute
-	maxAgentWSProbeTimeout     = 30 * time.Second
+	// The ping interval is capped at 60 s: the minion retries a 401 handshake for about 84 s, and the N1
+	// rule only treats a connection as dead after one silent ping interval (B15).
+	maxAgentWSPingInterval = time.Minute
+	maxAgentWSProbeTimeout = 30 * time.Second
 )
 
 // Minimums: variables only so that a `testhelpers` binary can lower them (agent_jwt_testhelpers.go).

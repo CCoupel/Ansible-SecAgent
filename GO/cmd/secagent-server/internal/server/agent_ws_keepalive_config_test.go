@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// AGENT_WS_PING_INTERVAL in [5 s, 5 min] (default 30 s), AGENT_WS_PROBE_TIMEOUT in [1 s, 30 s] (default 5 s).
+// AGENT_WS_PING_INTERVAL in [5 s, 60 s] (default 30 s), AGENT_WS_PROBE_TIMEOUT in [1 s, 30 s] (default 5 s).
 func TestResolveAgentWS(t *testing.T) {
 	if p, q, err := ResolveAgentWS(0, 0); err != nil || p != 30*time.Second || q != 5*time.Second {
 		t.Fatalf("defaults: %s %s %v", p, q, err)
@@ -14,8 +14,8 @@ func TestResolveAgentWS(t *testing.T) {
 		ping, probe time.Duration
 		ok          bool
 	}{
-		{5 * time.Second, time.Second, true}, {5 * time.Minute, 30 * time.Second, true},
-		{4 * time.Second, 0, false}, {6 * time.Minute, 0, false}, {0, 500 * time.Millisecond, false}, {0, time.Minute, false}, {-time.Second, 0, false},
+		{5 * time.Second, time.Second, true}, {time.Minute, 30 * time.Second, true},
+		{4 * time.Second, 0, false}, {61 * time.Second, 0, false}, {0, 500 * time.Millisecond, false}, {0, time.Minute, false}, {-time.Second, 0, false},
 	} {
 		if _, _, err := ResolveAgentWS(c.ping, c.probe); (err == nil) != c.ok {
 			t.Errorf("ping %s probe %s: err=%v want ok=%v", c.ping, c.probe, err, c.ok)
