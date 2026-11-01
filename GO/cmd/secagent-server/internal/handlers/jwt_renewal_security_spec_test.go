@@ -36,8 +36,8 @@ func TestSecH1_ARenewalRacingARevocationNeverIssuesAJTIAfterTheRevocation(t *tes
 	defer func() { sendToAgentFn = prevSend }()
 	defer registerStore.SetWriteGuard(func() error { return nil })
 
-	const rounds = 200
-	violations, renewedBeforeRevocation := 0, 0
+	const rounds = 300
+	violations, renewedBeforeRevocation, writeAfterRevoke := 0, 0, 0
 	for i := 0; i < rounds; i++ {
 		host := fmt.Sprintf("race-host-%03d", i)
 		preAuthorize(t, host, pub)
@@ -64,7 +64,7 @@ func TestSecH1_ARenewalRacingARevocationNeverIssuesAJTIAfterTheRevocation(t *tes
 		go func() {
 			defer wg.Done()
 			<-start
-			for spin := time.Now(); time.Since(spin) < time.Duration(i%40)*10*time.Microsecond; { // sweep the offset between the two
+			for spin := time.Now(); time.Since(spin) < time.Duration(i%100)*80*time.Microsecond; { // sweep the offset between the two
 			}
 			if _, err := registerStore.RevokeAgent(ctx, host, "jti-init", "race", time.Now().Add(time.Hour)); err != nil {
 				t.Errorf("revoke: %v", err)
@@ -80,6 +80,9 @@ func TestSecH1_ARenewalRacingARevocationNeverIssuesAJTIAfterTheRevocation(t *tes
 		if a.TokenJTI != "jti-init" {
 			renewedBeforeRevocation++
 		}
+		if seen.Load() {
+			writeAfterRevoke++
+		}
 		if seen.Load() && a.TokenJTI != jtiWhenRevoked.Load().(string) {
 			violations++
 		}
@@ -88,7 +91,7 @@ func TestSecH1_ARenewalRacingARevocationNeverIssuesAJTIAfterTheRevocation(t *tes
 	if violations != 0 {
 		t.Fatalf("H1: %d/%d rounds issued a new JTI AFTER the revocation committed (revoked check must be atomic with the JTI write)", violations, rounds)
 	}
-	t.Logf("%d/%d rounds renewed before the revocation (legitimate order)", renewedBeforeRevocation, rounds)
+	t.Logf("%d/%d rounds renewed before the revocation (legitimate order), %d/%d had a write attempted after it (the raced window)", renewedBeforeRevocation, rounds, writeAfterRevoke, rounds)
 }
 
 // H1, deterministic half: nothing is issued once the agent is revoked, through every entry point

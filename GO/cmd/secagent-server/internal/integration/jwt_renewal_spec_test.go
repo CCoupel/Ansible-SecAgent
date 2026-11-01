@@ -17,10 +17,14 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,6 +36,43 @@ const (
 	shortTTL      = "6s"
 	shortInterval = "2s"
 )
+
+var (
+	thBinOnce sync.Once
+	thBinPath string
+	thBinErr  error
+)
+
+// testHelpersNodeBinary builds (once) the node binary of the renewal tests: this package's test binary
+// compiled with `-tags testhelpers`, the seam that lowers the minimum agent JWT lifetime to 2 s / 0.5 s
+// (server/agent_jwt_testhelpers.go; never in a release binary). The tests below start nodes with a TTL
+// of a few seconds through AGENT_JWT_TTL / AGENT_JWT_RENEW_INTERVAL, so that `go test ./...` and the CI
+// need no extra flag. Not built with -race (the nodes of the load test must not be either).
+func testHelpersNodeBinary(t *testing.T) string {
+	t.Helper()
+	thBinOnce.Do(func() {
+		goBin, err := exec.LookPath("go")
+		if err != nil {
+			thBinErr = err
+			return
+		}
+		dir, err := os.MkdirTemp("", "secagent-th-node-")
+		if err != nil {
+			thBinErr = err
+			return
+		}
+		thBinPath = filepath.Join(dir, "integration-testhelpers.test")
+		cmd := exec.Command(goBin, "test", "-c", "-tags", "testhelpers", "-o", thBinPath, ".")
+		cmd.Env = append(os.Environ(), "GOFLAGS=", "CGO_ENABLED=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			thBinErr = fmt.Errorf("building the node binary with -tags testhelpers: %v\n%s", err, out)
+		}
+	})
+	if thBinErr != nil {
+		t.Fatal(thBinErr)
+	}
+	return thBinPath
+}
 
 func renewalEnv(ttl, interval string) []string {
 	return []string{"AGENT_JWT_TTL=" + ttl, "AGENT_JWT_RENEW_INTERVAL=" + interval}
@@ -83,6 +124,18 @@ func rekeyJWTs(t *testing.T, m *minion) []string {
 		}
 	}
 	return out
+}
+
+// lastRekeyJWT decrypts only the latest rekey frame ("" when none).
+func lastRekeyJWT(t *testing.T, m *minion) string {
+	t.Helper()
+	fr := m.received()
+	for i := len(fr) - 1; i >= 0; i-- {
+		if fr[i]["type"] == "rekey" {
+			return openRekey(t, fr[i])
+		}
+	}
+	return ""
 }
 
 func waitRekeys(t *testing.T, m *minion, n int) {
@@ -138,7 +191,7 @@ func agentJTI(n *node, host string) string {
 // the host (distinct JTI, later exp), the link is not cut, and neither token nor full JTI is logged (I5).
 func TestSpec217_MinionWithShortTTLReceivesAtLeastTwoRekeys(t *testing.T) {
 	parallel(t)
-	n := startNode(t, nodeSpec{ID: "root", Env: renewalEnv(shortTTL, shortInterval)})
+	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: renewalEnv(shortTTL, shortInterval)})
 	host := "renew-two"
 	original := n.enrollAgent(host)
 	m := connectMinionWithToken(t, n, host, original)
@@ -184,7 +237,7 @@ func TestSpec217_MinionWithShortTTLReceivesAtLeastTwoRekeys(t *testing.T) {
 // connection of the live agent goes on; exactly one JTI is current per host.
 func TestSpec217_I2_AReplacedJTIIsRefusedWith401TokenReplaced(t *testing.T) {
 	parallel(t)
-	n := startNode(t, nodeSpec{ID: "root", Env: renewalEnv(shortTTL, shortInterval)})
+	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: renewalEnv(shortTTL, shortInterval)})
 	host := "renew-replaced"
 	original := n.enrollAgent(host)
 	m := connectMinionWithToken(t, n, host, original)
@@ -219,7 +272,7 @@ func TestSpec217_I3_RealMinionReconnectsAfterRelayRestartBeyondTTLWithoutEnrollm
 	parallel(t)
 	const ttl, every = 16 * time.Second, "4s"
 	addr := newNodeAddrs(t)
-	n := startNode(t, nodeSpec{ID: "root", Env: append(addr.env(), renewalEnv(ttl.String(), every)...)})
+	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: append(addr.env(), renewalEnv(ttl.String(), every)...)})
 	host := "renew-real"
 	start := time.Now()
 	m := startMinionProc(t, host, enrollmentToken(t, n, host), addr)
@@ -271,7 +324,7 @@ func TestSpec217_I3_RealMinionReconnectsAfterRelayRestartBeyondTTLWithoutEnrollm
 // happens when the enrollment JWT has expired; the enrollment JWT itself is not.
 func TestSpec217_I3_LatestRenewedJWTIsAcceptedAfterRestartButTheExpiredOneIsNot(t *testing.T) {
 	parallel(t)
-	n := startNode(t, nodeSpec{ID: "root", Env: renewalEnv("16s", "4s")})
+	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: renewalEnv("16s", "4s")})
 	host := "renew-restart"
 	original := n.enrollAgent(host)
 	m := connectMinionWithToken(t, n, host, original)
@@ -299,7 +352,7 @@ func TestSpec217_I3_LatestRenewedJWTIsAcceptedAfterRestartButTheExpiredOneIsNot(
 // refused.
 func TestSpec217_I1_ARevokedAgentNeverReceivesAJWT(t *testing.T) {
 	parallel(t)
-	n := startNode(t, nodeSpec{ID: "root", Env: renewalEnv(shortTTL, shortInterval)})
+	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: renewalEnv(shortTTL, shortInterval)})
 	host := "renew-revoked"
 	m := connectMinionWithToken(t, n, host, n.enrollAgent(host))
 	waitRekeys(t, m, 1)
@@ -337,12 +390,27 @@ func TestSpec217_I1_ARevokedAgentNeverReceivesAJWT(t *testing.T) {
 // one is the single current one and reconnects; the one the rotation issued is refused once replaced.
 func TestSpec217_I7_RotationAndRenewalDoNotConflictLastJTIWins(t *testing.T) {
 	parallel(t)
-	n := startNode(t, nodeSpec{ID: "root", Env: renewalEnv(shortTTL, shortInterval)})
+	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: renewalEnv(shortTTL, shortInterval)})
 	host := "renew-rotation"
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("full node log:\n%s", n.logs.String())
+		}
+	})
 	m := connectMinionWithToken(t, n, host, n.enrollAgent(host))
+	// Rotate right after a renewal frame arrived: the next periodic one is ~2 s away, so the frame order is
+	// deterministic: [... X signed by the OLD secret, R issued by the rotation (new secret), Y renewal (new)].
+	// A token signed with the previous secret skips the JTI check during the grace window (M1 of the
+	// security review, pre-existing), hence R and Y — both signed with the NEW secret — are the pair tested.
 	waitRekeys(t, m, 1)
-
-	before := len(rekeyJWTs(t, m))
+	first := len(m.received())
+	waitFor(t, "a fresh renewal frame", func() bool { return len(m.received()) > first })
+	before := 0
+	for _, f := range m.received() {
+		if f["type"] == "rekey" {
+			before++
+		}
+	}
 	if code, rot := n.admin("POST", "/api/admin/keys/rotate", map[string]any{"grace": "1h"}); code != http.StatusOK {
 		t.Fatalf("rotate: %d %v", code, rot)
 	}
@@ -370,8 +438,7 @@ func TestSpec217_I7_RotationAndRenewalDoNotConflictLastJTIWins(t *testing.T) {
 	}
 	// the latest frame wins (retry: a renewal may replace it between the read and the dial)
 	waitFor(t, "the latest issued JWT reconnects", func() bool {
-		all := rekeyJWTs(t, m)
-		conn, _, _ := dialAgent(t, n, all[len(all)-1])
+		conn, _, _ := dialAgent(t, n, lastRekeyJWT(t, m))
 		if conn == nil {
 			return false
 		}

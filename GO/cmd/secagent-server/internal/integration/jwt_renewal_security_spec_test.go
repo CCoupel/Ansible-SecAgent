@@ -18,7 +18,7 @@ func rekeysSentLogged(n *node, host string) int {
 // for several periods after the server noticed the disconnection.
 func TestSecH3_NoRenewalIsIssuedAfterTheAgentDisconnected(t *testing.T) {
 	parallel(t)
-	n := startNode(t, nodeSpec{ID: "root", Env: renewalEnv(shortTTL, shortInterval)})
+	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: renewalEnv(shortTTL, shortInterval)})
 	host := "renew-gone"
 	tok := n.enrollAgent(host)
 	m := connectMinionWithToken(t, n, host, tok)
@@ -41,7 +41,7 @@ func TestSecH3_NoRenewalIsIssuedAfterTheAgentDisconnected(t *testing.T) {
 // tokens (a second would double the rate on the new link, since sends are addressed by hostname).
 func TestSecH3_AReplacedConnectionDoesNotLeaveASecondLoopRunning(t *testing.T) {
 	parallel(t)
-	n := startNode(t, nodeSpec{ID: "root", Env: renewalEnv(shortTTL, shortInterval)})
+	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: renewalEnv(shortTTL, shortInterval)})
 	host := "renew-replaced-conn"
 	first := n.enrollAgent(host)
 	a := connectMinionWithToken(t, n, host, first)
@@ -71,7 +71,7 @@ func TestSecH3_AReplacedConnectionDoesNotLeaveASecondLoopRunning(t *testing.T) {
 // is logged for the host over several periods, and the stored JTI does not move.
 func TestSecH3_The4001RevocationCloseEndsTheLoop(t *testing.T) {
 	parallel(t)
-	n := startNode(t, nodeSpec{ID: "root", Env: renewalEnv(shortTTL, shortInterval)})
+	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: renewalEnv(shortTTL, shortInterval)})
 	host := "renew-4001"
 	m := connectMinionWithToken(t, n, host, n.enrollAgent(host))
 	waitRekeys(t, m, 1)

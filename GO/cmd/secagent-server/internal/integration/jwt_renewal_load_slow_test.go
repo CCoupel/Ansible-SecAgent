@@ -65,7 +65,7 @@ func TestSpec217_I6_Renewal3000AgentsWithoutBurst(t *testing.T) {
 	const agents = 3000
 	const ttl, interval = 60 * time.Second, 20 * time.Second
 	const periods = 3
-	n := startNode(t, nodeSpec{ID: "load", NodeBinary: buildPlainNodeBinary(t), Env: renewalEnv(ttl.String(), interval.String())})
+	n := startNode(t, nodeSpec{ID: "load", NodeBinary: testHelpersPlainBinary(t), Env: renewalEnv(ttl.String(), interval.String())})
 	rss := startRSSSampler(t, n.cmd.Process.Pid)
 
 	tokens := make([]string, agents)
@@ -184,3 +184,7 @@ func TestSpec217_I6_Renewal3000AgentsWithoutBurst(t *testing.T) {
 		}
 	}
 }
+
+// testHelpersPlainBinary: the load test's node binary (no -race) with the testhelpers seam for the short
+// TTL of the renewal. Same build as testHelpersNodeBinary, which is never built with -race either.
+func testHelpersPlainBinary(t *testing.T) string { return testHelpersNodeBinary(t) }
