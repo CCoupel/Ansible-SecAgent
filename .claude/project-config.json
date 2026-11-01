@@ -42,6 +42,26 @@
           "chain": "DEPLOYMENT/qualif/docker-compose.chain.yml",
           "script": "DEPLOYMENT/qualif/chain-test.sh",
           "host": "192.168.1.218"
+        },
+        "access": {
+          "method": "docker-tcp",
+          "host": "192.168.1.218",
+          "port": 2375,
+          "docker_host": "tcp://192.168.1.218:2375",
+          "runtime": "docker",
+          "compose_cli": "docker.exe compose (Windows ; pas de docker CLI dans WSL)",
+          "registry": "ghcr.io/ccoupel",
+          "credentials_env": [],
+          "verified": {
+            "status": "ok",
+            "at": "2026-10-31T15:32:34Z",
+            "checks": [
+              "docker-api",
+              "compose-cli",
+              "registry-pull"
+            ],
+            "note": "API Docker tcp:2375 sans TLS ni authentification"
+          }
         }
       },
       {
@@ -55,6 +75,27 @@
         "deploy": {
           "mechanism": "docker-compose",
           "target": "DEPLOYMENT/prod/docker-compose.server.yml"
+        },
+        "access": {
+          "method": "docker-tcp",
+          "host": "192.168.1.218",
+          "port": 2375,
+          "docker_host": "tcp://192.168.1.218:2375",
+          "runtime": "docker",
+          "compose_cli": "docker.exe compose (Windows ; pas de docker CLI dans WSL)",
+          "registry": "ghcr.io/ccoupel",
+          "credentials_env": [],
+          "verified": {
+            "status": "ok",
+            "at": "2026-10-31T15:32:34Z",
+            "checks": [
+              "docker-api",
+              "compose-cli",
+              "registry-pull",
+              "tag-push"
+            ],
+            "note": "meme hote que QUALIF ; PROD jamais deployee, sondes lecture seule"
+          }
         }
       }
     ]
@@ -85,14 +126,277 @@
     "test": "cd GO && JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v",
     "lint": "cd GO && golangci-lint run",
     "audit": "cd GO && govulncheck ./...",
-    "typecheck": ""
+    "typecheck": "",
+    "ci": "scripts/ci.sh"
   },
   "agents": {
     "idle_ttl_minutes": 15,
-    "idle_warning_interval_minutes": 5
+    "idle_warning_interval_minutes": 5,
+    "registry": [
+      {
+        "name": "cdp",
+        "source": "agents/cdp.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "30bd70780245344a6c6633c723055c8d72ff56299c28dbc5577f331d774eed36",
+        "changed_in": "v3.29.5"
+      },
+      {
+        "name": "code-reviewer",
+        "source": "agents/code-reviewer.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "6db56bbdc6483602b9284348bb1f2653fa1bc541ef31681697b6bbf98920b5fe",
+        "changed_in": "v3.29.1"
+      },
+      {
+        "name": "deploy",
+        "source": "agents/deploy.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "18aac28e4fd0997b2bfee016180a0791c4d582bec39ce4f8e4aacb2a69354c32",
+        "changed_in": "v3.30.1"
+      },
+      {
+        "name": "dev-agent",
+        "source": "templates/dev-backend-go.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "6fa0b4812a59d4c53cfb2afbd808052214dcf793cd5a66da51351a27fcc47332",
+        "changed_in": "v3.29.1",
+        "role": "Développeur secagent-minion (GO)",
+        "paths": [
+          "GO/cmd/secagent-minion/**"
+        ]
+      },
+      {
+        "name": "dev-connexion",
+        "source": "templates/dev-plugin.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "93e072b9f7ca8c185a1b1eb3e91b41486b89f61d44b2640a0e0c2d8da33791a1",
+        "changed_in": "v3.29.1",
+        "role": "Développeur plugin connexion Ansible (Python)",
+        "paths": [
+          "SECAGENT-PYTHON/**"
+        ]
+      },
+      {
+        "name": "dev-inventory",
+        "source": "templates/dev-backend-go.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "6fa0b4812a59d4c53cfb2afbd808052214dcf793cd5a66da51351a27fcc47332",
+        "changed_in": "v3.29.1",
+        "role": "Développeur secagent-inventory (GO)",
+        "paths": [
+          "GO/cmd/secagent-inventory/**"
+        ]
+      },
+      {
+        "name": "dev-relay",
+        "source": "templates/dev-backend-go.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "6fa0b4812a59d4c53cfb2afbd808052214dcf793cd5a66da51351a27fcc47332",
+        "changed_in": "v3.29.1",
+        "role": "Développeur secagent-server (GO)",
+        "paths": [
+          "GO/cmd/secagent-server/**"
+        ]
+      },
+      {
+        "name": "doc-updater",
+        "source": "agents/doc-updater.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "87c296a161f67af7eb441430cf2cb530fa9552b1bb6aa04acb819452ef581074",
+        "changed_in": "v3.29.5"
+      },
+      {
+        "name": "generic",
+        "source": "agents/generic.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "4157f75529762528a54afbfcc50630d772ca8734c8ab693c913bb0d8933f6be7",
+        "changed_in": "v3.29.1"
+      },
+      {
+        "name": "implementation-planner",
+        "source": "agents/implementation-planner.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "aaa506eddb0a237da081ec9735f7ef42e616a5bac27479326c8f75bce3f26261",
+        "changed_in": "v3.29.1"
+      },
+      {
+        "name": "infra",
+        "source": "agents/infra.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "81f8f8de43a2b331e7e1266fce60ac35ef97bbc2f1e62eee6a807d7613f533e7",
+        "changed_in": "v3.29.1"
+      },
+      {
+        "name": "marketing-release",
+        "source": "agents/marketing-release.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "763f9ff5f0bba3dd76e135203f316d7517b2f8105ab52622731771c1c8be45de",
+        "changed_in": "v3.30.1"
+      },
+      {
+        "name": "pr-reviewer",
+        "source": "agents/pr-reviewer.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "399fb28b4180b86be96dbb6dab0c483c287a2a660c403adc0a357977d2acb24b",
+        "changed_in": "v3.29.1"
+      },
+      {
+        "name": "qa",
+        "source": "agents/qa.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "0f237e69c191fc1d64517f36b65ca45b25452643af4d42b277bd5d91f5de138b",
+        "changed_in": "v3.29.5"
+      },
+      {
+        "name": "security",
+        "source": "agents/security.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "c92fc9d89ba987149dee4e7a7442cae784267ff15e43100bc0e357e21547bc54",
+        "changed_in": "v3.29.1"
+      },
+      {
+        "name": "teamleader",
+        "source": "agents/teamleader.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "2049e584e94c96b148521817f83aed49ebb580dbb55c3159e369892cf70bdd8e",
+        "changed_in": "v3.29.7"
+      },
+      {
+        "name": "test-writer",
+        "source": "agents/test-writer.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "5b4b6fc94d68be1f4c6e050c801afdbdac21fe77c7ea87a37a98440cd074f53c",
+        "changed_in": "v3.29.1"
+      }
+    ]
   },
   "template_version": {
-    "tag": "v3.13.1",
-    "commit": "b1a3b8e41b4dd3a551917e1ce6c99e1bd6957655"
+    "tag": "v3.30.1",
+    "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a"
+  },
+  "contexts": {
+    "registry": [
+      {
+        "name": "agents/context/CDP_PHASES_PLAN_DEV",
+        "source": "agents/context/CDP_PHASES_PLAN_DEV.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "0543a2eba88ba41dd1bcca60af44845004f62e07561be061e7b5fb8086eefb69",
+        "changed_in": "v3.29.1"
+      },
+      {
+        "name": "agents/context/CDP_PHASES_RELEASE",
+        "source": "agents/context/CDP_PHASES_RELEASE.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "418b25b5ed9adf4af7d979d608550f3a8100ae786323e2960cc515f36c260ae4",
+        "changed_in": "v3.30.1"
+      },
+      {
+        "name": "agents/context/CDP_PHASES_REVIEW_QA",
+        "source": "agents/context/CDP_PHASES_REVIEW_QA.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "8df71ac20f62a7f178067fb59696d84e5b7b2f6d142191bf72be2136f77fc5c2",
+        "changed_in": "v3.29.1"
+      },
+      {
+        "name": "agents/context/COMMON",
+        "source": "agents/context/COMMON.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "ec0301b4aa309b9832fafb2aa2e7358b82a5a5fcda026102e6a495a19d5dc38d",
+        "changed_in": "v3.30.1"
+      },
+      {
+        "name": "agents/context/DEV_COMMON",
+        "source": "agents/context/DEV_COMMON.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "d166f7511d822687d5ca49b8682ec43d7f8486969ded99c456c047f510fb186d",
+        "changed_in": "v3.30.1"
+      },
+      {
+        "name": "agents/context/GITHUB",
+        "source": "agents/context/GITHUB.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "b92779e079d461617fe96dc2a4753f91b4a05e0570308ba78388b8cbcdb5b69b",
+        "changed_in": "v3.30.1"
+      },
+      {
+        "name": "agents/context/TEAMMATES_PROTOCOL",
+        "source": "agents/context/TEAMMATES_PROTOCOL.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "39120cd25cf5d0dd591ae3c76623e62386119f75687b8da2779544a513255d34",
+        "changed_in": "v3.29.1"
+      },
+      {
+        "name": "agents/context/VALIDATION_COMMON",
+        "source": "agents/context/VALIDATION_COMMON.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "5d8a206b7aad38d8289daef43c17b81bd7f2b4ee4410eada5c7d2a1129914c77",
+        "changed_in": "v3.30.1"
+      },
+      {
+        "name": "commands/context/CDP_WORKFLOWS",
+        "source": "commands/context/CDP_WORKFLOWS.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "b6766b003ec181de7b0386dfd5d46c385d54e6f2ebbd83b4228711cc7465af76",
+        "changed_in": "v3.30.1"
+      },
+      {
+        "name": "commands/context/COMMON",
+        "source": "commands/context/COMMON.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "359536d2f3b9e15319c4a06c0d347be417860cc5b0808727122aee69fd7b946d",
+        "changed_in": "v3.30.1"
+      },
+      {
+        "name": "commands/context/DEVELOPMENT",
+        "source": "commands/context/DEVELOPMENT.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "3735789c22d320b46b922b396947ca55b5b85b4fa6b73204b33d3054ea07d869",
+        "changed_in": "v3.30.1"
+      },
+      {
+        "name": "commands/context/GITHUB",
+        "source": "commands/context/GITHUB.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "766ab9adb5eab386baabf981190184fc201a5a0a4cc867955c285f834fe59802",
+        "changed_in": "v3.30.1"
+      },
+      {
+        "name": "commands/context/QUALITY",
+        "source": "commands/context/QUALITY.md",
+        "tag": "v3.30.1",
+        "commit": "0977a3a34b6a2202b2ec6671ee642ac3e61f158a",
+        "sha256": "ab47a6e5734069e71de7d50696fa66b90b537781cb45570f0ac749be487de893",
+        "changed_in": "v3.29.1"
+      }
+    ]
   }
 }

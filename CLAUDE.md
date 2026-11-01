@@ -88,7 +88,7 @@ ansible-secagent/
 - Tests GO : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v`
 - Tests Python : pytest, fichier `test_<module>.py` par module
 - Commits : conventionnel (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`) ; **trailer exact en dernière ligne** : `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` (contrôlé sur tous les commits avant un push) ; jamais `git commit --amend` en arbre partagé
-- Push : **jamais sans feu vert explicite de l'utilisateur**, toujours délégué à `deployer` (SHA complet explicite, jamais `HEAD`, jamais de force, jamais `main` hors PR validée) ; un tag publie (GHCR + release) : confirmation dédiée
+- Push : **jamais sans feu vert explicite de l'utilisateur**, toujours délégué à `deployer` (SHA complet explicite, jamais `HEAD`, jamais de force, jamais `main` hors PR validée) ; un tag publie (GHCR + release) : confirmation dédiée ; exception : les commits produits par `/init-project` (init et synchronisation du template) sont reportés sur `main` hors cycle par la commande elle-même (cherry-pick, jamais de merge de la branche milestone, jamais de force) — `init-project.md` §7
 - Environnement de l'utilisateur : aucun agent n'installe quoi que ce soit hors du scratchpad (ni WSL, ni `~/.local`), ne démarre Docker Desktop, ne modifie la config système ; kills par PID enregistré seulement (jamais `pkill`/`killall` par nom)
 - Agents de documentation : toujours lancés avec un modèle suffisant (`model: sonnet`) ; leurs « vérifié » sont revérifiés contre le code (`qa`, `security-reviewer`)
 
@@ -118,7 +118,7 @@ Séquence correcte :
 
 ## Agents Disponibles
 
-Équipe spécialisée du projet (9 agents permanents + team-lead/CDP fusionné) :
+Équipe spécialisée du projet (9 agents permanents + 1 ponctuel + team-lead/CDP fusionné) :
 
 | Nom | Rôle | Fichier | Spawn |
 |-----|------|---------|-------|
@@ -131,6 +131,7 @@ Séquence correcte :
 | `qa` | Exécution des tests, verdict GO/NOGO | `.claude/agents/qa.template.md` | permanent |
 | `security-reviewer` | Audit sécurité (TLS, JWT, become_pass, enrollment) | `.claude/agents/security-reviewer.md` | permanent |
 | `deployer` | BUILD / PUBLISH / DEPLOY QUALIF (Docker Compose 192.168.1.218) et PROD (Docker Compose, même hôte) | `.claude/agents/deploy.template.md` + compagnons `environments/deploy.{qualif,prod}.md` | permanent |
+| `marketing` | Communication de release (release notes, posts, site `gh-pages`) | `.claude/agents/marketing-release.template.md` | ponctuel |
 
 > **Convention template/compagnon** : `xxx.template.md` = template synchronisé (gitignoré, jamais édité) ;
 > `xxx.md` = compagnon projet tracké (périmètre, specs, règles propres à Ansible-SecAgent), à lire après le
@@ -138,10 +139,11 @@ Séquence correcte :
 > une définition projet autonome (pas de template équivalent).
 
 > **permanent** = spawné au `/start-session`, reste en IDLE toute la session.
+> **ponctuel** = spawné à la demande par sa commande ou sa phase (`marketing` : GATE 4d / `/marketing`), puis arrêté (`TaskStop`).
 
 Agents génériques additionnels livrés par le template (disponibles, **pas encore intégrés** au
 workflow `/start-session` ni au cycle CDP décrit ci-dessus — à activer manuellement si besoin) :
-`code-reviewer`, `doc-updater`, `infra`, `security`, `pr-reviewer`, `marketing-release`.
+`code-reviewer`, `doc-updater`, `infra`, `security`, `pr-reviewer`.
 
 <!-- BEGIN TEAMLEADER_PROTOCOL — maintenu par le template, ne pas modifier manuellement -->
 
@@ -158,21 +160,22 @@ Tu **coordonnes et dispatches**. Tu n'exécutes aucune tâche technique toi-mêm
 
 | Outil interdit | Déléguer à |
 |---------------|-----------|
-| `Edit`, `Write`, `MultiEdit` (sauf `Write` d'un ordre dans `_work/tasks/*.md`) | `dev-*`, `doc-updater` |
-| `Bash` (build / test / git) | `qa`, `deployer`, `dev-*` |
+| `Edit`, `Write`, `MultiEdit` (sauf `Write` d'un ordre dans `_work/tasks/*.md` et de l'état `.claude/workflow-state.json`, `.claude/workflow/*`) | `dev-*`, `doc-updater` |
+| `Bash` (build / test / git) — sauf opérations HEAD du checkout principal (`checkout`, `switch`, `reset`, `stash`), qui sont au teamleader seul (`agents/context/COMMON.md` « Branche Courante ») | `qa`, `deployer`, `dev-*` |
 | `Read` (code applicatif) | `code-reviewer`, `planner` |
 | `Glob`, `Grep` (recherche code) | `planner`, `dev-*` |
 
 **`Read` autorisé uniquement pour** : `CLAUDE.md`, `MEMORY.md`, `project-config.json`, `_work/tasks/*.md`, `_work/handoff/*.md`, `_work/reports/*.md`, `contracts/CHANGELOG.md`
 
-**`Write` autorisé uniquement pour** : `_work/tasks/*.md` (ordres aux teammates, création seule — jamais `Edit`/`MultiEdit`, jamais un autre chemin)
+**`Write` autorisé uniquement pour** : `_work/tasks/*.md` (ordres aux teammates, création seule — jamais `Edit`/`MultiEdit`) et l'état d'orchestration `.claude/workflow-state.json` / `.claude/workflow/plan-<version>.md` (reprise après interruption) — jamais un autre chemin
 
 **Ne jamais** exécuter une tâche technique soi-même — spawner l'agent approprié.
 
 ### Dispatcher une tâche
 
 Tous les teammates sont spawned au démarrage (`/start-session`) et sont en IDLE.
-**Pendant la session : uniquement `SendMessage` — jamais de spawn.**
+**Pendant la session : uniquement `SendMessage` — jamais de spawn**, sauf les agents `ponctuel` de la table
+(`security`, `infra`, `marketing`…) : spawnés à la demande par leur commande ou leur phase, puis arrêtés (`TaskStop`).
 
 ```
 SendMessage({ to: "<nom-canonique>", content: "<tâche complète>" })
@@ -204,26 +207,22 @@ test-writer, code-reviewer, qa, doc-updater, deployer, security, infra
 
 ### Questions à l'utilisateur
 
-**Règle absolue** : toute information, décision ou validation attendue de l'utilisateur est posée
-**via l'outil `AskUserQuestion`** — jamais en texte dans le chat (pas de liste numérotée, pas de « OUI/NON »,
-pas de `[O/n]`, pas de « dis-moi »). Ça vaut aussi pour les questions remontées par un teammate
-(`BLOQUE` / `FAILED` — format unique `[NOM] BLOQUE` + `Questions:`, `TEAMMATES_PROTOCOL.md`).
-
-Chaîne : les teammates ne parlent jamais à l'utilisateur — ils t'envoient leurs questions et options
-(`SendMessage` vers `main`), **tu les convertis en `AskUserQuestion`**, puis tu leur renvoies les réponses
-via `SendMessage`.
-
-- Questions fermées, 2 à 4 options, label court + description (contexte/conséquence), option par défaut
-  marquée « (Recommandé) » ; pas d'option « Autre » (ajoutée automatiquement).
-- Tout regrouper dans **un seul appel** `AskUserQuestion` (jusqu'à 4 questions).
-- Seule exception : une question de découverte ouverte par nature (workshop de cadrage).
-
-Détail et checklist avant chaque message à l'utilisateur : `.claude/agents/teamleader.md`, section « Questions à l'utilisateur ».
+**Règle absolue** : toute information, décision ou validation attendue de l'utilisateur (y compris les `BLOQUE` /
+`FAILED` remontés par un teammate) passe **par l'outil `AskUserQuestion`** — jamais en texte dans le chat (pas de
+liste numérotée, « OUI/NON », `[O/n]`). Les teammates ne parlent jamais à l'utilisateur : tu convertis leurs
+questions en `AskUserQuestion`, puis tu leur renvoies les réponses via `SendMessage`.
+Procédure, format et checklist : `.claude/agents/teamleader.template.md`, section « Questions à l'utilisateur ».
 
 ### Relayer l'avancement
 
 Chaque jalon `[NOM] EN COURS — …` d'un teammate (ex. `QA EN COURS — lot 3/12 …`) est relayé à l'utilisateur en
-une ligne, sans attendre le DONE. Un jalon n'est pas un DONE : ne pas enchaîner avant le DONE.
+une ligne, sans attendre le DONE. Un jalon n'est pas un DONE : ne pas enchaîner avant le DONE. Si un jalon signale des échecs, les nommer dans le relais.
+
+### Labels d'issues — à chaque changement de phase
+
+Mettre à jour les labels de **toutes** les issues suivies (`ISSUE_NUMS[]`) **avant** d'envoyer l'ordre suivant, **et dès l'événement** (retour de fin de tâche d'un teammate `DONE`/`FAILED`/`BLOQUE`, validation d'un GATE — `GITHUB.md` §9.12), avant de le relayer. L'état dit ce qui **reste à faire** (ex. `PRET` = plan validé, DEV pas lancé), pas ce qu'un teammate fait à cet instant :
+`SendMessage` à `deployer` (`gh issue edit --add-label … --remove-label …`, `.claude/commands/context/GITHUB.template.md` §9).
+La clôture du milestone reste soumise à la validation utilisateur.
 
 ### Validation des rapports DONE
 
@@ -239,3 +238,5 @@ SendMessage({
 ```
 
 <!-- END TEAMLEADER_PROTOCOL -->
+
+> **Noms canoniques de ce projet** : ceux de la table « Agents Disponibles » ci-dessus (`dev-agent`, `dev-relay`, `dev-inventory`, `dev-connexion`, `deployer`…) ; les noms génériques du bloc (`dev-backend`, `dev-plugin`…) ne s'appliquent pas.

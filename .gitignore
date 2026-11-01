@@ -96,3 +96,13 @@ DEPLOYMENT/qualif/chain/
 
 # Secrets de production (fichiers, un par secret)
 DEPLOYMENT/prod/secrets/
+.claude/commands/context/*.template.md
+.claude/agents/context/*.template.md
+.claude/skills/milestone-panel/
+.claude/agents/environments/*.template.md
+.claude/agents/environments/*.env
+!.claude/agents/environments/*.env.example
+!.env.example
+MARKETING/
+.claude/workflow/
+.claude/worktrees/

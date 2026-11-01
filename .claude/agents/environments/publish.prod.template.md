@@ -19,7 +19,7 @@ repo secrets), jamais dans ces fichiers `.env` locaux.
 
 ```bash
 # 1. Verification
-# Prerequis confirmes par le CDP avant cet ordre. Une publication validee sur l'environnement
+# Prerequis confirmes par le teamleader avant cet ordre. Une publication validee sur l'environnement
 # precedent de la chaine doit exister — sauf hotfix, ou ce candidat vient directement de BUILD.
 
 # 1bis. Determination de la version cible
@@ -31,13 +31,25 @@ VERSION=$(echo "$DEV_VERSION" | cut -d. -f1-3)   # X.Y.Z, ex: 1.4.0
 # Ecrire $VERSION dans  avant le merge
 
 # 1ter. Verification documentation (avant merge)
-# En orchestration CDP : le doc-updater a deja fait le DOC FINALIZE — verifier juste la reception du DONE.
-# En usage standalone (hors CDP) : verifier manuellement que la doc est a jour, sinon STOP.
+# En orchestration teamleader : le doc-updater a deja fait le DOC FINALIZE — verifier juste la reception du DONE.
+# En usage standalone (hors teamleader) : verifier manuellement que la doc est a jour, sinon STOP.
 grep -q "$DEV_VERSION" CHANGELOG.md || {
   echo "CHANGELOG.md non mis a jour pour cette version — STOP, retour doc-updater avant de continuer."
   exit 1
 }
 # README/docs concernes : verifier manuellement qu'ils refletent les changements de ce release.
+
+# 1quater. BARRIERE — pre-validation verte sur le SHA exact (un tag ne sert JAMAIS de test)
+# Le workflow de pre-validation (`.github/workflows/ci-branch.yml`, infra.md §3bis C10, qui ne lance
+# que `commands.ci`) doit etre vert sur le commit exact de la branche milestone qui va etre merge.
+# Sinon : STOP — pas de merge dans main, pas de tag.
+git push origin milestone/vX.Y.Z
+SHA=$(git rev-parse milestone/vX.Y.Z)
+gh run list --workflow ci-branch.yml --commit "$SHA" --json status,conclusion,databaseId \
+  --jq '.[0]'    # attendu : status=completed, conclusion=success
+# Aucun run sur ce SHA -> le declencher : gh workflow run ci-branch.yml --ref milestone/vX.Y.Z
+#   puis `gh run watch <id> --exit-status`. Run rouge/absent -> PUBLISH FAILED (categorie CODE/FLAKY,
+#   voir Echec) ; ne rien merger, ne rien taguer.
 
 # 2. Promotion (sans supprimer la branche de travail) — la branche de travail est la branche
 # milestone (milestone/vX.Y.Z), qui a accueilli tout le cycle FEATURE/BUGFIX/REFACTOR ;
@@ -49,15 +61,20 @@ grep -q "$DEV_VERSION" CHANGELOG.md || {
 # rollback en cas d'echec (ci-dessous) dispose de l'etat exact merge, avant la suppression de la
 # branche distante en cas de succes (voir `agents/deploy.md`, Tache DEPLOY PROD, Etape 6).
 git push origin milestone/vX.Y.Z
-git checkout main
-git merge --no-ff milestone/vX.Y.Z -m "Release v$VERSION"
-git push origin main
+# Merge dans un worktree detache sur origin/main — le HEAD du checkout principal reste sur la branche
+# milestone (il appartient au teamleader, voir context/COMMON.md « Branche Courante et Historique »)
+REL=.claude/worktrees/release
+git fetch origin main
+git worktree add --detach "$REL" origin/main
+git -C "$REL" merge --no-ff milestone/vX.Y.Z -m "Release v$VERSION"
+git -C "$REL" push origin HEAD:main
 
 # 3. Tag officiel — LE declencheur du rebuild deterministe. Le pipeline CI (`.github/workflows/release.yml`) est
 # configure sur `tags: ['v*']` : ce push de tag lance le job de build, qui reconstruit depuis ce
 # commit fige et publie le resultat (registre / GitHub Release).
-git tag -a "v$VERSION" -m "Release v$VERSION"
+git -C "$REL" tag -a "v$VERSION" -m "Release v$VERSION"   # tag sur le commit de merge
 git push origin "v$VERSION"
+git worktree remove "$REL"
 
 sleep 5
 RUN_ID=$(gh run list --limit 1 --json databaseId --jq '.[0].databaseId')
@@ -71,7 +88,7 @@ CI_STATUS=$?
 
 ## Echec
 
-Le deployer ne corrige rien lui-même. Il identifie l'agent responsable et remonte à `main`.
+Le deployer ne corrige rien lui-même. Il identifie l'agent responsable et remonte au teamleader.
 
 **Classifier :**
 
@@ -86,11 +103,11 @@ gh run view "$RUN_ID" --log-failed
 | **CONFIG** | Secret manquant, variable absente, mauvais path | Oui | `infra` |
 | **INFRA** | Registry inaccessible, runner hors ligne, quota | Oui | `infra` |
 
-**Rapport à main :**
+**Rapport au teamleader :**
 
 ```
 SendMessage({
-  to: "main",
+  to: "team-lead",
   content: "PUBLISH FAILED
 Environnement : PROD
 Version  : v[X.Y.Z]
@@ -99,7 +116,12 @@ Run CI   : #[RUN_ID] — gh run view [RUN_ID] --log-failed"
 })
 ```
 
-`main` analyse le rapport et décide du routing et de la suite. En cas d'echec, le merge/tag sont
+**Politique de reprise** : apres un echec, le deployer **corrige sur la branche milestone** (via l'agent
+responsable) et rejoue la pre-validation ; il ne **retague jamais** pour « retester » (le tag ne sert pas de
+test). Un echec **FLAKY** se relance **une fois au plus** ; au deuxieme echec, analyse (traiter comme CODE).
+L'ordre PROD de l'utilisateur n'autorise pas a retaguer sans limite (`CDP_WORKFLOWS.md` §7).
+
+Le teamleader analyse le rapport et décide du routing et de la suite. En cas d'echec, le merge/tag sont
 annules (voir Rollback ci-dessous) — aucun artefact partiellement publié ne doit rester
 référençable.
 
@@ -111,9 +133,11 @@ echo "Publication PROD terminee - v$VERSION (tag pousse, CI OK)"
 ## Rollback
 
 ```bash
-git checkout main
-git revert HEAD --no-edit
-git push origin main
+# Worktree detache sur origin/main (jamais de checkout dans le checkout principal)
+git fetch origin main && git worktree add --detach .claude/worktrees/rollback origin/main
+git -C .claude/worktrees/rollback revert HEAD --no-edit
+git -C .claude/worktrees/rollback push origin HEAD:main
+git worktree remove .claude/worktrees/rollback
 git tag -d v[X.Y.Z]
 git push origin --delete v[X.Y.Z]
 # Correction : agent responsable (voir Echec ci-dessus), puis /publish prod a nouveau
