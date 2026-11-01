@@ -17,7 +17,7 @@ import (
 	"testing"
 )
 
-func keyOfLen(n int) string { return strings.Repeat("k", n) }
+func keyOfLen(n int) string { return varKey(n) }
 
 // (critical) a key shorter than 32 bytes is refused and NOTHING is written.
 func TestSpec214_InitRefusesAMasterKeyShorterThan32Bytes(t *testing.T) {
@@ -71,14 +71,14 @@ func TestSpec214_InitAcceptsMasterKeysOf32BytesAndMore(t *testing.T) {
 
 // The length is counted in BYTES, not characters: 16 two-byte runes make 32 bytes, 15 + 1 ASCII make 31.
 func TestSpec214_LengthIsCountedInBytesNotRunes(t *testing.T) {
-	ok := strings.Repeat("é", 16) // 32 bytes, 16 runes
+	ok := "éèêëàâäôöùûüçïîœ" // 32 bytes, 16 distinct runes
 	if len(ok) != 32 {
 		t.Fatalf("fixture: %d bytes", len(ok))
 	}
 	if err := Init(InitOptions{Dir: t.TempDir(), MasterKey: ok, RSABits: 2048}); err != nil {
 		t.Errorf("32 bytes (16 runes) must be accepted: %v", err)
 	}
-	short := strings.Repeat("é", 15) + "a" // 31 bytes, 16 runes
+	short := "éèêëàâäôöùûüçïî" + "a" // 31 bytes
 	if len(short) != 31 {
 		t.Fatalf("fixture: %d bytes", len(short))
 	}
@@ -114,7 +114,7 @@ func TestSpec214_InitAndRekeyShareTheSameMinimum(t *testing.T) {
 // >= 32-byte key opens with AES-256-GCM keyed by SHA-256(master key), the v3.0.4 construction, which
 // this test re-implements independently of the product code. A switch to HKDF would fail here.
 func TestSpec214_KeyDerivationIsUnchangedSHA256ForAES(t *testing.T) {
-	key := strings.Repeat("0123456789abcdef", 3) // 48 bytes
+	key := varKey(48)
 	dir := t.TempDir()
 	if err := Init(InitOptions{Dir: dir, MasterKey: key, RSABits: 2048}); err != nil {
 		t.Fatal(err)

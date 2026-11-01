@@ -34,6 +34,8 @@ var (
 	// ErrRekeyKeyTooShort: the new master key is shorter than MinNewMasterKeyBytes (the AES key is a
 	// plain SHA-256 of it, so a short key is a weak key). The message never echoes the key.
 	ErrRekeyKeyTooShort = errors.New("state rekey: the new master key is too short (minimum 32 bytes; generate one with 'openssl rand -base64 48')")
+	// ErrRekeyKeyPredictable: the new master key is long enough but trivially guessable (#214, M4).
+	ErrRekeyKeyPredictable = errors.New("state rekey: the new master key is predictable (repeated character or pattern, or fewer than 12 distinct characters; generate one with 'openssl rand -base64 48')")
 	// ErrRekeyFromPrev: relay.state is not usable and the state would come from relay.state.prev.
 	ErrRekeyFromPrev = errors.New("state rekey: relay.state is not usable as is (the state comes from relay.state.prev): fix it first, for example with 'state restore'")
 	// ErrRekeySchema is no longer returned: a schema 1 state is migrated to 2 by the rekey itself.
@@ -57,6 +59,8 @@ func ValidateNewMasterKey(oldKey, newKey string) error {
 		return ErrRekeySameKey
 	case len(newKey) < MinNewMasterKeyBytes:
 		return ErrRekeyKeyTooShort
+	case isPredictableKey(newKey):
+		return ErrRekeyKeyPredictable
 	}
 	return nil
 }

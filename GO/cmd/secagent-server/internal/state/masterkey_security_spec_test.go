@@ -47,7 +47,7 @@ func TestSecD2_1_OneThresholdForInitStartAndRekey(t *testing.T) {
 		t.Fatalf("threshold = %d, want 32", MinNewMasterKeyBytes)
 	}
 	for _, n := range []int{31, 32} {
-		key := strings.Repeat("q", n)
+		key := varKey(n)
 		wantRefused := n < 32
 		if got := ValidateMasterKeyLength(key) != nil; got != wantRefused {
 			t.Errorf("start validation, %d bytes: refused=%v, want %v", n, got, wantRefused)

@@ -571,7 +571,7 @@ func rekeyError(err error, prefix string) error {
 	switch {
 	case errors.Is(err, state.ErrRekeyVerify):
 		return &ExitError{Code: ExitRekeyVerify, Msg: prefix + err.Error()}
-	case errors.Is(err, state.ErrRekeyKeyTooShort):
+	case errors.Is(err, state.ErrRekeyKeyTooShort), errors.Is(err, state.ErrRekeyKeyPredictable):
 		return &ExitError{Code: ExitRekeyKeyTooShort, Msg: prefix + "refused, nothing modified: " + err.Error()}
 	case errors.Is(err, state.ErrRekeySameKey), errors.Is(err, state.ErrRekeyNoNewKey), errors.Is(err, state.ErrRekeyUncovered),
 		errors.Is(err, state.ErrRekeySchema), errors.Is(err, state.ErrRekeyFromPrev):

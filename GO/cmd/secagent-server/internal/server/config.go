@@ -152,21 +152,30 @@ const (
 	MaxAgentJWTTTL = 7 * 24 * time.Hour
 )
 
+// Minimums of AGENT_JWT_TTL and AGENT_JWT_RENEW_INTERVAL (security review of #217: a tiny TTL makes the
+// fleet renew in a loop, a tiny interval floods the state with writes). Variables, not constants, only so
+// that a binary built with the `testhelpers` tag (agent_jwt_testhelpers.go) can lower them; the release
+// binary has no way around them, not even through the environment.
+var (
+	minAgentJWTTTL      = 5 * time.Minute
+	minAgentJWTInterval = time.Minute
+)
+
 // ResolveAgentJWT applies the defaults (TTL 24 h, interval TTL/3) and validates the pair: TTL in
-// ]0, 7 days], interval > 0 and at most TTL/2 (so a token is renewed at least twice before it
+// [5 min, 7 days], interval at least 1 min and at most TTL/2 (so a token is renewed at least twice before it
 // expires: one missed renewal does not lose the agent).
 func ResolveAgentJWT(ttl, interval time.Duration) (time.Duration, time.Duration, error) {
 	if ttl == 0 {
 		ttl = handlers.DefaultAgentJWTTTL
 	}
-	if ttl < 0 || ttl > MaxAgentJWTTTL {
-		return 0, 0, fmt.Errorf("%s: %s is out of range (must be > 0 and at most %s)", EnvAgentJWTTTL, ttl, MaxAgentJWTTTL)
+	if ttl < minAgentJWTTTL || ttl > MaxAgentJWTTTL {
+		return 0, 0, fmt.Errorf("%s: %s is out of range (must be between %s and %s)", EnvAgentJWTTTL, ttl, minAgentJWTTTL, MaxAgentJWTTTL)
 	}
 	if interval == 0 {
 		interval = ttl / 3
 	}
-	if interval <= 0 {
-		return 0, 0, fmt.Errorf("%s: %s must be > 0", EnvAgentJWTRenewInterval, interval)
+	if interval < minAgentJWTInterval {
+		return 0, 0, fmt.Errorf("%s: %s is too short (at least %s)", EnvAgentJWTRenewInterval, interval, minAgentJWTInterval)
 	}
 	if interval*2 > ttl {
 		return 0, 0, fmt.Errorf("%s: %s is too long for %s=%s (the interval must be at most half of the TTL)", EnvAgentJWTRenewInterval, interval, EnvAgentJWTTTL, ttl)

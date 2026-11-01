@@ -278,13 +278,13 @@ secagent-server state init|verify <fichier>|restore --from <fichier>   # voir ST
 |---|---|---|
 | `JWT_SECRET_KEY` | ✅ | Secret HMAC-HS256 pour signer les JWT agents |
 | `ADMIN_TOKEN` | ✅ | Token admin (port 7771) |
-| `AGENT_JWT_TTL` | — | Durée de vie du JWT des agents (durée Go : `24h`, `90m`…). Défaut **`24h`** (1 h codé en dur avant v3.0.5) ; maximum 7 jours ; valeur invalide ou `0` : démarrage refusé (#217) |
-| `AGENT_JWT_RENEW_INTERVAL` | — | Période de renouvellement du JWT de chaque agent connecté, par la trame `rekey` sur sa WebSocket (gigue ±10 %). Défaut `AGENT_JWT_TTL`/3 ; au plus `AGENT_JWT_TTL`/2 (#217, `SECURITY.md` §5) |
+| `AGENT_JWT_TTL` | — | Durée de vie du JWT des agents (durée Go : `24h`, `90m`…). Défaut **`24h`** (1 h codé en dur avant v3.0.5) ; entre 5 min et 7 jours ; valeur invalide, `0` ou hors bornes : démarrage refusé (#217) |
+| `AGENT_JWT_RENEW_INTERVAL` | — | Période de renouvellement du JWT de chaque agent connecté, par la trame `rekey` sur sa WebSocket (gigue ±10 %). Défaut `AGENT_JWT_TTL`/3 ; entre 1 min et `AGENT_JWT_TTL`/2 (#217, `SECURITY.md` §5) |
 | `NATS_URL` | — | **Obsolète (#178)** : NATS est retiré ; si la variable est définie, un `[WARN]` est journalisé et elle est ignorée |
 | `STATE_DIR` | — | Répertoire du fichier d'état `relay.state` (défaut `/data`), créé par `secagent-server state init` — voir `STATE_SPEC.md` (#160) |
 | `STATE_MAX_BYTES` | — | Plafond dur de taille du fichier d'état (défaut 64 Mio) |
 | `DATABASE_URL` | — | **Retirée (#160)** : SQLite n'existe plus. Si la variable est définie, le serveur **refuse de démarrer** (aucune migration d'un ancien `relay.db`) |
-| `RSA_MASTER_KEY` | ✅ en production | **32 octets minimum** (plus court : démarrage refusé et `state init` refusé, #214 ; `openssl rand -base64 48`). Secret (chaîne, pas une clef RSA) dont dérivent le HMAC du fichier d'état et le chiffrement AES-256-GCM des secrets ; exigé par `state init` (sauf `--insecure-test-mode`) et par le serveur ; identique sur tous les nœuds candidats |
+| `RSA_MASTER_KEY` | ✅ en production | **32 octets minimum, non prévisible** (plus court ou caractère/motif répété ou < 12 caractères distincts : démarrage refusé et `state init` refusé, #214 ; `openssl rand -base64 48`). Secret (chaîne, pas une clef RSA) dont dérivent le HMAC du fichier d'état et le chiffrement AES-256-GCM des secrets ; exigé par `state init` (sauf `--insecure-test-mode`) et par le serveur ; identique sur tous les nœuds candidats |
 | `REPEATER_ID` | — | Identifiant du relay (ex: `dmz1`) — requis en mode enfant |
 | `REPEATER_UPSTREAM_URL` | — | URL WSS du parent (ex: `wss://central:7772`) — requis en mode enfant pull. Liste séparée par des virgules (une adresse par instance du parent, `wss://` uniquement, 16 max) : essayées dans l'ordre, la dernière qui a répondu en premier ; un échec avant envoi passe à l'adresse suivante, un échec après envoi de la requête d'upgrade ne rejoue pas sur une autre |
 | `REPEATER_UPSTREAM_TOKEN` | — | Jeton de lien EdDSA du relay enfant (rôle `relay-child`, `sub` = `REPEATER_ID`, `aud` = `relay_id` du parent), minté sur la **racine** par `tokens create --role relay-child --sub <enfant> --aud <parent>` — requis en mode enfant pull. Variante `REPEATER_UPSTREAM_TOKEN_FILE` (exclusive : les deux définies refusent le démarrage). Voir §9.4 |

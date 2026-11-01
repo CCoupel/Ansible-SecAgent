@@ -137,7 +137,7 @@ Pas de `task_id`. L'agent déchiffre le JWT, le persiste (`token.jwt`, 0600) et 
 
 1. rotation de `JWT_SECRET_KEY` (`security keys rotate`) ;
 2. reconnexion d'un agent avec le JWT signé par l'ancien secret ;
-3. **[CHANGED v3.0.5, #217] renouvellement périodique** : le relay envoie un JWT frais à chaque agent connecté avant l'expiration du sien, toutes les `AGENT_JWT_RENEW_INTERVAL` (défaut `AGENT_JWT_TTL`/3, gigue ±10 %). `AGENT_JWT_TTL` : 24 h par défaut (1 h avant v3.0.5), 7 jours au plus. Un agent révoqué ne reçoit rien ; un état en lecture seule non plus. Voir `DOC/security/SECURITY.md` §5.
+3. **[CHANGED v3.0.5, #217] renouvellement périodique** : le relay envoie un JWT frais à chaque agent connecté avant l'expiration du sien, toutes les `AGENT_JWT_RENEW_INTERVAL` (défaut `AGENT_JWT_TTL`/3, gigue ±10 %). `AGENT_JWT_TTL` : 24 h par défaut (1 h avant v3.0.5), entre 5 min et 7 jours. Un agent révoqué ne reçoit rien ; un état en lecture seule non plus. Voir `DOC/security/SECURITY.md` §5.
 
 `/ws/agent` : la sémantique du 401 (JTI remplacé, révoqué ou expiré) est inchangée.
 

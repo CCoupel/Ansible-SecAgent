@@ -301,7 +301,7 @@ func TestRekey_NewKeyMinimumLength(t *testing.T) {
 	}{
 		{"one byte", "x", false},
 		{"31 bytes", strings.Repeat("k", 31), false},
-		{"32 bytes", strings.Repeat("k", 32), true},
+		{"32 bytes", varKey(32), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, _ := rekeyState(t) // the current key (rekeyOld) is shorter than 32 bytes: it stays openable

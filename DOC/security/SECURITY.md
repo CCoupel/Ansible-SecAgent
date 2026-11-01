@@ -268,8 +268,10 @@ Le relay **renouvelle donc le JWT de chaque agent connecté sur sa WebSocket aut
 
 | Variable | Défaut | Rôle |
 |---|---|---|
-| `AGENT_JWT_TTL` | `24h` (était 1 h codé en dur) | durée de vie du JWT d'agent ; maximum 7 jours |
-| `AGENT_JWT_RENEW_INTERVAL` | `TTL/3` | période de renouvellement ; au plus `TTL/2` (deux renouvellements manqués d'affilée avant l'expiration) |
+| `AGENT_JWT_TTL` | `24h` (était 1 h codé en dur) | durée de vie du JWT d'agent ; entre **5 min** et 7 jours |
+| `AGENT_JWT_RENEW_INTERVAL` | `TTL/3` | période de renouvellement ; entre **1 min** et `TTL/2` (deux renouvellements manqués d'affilée avant l'expiration) |
+
+Une valeur hors bornes ou mal formée refuse le démarrage (jamais de repli silencieux). Les minimums n'ont aucun contournement dans le binaire de release ; seuls les binaires de test compilés avec `-tags testhelpers` les abaissent (2 s / 0,5 s).
 
 Règles (invariants testés) :
 
@@ -288,7 +290,7 @@ Il déclenche automatiquement un ré-enrollment complet (`POST /api/register` av
 
 ### Stockage des secrets
 
-**`RSA_MASTER_KEY` : 32 octets minimum (v3.0.5, #214).** La clé AES-256 des secrets scellés est le SHA-256 de `RSA_MASTER_KEY` (sans sel ni facteur de travail) : sûr pour une clé aléatoire d'au moins 32 octets, faible pour une clé courte et devinable. Une clé plus courte est donc **refusée**, pas seulement signalée : à `state init`, au démarrage du serveur et comme nouvelle clé de `state rekey` (la longueur compte en **octets**). Le message d'erreur donne le remède et ne reproduit jamais la clé. Générer une clé : `openssl rand -base64 48`. La dérivation n'est **pas** modifiée (pas de HKDF, pas de changement de `schema_version`) : un état écrit en v3.0.4 avec une clé d'au moins 32 octets est lu tel quel. Un déploiement existant dont la clé est plus courte doit exécuter `secagent-server state rekey` (nœud arrêté, `NEW_RSA_MASTER_KEY_FILE`) **avant** la montée en v3.0.5 ; la clé *actuelle* de `state rekey` et des outils de lecture (`state verify`) n'est pas soumise au minimum.
+**`RSA_MASTER_KEY` : 32 octets minimum (v3.0.5, #214).** La clé AES-256 des secrets scellés est le SHA-256 de `RSA_MASTER_KEY` (sans sel ni facteur de travail) : sûr pour une clé aléatoire d'au moins 32 octets, faible pour une clé courte et devinable. Une clé plus courte est donc **refusée**, de même qu'une clé *prévisible* (un caractère ou un motif répété, ou moins de 12 caractères distincts ; `openssl rand -base64 48` passe toujours), pas seulement signalée : à `state init`, au démarrage du serveur et comme nouvelle clé de `state rekey` (la longueur compte en **octets**). Le message d'erreur donne le remède et ne reproduit jamais la clé. Générer une clé : `openssl rand -base64 48`. La dérivation n'est **pas** modifiée (pas de HKDF, pas de changement de `schema_version`) : un état écrit en v3.0.4 avec une clé d'au moins 32 octets est lu tel quel. Un déploiement existant dont la clé est plus courte doit exécuter `secagent-server state rekey` (nœud arrêté, `NEW_RSA_MASTER_KEY_FILE`) **avant** la montée en v3.0.5 ; la clé *actuelle* de `state rekey` et des outils de lecture (`state verify`) n'est pas soumise au minimum.
 
 Tous les secrets du serveur sont stockés en DB chiffrés (AES-256-GCM) :
 

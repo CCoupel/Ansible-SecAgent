@@ -301,7 +301,7 @@ func TestRekeyBinary_NewKeyMinimumIs32Bytes(t *testing.T) {
 	h0 := rekeyFileHash(t, sp)
 	env := func(k string) []string { return []string{"RSA_MASTER_KEY=" + old, "NEW_RSA_MASTER_KEY=" + k} }
 
-	k31, k32 := strings.Repeat("k", 31), strings.Repeat("k", 32)
+	k31, k32 := strings.Repeat("k", 31), varKey(32)
 	code, out := rekeyCLI(t, bin, n, env(k31), "state", "rekey", "--yes")
 	if code != 11 || rekeyFileHash(t, sp) != h0 || strings.Contains(out, k31) || !strings.Contains(out, "32 bytes") {
 		t.Fatalf("31 bytes: exit %d, state unchanged=%v, output %q (want exit 11, nothing modified, the key not echoed)", code, rekeyFileHash(t, sp) == h0, rekeyFirstLine(out))
@@ -316,4 +316,14 @@ func TestRekeyBinary_NewKeyMinimumIs32Bytes(t *testing.T) {
 	if c, _ := rekeyCLI(t, bin, n, []string{"RSA_MASTER_KEY=" + k32}, "state", "verify", sp); c != 0 {
 		t.Errorf("the rekeyed state does not verify with the new key: %d", c)
 	}
+}
+
+// varKey returns a non-predictable test master key of n bytes (the key rules refuse repeated characters and patterns).
+func varKey(n int) string {
+	const src = "Tq9vXr2LmZk8WcYb4HnJ7sUd1EoGfAp5iBx3NtVw6QyKzRaMlSjCh0e+/=PdFgIuOl"
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = src[(i*7+i/len(src))%len(src)]
+	}
+	return string(out)
 }

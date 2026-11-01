@@ -20,7 +20,7 @@ func TestMasterKeyLength_AHistoricalShortKeyStillOpensAndRekeys(t *testing.T) {
 	}
 	o := rekeyOpts(dir)
 	o.OldKey = short
-	o.NewKey = strings.Repeat("n", MinNewMasterKeyBytes)
+	o.NewKey = varKey(MinNewMasterKeyBytes)
 	if _, err := Rekey(o); err != nil {
 		t.Fatalf("the rekey from a short key to a compliant one must work: %v", err)
 	}
@@ -37,7 +37,17 @@ func TestValidateMasterKeyLength(t *testing.T) {
 	if !errors.Is(err, ErrMasterKeyTooShort) {
 		t.Fatalf("31 bytes: %v", err)
 	}
-	if err := ValidateMasterKeyLength(strings.Repeat("x", 32)); err != nil {
+	if err := ValidateMasterKeyLength(varKey(32)); err != nil {
 		t.Errorf("32 bytes: %v", err)
 	}
+}
+
+// varKey returns a non-predictable test master key of n bytes (the key rules refuse repeated characters and patterns).
+func varKey(n int) string {
+	const src = "Tq9vXr2LmZk8WcYb4HnJ7sUd1EoGfAp5iBx3NtVw6QyKzRaMlSjCh0e+/=PdFgIuOl"
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = src[(i*7+i/len(src))%len(src)]
+	}
+	return string(out)
 }

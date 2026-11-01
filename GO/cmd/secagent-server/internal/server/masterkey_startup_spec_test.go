@@ -53,7 +53,7 @@ func newLongKeyState(t *testing.T, key string) string {
 
 // (critical) short key: refused, remedy present, key not in the error nor in the logs, state untouched.
 func TestSpec214_ServerRefusesToStartWithAShortMasterKey(t *testing.T) {
-	long := strings.Repeat("L", 48)
+	long := varKey(48)
 	dir := newLongKeyState(t, long)
 	before, err := os.ReadFile(filepath.Join(dir, state.StateFile))
 	if err != nil {
@@ -86,7 +86,7 @@ func TestSpec214_ServerRefusesToStartWithAShortMasterKey(t *testing.T) {
 // 32 bytes and more start (the state of a v3.0.4 deployment with such a key is read unchanged).
 func TestSpec214_ServerStartsWithA32BytesOrLongerMasterKey(t *testing.T) {
 	for _, n := range []int{32, 48} {
-		key := strings.Repeat("K", n)
+		key := varKey(n)
 		dir := newLongKeyState(t, key)
 		if err, logs := startWithMasterKey(t, dir, key); err != nil {
 			t.Errorf("%d bytes: the server must start: %v\n%s", n, err, logs)
@@ -98,7 +98,7 @@ func TestSpec214_ServerStartsWithA32BytesOrLongerMasterKey(t *testing.T) {
 
 // The key is never in the logs of a normal start either (RSA_MASTER_KEY and its _FILE variant).
 func TestSpec214_MasterKeyIsNeverLoggedAtStart(t *testing.T) {
-	key := strings.Repeat("Z", 40)
+	key := varKey(40)
 	dir := newLongKeyState(t, key)
 	if err, logs := startWithMasterKey(t, dir, key); err != nil {
 		t.Fatal(err)
@@ -115,9 +115,9 @@ func TestSpec214_MasterKeyFileIsMeasuredWithoutItsTrailingNewline(t *testing.T) 
 		content string
 		refused bool
 	}{
-		{"32 bytes + newline", strings.Repeat("f", 32) + "\n", false},
+		{"32 bytes + newline", varKey(32) + "\n", false},
 		{"31 bytes + newline (32 on disk)", strings.Repeat("f", 31) + "\n", true},
-		{"32 bytes without newline", strings.Repeat("f", 32), false},
+		{"32 bytes without newline", varKey(32), false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			setServerEnv(t)
@@ -133,4 +133,14 @@ func TestSpec214_MasterKeyFileIsMeasuredWithoutItsTrailingNewline(t *testing.T) 
 			}
 		})
 	}
+}
+
+// varKey returns a non-predictable test master key of n bytes (the key rules refuse repeated characters and patterns).
+func varKey(n int) string {
+	const src = "Tq9vXr2LmZk8WcYb4HnJ7sUd1EoGfAp5iBx3NtVw6QyKzRaMlSjCh0e+/=PdFgIuOl"
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = src[(i*7+i/len(src))%len(src)]
+	}
+	return string(out)
 }

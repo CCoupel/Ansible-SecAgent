@@ -19,10 +19,50 @@ const MinNewMasterKeyBytes = 32
 // carries the remedy and never the key.
 var ErrMasterKeyTooShort = errors.New("RSA_MASTER_KEY is too short")
 
-// ValidateMasterKeyLength refuses a non-empty master key shorter than MinNewMasterKeyBytes bytes. An
-// empty key is not judged here (it means "no master key": each caller decides).
+// MinDistinctMasterKeyChars is the fewest distinct characters a master key may have (#214, M4).
+const MinDistinctMasterKeyChars = 12
+
+// ErrMasterKeyPredictable is returned for a long enough RSA_MASTER_KEY that is trivially guessable: one
+// repeated character, a repeated pattern, or fewer than MinDistinctMasterKeyChars distinct characters.
+var ErrMasterKeyPredictable = errors.New("RSA_MASTER_KEY is predictable")
+
+// isPredictableKey is a cheap sanity check, not an entropy estimate: `openssl rand -base64 48` always passes.
+func isPredictableKey(key string) bool {
+	seen := map[rune]struct{}{}
+	for _, r := range key {
+		seen[r] = struct{}{}
+	}
+	if len(seen) < MinDistinctMasterKeyChars {
+		return true
+	}
+	n := len(key)
+	for p := 1; p <= n/2; p++ { // the whole key is a block of p bytes repeated
+		periodic := true
+		for i := 0; i+p < n; i++ {
+			if key[i] != key[i+p] {
+				periodic = false
+				break
+			}
+		}
+		if periodic {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidateMasterKeyLength refuses a non-empty master key that is shorter than MinNewMasterKeyBytes bytes
+// or predictable (see isPredictableKey). An empty key is not judged here (it means "no master key":
+// each caller decides). Nothing derived from the key is echoed.
 func ValidateMasterKeyLength(key string) error {
-	if key == "" || len(key) >= MinNewMasterKeyBytes {
+	if key == "" {
+		return nil
+	}
+	if len(key) >= MinNewMasterKeyBytes {
+		if isPredictableKey(key) {
+			return fmt.Errorf("%w: a repeated character or pattern, or fewer than %d distinct characters, is refused; generate one with 'openssl rand -base64 48'",
+				ErrMasterKeyPredictable, MinDistinctMasterKeyChars)
+		}
 		return nil
 	}
 	// Nothing derived from the key (not even its length) is echoed.
