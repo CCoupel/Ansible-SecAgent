@@ -110,17 +110,24 @@ func TestSpec217_Keepalive_AHalfOpenConnectionIsUnregisteredAfterTheDelay(t *tes
 }
 
 // (2) The agent comes back with its previous JWT (it never got the rekey: the link died during it) while the
-// relay still holds the dead connection: after the probe the old connection is dropped and the previous JWT
-// is ACCEPTED — no re-enrollment, no loss of the agent.
+// relay still holds the dead connection: once the connection has been silent for at least one ping interval
+// (N2) and failed the probe, the old connection is dropped and the previous JWT is ACCEPTED — no
+// re-enrollment, no loss of the agent.
 func TestSpec217_Keepalive_APreviousJWTIsAcceptedOnceTheDeadConnectionWasProbed(t *testing.T) {
 	parallel(t)
-	// ping every 6 s (deadline 12 s): the dead connection is still registered when the agent returns; the probe is 1 s
-	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: append(keepaliveEnv("6s", "1s"), renewalEnv("30s", "4s")...)})
+	// ping every 4 s (read deadline 8 s): after 4.5 s of silence the dead connection is still registered; probe 1 s
+	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: keepaliveEnv("4s", "1s")})
 	host := "ka-return"
 	orig := n.enrollAgent(host)
+	connected := time.Now()
 	dead := dialSilent(t, n, orig)
-	waitFor(t, "a renewal was sent on the dying connection", func() bool { return dead.rekeys() >= 1 })
-	// the agent never saw that rekey: it comes back with `orig` = the predecessor of the (never used) current JTI
+	// a rekey (key rotation) reaches the dying connection: the agent never saw it, `orig` is now the predecessor
+	if code, rot := n.admin("POST", "/api/admin/keys/rotate", map[string]any{"grace": "30s"}); code != http.StatusOK {
+		t.Fatalf("rotate: %d %v", code, rot)
+	}
+	waitFor(t, "the rekey was sent on the dying connection", func() bool { return dead.rekeys() >= 1 })
+	time.Sleep(time.Until(connected.Add(4500 * time.Millisecond))) // more than one ping interval without any sign of life
+
 	base := replacedRefusals(n, host)
 	start := time.Now()
 	conn, code, body := dialAgent(t, n, orig)
@@ -135,16 +142,50 @@ func TestSpec217_Keepalive_APreviousJWTIsAcceptedOnceTheDeadConnectionWasProbed(
 	if got := replacedRefusals(n, host); got != base {
 		t.Errorf("the returning agent was refused as replaced (%d refusals)", got-base)
 	}
-	// and it is served: it receives its rekey (renewal) like any connected agent
+	// and it is served: the relay sends it a fresh JWT (it connected with the previous secret)
 	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 	for {
 		var f map[string]any
 		if err := conn.ReadJSON(&f); err != nil {
-			t.Fatalf("the returning agent must be served (renewal frame): %v", err)
+			t.Fatalf("the returning agent must be served (fresh JWT): %v", err)
 		}
 		if f["type"] == "rekey" {
 			break
 		}
+	}
+}
+
+// N2: a connection that is silent for LESS than one ping interval is not declared dead, whatever the probe
+// would say: the replayed predecessor gets 401 and the connection is kept (an attacker cannot evict a
+// healthy but momentarily quiet agent by replaying its previous JWT).
+func TestSpec217_Keepalive_AConnectionSilentForLessThanAPingIntervalIsNotDeclaredDead(t *testing.T) {
+	parallel(t)
+	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: keepaliveEnv("30s", "1s")})
+	host := "ka-n2"
+	orig := n.enrollAgent(host)
+	quiet := dialSilent(t, n, orig) // answers no ping, but the last sign of life (the connection itself) is fresh
+	if code, rot := n.admin("POST", "/api/admin/keys/rotate", map[string]any{"grace": "30s"}); code != http.StatusOK {
+		t.Fatalf("rotate: %d %v", code, rot)
+	}
+	waitFor(t, "the rekey was sent", func() bool { return quiet.rekeys() >= 1 })
+
+	base := replacedRefusals(n, host)
+	conn, code, body := dialAgent(t, n, orig)
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatal("N2: the predecessor was accepted although the connection was silent for less than one ping interval")
+	}
+	if code != http.StatusUnauthorized || strings.Contains(body, "replaced") || strings.Contains(body, "probe") {
+		t.Errorf("replay against a recently-alive connection: %d %q, want 401 without the reason", code, body)
+	}
+	waitFor(t, "the refusal is journalized", func() bool { return replacedRefusals(n, host) > base })
+	select {
+	case err := <-quiet.closed:
+		t.Errorf("N2: the quiet connection was dropped: %v", err)
+	case <-time.After(1500 * time.Millisecond):
+	}
+	if disconnects(n, host) != 0 {
+		t.Error("N2: the quiet connection was unregistered")
 	}
 }
 
