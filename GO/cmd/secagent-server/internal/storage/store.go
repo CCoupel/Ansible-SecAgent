@@ -172,6 +172,14 @@ func (s *Store) WriteSeq() uint64 { return s.snap().WriteSeq() }
 
 func (s *Store) snap() state.Snapshot { return s.eng.Snapshot() }
 
+// shortJTI keeps the first 8 characters of a JTI for the logs (a full JTI never goes to a journal).
+func shortJTI(jti string) string {
+	if len(jti) > 8 {
+		return jti[:8] + "…"
+	}
+	return jti
+}
+
 func nowUTC() time.Time { return time.Now().UTC().Truncate(time.Second) }
 
 // ========================================================================
@@ -257,7 +265,7 @@ func (s *Store) RegisterAgent(ctx context.Context, hostname, publicKeyPEM, token
 		return "", fmt.Errorf("failed to register agent: %w", err)
 	}
 	s.touchAgent(hostname, "disconnected", now, false)
-	log.Printf("Agent registered: hostname=%q jti=%q", hostname, tokenJTI)
+	log.Printf("Agent registered: hostname=%q jti=%q", hostname, shortJTI(tokenJTI))
 	return hostname, nil
 }
 
@@ -306,7 +314,7 @@ func (s *Store) EnrollAgent(ctx context.Context, tokenID, hostname, publicKeyPEM
 		return fmt.Errorf("EnrollAgent: %w", err)
 	}
 	s.touchAgent(hostname, "disconnected", now, false)
-	log.Printf("Agent enrolled: hostname=%q token_id=%q jti=%q", hostname, tokenID, tokenJTI)
+	log.Printf("Agent enrolled: hostname=%q token_id=%q jti=%q", hostname, tokenID, shortJTI(tokenJTI))
 	return nil
 }
 
@@ -413,6 +421,34 @@ func (s *Store) UpdateTokenJTI(ctx context.Context, hostname, tokenJTI string) (
 	return found, nil
 }
 
+// UpdateTokenJTIUnlessRevoked replaces the current JTI of an agent like UpdateTokenJTI, but the
+// revocation check and the write are ONE transaction: an agent revoked between a caller's earlier read
+// and this write never gets a new JTI (#217: a renewal racing a revocation must not issue a token
+// after the revocation committed). A revoked agent leaves the state untouched and returns
+// ErrAgentRevoked (the same error as enrollment); an unknown one (false, nil).
+func (s *Store) UpdateTokenJTIUnlessRevoked(ctx context.Context, hostname, tokenJTI string) (bool, error) {
+	found := false
+	err := s.mutate(func(tx *state.Tx) error {
+		a, ok := tx.Agent(hostname)
+		if !ok {
+			return nil
+		}
+		found = true
+		if a.Revoked {
+			return ErrAgentRevoked
+		}
+		a.TokenJTI = tokenJTI
+		return tx.PutAgent(a)
+	})
+	if errors.Is(err, ErrAgentRevoked) {
+		return true, ErrAgentRevoked
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to update token JTI: %w", err)
+	}
+	return found, nil
+}
+
 // ========================================================================
 // JWT blacklist
 // ========================================================================
@@ -431,7 +467,7 @@ func (s *Store) AddToBlacklist(ctx context.Context, jti, hostname, expiresAt str
 	if err != nil {
 		return fmt.Errorf("failed to add to blacklist: %w", err)
 	}
-	log.Printf("JTI blacklisted: jti=%q hostname=%q reason=%q", jti, hostname, reasonStr)
+	log.Printf("JTI blacklisted: jti=%q hostname=%q reason=%q", shortJTI(jti), hostname, reasonStr)
 	return nil
 }
 
@@ -552,7 +588,7 @@ func (s *Store) RevokeAgent(ctx context.Context, hostname, jti, reason string, b
 		return false, fmt.Errorf("failed to revoke agent: %w", err)
 	}
 	if found {
-		log.Printf("Agent revoked: hostname=%q jti=%q reason=%q", hostname, jti, reason)
+		log.Printf("Agent revoked: hostname=%q jti=%q reason=%q", hostname, shortJTI(jti), reason)
 	}
 	return found, nil
 }

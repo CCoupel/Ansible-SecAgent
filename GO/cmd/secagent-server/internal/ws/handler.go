@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -145,6 +146,26 @@ func UnregisterConnection(hostname string) {
 	}
 
 	// Resolve all pending futures with error
+	ResolveFuturesForHostname(hostname, "agent_disconnected")
+}
+
+// unregisterIfCurrent is UnregisterConnection for the handler of conn: it does nothing when conn has
+// been REPLACED by a newer connection of the same host (the newer one must stay registered, and its
+// pending tasks must not be failed because an old socket finally closed).
+func unregisterIfCurrent(hostname string, conn *AgentConnection) {
+	connectionsMu.Lock()
+	if cur, ok := wsConnections[hostname]; ok && cur != conn {
+		connectionsMu.Unlock()
+		log.Printf("Replaced WS closed for hostname: %q", hostname)
+		return
+	}
+	delete(wsConnections, hostname)
+	connectionsMu.Unlock()
+	log.Printf("Agent disconnected: hostname=%q", hostname)
+
+	if fn := dispatchFn.Load(); fn != nil {
+		go (*fn)("host.down", hostname, "disconnected", "")
+	}
 	ResolveFuturesForHostname(hostname, "agent_disconnected")
 }
 
@@ -393,6 +414,7 @@ type agentIdentity struct {
 	Hostname     string
 	JTI          string
 	UsedPrevious bool
+	Exp          time.Time // expiry of the JWT presented at the handshake (zero if absent)
 }
 
 // authenticateAgentRequest validates the Bearer token (dual-key) and returns the identity.
@@ -424,7 +446,11 @@ func authenticateAgentRequest(r *http.Request) (agentIdentity, error) {
 		return agentIdentity{}, fmt.Errorf("jwt_missing_sub")
 	}
 	jti, _ := claims["jti"].(string)
-	return agentIdentity{Hostname: sub, JTI: jti, UsedPrevious: prev}, nil
+	var exp time.Time
+	if e, ok := claims["exp"].(float64); ok && e > 0 {
+		exp = time.Unix(int64(e), 0)
+	}
+	return agentIdentity{Hostname: sub, JTI: jti, UsedPrevious: prev, Exp: exp}, nil
 }
 
 // AgentHandler manages WebSocket connections from secagent-minions.
@@ -469,6 +495,7 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 
 	// If agent authenticated with the previous JWT secret, send rekey message
 	// so it gets a fresh token signed with the current secret.
+	rekeyed := false
 	if usedPrevious {
 		sent := false
 		if RekeyFunc != nil {
@@ -483,11 +510,24 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			agentConn.mu.Unlock()
 		}
+		rekeyed = sent
 		log.Printf("Rekey sent to agent: hostname=%q encrypted=%v", hostname, sent)
 	}
 
+	// Periodic renewal of the JWT of this connection (#217), ended with the connection. After an
+	// encrypted rekey caused by the previous secret the agent holds a fresh token: count from now.
+	renewCtx, stopRenewal := context.WithCancel(context.Background())
+	if p := renewal.Load(); p != nil {
+		exp := id.Exp
+		if rekeyed || exp.IsZero() {
+			exp = time.Now().Add(p.ttl)
+		}
+		go runRenewal(renewCtx, hostname, exp)
+	}
+
 	defer func() {
-		UnregisterConnection(hostname)
+		stopRenewal()
+		unregisterIfCurrent(hostname, agentConn)
 		_ = conn.Close()
 	}()
 

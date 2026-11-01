@@ -119,6 +119,14 @@ func Build(cfg Config) (node *Node, err error) {
 	// Bootstrap secrets from the Config (init() read the same values from the environment).
 	handlers.ConfigureServer(cfg.JWTSecret, cfg.AdminToken)
 
+	// Lifetime and renewal of the agent JWTs (#217); invalid values refuse to start.
+	agentJWTTTL, agentJWTRenew, jerr := ResolveAgentJWT(cfg.AgentJWTTTL, cfg.AgentJWTRenewInterval)
+	if jerr != nil {
+		return nil, jerr
+	}
+	handlers.ConfigureAgentJWT(agentJWTTTL)
+	log.Printf("[INIT] AGENT_JWT_TTL: %s, renewed every %s", agentJWTTTL, agentJWTRenew)
+
 	// Load the state file BEFORE anything else: a missing state refuses to start (never created
 	// here), an invalid or tampered one too. Without a write guard the instance is read-only.
 	log.Println("[INIT] Loading the state file...")
@@ -129,6 +137,10 @@ func Build(cfg Config) (node *Node, err error) {
 	masterKey := cfg.MasterKey // RSA_MASTER_KEY or RSA_MASTER_KEY_FILE, resolved by ConfigFromEnv (#196)
 	if masterKey == "" {
 		masterKey = os.Getenv("RSA_MASTER_KEY")
+	}
+	// A master key shorter than 32 bytes is refused before anything is read or written (#214, D2).
+	if err := state.ValidateMasterKeyLength(masterKey); err != nil {
+		return nil, err
 	}
 	// only a key resolved by ConfigFromEnv (file or env); otherwise the environment is read lazily
 	handlers.ConfigureMasterKey(cfg.MasterKey)
@@ -159,6 +171,7 @@ func Build(cfg Config) (node *Node, err error) {
 		log.Println("[WARN] no write guard connected: the state is READ-ONLY until this instance is the confirmed master (#163)")
 	}
 	log.Println("[OK] State loaded")
+	warnNoReusableEnrollmentToken(store)
 	// Agents revoked before the persistent flag existed (#193): their blacklisted JTI is the only trace;
 	// flag them now (one write, none when there is nothing to repair). Non-fatal: the blacklist still
 	// protects them until it expires.
@@ -207,6 +220,11 @@ func Build(cfg Config) (node *Node, err error) {
 
 	// Inject rekey function into WS handler (used when agent connects with previous key)
 	ws.SetRekeyFunc(handlers.RekeyAgent)
+
+	// Periodic renewal of the JWT of every connected agent over its WebSocket (#217): without it an
+	// agent whose connection drops after its JWT expired could only re-enroll, with a token it
+	// usually no longer has. The loop is per connection (no global sweep).
+	ws.SetRenewal(agentJWTTTL, agentJWTRenew, handlers.RenewAgentJWT)
 
 	// Initialize hooks dispatcher (async event delivery)
 	n.dispatchCtx, n.cancel = context.WithCancel(context.Background())
@@ -779,4 +797,23 @@ func orInt64(v, def int64) int64 {
 		return v
 	}
 	return def
+}
+
+// warnNoReusableEnrollmentToken warns, at start, when no reusable enrollment token is active: an
+// agent whose JWT could not be renewed (relay unreachable for longer than the JWT lifetime) can only
+// come back by enrolling again, which needs such a token (#217). Informational: a deployment may
+// legitimately enroll with one-shot tokens only.
+func warnNoReusableEnrollmentToken(store *storage.Store) {
+	tokens, err := store.ListEnrollmentTokens(context.Background())
+	if err != nil {
+		log.Printf("[WARN] enrollment tokens could not be listed: %v", err)
+		return
+	}
+	now := time.Now()
+	for _, t := range tokens {
+		if t.Reusable && (t.ExpiresAt == nil || t.ExpiresAt.After(now)) {
+			return
+		}
+	}
+	log.Printf("[WARN] no reusable enrollment token is active: an agent unreachable for longer than AGENT_JWT_TTL can no longer reconnect and must be enrolled again; create one with 'secagent-server tokens create --role enrollment --reusable --hostname-pattern <regex> --expires 90d'")
 }

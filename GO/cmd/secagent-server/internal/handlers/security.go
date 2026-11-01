@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 
+	"secagent-server/cmd/secagent-server/internal/storage"
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
@@ -164,42 +166,73 @@ var sendToAgentFn = ws.SendToAgent
 // sendRekeyToAgent issues a new JWT for hostname, encrypts it with the agent's
 // RSA public key, and sends a WS "rekey" message. Returns true on success.
 func sendRekeyToAgent(ctx context.Context, hostname, jwtSecret string, jwtTTL time.Duration) bool {
+	_, err := issueRekey(ctx, hostname, jwtSecret, jwtTTL)
+	return err == nil
+}
+
+// errRekeyNotSent is the generic failure of issueRekey (details are logged, never returned: they
+// could carry token material).
+var errRekeyNotSent = errors.New("rekey not sent")
+
+// issueRekey is the single path that renews the JWT of a connected agent: the rotation of
+// JWT_SECRET_KEY, the reconnection with the previous secret and the periodic renewal (#217) all go
+// through it, so that the revocation rules (#193) and the "persist the JTI before sending" rule
+// (#192) cannot diverge. It returns the expiry of the token it sent.
+//
+// Errors: ws.ErrRenewStop when the agent is gone or revoked (nothing was sent, do not retry);
+// errRekeyNotSent otherwise (read-only state, no connection, ...: nothing sent, may be retried).
+// The JWT itself is never logged, the JTI only truncated.
+func issueRekey(ctx context.Context, hostname, jwtSecret string, jwtTTL time.Duration) (time.Time, error) {
 	if adminStore == nil {
-		return false
+		return time.Time{}, errRekeyNotSent
 	}
 
 	// Fetch agent's public key from DB
 	agent, err := adminStore.GetAgent(ctx, hostname)
 	if err != nil || agent == nil {
 		log.Printf("sendRekeyToAgent: GetAgent %q: err=%v found=%v", hostname, err, agent != nil)
-		return false
+		if err == nil {
+			return time.Time{}, fmt.Errorf("%w: unknown agent", ws.ErrRenewStop)
+		}
+		return time.Time{}, errRekeyNotSent
 	}
 
 	if agent.Revoked { // a revoked host never gets a new token (#193)
 		log.Printf("[SECURITY WARNING] sendRekeyToAgent: %q is revoked, no token issued", hostname)
-		return false
+		return time.Time{}, fmt.Errorf("%w: revoked", ws.ErrRenewStop)
 	}
 
 	// Sign new JWT with the new current secret
 	rawJWT, newJTI, err := signAgentJWT(hostname, jwtSecret, jwtTTL)
 	if err != nil {
 		log.Printf("sendRekeyToAgent: signAgentJWT %q: %v", hostname, err)
-		return false
+		return time.Time{}, errRekeyNotSent
 	}
+	exp := time.Now().Add(effectiveJWTTTL(jwtTTL))
 
 	// Encrypt JWT with agent's RSA public key (RSAES-OAEP SHA-256)
 	tokenEncrypted, err := encryptWithPublicKey(rawJWT, agent.PublicKeyPEM)
 	if err != nil {
 		log.Printf("sendRekeyToAgent: encryptWithPublicKey %q: %v", hostname, err)
-		return false
+		return time.Time{}, errRekeyNotSent
 	}
 
 	// Persist the new JTI BEFORE sending the token: a token whose JTI is not stored would be refused
 	// at the next handshake (token_replaced), and the old one would stay valid. A refused write
 	// (read-only state, lost lock) therefore sends nothing (#192 audit).
-	if _, err := adminStore.UpdateTokenJTI(ctx, hostname, newJTI); err != nil {
+	// The revocation check and the write are one transaction: an agent revoked since the read above
+	// gets no new JTI (a renewal racing a revocation, #217).
+	found, err := adminStore.UpdateTokenJTIUnlessRevoked(ctx, hostname, newJTI)
+	if errors.Is(err, storage.ErrAgentRevoked) {
+		log.Printf("[SECURITY WARNING] sendRekeyToAgent: %q was revoked during the renewal, no token issued", hostname)
+		return time.Time{}, fmt.Errorf("%w: revoked", ws.ErrRenewStop)
+	}
+	if err != nil {
 		log.Printf("sendRekeyToAgent: UpdateTokenJTI %q: %v — rekey not sent", hostname, err)
-		return false
+		return time.Time{}, errRekeyNotSent
+	}
+	if !found {
+		return time.Time{}, fmt.Errorf("%w: unknown agent", ws.ErrRenewStop)
 	}
 
 	// Send rekey message over WebSocket (no task_id — control message)
@@ -209,18 +242,35 @@ func sendRekeyToAgent(ctx context.Context, hostname, jwtSecret string, jwtTTL ti
 	}
 	if err := sendToAgentFn(hostname, rekeyMsg); err != nil {
 		log.Printf("sendRekeyToAgent: SendToAgent %q: %v", hostname, err)
-		return false
+		return time.Time{}, errRekeyNotSent
 	}
 
-	log.Printf("Rekey sent to agent: hostname=%q jti=%q", hostname, newJTI)
-	return true
+	log.Printf("Rekey sent to agent: hostname=%q jti=%q", hostname, truncateJTI(newJTI))
+	return exp, nil
+}
+
+// truncateJTI keeps the first 8 characters of a JTI for the logs.
+func truncateJTI(jti string) string {
+	if len(jti) > 8 {
+		return jti[:8] + "…"
+	}
+	return jti
+}
+
+// DefaultAgentJWTTTL is the lifetime of an agent JWT when AGENT_JWT_TTL is not set (#217).
+const DefaultAgentJWTTTL = 24 * time.Hour
+
+// effectiveJWTTTL maps the zero value to the default lifetime.
+func effectiveJWTTTL(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		return DefaultAgentJWTTTL
+	}
+	return ttl
 }
 
 // signAgentJWT signs a fresh agent JWT and returns (rawJWT, jti, error).
 func signAgentJWT(hostname, jwtSecret string, ttl time.Duration) (string, string, error) {
-	if ttl == 0 {
-		ttl = time.Hour
-	}
+	ttl = effectiveJWTTTL(ttl)
 	jti := uuid.New().String()
 	now := time.Now()
 	claims := jwt.MapClaims{
@@ -422,6 +472,22 @@ func RekeyAgent(hostname string) bool {
 	server.mu.RUnlock()
 
 	return sendRekeyToAgent(context.Background(), hostname, jwtSecret, jwtTTL)
+}
+
+// RenewAgentJWT is the function injected into ws.SetRenewal (#217): it sends the connected agent a
+// fresh JWT in a "rekey" frame (same format as the rotation) and returns its expiry. A revoked or
+// unknown agent gets nothing and ws.ErrRenewStop; a read-only state gets nothing and a retryable error.
+func RenewAgentJWT(hostname string) (time.Time, error) {
+	server.mu.RLock()
+	jwtSecret := server.JWTSecret
+	jwtTTL := server.JWTttl
+	server.mu.RUnlock()
+
+	exp, err := issueRekey(context.Background(), hostname, jwtSecret, jwtTTL)
+	if err != nil && !errors.Is(err, ws.ErrRenewStop) {
+		log.Printf("[WARN] agent JWT renewal skipped: hostname=%q (state read-only or agent not reachable): will retry", hostname)
+	}
+	return exp, err
 }
 
 // ========================================================================

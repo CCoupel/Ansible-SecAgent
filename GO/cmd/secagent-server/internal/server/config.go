@@ -62,6 +62,12 @@ type Config struct {
 	// PurgeInterval is the period of the blacklist purge task (0 = one hour). TEST SEAM.
 	PurgeInterval time.Duration
 
+	// AgentJWTTTL is AGENT_JWT_TTL: the lifetime of the JWT issued to agents (0 = 24 h) and
+	// AgentJWTRenewInterval AGENT_JWT_RENEW_INTERVAL: the period of its renewal over the open
+	// WebSocket (0 = TTL/3). Validated by ResolveAgentJWT (#217).
+	AgentJWTTTL           time.Duration
+	AgentJWTRenewInterval time.Duration
+
 	// Listen addresses; empty = the defaults above.
 	APIAddr   string
 	AdminAddr string
@@ -136,6 +142,52 @@ type Config struct {
 	MaxStdoutBufferTotal int64
 }
 
+// Environment variables of the agent JWT lifetime and renewal (#217).
+const (
+	EnvAgentJWTTTL           = "AGENT_JWT_TTL"
+	EnvAgentJWTRenewInterval = "AGENT_JWT_RENEW_INTERVAL"
+
+	// MaxAgentJWTTTL bounds AGENT_JWT_TTL: a longer life widens the window of a stolen token and the
+	// blacklist that must outlive it.
+	MaxAgentJWTTTL = 7 * 24 * time.Hour
+)
+
+// ResolveAgentJWT applies the defaults (TTL 24 h, interval TTL/3) and validates the pair: TTL in
+// ]0, 7 days], interval > 0 and at most TTL/2 (so a token is renewed at least twice before it
+// expires: one missed renewal does not lose the agent).
+func ResolveAgentJWT(ttl, interval time.Duration) (time.Duration, time.Duration, error) {
+	if ttl == 0 {
+		ttl = handlers.DefaultAgentJWTTTL
+	}
+	if ttl < 0 || ttl > MaxAgentJWTTTL {
+		return 0, 0, fmt.Errorf("%s: %s is out of range (must be > 0 and at most %s)", EnvAgentJWTTTL, ttl, MaxAgentJWTTTL)
+	}
+	if interval == 0 {
+		interval = ttl / 3
+	}
+	if interval <= 0 {
+		return 0, 0, fmt.Errorf("%s: %s must be > 0", EnvAgentJWTRenewInterval, interval)
+	}
+	if interval*2 > ttl {
+		return 0, 0, fmt.Errorf("%s: %s is too long for %s=%s (the interval must be at most half of the TTL)", EnvAgentJWTRenewInterval, interval, EnvAgentJWTTTL, ttl)
+	}
+	return ttl, interval, nil
+}
+
+// envDuration reads a Go duration variable ("" = unset = 0; "0s" is kept as 0 ONLY when unset: an
+// explicit zero is refused by the callers).
+func envDuration(name string) (time.Duration, bool, error) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return 0, false, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, true, fmt.Errorf("%s: %q is not a duration (for example 24h, 90m)", name, v)
+	}
+	return d, true, nil
+}
+
 // Environment variables of the task admission limits (#179).
 const (
 	EnvMaxTasksPerAgent     = "MAX_TASKS_PER_AGENT"
@@ -188,6 +240,9 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, terr
 	}
 	if cfg.MasterKey, terr = secretenv.Get("RSA_MASTER_KEY"); terr != nil {
+		return Config{}, terr
+	}
+	if terr = state.ValidateMasterKeyLength(cfg.MasterKey); terr != nil { // #214: refused at the start, never logged
 		return Config{}, terr
 	}
 	if cfg.TLSDisable, terr = envStrictBool(EnvTLSDisable); terr != nil {
@@ -255,6 +310,21 @@ func ConfigFromEnv() (Config, error) {
 	} else {
 		cfg.MaxTasksInflight = int(n)
 	}
+	ttl, ttlSet, err := envDuration(EnvAgentJWTTTL)
+	if err != nil {
+		return Config{}, err
+	}
+	interval, intervalSet, err := envDuration(EnvAgentJWTRenewInterval)
+	if err != nil {
+		return Config{}, err
+	}
+	if (ttlSet && ttl == 0) || (intervalSet && interval == 0) {
+		return Config{}, fmt.Errorf("%s / %s: an explicit zero duration is refused (unset the variable for the default)", EnvAgentJWTTTL, EnvAgentJWTRenewInterval)
+	}
+	if _, _, err := ResolveAgentJWT(ttl, interval); err != nil {
+		return Config{}, err
+	}
+	cfg.AgentJWTTTL, cfg.AgentJWTRenewInterval = ttl, interval
 	if cfg.JWTSecret == "" {
 		return Config{}, ErrMissingJWTSecret
 	}
