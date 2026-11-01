@@ -87,7 +87,7 @@
 
 | Etape | Action | Resultat Attendu | Resultat Obtenu | OK ? |
 |-------|--------|-----------------|----------------|------|
-| 1 | Provoquer le refus du scenario 4 etape 2 sur un deploiement existant a cle courte | Le message dit : la longueur actuelle, le minimum, la commande de generation, la commande `state rekey` a lancer **avant** la montee de version | | |
+| 1 | Provoquer le refus du scenario 4 etape 2 sur un deploiement existant a cle courte | Le message dit : que la cle est trop courte, le minimum (32 octets), la commande de generation, la commande `state rekey` a lancer **avant** la montee de version. Il ne donne **volontairement pas** la longueur actuelle de la cle (ni aucun element derive de la cle : revue securite M5) | | |
 | 2 | Suivre le remede tel que decrit | Le deploiement redemarre avec la nouvelle cle | | |
 
 **Verdict** : [ ] PASS  [ ] FAIL
