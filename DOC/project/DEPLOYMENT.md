@@ -246,6 +246,16 @@ Coût équivalent à une montée de version complète : à répéter en qualific
 
 Jusqu'à la v3.0.3 incluse (et depuis v1.0.0), le serveur API coupait la réponse de tout `exec`, `upload` ou `fetch` bloquant plus de 15 s (`WriteTimeout`) : la tâche s'exécutait sur l'agent mais le plugin voyait une connexion rompue (`bad record MAC` en TLS). La v3.0.4 étend la deadline d'écriture à `timeout + 35 s` pour ces trois routes ; aucune configuration n'est nécessaire. Si vous restez en v3.0.3, un contournement partiel consiste à garder les tâches sous 15 s.
 
+## Montée de version v3.0.4 → v3.0.5 (JWT d'agent renouvelés, clé maître contrôlée)
+
+Aucune rupture de lien ni d'agent. Trois précautions **avant** de démarrer le binaire v3.0.5 :
+
+1. **Qualité de `RSA_MASTER_KEY` (#214)** : v3.0.5 refuse de démarrer avec une clé de moins de 32 octets ou prévisible (caractère/motif répété, moins de 12 caractères distincts). Vérifier la clé avant la montée (longueur : `wc -c` du fichier `RSA_MASTER_KEY_FILE`, newline final non compté) ; si elle est trop courte, exécuter d'abord `secagent-server state rekey` avec le binaire **v3.0.4** (nœuds arrêtés, nouvelle clé `openssl rand -base64 48` en `NEW_RSA_MASTER_KEY_FILE`, voir 6 bis ci-dessus) puis déployer la nouvelle clé sur tous les nœuds.
+2. **Sauvegarde de `STATE_DIR` (nœuds arrêtés ou non : `relay.state` est remplacé atomiquement)** : `install -m 0600 "$STATE_DIR/relay.state" /chemin/hors-STATE_DIR/relay.state.pre-v305.$(date -u +%Y%m%dT%H%M%SZ)` sur chaque relais (avec `RSA_MASTER_KEY_FILE`, `secagent-server state verify <copie>` doit répondre `verdict: OK`). La sauvegarde est lisible avec la clé maître : même protection que `relay.state`.
+3. **Variables** : `AGENT_JWT_TTL` (défaut 24 h) et `AGENT_JWT_RENEW_INTERVAL` (défaut TTL/3) ne demandent rien ; créer un jeton d'enrôlement réutilisable (voir « Agents après un redémarrage de relay »).
+
+**Retour arrière vers v3.0.4** : à partir du premier renouvellement ou de la première rotation, l'état contient `prev_token_jti` et un binaire v3.0.4 ne sait plus le lire (il peut même basculer en silence sur `relay.state.prev`, plus ancien : `STATE_SPEC.md`). Procédure : arrêter **tous** les nœuds du relais, `secagent-server state restore --from <sauvegarde pre-v305> --state-dir "$STATE_DIR"` (vérifie le HMAC, sauvegarde l'état courant, écriture atomique), démarrer les binaires v3.0.4 avec la **même** clé maître (ou celle de la sauvegarde si `state rekey` a eu lieu entre-temps). **Perte** : tout ce que l'état contenait de plus récent que la sauvegarde — agents enrôlés, révocations, jetons créés, clés de signature de lien. Les agents dont le JWT a été renouvelé depuis ont un JTI inconnu de l'état restauré : ils reçoivent 401 et se ré-enrôlent (jeton réutilisable indispensable, sinon code 78). Noter avant le retour arrière les révocations à ré-appliquer.
+
 ## Gestion des Tokens Relay (v3.0.4)
 
 ### Créer un jeton de lien (sur la racine uniquement)
