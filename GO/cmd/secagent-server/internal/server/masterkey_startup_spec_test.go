@@ -1,0 +1,108 @@
+package server
+
+// #214 (v3.0.5, D2) — the server REFUSES TO START with an RSA_MASTER_KEY shorter than 32 bytes
+// (configuration read or Build, whichever the implementation chose: the contract is "the start is
+// refused before anything is served"), with the remedy in the message, the key nowhere in the logs,
+// and the state untouched. A key of 32 bytes or more starts the node as before.
+
+import (
+	"bytes"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"secagent-server/cmd/secagent-server/internal/state"
+)
+
+// startWithMasterKey drives the real start sequence (ConfigFromEnv then Build) with key as
+// RSA_MASTER_KEY over stateDir, and returns the refusal (nil when the node was built) plus the logs.
+func startWithMasterKey(t *testing.T, stateDir, key string) (error, string) {
+	t.Helper()
+	setServerEnv(t)
+	t.Setenv("RSA_MASTER_KEY", key)
+	t.Setenv("STATE_DIR", stateDir)
+	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
+	t.Setenv("RELAY_ACTION_LOG", t.TempDir()+"/actions.log")
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		return err, buf.String()
+	}
+	cfg.AdminAddr = "127.0.0.1:0"
+	cfg.WriteGuard = allowWrites
+	n, err := Build(cfg)
+	if err == nil {
+		n.Close()
+	}
+	return err, buf.String()
+}
+
+func newLongKeyState(t *testing.T, key string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := state.Init(state.InitOptions{Dir: dir, MasterKey: key, RSABits: 2048}); err != nil {
+		t.Fatalf("fixture state: %v", err)
+	}
+	return dir
+}
+
+// (critical) short key: refused, remedy present, key not in the error nor in the logs, state untouched.
+func TestSpec214_ServerRefusesToStartWithAShortMasterKey(t *testing.T) {
+	long := strings.Repeat("L", 48)
+	dir := newLongKeyState(t, long)
+	before, err := os.ReadFile(filepath.Join(dir, state.StateFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []int{8, 31} {
+		short := strings.Repeat("s", n)
+		err, logs := startWithMasterKey(t, dir, short)
+		if err == nil {
+			t.Fatalf("%d-byte RSA_MASTER_KEY: the server must refuse to start", n)
+		}
+		for _, want := range []string{"RSA_MASTER_KEY", "32", "openssl rand -base64 48", "state rekey"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%d bytes: the refusal must contain %q: %v", n, want, err)
+			}
+		}
+		if strings.Contains(err.Error(), short) || strings.Contains(logs, short) {
+			t.Errorf("%d bytes: the key leaks (error %q, logs %q)", n, err, logs)
+		}
+		after, _ := os.ReadFile(filepath.Join(dir, state.StateFile))
+		if !bytes.Equal(before, after) {
+			t.Errorf("%d bytes: relay.state changed on a refused start", n)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, state.LockFile)); statErr == nil {
+			t.Errorf("%d bytes: a refused start must not take the master lock", n)
+		}
+	}
+}
+
+// 32 bytes and more start (the state of a v3.0.4 deployment with such a key is read unchanged).
+func TestSpec214_ServerStartsWithA32BytesOrLongerMasterKey(t *testing.T) {
+	for _, n := range []int{32, 48} {
+		key := strings.Repeat("K", n)
+		dir := newLongKeyState(t, key)
+		if err, logs := startWithMasterKey(t, dir, key); err != nil {
+			t.Errorf("%d bytes: the server must start: %v\n%s", n, err, logs)
+		} else if strings.Contains(logs, key) {
+			t.Errorf("%d bytes: the master key is in the logs", n)
+		}
+	}
+}
+
+// The key is never in the logs of a normal start either (RSA_MASTER_KEY and its _FILE variant).
+func TestSpec214_MasterKeyIsNeverLoggedAtStart(t *testing.T) {
+	key := strings.Repeat("Z", 40)
+	dir := newLongKeyState(t, key)
+	if err, logs := startWithMasterKey(t, dir, key); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(logs, key) || strings.Contains(logs, "ZZZZZZZZ") {
+		t.Errorf("the master key (or a fragment) is in the start logs:\n%s", logs)
+	}
+}
