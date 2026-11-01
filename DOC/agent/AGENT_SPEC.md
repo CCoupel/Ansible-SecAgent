@@ -370,12 +370,17 @@ Les tâches Ansible **ne reçoivent PAS** l'environnement complet du minion. Une
 
 Le minion gère automatiquement le ré-enrôlement en cas de token JWT expiré ou révoqué :
 
-1. **HTTP 401 à l'upgrade WebSocket** (JWT expiré, invalide ou rejeté) → le JWT local est supprimé, appel à `POST /api/register` (enrollment, avec `RELAY_ENROLLMENT_TOKEN`) → nouveau JWT → reconnexion WS. Aucun code de fermeture WebSocket ne déclenche un ré-enrôlement
+1. **HTTP 401 à l'upgrade WebSocket** (JWT expiré, invalide, remplacé ou rejeté). Le relais répond toujours le même 401 au motif masqué (JWT expiré, remplacé, hôte révoqué) : le minion ne les distingue pas.
+   - **Réessais d'abord (v3.0.5)** : le minion **garde son JWT** (et `token.jwt`) et réessaie jusqu'à **3 fois** avec backoff exponentiel (12 s, 24 s, 48 s, jitter ±20 %, soit ≥ 67 s au pire), plus long que la sonde du relais (~5 s) et que son délai de pong (~60 s) : un 401 transitoire (le relais juge encore vivante l'ancienne connexion) se résorbe sans consommer de jeton d'enrôlement. Le JWT n'est jamais journalisé.
+   - **Borné** : un agent révoqué ne boucle pas ; après les 3 réessais, comportement ci-dessous. Une révocation d'une connexion ouverte (fermeture 4001) arrête le minion (code 77) sans aucun réessai. Un JWT tout juste obtenu par ré-enrôlement n'est pas réessayé.
+   - **Ensuite** : le JWT local est supprimé, appel à `POST /api/register` (enrollment, avec `RELAY_ENROLLMENT_TOKEN`) → nouveau JWT → reconnexion WS. Aucun code de fermeture WebSocket ne déclenche un ré-enrôlement
 2. **Message `rekey`** (rotation ou renouvellement périodique, §4) → le minion déchiffre `token_encrypted`, persiste puis adopte le nouveau JWT et garde la connexion ouverte (pas de ré-enrôlement) ; une trame invalide est ignorée sans couper la connexion
 3. **Échec corrigible d'enrôlement** (réseau, 400, 5xx, coupure après envoi de la requête) → nouveau tour après un backoff exponentiel : **1 s → 2 s → 4 s → … → 60 s max**, en passant à l'adresse suivante de `RELAY_SERVER_URL`
    - Un jeton à usage unique n'est jamais rejoué sur une autre adresse une fois la requête partie
    - Si le serveur accepte le ré-enrôlement mais refuse encore le JWT à l'upgrade, un message `[ERROR] N consecutive authentication cycles without a working WebSocket…` est journalisé et le minion continue avec backoff
 4. **HTTP 403 à l'enrôlement** (jeton invalide, expiré ou déjà consommé) ou **absence de `RELAY_ENROLLMENT_TOKEN`** → **refus permanent, aucun retry** : sortie avec le code **78**. **NE PAS redémarrer** (voir codes sortie §7) ; l'opérateur crée un nouveau jeton d'enrôlement
+
+**Pings du relais** : le minion n'applique aucun délai de lecture sur la WebSocket (une connexion qui ne reçoit que des pings reste ouverte) et répond à chaque ping par un pong (`WriteControl`, sans bloquer la boucle de lecture derrière une écriture en cours).
 
 ---
 
