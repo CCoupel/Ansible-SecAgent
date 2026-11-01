@@ -17,6 +17,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -578,4 +579,143 @@ type mockReEnroller struct {
 
 func (m *mockReEnroller) ReEnroll(ctx context.Context) (string, error) {
 	return m.jwt, m.err
+}
+
+// ============================================================================
+// handleRekey — robustesse (#217)
+// ============================================================================
+
+func newRekeyDispatcher(t *testing.T, jwtPath string) (*Dispatcher, *rsa.PrivateKey) {
+	t.Helper()
+	key := generateTestKey2048(t)
+	d := NewDispatcher(ConnConfig{JWT: "old-jwt", Insecure: true}, nil).
+		WithEnrollConfig(EnrollConfig{PrivateKey: key, JWTPath: jwtPath})
+	return d, key
+}
+
+func rekeyFrame(t *testing.T, key *rsa.PrivateKey, jwt string) []byte {
+	t.Helper()
+	b, err := json.Marshal(map[string]string{"type": "rekey", "token_encrypted": encryptJWT(t, &key.PublicKey, jwt)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// Le JWT est déjà sur disque (0600) au moment où updateJWT est appelé.
+func TestHandleRekeyPersistsBeforeUse(t *testing.T) {
+	path := t.TempDir() + "/token.jwt"
+	d, key := newRekeyDispatcher(t, path)
+
+	var onDiskAtUse string
+	orig := decryptAndSaveToken
+	defer func() { decryptAndSaveToken = orig }()
+	decryptAndSaveToken = func(enc string, k *rsa.PrivateKey, p string) (string, error) {
+		jwt, err := defaultDecryptAndSaveToken(enc, k, p)
+		// Au retour, le dispatcher n'a pas encore adopté le JWT : il est déjà persisté.
+		if b, rerr := os.ReadFile(p); rerr == nil {
+			onDiskAtUse = string(b)
+		}
+		if d.currentJWT() != "old-jwt" {
+			t.Errorf("JWT adopted before persistence returned")
+		}
+		return jwt, err
+	}
+
+	d.handleRekey(rekeyFrame(t, key, "renewed-1"))
+
+	if onDiskAtUse != "renewed-1" {
+		t.Errorf("on-disk JWT before use: got %q", onDiskAtUse)
+	}
+	if d.currentJWT() != "renewed-1" {
+		t.Errorf("current JWT: got %q", d.currentJWT())
+	}
+	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("token.jwt mode: %v %v", fi, err)
+	}
+}
+
+// Trames malformées : aucune panique, JWT inchangé, compteur inchangé.
+func TestHandleRekeyMalformedKeepsJWT(t *testing.T) {
+	path := t.TempDir() + "/token.jwt"
+	d, key := newRekeyDispatcher(t, path)
+	otherKey := generateTestKey2048(t)
+
+	cases := map[string][]byte{
+		"not json":        []byte("{not json"),
+		"token is number": []byte(`{"type":"rekey","token_encrypted":42}`),
+		"missing token":   []byte(`{"type":"rekey"}`),
+		"empty token":     []byte(`{"type":"rekey","token_encrypted":""}`),
+		"bad base64":      []byte(`{"type":"rekey","token_encrypted":"!!!"}`),
+		"wrong key":       rekeyFrame(t, otherKey, "x"),
+		"empty plaintext": rekeyFrame(t, key, ""),
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			d.handleRekey(raw)
+			if d.currentJWT() != "old-jwt" {
+				t.Errorf("JWT changed: %q", d.currentJWT())
+			}
+			if n := d.rekeyCount.Load(); n != 0 {
+				t.Errorf("rekeyCount: %d", n)
+			}
+			if _, err := os.Stat(path); err == nil {
+				t.Errorf("token.jwt written on invalid frame")
+			}
+		})
+	}
+}
+
+// Deux rekey successifs : le dernier gagne, le compteur vaut 2, le disque suit.
+func TestHandleRekeyTwoSuccessive(t *testing.T) {
+	path := t.TempDir() + "/token.jwt"
+	d, key := newRekeyDispatcher(t, path)
+
+	d.handleRekey(rekeyFrame(t, key, "renewed-1"))
+	d.handleRekey([]byte("{garbage")) // entre deux : sans effet
+	d.handleRekey(rekeyFrame(t, key, "renewed-2"))
+
+	if d.currentJWT() != "renewed-2" {
+		t.Errorf("current JWT: %q", d.currentJWT())
+	}
+	if b, _ := os.ReadFile(path); string(b) != "renewed-2" {
+		t.Errorf("on-disk JWT: %q", b)
+	}
+	if n := d.rekeyCount.Load(); n != 2 {
+		t.Errorf("rekeyCount: %d", n)
+	}
+}
+
+// Échec d'écriture : le JWT est adopté en mémoire (l'ancien JTI est remplacé côté serveur).
+func TestHandleRekeyPersistFailureKeptInMemory(t *testing.T) {
+	dir := t.TempDir()
+	blocker := dir + "/file"
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, key := newRekeyDispatcher(t, blocker+"/sub/token.jwt") // parent = fichier : MkdirAll échoue
+
+	d.handleRekey(rekeyFrame(t, key, "renewed-mem"))
+
+	if d.currentJWT() != "renewed-mem" {
+		t.Errorf("current JWT: %q", d.currentJWT())
+	}
+}
+
+// Le journal ne contient jamais le JWT.
+func TestHandleRekeyNeverLogsToken(t *testing.T) {
+	var buf strings.Builder
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	d, key := newRekeyDispatcher(t, t.TempDir()+"/token.jwt")
+
+	d.handleRekey(rekeyFrame(t, key, "SECRET-JWT-VALUE"))
+	d.handleRekey([]byte(`{"type":"rekey","token_encrypted":"SECRET-JWT-VALUE"}`))
+
+	if strings.Contains(buf.String(), "SECRET-JWT-VALUE") {
+		t.Errorf("JWT leaked in logs: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "renewal #1") {
+		t.Errorf("renewal counter missing from logs: %s", buf.String())
+	}
 }

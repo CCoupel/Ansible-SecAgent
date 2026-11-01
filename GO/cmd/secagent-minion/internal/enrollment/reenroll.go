@@ -14,8 +14,20 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 )
+
+// PersistError signale que le JWT a été déchiffré mais n'a pas pu être écrit sur disque.
+// DecryptAndSaveToken retourne alors le JWT AVEC cette erreur : l'appelant peut l'adopter en
+// mémoire (le serveur a déjà remplacé le JTI, l'ancien JWT serait refusé en 401).
+type PersistError struct{ Err error }
+
+func (e *PersistError) Error() string { return "enrollment: persist rotated JWT: " + e.Err.Error() }
+func (e *PersistError) Unwrap() error { return e.Err }
+
+// ErrEmptyToken : le token_encrypted déchiffré est vide.
+var ErrEmptyToken = errors.New("enrollment: decrypted token is empty")
 
 // DecryptAndSaveToken déchiffre un token_encrypted (base64 RSA-OAEP) et persiste
 // le JWT résultant sur disque (JWTPath, mode 0600).
@@ -39,10 +51,14 @@ func DecryptAndSaveToken(tokenEncryptedB64 string, privKey *rsa.PrivateKey, jwtP
 		return "", fmt.Errorf("enrollment: RSA-OAEP decrypt token_encrypted: %w", err)
 	}
 	jwt := string(jwtBytes)
+	if jwt == "" {
+		return "", ErrEmptyToken
+	}
 
+	// Persistance AVANT tout usage par l'appelant.
 	if jwtPath != "" {
 		if err := writeSecret(jwtPath, jwtBytes); err != nil {
-			return "", fmt.Errorf("enrollment: persist rotated JWT: %w", err)
+			return jwt, &PersistError{Err: err}
 		}
 	}
 

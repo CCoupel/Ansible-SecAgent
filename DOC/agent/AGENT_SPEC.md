@@ -123,13 +123,19 @@ Limite : **500KB** décodé. Retourner `rc: 1, error: "payload_too_large"` si d�
 
 `SIGTERM` sur le subprocess associé au `task_id`. Le mapping `task_id → subprocess` est **interne à l'agent**, jamais exposé.
 
-### `rekey` — Rotation des clefs serveur
+### `rekey` — Remplacement du JWT (rotation et renouvellement périodique)
 
 ```json
-{ "type": "rekey" }
+{ "type": "rekey", "token_encrypted": "<base64(RSA-OAEP-SHA256(JWT))>" }
 ```
 
-Déclenche un ré-enrollment automatique : génère un nouvel enrollment token (via admin si possible) ou utilise le mécanisme de refresh token.
+Le serveur émet cette trame pour rotation de `JWT_SECRET_KEY` et, depuis v3.0.5 (#217), périodiquement pour renouveler le JWT avant son expiration. Le format de trame est inchangé. Le minion la traite en ligne (read loop, sans goroutine), connexion maintenue :
+
+1. déchiffre `token_encrypted` avec sa clef privée ;
+2. **persiste** le JWT dans `token.jwt` (0600) **avant** de l'adopter ;
+3. remplace son JWT courant (utilisé pour toute reconnexion).
+
+Robustesse : une trame malformée (JSON invalide, `token_encrypted` absent/vide/non base64, mauvaise clef, texte clair vide) est journalisée et ignorée — le JWT et la connexion sont inchangés. Si l'écriture de `token.jwt` échoue, le JWT est tout de même adopté en mémoire (le serveur a déjà remplacé le JTI : l'ancien JWT serait refusé en 401) et `[ERROR] rekey: new JWT not persisted` est journalisé. Le journal indique un compteur de renouvellements (`renewal #N`), jamais le jeton.
 
 ---
 
@@ -365,7 +371,7 @@ Les tâches Ansible **ne reçoivent PAS** l'environnement complet du minion. Une
 Le minion gère automatiquement le ré-enrôlement en cas de token JWT expiré ou révoqué :
 
 1. **HTTP 401 à l'upgrade WebSocket** (JWT expiré, invalide ou rejeté) → le JWT local est supprimé, appel à `POST /api/register` (enrollment, avec `RELAY_ENROLLMENT_TOKEN`) → nouveau JWT → reconnexion WS. Aucun code de fermeture WebSocket ne déclenche un ré-enrôlement
-2. **Message `rekey`** → le minion déchiffre `token_encrypted`, remplace son JWT et garde la connexion ouverte (pas de ré-enrôlement)
+2. **Message `rekey`** (rotation ou renouvellement périodique, §4) → le minion déchiffre `token_encrypted`, persiste puis adopte le nouveau JWT et garde la connexion ouverte (pas de ré-enrôlement) ; une trame invalide est ignorée sans couper la connexion
 3. **Échec corrigible d'enrôlement** (réseau, 400, 5xx, coupure après envoi de la requête) → nouveau tour après un backoff exponentiel : **1 s → 2 s → 4 s → … → 60 s max**, en passant à l'adresse suivante de `RELAY_SERVER_URL`
    - Un jeton à usage unique n'est jamais rejoué sur une autre adresse une fois la requête partie
    - Si le serveur accepte le ré-enrôlement mais refuse encore le JWT à l'upgrade, un message `[ERROR] N consecutive authentication cycles without a working WebSocket…` est journalisé et le minion continue avec backoff

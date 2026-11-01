@@ -237,6 +237,8 @@ type Dispatcher struct {
 	reconnectBase, reconnectMax float64
 	// connected est vrai quand la dernière connexion a abouti (handshake WS réussi).
 	connected atomic.Bool
+	// rekeyCount compte les JWT renouvelés par rekey depuis le démarrage (journal : jamais le jeton).
+	rekeyCount atomic.Uint64
 
 	// wsRotor ordonne les adresses WS ; enrollRotor (EnrollConfig.Rotor) celles d'enrôlement. Les
 	// deux listes sont appariées par position : la dernière bonne instance est partagée.
@@ -346,6 +348,38 @@ func (d *Dispatcher) updateJWT(token string) {
 	d.jwtMu.Lock()
 	defer d.jwtMu.Unlock()
 	d.jwt = token
+}
+
+// handleRekey traite une trame rekey (rotation ou renouvellement périodique, #217). Toute anomalie
+// est journalisée sans couper la connexion ; le JWT n'apparaît jamais dans les journaux.
+// Ordre : déchiffrement → persistance (token.jwt, 0600) → updateJWT. Si la persistance échoue,
+// le JWT est tout de même adopté en mémoire : le serveur a déjà remplacé le JTI, l'ancien JWT
+// serait refusé en 401 à la reconnexion.
+func (d *Dispatcher) handleRekey(raw []byte) {
+	var msg RekeyMsg
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		log.Printf("[WS] Bad rekey message: %v", err)
+		return
+	}
+	if msg.TokenEncrypted == "" {
+		log.Printf("[WS] Bad rekey message: empty token_encrypted")
+		return
+	}
+	if d.enrollCfg.PrivateKey == nil {
+		log.Printf("[SECURITY] rekey received but no private key configured — ignoring")
+		return
+	}
+	newJWT, err := decryptAndSaveToken(msg.TokenEncrypted, d.enrollCfg.PrivateKey, d.enrollCfg.JWTPath)
+	if err != nil {
+		var pe *enrollment.PersistError
+		if !errors.As(err, &pe) || newJWT == "" {
+			log.Printf("[SECURITY] rekey: failed to decrypt new token: %v", err)
+			return
+		}
+		log.Printf("[ERROR] rekey: new JWT not persisted (%v) — kept in memory only", pe.Err)
+	}
+	d.updateJWT(newJWT)
+	log.Printf("[SECURITY] JWT rotated — new token received (renewal #%d)", d.rekeyCount.Add(1))
 }
 
 // Run ouvre la connexion WebSocket et entre dans la boucle de lecture.
@@ -647,22 +681,7 @@ func (d *Dispatcher) serve(ctx context.Context, conn *websocket.Conn, host strin
 			// Rotation JWT sans interruption de connexion (§22 ARCHITECTURE.md).
 			// Traité en-ligne (pas de goroutine) : le JWT doit être mis à jour
 			// immédiatement avant tout envoi ultérieur.
-			var msg RekeyMsg
-			if err := json.Unmarshal(raw, &msg); err != nil {
-				log.Printf("[WS] Bad rekey message: %v", err)
-				continue
-			}
-			if d.enrollCfg.PrivateKey == nil {
-				log.Printf("[SECURITY] rekey received but no private key configured — ignoring")
-				continue
-			}
-			newJWT, err := decryptAndSaveToken(msg.TokenEncrypted, d.enrollCfg.PrivateKey, d.enrollCfg.JWTPath)
-			if err != nil {
-				log.Printf("[SECURITY] rekey: failed to decrypt new token: %v", err)
-				continue
-			}
-			d.updateJWT(newJWT)
-			log.Printf("[SECURITY] JWT rotated — new token received")
+			d.handleRekey(raw)
 
 		case "exec":
 			var msg ExecMsg
