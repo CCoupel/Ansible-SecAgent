@@ -30,7 +30,7 @@
 ## À trancher / suivis
 - Écart CI C11 partiel : `scripts/ci.sh` (`commands.ci`) = jobs Go de `ci.yml`, pas encore appelé par `ci.yml` → alignement par `infra` en v3.0.5. Alerte modèle : `doc-updater` en haiku dans le template (CLAUDE.md exige sonnet : le passer au spawn).
 - Branches résiduelles (classement 2026-11-01) : `fix/admission-release-order` SURE ; à arbitrer : `backup/pre-trailer-1e310aa` (111 commits hors main, sans PR), `site-v304` (20 commits, sans PR — site gh-pages), 7 branches dependabot à PR ouverte (#227) ; `backup/milestone-v3.0.4-pre-merge-20261101` (locale).
-- Template : références `context/PROJECT_CONTEXT.md` cassées dans 5 fichiers `*.template.md` (non généré par `/init-project`) → correction côté template par l'utilisateur. Compagnon `security-reviewer` corrigé (`model: sonnet`, chemins relatifs, `af901d3`).
+- Template : références `context/PROJECT_CONTEXT.md` corrigées par le template v3.30.1 (sync 2026-11-01). Compagnon `security-reviewer` corrigé (`model: sonnet`, chemins relatifs, `af901d3`).
 - Réactiver le `schedule` de `failover.yml` (PR séparée). Visibilité des paquets GHCR (publics aujourd'hui).
 - Nettoyage qualif : jeton plugin `q4-qa` (8 h) et fichiers `/tmp/q4_*.mark` dans les minions ; `/tmp/qualif-v200` (v2) ; décision sur la suppression des volumes de la v2 (utilisateur).
 - Historique git : trois `.exe` obsolètes restent dans l'historique (purge `git filter-repo` = décision utilisateur, destructif).
