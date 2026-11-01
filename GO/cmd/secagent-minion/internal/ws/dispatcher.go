@@ -245,6 +245,9 @@ type Dispatcher struct {
 	persistMu            sync.Mutex
 	persistCancel        context.CancelFunc
 	persistRetryInterval time.Duration // 0 = persistRetryDefault
+	// persistPending : le JWT en mémoire n'est pas (encore) sur disque. Survit à la fermeture de
+	// la connexion : la relance reprend à la reconnexion (B9).
+	persistPending atomic.Bool
 
 	// wsRotor ordonne les adresses WS ; enrollRotor (EnrollConfig.Rotor) celles d'enrôlement. Les
 	// deux listes sont appariées par position : la dernière bonne instance est partagée.
@@ -389,6 +392,7 @@ func (d *Dispatcher) handleRekey(ctx context.Context, raw []byte) {
 		return
 	}
 	d.stopPersistRetry() // un rekey persisté remplace toute écriture en attente
+	d.persistPending.Store(false)
 	d.updateJWT(newJWT)
 	log.Printf("[SECURITY] JWT rotated — new token received (renewal #%d)", d.rekeyCount.Add(1))
 }
@@ -420,6 +424,7 @@ func (d *Dispatcher) startPersistRetry(ctx context.Context) {
 	if interval <= 0 {
 		interval = persistRetryDefault
 	}
+	d.persistPending.Store(true)
 	rctx, cancel := context.WithCancel(ctx)
 	d.persistMu.Lock()
 	if d.persistCancel != nil {
@@ -442,6 +447,7 @@ func (d *Dispatcher) startPersistRetry(ctx context.Context) {
 				log.Printf("[ERROR] rekey: JWT persistence retry failed: %v", err)
 				continue
 			}
+			d.persistPending.Store(false)
 			log.Printf("[SECURITY] rekey: JWT persisted after retry")
 			return
 		}
@@ -702,6 +708,11 @@ func (d *Dispatcher) serve(ctx context.Context, conn *websocket.Conn, host strin
 		case <-stopWatch:
 		}
 	}()
+
+	// Écriture du JWT encore en attente d'une connexion précédente (coupée pendant la relance).
+	if d.persistPending.Load() {
+		d.startPersistRetry(ctx)
+	}
 
 	reconnect.Reset()
 	d.connected.Store(true)
