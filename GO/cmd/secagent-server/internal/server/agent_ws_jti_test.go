@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
 // ── /ws/agent revocation check (#169) ────────────────────────────────────────
@@ -213,5 +214,42 @@ func TestAgentJTICheck_ReplacedJTIIsKeptUntilTheCurrentOneIsUsed(t *testing.T) {
 	}
 	if err := check("h", "j4", false); err == nil {
 		t.Error("an enrollment must drop the replaced JTI")
+	}
+}
+
+// N1 (#217): the replaced JTI is accepted only when the agent has no live connection; with one, the
+// handshake is refused and the live connection stays registered.
+func TestAgentJTICheck_ReplacedJTIIsRefusedWhileAConnectionIsLive(t *testing.T) {
+	st := newMemStore(t)
+	ctx := context.Background()
+	if _, err := st.RegisterAgent(ctx, "n1-host", "pem", "j1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpdateTokenJTIUnlessRevoked(ctx, "n1-host", "j2"); err != nil {
+		t.Fatal(err)
+	}
+	check := agentJTICheck(st)
+
+	live := &ws.AgentConnection{Hostname: "n1-host"}
+	ws.RegisterConnection("n1-host", live)
+	err := check("n1-host", "j1", false)
+	if err == nil || !strings.Contains(err.Error(), "token_replaced") {
+		t.Fatalf("the replaced JTI must be refused while a connection is live: %v", err)
+	}
+	if got, gerr := ws.GetConnection("n1-host"); gerr != nil || got != live {
+		t.Fatalf("the live connection must stay registered: %v", gerr)
+	}
+	if err := check("n1-host", "j2", false); err != nil { // the current JTI is always fine
+		t.Fatalf("current JTI: %v", err)
+	}
+	ws.UnregisterConnection("n1-host")
+
+	// no live connection: the agent that never got j2 can come back with j1
+	if _, err := st.RegisterAgent(ctx, "n1-host", "pem", "k1"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = st.UpdateTokenJTIUnlessRevoked(ctx, "n1-host", "k2")
+	if err := check("n1-host", "k1", true); err != nil {
+		t.Fatalf("without a live connection the replaced JTI is accepted: %v", err)
 	}
 }

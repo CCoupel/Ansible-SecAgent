@@ -207,7 +207,13 @@ func agentJTICheck(store *storage.Store) func(hostname, jti string, usedPrevious
 				}
 			}
 		case agent.PrevTokenJTI != "" && agent.PrevTokenJTI == jti:
-			// the agent still holds the JWT that was replaced and has not used the new one
+			// The agent still holds the JWT that was replaced and has not used the new one. That is only
+			// plausible when its connection is gone: while a live connection exists, the holder of the
+			// replaced JWT is not the agent that received the new one, and accepting it would replace the
+			// live connection (N1). The reason is logged, never sent.
+			if _, err := ws.GetConnection(hostname); err == nil {
+				return fmt.Errorf("token_replaced: replaced JTI refused while a live connection exists")
+			}
 		default:
 			return fmt.Errorf("token_replaced")
 		}
