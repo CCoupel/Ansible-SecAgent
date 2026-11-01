@@ -8,7 +8,7 @@
 - **Architecture v3.0.3** : relay actif/passif, un seul maître par STATE_DIR partagé (NFS), secondaires sans aucun port ; état = fichier `relay.state` (HMAC, secrets `enc:`) + `relay.lock` ; plus de SQLite, CGO, NATS, Caddy ni Kubernetes (K8s abandonné, #136 fermée). TLS natif (7770/7772), admin 7771 en boucle locale par défaut. Clients multi-adresses (`internal/endpoints`). Détail : `DOC/server/STATE_SPEC.md`, `SERVER_SPEC.md`, `DOC/security/SECURITY.md` (avis 1 à 3).
 - **Qualif** : 192.168.1.218 (srv8, Docker 29.2.1, accès `docker -H tcp://192.168.1.218:2375`, API non authentifiée = choix utilisateur sur son LAN). **Chaîne v3.0.3 EN SERVICE** (projet compose `secagent-qualif` : racine actif/passif a/b, enfant pull, minions). L'ancienne qualif v2 (projet `qualif`) est ARRÊTÉE (pas supprimée) et sauvegardée dans `/home/cyril/secagent-qualif-v2-backup-20261007-091343` (contient des secrets : ne jamais commiter). L'hôte héberge MooseFS (projet `chunks`, `/opt/MFS`) : **ne JAMAIS toucher**. Images de qualif par artefact de CI + `docker load` (`chain-test.sh load-images`), sans registre.
 - **Prod** : Docker Compose (`DEPLOYMENT/prod/`), `tag@sha256` obligatoire. **Hôte = 192.168.1.218** (même hôte que la qualif, choix utilisateur 2026-10-31), projet compose `secagent-prod-*` distinct, collisions de ports à vérifier. **Jamais déployée.** Accès enregistré dans `project-config.json` → `infrastructure.environments[].access`.
-- **Template Claude** : v3.29.1 (`3347a2e`, voir `.claude/project-config.json` → `template_version`).
+- **Template Claude** : v3.29.7 (`9bd723d`, voir `.claude/project-config.json` → `template_version`).
 
 ## Milestones GitHub
 - v3.0.0 à v3.0.3 fermés (v3.0.3 : 34 issues, #157 épique fermée).
@@ -26,7 +26,7 @@
 - `docker.exe` (Windows) seul disponible dans WSL ; il ne reçoit pas `DOCKER_HOST` : utiliser `-H`. Le démon Docker local est arrêté : ne pas le démarrer.
 
 ## À trancher / suivis
-- Écart CI C11 (template v3.29.1) : pas de script CI unique `commands.ci` → `infra` en v3.0.5. Alerte modèle : `doc-updater` en haiku dans le template (CLAUDE.md exige sonnet : le passer au spawn).
+- Écart CI C11 partiel : `scripts/ci.sh` (`commands.ci`) = jobs Go de `ci.yml`, pas encore appelé par `ci.yml` → alignement par `infra` en v3.0.5. Alerte modèle : `doc-updater` en haiku dans le template (CLAUDE.md exige sonnet : le passer au spawn).
 - Réactiver le `schedule` de `failover.yml` (PR séparée). Visibilité des paquets GHCR (publics aujourd'hui).
 - Nettoyage qualif : jeton plugin `q4-qa` (8 h) et fichiers `/tmp/q4_*.mark` dans les minions ; `/tmp/qualif-v200` (v2) ; décision sur la suppression des volumes de la v2 (utilisateur).
 - Historique git : trois `.exe` obsolètes restent dans l'historique (purge `git filter-repo` = décision utilisateur, destructif).

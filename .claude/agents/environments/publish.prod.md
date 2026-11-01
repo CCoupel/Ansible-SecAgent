@@ -7,8 +7,8 @@
 - Le workflow de pré-validation du projet est **`.github/workflows/ci.yml`** (déclenché sur push
   `milestone/**`), pas `ci-branch.yml` : remplacer `ci-branch.yml` par `ci.yml` dans les commandes
   `gh run list` / `gh workflow run` de la barrière.
-- Le script CI unique `commands.ci` (exigence C11) n'existe pas encore : écart consigné, à traiter par
-  `infra` en v3.0.5.
+- Script CI unique : `commands.ci` = `scripts/ci.sh` (C11 partiel : jobs Go de `ci.yml` seulement ; `ci.yml`
+  ne l'appelle pas encore, alignement à faire par `infra` en v3.0.5).
 
 ## Version
 
