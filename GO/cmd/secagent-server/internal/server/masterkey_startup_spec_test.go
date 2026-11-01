@@ -17,8 +17,8 @@ import (
 )
 
 // startWithMasterKey drives the real start sequence (ConfigFromEnv then Build) with key as
-// RSA_MASTER_KEY over stateDir, and returns the refusal (nil when the node was built) plus the logs.
-func startWithMasterKey(t *testing.T, stateDir, key string) (error, string) {
+// RSA_MASTER_KEY over stateDir, and returns the logs plus the refusal (nil when the node was built).
+func startWithMasterKey(t *testing.T, stateDir, key string) (string, error) {
 	t.Helper()
 	setServerEnv(t)
 	t.Setenv("RSA_MASTER_KEY", key)
@@ -31,7 +31,7 @@ func startWithMasterKey(t *testing.T, stateDir, key string) (error, string) {
 
 	cfg, err := ConfigFromEnv()
 	if err != nil {
-		return err, buf.String()
+		return buf.String(), err
 	}
 	cfg.AdminAddr = "127.0.0.1:0"
 	cfg.WriteGuard = allowWrites
@@ -39,7 +39,7 @@ func startWithMasterKey(t *testing.T, stateDir, key string) (error, string) {
 	if err == nil {
 		n.Close()
 	}
-	return err, buf.String()
+	return buf.String(), err
 }
 
 func newLongKeyState(t *testing.T, key string) string {
@@ -61,7 +61,7 @@ func TestSpec214_ServerRefusesToStartWithAShortMasterKey(t *testing.T) {
 	}
 	for _, n := range []int{8, 31} {
 		short := strings.Repeat("s", n)
-		err, logs := startWithMasterKey(t, dir, short)
+		logs, err := startWithMasterKey(t, dir, short)
 		if err == nil {
 			t.Fatalf("%d-byte RSA_MASTER_KEY: the server must refuse to start", n)
 		}
@@ -88,7 +88,7 @@ func TestSpec214_ServerStartsWithA32BytesOrLongerMasterKey(t *testing.T) {
 	for _, n := range []int{32, 48} {
 		key := varKey(n)
 		dir := newLongKeyState(t, key)
-		if err, logs := startWithMasterKey(t, dir, key); err != nil {
+		if logs, err := startWithMasterKey(t, dir, key); err != nil {
 			t.Errorf("%d bytes: the server must start: %v\n%s", n, err, logs)
 		} else if strings.Contains(logs, key) {
 			t.Errorf("%d bytes: the master key is in the logs", n)
@@ -100,7 +100,7 @@ func TestSpec214_ServerStartsWithA32BytesOrLongerMasterKey(t *testing.T) {
 func TestSpec214_MasterKeyIsNeverLoggedAtStart(t *testing.T) {
 	key := varKey(40)
 	dir := newLongKeyState(t, key)
-	if err, logs := startWithMasterKey(t, dir, key); err != nil {
+	if logs, err := startWithMasterKey(t, dir, key); err != nil {
 		t.Fatal(err)
 	} else if strings.Contains(logs, key) || strings.Contains(logs, "ZZZZZZZZ") {
 		t.Errorf("the master key (or a fragment) is in the start logs:\n%s", logs)

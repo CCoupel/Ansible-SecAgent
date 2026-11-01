@@ -124,7 +124,7 @@ func TestSpec217_I4_ReadOnlyStateEmitsNothingAndSaysSo(t *testing.T) {
 		t.Fatalf("read-only state: nothing may be sent (sent=%d)", len(r.sent))
 	}
 	logs := strings.ToLower(r.logs.String())
-	if !strings.Contains(logs, r.host) || !(strings.Contains(logs, "not sent") || strings.Contains(logs, "read-only") || strings.Contains(logs, "read only")) {
+	if !strings.Contains(logs, r.host) || (!strings.Contains(logs, "not sent") && !strings.Contains(logs, "read-only") && !strings.Contains(logs, "read only")) {
 		t.Errorf("the refusal must be explicit (host + not sent / read-only):\n%s", r.logs.String())
 	}
 	a, _ := registerStore.GetAgent(context.Background(), r.host)

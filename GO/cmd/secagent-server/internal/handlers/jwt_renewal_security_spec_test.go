@@ -136,7 +136,7 @@ func TestSecH2_ASendFailureAfterTheJTIWriteIsNeverASuccess(t *testing.T) {
 		t.Errorf("each issuance must attempt the send exactly once (2 calls, %d sends)", attempts)
 	}
 	logs := strings.ToLower(r.logs.String())
-	if !strings.Contains(logs, r.host) || !(strings.Contains(logs, "sendtoagent") || strings.Contains(logs, "not sent") || strings.Contains(logs, "failed")) {
+	if !strings.Contains(logs, r.host) || (!strings.Contains(logs, "sendtoagent") && !strings.Contains(logs, "not sent") && !strings.Contains(logs, "failed")) {
 		t.Errorf("the failure must be journalized with the host:\n%s", r.logs.String())
 	}
 	if strings.Contains(r.logs.String(), "eyJ") {
