@@ -106,3 +106,31 @@ func TestSpec214_MasterKeyIsNeverLoggedAtStart(t *testing.T) {
 		t.Errorf("the master key (or a fragment) is in the start logs:\n%s", logs)
 	}
 }
+
+// M6 (security review): a key read from RSA_MASTER_KEY_FILE is measured after the single trailing newline
+// is removed: 32 real bytes + "\n" are accepted, 31 + "\n" (32 bytes on disk) are refused.
+func TestSpec214_MasterKeyFileIsMeasuredWithoutItsTrailingNewline(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		content string
+		refused bool
+	}{
+		{"32 bytes + newline", strings.Repeat("f", 32) + "\n", false},
+		{"31 bytes + newline (32 on disk)", strings.Repeat("f", 31) + "\n", true},
+		{"32 bytes without newline", strings.Repeat("f", 32), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			setServerEnv(t)
+			path := filepath.Join(t.TempDir(), "master.key")
+			if err := os.WriteFile(path, []byte(c.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("RSA_MASTER_KEY", "")
+			t.Setenv("RSA_MASTER_KEY_FILE", path)
+			_, err := ConfigFromEnv()
+			if (err != nil) != c.refused {
+				t.Fatalf("refused=%v, want %v (%v)", err != nil, c.refused, err)
+			}
+		})
+	}
+}
