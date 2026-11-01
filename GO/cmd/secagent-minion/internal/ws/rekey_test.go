@@ -821,3 +821,67 @@ func TestHandleRekeyNewRekeyStopsPendingRetry(t *testing.T) {
 		t.Errorf("file %q", b)
 	}
 }
+
+// B9 : connexion coupée pendant une relance → la relance reprend à la reconnexion (serve).
+func TestPersistRetryResumesAfterReconnect(t *testing.T) {
+	path := t.TempDir() + "/token.jwt"
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.Close() }()
+		time.Sleep(500 * time.Millisecond)
+	}))
+	defer srv.Close()
+	key := generateTestKey2048(t)
+	d := NewDispatcher(ConnConfig{ServerURL: "ws" + strings.TrimPrefix(srv.URL, "http"), JWT: "old-jwt", Insecure: true}, nil).
+		WithEnrollConfig(EnrollConfig{PrivateKey: key, JWTPath: path})
+	d.persistRetryInterval = 10 * time.Millisecond
+
+	origDec := decryptAndSaveToken
+	defer func() { decryptAndSaveToken = origDec }()
+	decryptAndSaveToken = func(string, *rsa.PrivateKey, string) (string, error) {
+		return "renewed-b9", &enrollment.PersistError{Err: errors.New("ro")}
+	}
+	origPersist := persistToken
+	defer func() { persistToken = origPersist }()
+	var fail atomic.Bool
+	fail.Store(true)
+	var calls atomic.Int32
+	persistToken = func(p, jwt string) error {
+		calls.Add(1)
+		if fail.Load() {
+			return errors.New("ro")
+		}
+		return origPersist(p, jwt)
+	}
+
+	// 1re connexion : rekey en échec d'écriture, puis fermeture de la connexion.
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	d.handleRekey(ctx1, rekeyFrame(t, key, "x"))
+	waitFor(t, "first retries", func() bool { return calls.Load() >= 2 })
+	cancel1()
+	time.Sleep(40 * time.Millisecond)
+	n := calls.Load()
+	time.Sleep(60 * time.Millisecond)
+	if calls.Load() != n {
+		t.Fatalf("retry continued after connection close")
+	}
+	if !d.persistPending.Load() {
+		t.Fatal("pending flag lost on connection close")
+	}
+
+	// Reconnexion : serveur qui ferme aussitôt ; le disque redevient inscriptible.
+	fail.Store(false)
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	go func() { _ = d.Run(ctx2) }()
+
+	waitFor(t, "write after reconnect", func() bool { b, _ := os.ReadFile(path); return string(b) == "renewed-b9" })
+	if d.persistPending.Load() {
+		t.Error("pending flag not cleared after successful write")
+	}
+}
