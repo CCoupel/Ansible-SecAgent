@@ -146,6 +146,10 @@ func TestSecM1_ThePredecessorIsValidUntilTheCurrentJTIServedAHandshake(t *testin
 	origA := n.enrollAgent(hostA)
 	mA := connectMinionWithToken(t, n, hostA, origA)
 	waitRekeys(t, mA, 1) // current = f1, predecessor = origA; the next frame is ~4 s away
+	// N1: the predecessor is only accepted without a live connection: the agent lost its link
+	down := n.logs.count(`Agent disconnected: hostname=` + hostA)
+	_ = mA.conn.Close()
+	waitFor(t, "the server noticed the disconnection", func() bool { return n.logs.count(`Agent disconnected: hostname=`+hostA) > down })
 	if conn, code, body := dialAgent(t, n, origA); conn == nil {
 		t.Errorf("the predecessor of a never-used current JTI must be accepted (agent that missed its new JWT): %d %s", code, body)
 	} else {
@@ -224,4 +228,46 @@ func assertDeadlineWithin(t *testing.T, m map[string]any, afterCall time.Time, m
 	if d.After(afterCall.Add(max + time.Second)) {
 		t.Errorf("the grace deadline %s is beyond now + %s", d.Format(time.RFC3339), max)
 	}
+}
+
+// N1 (review 2): the predecessor JTI (generation n-1) is only accepted when NO WebSocket is alive for the host
+// (the agent that missed its new JWT, M2). While a connection is alive it is refused 401 (reason in the
+// journal only) and the live connection is NOT replaced; once the connection is gone it is accepted again.
+func TestSecN1_ThePredecessorIsRefusedWhileAConnectionIsAliveAndAcceptedWithoutOne(t *testing.T) {
+	parallel(t)
+	n := m1Node(t)
+	host := "n1-prev"
+	orig := n.enrollAgent(host)
+	m := connectMinionWithToken(t, n, host, orig)
+	waitRekeys(t, m, 1) // current = f1 (never used at a handshake), predecessor = orig; the next frame is ~4 s away
+
+	// 1. live connection: the predecessor is refused and nothing is replaced
+	base := replacedRefusals(n, host)
+	conn, code, body := dialAgent(t, n, orig)
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatal("N1: the predecessor was ACCEPTED while a connection is alive")
+	}
+	if code != http.StatusUnauthorized || strings.Contains(body, "replaced") {
+		t.Errorf("predecessor with a live connection: %d %q, want 401 without the reason in the body", code, body)
+	}
+	waitFor(t, "the refusal is journalized", func() bool {
+		return replacedRefusals(n, host) > base || n.logs.has("agent connection refused: hostname="+host)
+	})
+	if c, ended := m.closeCode(300 * time.Millisecond); ended {
+		t.Errorf("N1: the refused replay cut the live connection (close %d)", c)
+	}
+	if n.logs.has(`Replacing stale WS for hostname: "` + host + `"`) {
+		t.Error("N1: the refused replay replaced the live WebSocket")
+	}
+
+	// 2. the connection is gone: the agent that never got f1 comes back with the predecessor (M2)
+	disconnects := n.logs.count(`Agent disconnected: hostname=` + host)
+	_ = m.conn.Close()
+	waitFor(t, "the server noticed the disconnection", func() bool { return n.logs.count(`Agent disconnected: hostname=`+host) > disconnects })
+	c2, code, body := dialAgent(t, n, orig)
+	if c2 == nil {
+		t.Fatalf("N1/M2: without a live connection the predecessor must be accepted: %d %s", code, body)
+	}
+	_ = c2.Close()
 }
