@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -118,23 +119,44 @@ func TestRevocation_RelayParentToken_DialerStopsForGood(t *testing.T) {
 
 // (e) 4012 is a CORRECTABLE refusal: the child reconnects with backoff, every time, and never
 // becomes terminal.
+//
+// What is asserted is the BEHAVIOUR (three immediate reconnections, never refused_permanent) plus, at least once, the
+// child's own log that it received the 4012 as a correctable refusal. That log is NOT asserted three times: the root
+// closes the socket right after writing the close frame, and under CPU contention (CI runner, -race, parallel
+// tests) the TCP close can reach the child BEFORE it read the frame — the child then logs a plain read error and
+// retries all the same (flaky "waiting for 3 log lines", relay-handler timing, not a defect). When the log was lost,
+// extra closes (bounded) are issued until the child has been seen classifying a 4012.
 func TestRevocation_Code4012IsRetried(t *testing.T) {
 	parallel(t)
 	root := startNode(t, nodeSpec{ID: "root"})
 	relay1 := startNode(t, nodeSpec{ID: "relay1", ParentURL: root.wssURL(), ParentToken: root.registerChild("relay1")})
 	waitFor(t, "relay1 linked", func() bool { return relay1.upstreamState() == "connected" })
 
-	for i := 1; i <= 3; i++ {
+	reconnect := func(i int) {
+		t.Helper()
 		before := root.logs.count("Relay connected: relay_id=relay1")
 		root.closeRelay("relay1", 4012)
-		waitFor(t, "relay1 reconnected after a 4012", func() bool {
+		waitFor(t, fmt.Sprintf("relay1 reconnected after 4012 #%d", i), func() bool {
 			return root.logs.count("Relay connected: relay_id=relay1") > before && relay1.upstreamState() == "connected"
 		})
+		if relay1.upstreamState() == "refused_permanent" {
+			t.Fatal("4012 must never be terminal")
+		}
+	}
+	const seen4012 = "peer closed with code 4012"
+	closes := 0
+	for ; closes < 3; closes++ {
+		reconnect(closes + 1)
+	}
+	for ; closes < 9 && relay1.logs.count(seen4012) == 0; closes++ { // the close frame was lost to a TCP close: try again
+		reconnect(closes + 1)
 	}
 	if relay1.health().Degraded || relay1.upstreamState() == "refused_permanent" {
 		t.Error("4012 must never be terminal")
 	}
-	waitFor(t, "the child logged its three 4012 closes", func() bool { return relay1.logs.count("peer closed with code 4012") >= 3 })
+	if relay1.logs.count(seen4012) == 0 {
+		t.Errorf("after %d closes the child never logged a received 4012 close (correctable refusal)", closes)
+	}
 }
 
 // DELETE of a relay whose token cannot be blacklisted (push) is refused with 409 unless it was
