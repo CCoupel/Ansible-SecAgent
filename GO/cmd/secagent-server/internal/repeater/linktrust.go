@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +33,32 @@ var errUnverifiableKnownKey = errors.New("link_keys frame announcing the already
 // ErrAnchorMismatch: the pinned root key disagrees with the persisted link_trust outside a valid
 // rotation chain, or the root identity differs. The relay must refuse to start.
 var ErrAnchorMismatch = errors.New("pinned root link key disagrees with the persisted link_trust (outside a valid rotation chain)")
+
+// AnchorMismatchError is the explained refusal (#218, D4: no tolerance, fail closed). It carries only
+// fingerprints (kids) and identities, never a key, and unwraps to ErrAnchorMismatch.
+type AnchorMismatchError struct {
+	PinnedRootID, PersistedRootID string
+	PinnedKID                     string // kid of the key in REPEATER_ROOT_LINK_KEY_FILE ("" = root identity mismatch only)
+	CurrentKID, PreviousKID       string // persisted link_trust
+}
+
+func (e *AnchorMismatchError) Unwrap() error { return ErrAnchorMismatch }
+
+func (e *AnchorMismatchError) Error() string {
+	var b strings.Builder
+	b.WriteString(ErrAnchorMismatch.Error())
+	if e.PinnedKID == "" {
+		fmt.Fprintf(&b, ": root id differs (REPEATER_ROOT_ID=%q, persisted %q). Probable cause: this relay was anchored on another root.", e.PinnedRootID, e.PersistedRootID)
+	} else {
+		prev := e.PreviousKID
+		if prev == "" {
+			prev = "none"
+		}
+		fmt.Fprintf(&b, ": pinned kid=%s (REPEATER_ROOT_LINK_KEY_FILE), persisted current kid=%s, previous kid=%s. Probable cause: the pinned file is stale, older than a key rotation that was already retired (or belongs to another root).", e.PinnedKID, e.CurrentKID, prev)
+	}
+	b.WriteString(" Fix: export the current key on the root with 'secagent-server keys link-pubkey' and replace the pinned file, then, relay stopped, run 'secagent-server state link-trust reset' to re-pin.")
+	return b.String()
+}
 
 // TrustRecord is the persisted link trust. Keys are base64url without padding (32 raw bytes).
 type TrustRecord struct {
@@ -118,10 +145,11 @@ func NewLinkTrust(cfg LinkTrustConfig) (*LinkTrust, error) {
 			return nil, fmt.Errorf("link trust: persisted state is invalid: %w", derr)
 		}
 		if cfg.RootID != "" && rec.RootID != "" && cfg.RootID != rec.RootID {
-			return nil, fmt.Errorf("%w: root id differs", ErrAnchorMismatch)
+			return nil, &AnchorMismatchError{PinnedRootID: cfg.RootID, PersistedRootID: rec.RootID}
 		}
 		if cfg.Anchor != nil && !cfg.Anchor.Equal(cur) && (prev == nil || !cfg.Anchor.Equal(prev)) {
-			return nil, ErrAnchorMismatch
+			return nil, &AnchorMismatchError{PinnedRootID: cfg.RootID, PersistedRootID: rec.RootID, PinnedKID: auth.LinkKID(cfg.Anchor),
+				CurrentKID: auth.LinkKID(cur), PreviousKID: prevKID(prev)}
 		}
 		if m.rootID == "" {
 			m.rootID = rec.RootID
@@ -144,6 +172,13 @@ func NewLinkTrust(cfg LinkTrustConfig) (*LinkTrust, error) {
 		log.Printf("[SECURITY WARNING] link trust: no pinned root key (REPEATER_ROOT_LINK_KEY_FILE) and nothing persisted: every incoming link is refused")
 	}
 	return m, nil
+}
+
+func prevKID(prev ed25519.PublicKey) string {
+	if prev == nil {
+		return ""
+	}
+	return auth.LinkKID(prev)
 }
 
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
