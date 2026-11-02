@@ -42,6 +42,9 @@ type heldMinion struct {
 	mu     sync.Mutex
 	tasks  []string // task ids received, in order
 	closed chan struct{}
+	// arrival is signalled (non-blocking, capacity 1) whenever a task arrives: a responder waits on it instead of
+	// polling received() every few milliseconds (3 000 pollers starved the CPU of the load test, #222)
+	arrival chan struct{}
 }
 
 func dialHeld(tb testing.TB, n *node, host, token string) (*heldMinion, error) {
@@ -51,7 +54,7 @@ func dialHeld(tb testing.TB, n *node, host, token string) (*heldMinion, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &heldMinion{host: host, conn: conn, closed: make(chan struct{})}
+	m := &heldMinion{host: host, conn: conn, closed: make(chan struct{}), arrival: make(chan struct{}, 1)}
 	go func() {
 		defer close(m.closed)
 		for {
@@ -63,6 +66,10 @@ func dialHeld(tb testing.TB, n *node, host, token string) (*heldMinion, error) {
 				m.mu.Lock()
 				m.tasks = append(m.tasks, id)
 				m.mu.Unlock()
+				select {
+				case m.arrival <- struct{}{}:
+				default:
+				}
 			}
 		}
 	}()
@@ -130,6 +137,11 @@ type execReply struct {
 }
 
 func rawExec(n *node, host string, timeout int) execReply {
+	return rawExecOn(longHTTP(), n, host, timeout)
+}
+
+// rawExecOn is rawExec with the HTTP client given (the load test needs a client timeout that follows its task timeout).
+func rawExecOn(c *http.Client, n *node, host string, timeout int) execReply {
 	body, _ := json.Marshal(map[string]any{"cmd": "true", "timeout": timeout})
 	req, err := http.NewRequest("POST", n.apiURL()+"/api/exec/"+host, bytes.NewReader(body))
 	if err != nil {
@@ -137,7 +149,7 @@ func rawExec(n *node, host string, timeout int) execReply {
 	}
 	req.Header.Set("Authorization", "Bearer "+n.pluginToken())
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := longHTTP().Do(req)
+	resp, err := c.Do(req)
 	if err != nil {
 		return execReply{Err: err}
 	}
@@ -255,9 +267,20 @@ func TestTaskLimits_GlobalLimitRejectsWith429(t *testing.T) {
 }
 
 // Every path that ends a task frees its GLOBAL slot (a leak would end in a permanent 429).
+//
+// The "result" path is deliberately NOT here (#222): the race fixed by PR #211 (the slot must be released BEFORE
+// the answer is delivered, so that a client chaining a request right after its answer is not refused with a
+// transient 429) lives in a window far narrower than one real HTTP round trip — a "result" subtest here passed
+// with the OLD code too (-race -count=50, qa-20261008-release-order). It is covered deterministically, at the
+// level where the ordering is observable, by the ws package:
+//
+//	TestAdmission_ResultReleasesTheSlotBeforeItIsDelivered
+//	TestAdmission_AnswerReceiverCanImmediatelyAdmitTheNextTask   (25 failures out of 30 with the old order)
+//
+// A subtest that cannot fail on the regression it names only gives a false assurance.
 func TestTaskLimits_EveryEndOfTaskFreesItsSlot(t *testing.T) {
 	requireTaskLimits(t)
-	for _, path := range []string{"result", "timeout", "disconnection", "revocation"} {
+	for _, path := range []string{"timeout", "disconnection", "revocation"} {
 		t.Run(path, func(t *testing.T) {
 			parallel(t)
 			n := startNode(t, nodeSpec{ID: "root", Env: []string{"MAX_TASKS_INFLIGHT=1", "MAX_TASKS_PER_AGENT=1"}})
@@ -277,8 +300,6 @@ func TestTaskLimits_EveryEndOfTaskFreesItsSlot(t *testing.T) {
 			expectRejection(t, rawExec(n, "host-b", 5), http.StatusTooManyRequests, "too_many_tasks") // the slot is really taken
 
 			switch path {
-			case "result":
-				a.answer(a.received()[0])
 			case "disconnection":
 				_ = a.conn.Close()
 			case "revocation":
