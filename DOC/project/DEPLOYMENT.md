@@ -134,26 +134,36 @@ Le déploiement se fait ensuite dans le projet Compose **`secagent-qualif`** (mo
 
 ### Vérifier l'origine d'une image publiée (attestation de provenance signée, #213)
 
-À partir de v3.0.5, chaque image poussée sur GHCR par `release.yml` (job `images`) ou par `candidate-images.yml` reçoit une **attestation de provenance SLSA signée** (`actions/attest-build-provenance`) : signature Sigstore par un certificat éphémère lié à l'identité OIDC du workflow GitHub, enregistrée dans le journal de transparence public (dépôt public), rangée par GitHub et poussée à côté de l'image dans GHCR. Vérifier **toujours par digest**, avant un déploiement ou une promotion (CLI `gh` récente, commande `gh attestation`) :
+À partir de v3.0.5, chaque image poussée sur GHCR par `release.yml` (job `images`) ou par `candidate-images.yml` reçoit une **attestation de provenance SLSA signée** (`actions/attest-build-provenance`) : signature Sigstore par un certificat éphémère lié à l'identité OIDC du workflow GitHub, enregistrée dans le journal de transparence public (dépôt public), rangée par GitHub et poussée à côté de l'image dans GHCR.
+
+**Ce que l'attestation enregistre** : le dépôt, le **fichier de workflow**, et le **ref et le commit sur lesquels le workflow a été lancé** (`GITHUB_REF` / `GITHUB_SHA`) — pas ceux d'un checkout explicite. Les workflows garantissent que ce sont aussi ceux du code construit :
+- `release.yml` : le job `images` **refuse de publier** si le workflow ne tourne pas sur `refs/tags/<tag>` au commit du tag. Lancement manuel : `gh workflow run release.yml --ref vX.Y.Z -f tag=vX.Y.Z` (lancé depuis une branche, il échoue avant tout push).
+- `candidate-images.yml` : l'image n'est attestée que si le commit construit est celui du lancement, sur une branche. Lancement attesté : `gh workflow run candidate-images.yml --ref <branche> -f ref=<branche> -f publish=true`. Avec `-f ref=<autre branche ou commit>`, l'image est construite et publiée **sans attestation** (avertissement dans le run) : elle ne doit pas être présentée comme prouvée.
+
+Vérifier **toujours par digest**, et **toujours avec `--source-ref`** en plus de `--signer-workflow` (CLI `gh` ≥ 2.49, commande `gh attestation`). Sans `--source-ref`, une attestation émise par un workflow du même nom lancé depuis **n'importe quelle branche** (par un collaborateur ayant l'accès en écriture) serait acceptée.
 
 ```bash
 IMG=ghcr.io/ccoupel/secagent-server@sha256:<digest>      # digest de la release (archive Compose, SHA256SUMS) ou de la candidate
 
-# Image de RELEASE : signée par release.yml, depuis le tag attendu
+# Image de RELEASE : signée par release.yml lancé sur le tag attendu
 gh attestation verify "oci://$IMG" --owner CCoupel \
   --signer-workflow CCoupel/Ansible-SecAgent/.github/workflows/release.yml \
   --source-ref refs/tags/vX.Y.Z --deny-self-hosted-runners
 
-# Image CANDIDATE (qualif) : signée par candidate-images.yml
+# Image CANDIDATE (qualif) : signée par candidate-images.yml lancé sur la branche attendue (ex. main, milestone/vX.Y.Z)
 gh attestation verify "oci://$IMG" --owner CCoupel \
-  --signer-workflow CCoupel/Ansible-SecAgent/.github/workflows/candidate-images.yml --deny-self-hosted-runners
+  --signer-workflow CCoupel/Ansible-SecAgent/.github/workflows/candidate-images.yml \
+  --source-ref refs/heads/<branche> --deny-self-hosted-runners
+# optionnel : imposer aussi le commit, lu dans l'étiquette sha-<commit> de la candidate
+#   --source-digest <commit>
 
-# Variante : attestation lue dans le registre plutôt que via l'API GitHub
+# Variante : attestation lue dans le registre plutôt que via l'API GitHub (mêmes contraintes)
 gh attestation verify "oci://$IMG" --owner CCoupel --bundle-from-oci \
-  --signer-workflow CCoupel/Ansible-SecAgent/.github/workflows/release.yml
+  --signer-workflow CCoupel/Ansible-SecAgent/.github/workflows/release.yml \
+  --source-ref refs/tags/vX.Y.Z --deny-self-hosted-runners
 ```
 
-Code 0 = vérifié. **Ce que cela prouve** : l'image de **ce digest** a été construite par un workflow GitHub Actions du dépôt `CCoupel/Ansible-SecAgent` (le fichier de workflow nommé, sur un runner hébergé par GitHub), à partir du commit et du ref inscrits dans la provenance (`--source-ref` impose le tag), et l'attestation n'a pas été modifiée depuis sa signature. **Ce que cela ne prouve pas** : que le code de ce commit est sûr (revue et tests), ni que l'image d'un **tag** mutable est la bonne (seul le digest compte) ; les images antérieures à v3.0.5 n'ont pas d'attestation signée (la vérification échoue).
+Code 0 = vérifié. **Ce que cela prouve** : l'image de **ce digest** a été construite et attestée par le workflow nommé du dépôt `CCoupel/Ansible-SecAgent`, sur un runner hébergé par GitHub, lancé sur le ref imposé (`--source-ref`) ; grâce aux gardes ci-dessus, le code construit est celui de ce ref et du commit inscrit ; l'attestation n'a pas été modifiée depuis sa signature. **Ce que cela ne prouve pas** : que le code de ce commit est sûr (revue et tests) ; qu'aucune version modifiée du workflow n'a tourné sur ce ref (c'est la protection du ref, et idéalement un *Environment* GitHub protégé, qui le garantit) ; qu'un **tag** d'image mutable désigne la bonne image (seul le digest compte). Les images antérieures à v3.0.5, et les candidates construites depuis un autre ref que celui du lancement, n'ont pas d'attestation signée (la vérification échoue).
 
 Les attestations **BuildKit** attachées à l'image (`provenance: true`, `sbom: true`) restent présentes mais **ne sont pas signées** : elles se consultent, sans valeur de preuve, avec `docker buildx imagetools inspect "$IMG" --format '{{json .Provenance}}'` (et `'{{json .SBOM}}'`). Les images ne sont pas signées par cosign (décision v3.0.5).
 

@@ -78,6 +78,25 @@ jobs:
         id: commit
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      # #213 M7 : la provenance signee inscrit le ref et le commit DU WORKFLOW (GITHUB_REF / GITHUB_SHA), pas ceux du
+      # checkout. Construire un autre commit (`ref` different du ref de lancement) reste possible pour la qualif, mais
+      # l'image n'est alors PAS attestee (avertissement + resume). Image attestee : lancer le workflow SUR la branche a
+      # construire, `gh workflow run candidate-images.yml --ref <branche> -f ref=<branche> -f publish=true`.
+      - name: Le commit construit est-il celui qui serait atteste
+        id: attestable
+        env:
+          HEAD_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$HEAD_SHA" = "$GITHUB_SHA" ] && [[ "$GITHUB_REF" == refs/heads/* ]]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "provenance = code construit : ${GITHUB_REF}@${GITHUB_SHA}"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Code construit ${HEAD_SHA} different du workflow ${GITHUB_REF}@${GITHUB_SHA} : image candidate NON attestee (M7)."
+            echo "Image candidate NON attestee : commit construit ${HEAD_SHA} != ${GITHUB_REF}@${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -103,6 +122,7 @@ jobs:
       # (provenance + SBOM) restent attachees a l'image mais ne sont PAS signees. Verification : DOC/project/DEPLOYMENT.md.
       # create-storage-record: false : le storage record exige `artifact-metadata: write` (API d'organisation, non accordee).
       - name: Attestation de provenance signee
+        if: steps.attestable.outputs.ok == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/ccoupel/${{ matrix.image }}

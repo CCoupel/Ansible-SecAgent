@@ -1,7 +1,8 @@
 name: Release
 
 # Declenche par le tag officiel vX.Y.Z (rebuild deterministe depuis le commit fige du tag),
-# ou a la demande sur un TAG EXISTANT (publication a posteriori des images).
+# ou a la demande sur un TAG EXISTANT (publication a posteriori des images). Lancement manuel SUR le tag (#213 M7) :
+#   gh workflow run release.yml --ref vX.Y.Z -f tag=vX.Y.Z   (lance depuis une branche, le job images refuse de publier)
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
@@ -204,6 +205,21 @@ jobs:
         with:
           persist-credentials: false
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
+
+      # #213 M7 : la provenance signee inscrit le ref et le commit DU WORKFLOW (GITHUB_REF / GITHUB_SHA), pas ceux du
+      # checkout. On refuse, AVANT toute publication, un build dont le code n'est pas celui-la : un lancement manuel doit
+      # se faire SUR le tag (`gh workflow run release.yml --ref vX.Y.Z -f tag=vX.Y.Z`), sinon l'attestation mentirait.
+      - name: Le commit construit est celui qui sera atteste
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [ "$GITHUB_REF" != "refs/tags/$TAG" ] || [ "$HEAD_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::Workflow lance sur ${GITHUB_REF}@${GITHUB_SHA}, code construit refs/tags/${TAG}@${HEAD_SHA} : la provenance ne decrirait pas l'image. Relancer avec --ref ${TAG}."
+            exit 1
+          fi
+          echo "provenance = code construit : ${GITHUB_REF}@${GITHUB_SHA}"
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
