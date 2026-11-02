@@ -266,3 +266,48 @@ func TestLinkTrust_AStalePinnedKeyRefusesTheRestartAndExplainsIt(t *testing.T) {
 		}
 	}
 }
+
+// M10 (security review of LOT-3) — "direct" must describe HOW the confirmation arrived, not whether the relay once had
+// a direct link: it is true only when the relay's last link_state came over its OWN link (id == conn.RelayID).
+// Scenario: relay2 first confirms the rotation directly to the root (direct), then moves BELOW relay1 (an
+// intermediary that stays connected the whole time): from then on its link_state reaches the root through relay1,
+// which could forge it. relay2 must be listed not_direct again. Before the fix the connection/disconnection
+// timestamps kept it "direct" (it had a direct link after the rotation).
+func TestLinkStatus_M10_ARelayThatMovesBelowAnIntermediaryStopsBeingDirect(t *testing.T) {
+	parallel(t)
+	root := startNode(t, nodeSpec{ID: "root"})
+	relay1 := startNode(t, nodeSpec{ID: "relay1", ParentURL: root.wssURL(), ParentToken: root.registerChild("relay1")})
+	waitFor(t, "relay1 linked", func() bool { return relay1.upstreamState() == "connected" })
+	relay2 := startNode(t, nodeSpec{ID: "relay2", ParentURL: root.wssURL(), ParentToken: root.registerChild("relay2")})
+	waitFor(t, "relay2 linked to the root", func() bool { return relay2.upstreamState() == "connected" })
+
+	if code, rot := root.admin("POST", "/api/admin/link/keys/rotate", map[string]any{}); code != http.StatusOK {
+		t.Fatalf("rotate: %d %v", code, rot)
+	}
+	waitFor(t, "relay1 and relay2 confirmed directly", func() bool {
+		rows, nd := linkStatus(t, root)
+		return rows["relay1"].State == "confirmed" && rows["relay2"].State == "confirmed" && rows["relay2"].Direct && !has(nd, "relay2")
+	})
+
+	// relay2 leaves the root and re-attaches below relay1 (same identity, state and secrets)
+	relay2.linkTo(relay1)
+	waitFor(t, "relay2 linked below relay1", func() bool { return relay2.upstreamState() == "connected" })
+	waitFor(t, "relay2 is reachable below relay1", func() bool { rows, _ := linkStatus(t, root); return rows["relay2"].Present })
+
+	// relay1 stayed connected all along; relay2 must now be listed as NOT direct
+	waitFor(t, "relay2 reported not direct (its confirmation now comes through relay1)", func() bool {
+		rows, nd := linkStatus(t, root)
+		return !rows["relay2"].Direct && has(nd, "relay2")
+	})
+	rows, nd := linkStatus(t, root)
+	if r := rows["relay1"]; !r.Direct || has(nd, "relay1") {
+		t.Errorf("relay1 is still directly connected: %+v not_direct=%v", r, nd)
+	}
+	code, m := root.admin("POST", "/api/admin/link/keys/retire-previous", map[string]any{})
+	if code != http.StatusOK {
+		t.Fatalf("a not_direct relay never blocks the retire: %d %v", code, m)
+	}
+	if got := strList(m["not_direct"]); !has(got, "relay2") || has(got, "relay1") {
+		t.Errorf("the retire answer must list relay2 (and not relay1) as not_direct: %v", m["not_direct"])
+	}
+}
