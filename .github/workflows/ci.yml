@@ -157,7 +157,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/guard-venv"
-          "$RUNNER_TEMP/guard-venv/bin/python" -m pip install --quiet --require-hashes --only-binary=:all: -r .github/ci/requirements-guard.txt
+          "$RUNNER_TEMP/guard-venv/bin/python" -m pip install --quiet --no-deps --require-hashes --only-binary=:all: -r .github/ci/requirements-guard.txt
           "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_actions_pinned.py
 
   ansible-inventory:

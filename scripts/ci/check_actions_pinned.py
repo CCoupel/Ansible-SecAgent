@@ -13,7 +13,9 @@ Echec si :
   - une valeur `uses` n'est pas `<owner>/<repo>[/<chemin>]@<SHA 40 hex>` suivie, dans le texte, d'un commentaire
     `# vX.Y.Z` ; ou contient une expression ${{ }} (cible non verifiable). Exceptions : `./...` (action ou workflow
     local, lui-meme analyse s'il est passe a la garde) ; `docker://<image>@sha256:<64 hex>` ;
-  - une valeur `run` (chaine, quelle que soit sa forme) ou le `with.script` d'actions/github-script contient ${{ }} :
+  - une action locale `./...` contient un segment `..` (sortie du depot) ;
+  - une valeur `run` (chaine, quelle que soit sa forme), `shell`, `working-directory` ou le `with.script`
+    d'actions/github-script contient ${{ }} :
     Actions l'interpole AVANT l'interpreteur (injection) ; les valeurs passent par `env:` ;
   - l'image d'un `container` ou d'un `services.<nom>` n'est pas epinglee par digest @sha256:<64 hex>, ou contient ${{ }} ;
   - le fichier n'est pas un document YAML de type mapping.
@@ -64,7 +66,8 @@ def _check_uses(value, where: str, text: str, errs: list) -> None:
     if EXPR in v:
         errs.append(f"{where}: uses contient une expression ${{{{ }}}} (cible non verifiable)")
     elif v.startswith("./"):
-        return
+        if ".." in v.replace("\\", "/").split("/"):
+            errs.append(f"{where}: action locale {v!r} : segment `..` interdit dans un chemin ./ (sortie possible du depot)")
     elif v.startswith("docker://"):
         if not DOCKER_RE.match(v):
             errs.append(f"{where}: image {v!r} non epinglee par digest @sha256:<64 hex>")
@@ -88,6 +91,11 @@ def _walk(node, path: str, text: str, errs: list) -> None:
         run = node.get("run")
         if isinstance(run, str) and EXPR in run:
             errs.append(f"{path}.run: expression ${{{{ }}}} dans un script run: (passer la valeur par env:)")
+        # B26 : `shell` est un gabarit de commande (`bash {0}; ...`) et `working-directory` est passe a l'interpreteur
+        for key in ("shell", "working-directory"):
+            val = node.get(key)
+            if isinstance(val, str) and EXPR in val:
+                errs.append(f"{path}.{key}: expression ${{{{ }}}} interdite (interpolee dans la commande de l'etape)")
         if isinstance(uses, str) and GITHUB_SCRIPT_RE.match(uses.strip()):
             script = (node.get("with") or {}).get("script") if isinstance(node.get("with"), dict) else None
             if isinstance(script, str) and EXPR in script:
