@@ -490,7 +490,7 @@ Après handshake établi, tous les changements (hôtes, relays) sont notifiés v
 2. Le parent ajoute son ID à son tour et continue vers la racine
 3. **Anti-boucle** : un event dont la chaîne contient l'ID du récepteur est ignoré ; un `event_forward` reçu **du parent** est ignoré et jamais renvoyé vers le haut (`repeater/uplink.go:310`)
 4. **Pas de déduplication** : un seul chemin → un seul event
-5. **Rate limit par lien** : 200 `event_forward` par seconde (`maxEventsPerSecond`, `relay_handler.go:84`) ; au-delà, les events sont **ignorés** (journalisés), le lien reste ouvert
+5. **Rate limit par identité `relay_id` (v3.0.5, #216 ; par lien avant)** : 200 `event_forward` par seconde (`maxEventsPerSecond`, `relay_handler.go:84`), compteur tenu par `relay_id` (`ws/event_quota.go`, fenêtre de 1 s, table bornée à 4096 identités, purgée par l'activité) : une reconnexion immédiate ne le remet pas à zéro ; au-delà, les events sont **ignorés** (journalisés), le lien reste ouvert
 6. Un event invalide (chaîne > 32, dernier élément ≠ pair authentifié, descendant inconnu, forme invalide, type inconnu, hôte hors du sous-arbre du pair) est **abandonné** sans fermer le lien (`handleEventForward`, `relay_handler.go:1599-1651`)
 
 **Validation du relay_chain à la réception** : Voir ARCHITECTURE.md §23.2 (HAUT-1) pour la règle unifiée. Le code applique une seule règle : `relay_chain[-1]` == le pair authentifié du lien

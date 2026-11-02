@@ -57,9 +57,7 @@ type RelayConnection struct {
 	descendants  map[string]struct{} // relays declared in the validated topology_snapshot
 	helloDone    bool                // relay_hello accepted: required before topology_snapshot / event_forward
 	snapshotDone bool
-	reject       *relayRejection // set by a handler to make the read loop close the link
-	evWindow     time.Time       // event_forward rate limit window start
-	evCount      int
+	reject       *relayRejection   // set by a handler to make the read loop close the link
 	reported     map[string]string // hostname → "old->new" already reported as host.conflict (no event storm)
 }
 
@@ -1469,6 +1467,13 @@ func resetRelayState() {
 	snapQuotaMu.Lock()
 	snapQuotas = map[string]*snapQuota{}
 	snapQuotaMu.Unlock()
+	eventQuotaMu.Lock()
+	eventQuotas = map[string]*eventQuota{}
+	eventQuotaPurged = time.Time{}
+	eventQuotaMu.Unlock()
+	directMu.Lock()
+	directSeen = map[string]time.Time{}
+	directMu.Unlock()
 	descOwnerMu.Lock()
 	for k := range descendantOwner {
 		delete(descendantOwner, k)
@@ -1698,12 +1703,8 @@ func handleEventForward(conn *RelayConnection, msg RelayMessage) {
 		log.Printf("[SECURITY WARNING] event_forward before relay_hello: relay_id=%q (dropped)", conn.RelayID)
 		return
 	}
-	now := time.Now()
-	if now.Sub(conn.evWindow) >= time.Second {
-		conn.evWindow, conn.evCount = now, 0
-	}
-	conn.evCount++
-	if conn.evCount > maxEventsPerSecond {
+	// The quota belongs to the relay_id, not to the link (#216): a reconnection does not reset it.
+	if !allowEvent(conn.RelayID, time.Now()) {
 		log.Printf("[RELAY] event_forward rate limit exceeded: relay_id=%q (dropped)", conn.RelayID)
 		return
 	}
