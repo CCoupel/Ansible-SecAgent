@@ -57,13 +57,19 @@ import (
 	"secagent-server/internal/secretenv"
 )
 
+// initBanner is the first log line of the minion: it carries the build version (the variable
+// printed by --version, injected with -ldflags "-X main.Version=…"), not a hard-coded number.
+func initBanner() string {
+	return "[INIT] Ansible-SecAgent GO Agent " + Version
+}
+
 func main() {
 	// The command line contract comes FIRST: --version / --help answer, anything else is refused,
 	// before any log line, configuration read, secret read or key generation.
 	if proceed, code := handleArgs(os.Args[1:], os.Stdout, os.Stderr); !proceed {
 		os.Exit(code)
 	}
-	log.Printf("[INIT] Ansible-SecAgent GO Agent v1.0")
+	log.Print(initBanner())
 
 	cfg := loadConfig()
 

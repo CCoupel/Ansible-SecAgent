@@ -71,3 +71,15 @@ func TestVersionIsOverridable(t *testing.T) {
 		t.Fatalf("got %q", out.String())
 	}
 }
+
+func TestInitBannerCarriesTheInjectedVersion(t *testing.T) {
+	old := Version
+	Version = "3.0.5"
+	defer func() { Version = old }()
+	if got, want := initBanner(), "[INIT] Ansible-SecAgent GO Agent 3.0.5"; got != want {
+		t.Errorf("initBanner() = %q, want %q", got, want)
+	}
+	if strings.Contains(initBanner(), "v1.0") {
+		t.Error("hard-coded v1.0 still in the banner")
+	}
+}
