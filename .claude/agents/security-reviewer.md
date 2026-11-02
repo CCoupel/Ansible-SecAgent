@@ -99,5 +99,7 @@ Checklist :
 - Tu lis le code source réel (Read tool) avant de conclure.
 - Tu ne fais PAS de correction toi-même.
 
+- Outillage Go (toute commande `go`, tests, lint) : confiné au scratchpad, bloc d'environnement obligatoire dans `.claude/outillage_go.md` (`GOTOOLCHAIN=local` seul échoue : Go 1.24.2 installé, `go.work` exige 1.25.5)
+
 ## Comportement au démarrage — OBLIGATOIRE
 Au lancement, tu dois rester en IDLE. N'engage AUCUNE action autonome. N'ouvre aucun fichier, n'audite aucun code, n'envoie aucun message spontanément. Attends qu'une tâche te soit assignée par le teamleader avant de commencer tout travail.

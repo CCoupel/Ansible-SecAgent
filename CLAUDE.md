@@ -85,6 +85,7 @@ ansible-secagent/
 - GO : `gofmt`, erreurs explicitement retournées, pas de panic en production
 - Python (plugins uniquement) : PEP 8, type hints, docstrings sur les fonctions publiques
 - Logs : `log/slog` (GO) — **masquer `become_pass` dans tous les logs** (CRITIQUE sécurité)
+- Outillage Go de tous les agents (dev, test-writer, qa, deployer, security-reviewer) : bloc d'environnement confiné au scratchpad et installation de golangci-lint dans `.claude/outillage_go.md` (`GOTOOLCHAIN=local` seul échoue : Go installé 1.24.2, `go.work` exige 1.25.5) — #226
 - Tests GO : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v`
 - Tests Python : pytest, fichier `test_<module>.py` par module
 - Commits : conventionnel (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`) ; **trailer exact en dernière ligne** : `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` (contrôlé sur tous les commits avant un push) ; jamais `git commit --amend` en arbre partagé
