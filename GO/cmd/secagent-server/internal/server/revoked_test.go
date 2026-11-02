@@ -7,12 +7,13 @@ import (
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 )
 
 // The /ws/agent handshake refuses a revoked agent by the persistent flag, whatever the state of the
 // blacklist (its entry lasts 25 h, the revocation does not) (#193).
 func TestAgentJTICheck_RevokedFlagRefusesEvenWithoutABlacklistEntry(t *testing.T) {
-	st, err := storage.OpenTemp()
+	st, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}

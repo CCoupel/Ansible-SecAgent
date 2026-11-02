@@ -125,6 +125,9 @@ func (s *Store) SetWriteGuard(fn func() error) { s.eng.SetBeforeWrite(fn) }
 // Engine exposes the state engine (reload on promotion, write counters).
 func (s *Store) Engine() *state.Engine { return s.eng }
 
+// AfterClose registers fn to run when the store is closed (the temporary directory of a test store).
+func (s *Store) AfterClose(fn func()) { s.cleanup = fn }
+
 // Close releases what the store owns (a temporary directory for OpenTemp).
 func (s *Store) Close() error {
 	if s.cleanup != nil {

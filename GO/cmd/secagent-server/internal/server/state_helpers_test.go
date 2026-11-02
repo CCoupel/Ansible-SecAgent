@@ -8,7 +8,7 @@ import (
 
 	"secagent-server/cmd/secagent-server/internal/handlers"
 	"secagent-server/cmd/secagent-server/internal/state"
-	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 )
 
 // testStateDir returns a directory holding an initial state: encrypted with RSA_MASTER_KEY when the
@@ -20,7 +20,7 @@ func testStateDir(t testing.TB) string {
 	dir := t.TempDir()
 	key := os.Getenv("RSA_MASTER_KEY")
 	if key == "" {
-		s, err := storage.OpenTestDir(dir)
+		s, err := storagetest.OpenTestDir(dir)
 		if err != nil {
 			t.Fatal(err)
 		}

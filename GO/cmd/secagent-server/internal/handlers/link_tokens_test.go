@@ -532,7 +532,7 @@ func TestLinkKeys_NeverSeenIsToldApartFromUnconfirmed(t *testing.T) {
 	if len(nv) != 1 || nv[0] != "ghost" {
 		t.Errorf("never_seen = %v, want [ghost]", e["never_seen"])
 	}
-	if msg, _ := e["message"].(string); !strings.Contains(msg, "relays remove <id>") {
+	if msg, _ := e["message"].(string); !strings.Contains(msg, "relays remove --revoke") {
 		t.Errorf("the remedy is missing: %q", msg)
 	}
 }

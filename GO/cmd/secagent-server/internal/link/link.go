@@ -545,34 +545,21 @@ func (m *Manager) SyncFrames() [][]byte {
 	return out
 }
 
-// Trust builds what /ws/relay verifies against, and the expected root relay_id. The root trusts its
-// own keys; any other relay its pinned anchor (link_trust). ErrNoTrust when there is nothing.
+// Trust builds what /ws/relay verifies against, and the expected root relay_id: the keys of the ROOT.
+// A relay that is not the root verifies through repeater.LinkTrust (its pinned anchor), never through
+// the Manager: here it has nothing to trust (ErrNoTrust, #221; the branch that read link_trust was dead).
 func (m *Manager) Trust() (auth.LinkTrust, string, error) {
-	if m.root() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		cur, prev, err := m.keys(false)
-		if err != nil {
-			return auth.LinkTrust{}, "", err
-		}
-		if cur == nil {
-			return auth.LinkTrust{}, "", ErrNoTrust
-		}
-		return auth.LinkTrust{Current: pub(cur), Previous: pub(prev)}, m.LocalID(), nil
-	}
-	lt := m.Store.LinkTrust()
-	if lt.CurrentPub == "" || lt.RootID == "" {
+	if !m.root() {
 		return auth.LinkTrust{}, "", ErrNoTrust
 	}
-	c, err := base64.RawURLEncoding.DecodeString(lt.CurrentPub)
-	if err != nil || len(c) != ed25519.PublicKeySize {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, prev, err := m.keys(false)
+	if err != nil {
+		return auth.LinkTrust{}, "", err
+	}
+	if cur == nil {
 		return auth.LinkTrust{}, "", ErrNoTrust
 	}
-	t := auth.LinkTrust{Current: c, LastSeq: lt.Seq}
-	if lt.PreviousPub != "" {
-		if p, perr := base64.RawURLEncoding.DecodeString(lt.PreviousPub); perr == nil && len(p) == ed25519.PublicKeySize {
-			t.Previous = p
-		}
-	}
-	return t, lt.RootID, nil
+	return auth.LinkTrust{Current: pub(cur), Previous: pub(prev)}, m.LocalID(), nil
 }

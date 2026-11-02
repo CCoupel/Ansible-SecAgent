@@ -16,7 +16,7 @@ import (
 	"testing"
 
 	"secagent-server/cmd/secagent-server/internal/handlers"
-	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 )
 
 var specConfigureDialPolicy func(allowLoopback bool, deny, allow string) (restore func(), err error)
@@ -41,7 +41,7 @@ func TestStartPushDialers_AStoredLineForbiddenByThePolicyIsNeverDialed(t *testin
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("RSA_MASTER_KEY", "main-test-master-key-0123456789abcdef")
-			st, err := storage.OpenTemp()
+			st, err := storagetest.OpenTemp()
 			if err != nil {
 				t.Fatal(err)
 			}

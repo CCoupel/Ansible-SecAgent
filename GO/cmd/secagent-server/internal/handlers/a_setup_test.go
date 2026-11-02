@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"secagent-server/cmd/secagent-server/internal/repeater"
-	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 )
 
 // TestMain sets required env vars and bootstraps server state for all handler tests.
@@ -59,7 +59,7 @@ func TestMain(m *testing.M) {
 	}
 
 	// Initialize an in-memory SQLite store for register/token handler tests.
-	testStore, err := storage.OpenTemp()
+	testStore, err := storagetest.OpenTemp()
 	if err != nil {
 		log.Fatalf("TestMain: create test store: %v", err)
 	}

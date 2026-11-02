@@ -6,12 +6,13 @@ import (
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 )
 
 // initStore creates a fresh in-memory store for server_config tests.
 func initStore(t *testing.T) *storage.Store {
 	t.Helper()
-	s, err := storage.OpenTemp()
+	s, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatalf("initStore: %v", err)
 	}

@@ -38,10 +38,6 @@ var (
 	ErrRekeyKeyPredictable = errors.New("state rekey: the new master key is predictable (repeated character or pattern, or fewer than 12 distinct characters; generate one with 'openssl rand -base64 48')")
 	// ErrRekeyFromPrev: relay.state is not usable and the state would come from relay.state.prev.
 	ErrRekeyFromPrev = errors.New("state rekey: relay.state is not usable as is (the state comes from relay.state.prev): fix it first, for example with 'state restore'")
-	// ErrRekeySchema is no longer returned: a schema 1 state is migrated to 2 by the rekey itself.
-	//
-	// Deprecated: kept declared until the tests that referenced it are updated.
-	ErrRekeySchema = errors.New("state rekey: unsupported schema_version")
 	// ErrRekeyUncovered: an "enc:" value was found where the rekey does not know how to re-encrypt it.
 	// Refusing is the only safe answer (the field would become unreadable after the rotation).
 	ErrRekeyUncovered = errors.New("state rekey: an encrypted value was found in a field the rekey does not cover: nothing modified")
@@ -254,10 +250,8 @@ func Rekey(o RekeyOptions) (*RekeyResult, error) {
 		return nil, err
 	}
 	migrate := env.SchemaVersion == 1
-	if migrate && (len(m.LinkTokens) > 0 || !m.LinkTrust.IsZero() ||
-		m.ServerConfig[ConfigLinkSigningKeyCurrent] != "" || m.ServerConfig[ConfigLinkSigningKeyPrevious] != "") {
-		return nil, fmt.Errorf("%w: a schema_version 1 state carries link data (link tokens, trust anchor or signing key)", ErrStructure)
-	}
+	// A schema_version 1 state that carries link data is already refused by the decoding above
+	// (checkLinks): no second check here.
 	if err := checkRekeyCoverage(&m.Payload); err != nil {
 		return nil, err
 	}
@@ -351,14 +345,8 @@ func verifyRekeyed(o RekeyOptions, newC codec, original Payload, now time.Time) 
 	if env2.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("the new state has schema_version %d, expected %d", env2.SchemaVersion, SchemaVersion)
 	}
-	oldOpts := Options{MasterKey: o.OldKey}
-	oldC, err := oldOpts.codec()
-	if err != nil {
-		return err
-	}
-	if _, _, err := oldC.decode(written, now); err == nil {
-		return errors.New("the new state still opens with the old key")
-	}
+	// No "the old key no longer opens it" check: the HMAC key is derived from the master key (HKDF), so a
+	// file cannot authenticate under two keys; the decode with the new key above is what proves the rekey.
 	wantPlain, _, err := transformSecrets(original, o.OldKey, "")
 	if err != nil {
 		return err

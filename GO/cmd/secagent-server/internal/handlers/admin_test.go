@@ -9,12 +9,13 @@ import (
 	"testing"
 
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 )
 
 // newTestStore creates an in-memory SQLite store for testing.
 func newTestStore(t *testing.T) *storage.Store {
 	t.Helper()
-	s, err := storage.OpenTemp()
+	s, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatalf("newTestStore: %v", err)
 	}

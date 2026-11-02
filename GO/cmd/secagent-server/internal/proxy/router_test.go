@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
@@ -17,7 +18,7 @@ import (
 
 func newRouterTestStore(t *testing.T) *storage.Store {
 	t.Helper()
-	s, err := storage.OpenTemp()
+	s, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}

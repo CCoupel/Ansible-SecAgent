@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
@@ -117,7 +118,7 @@ func TestWiring_AgentReplacedTokenIsRefused(t *testing.T) {
 
 func newMemStore(t *testing.T) *storage.Store {
 	t.Helper()
-	st, err := storage.OpenTemp()
+	st, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}

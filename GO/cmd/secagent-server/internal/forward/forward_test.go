@@ -20,6 +20,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/auth"
 	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
@@ -163,7 +164,7 @@ func run(t *testing.T, f *Forwarder, msg ws.RelayMessage) ws.RelayMessage {
 
 func routeStore(t *testing.T) *storage.Store {
 	t.Helper()
-	s, err := storage.OpenTemp()
+	s, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}

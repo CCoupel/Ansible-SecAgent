@@ -10,6 +10,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/handlers"
 	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 )
 
 type fakePushStarter struct {
@@ -44,7 +45,7 @@ func seedRelay(t *testing.T, st *storage.Store, id, mode, url, tokenField string
 
 func TestStartPushDialers_OnlyPushNodesWithASealedToken(t *testing.T) {
 	t.Setenv("RSA_MASTER_KEY", "main-test-master-key-0123456789abcdef")
-	st, err := storage.OpenTemp()
+	st, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +77,7 @@ func TestStartPushDialers_OnlyPushNodesWithASealedToken(t *testing.T) {
 }
 
 func TestStartPushDialers_SkipsUndecryptableAndInvalidRows(t *testing.T) {
-	st, err := storage.OpenTemp()
+	st, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +108,7 @@ func (v *validatingStarter) Start(t repeater.DialTarget) error {
 
 func TestStartPushDialers_ForbiddenStoredAddressIsNeverDialed(t *testing.T) {
 	t.Setenv("RSA_MASTER_KEY", "main-test-master-key-0123456789abcdef")
-	st, err := storage.OpenTemp()
+	st, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}
