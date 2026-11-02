@@ -61,6 +61,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || 'main' }}
           fetch-depth: 0
+          persist-credentials: false   # depot public : le `git fetch origin` ci-dessous est anonyme (B32)
 
       # Le commit construit doit appartenir a une BRANCHE du depot (un commit n'existant que dans une PR est refuse).
       - name: Le commit appartient a une branche du depot

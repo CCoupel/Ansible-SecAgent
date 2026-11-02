@@ -17,6 +17,8 @@ Echec si :
   - une valeur `run` (chaine, quelle que soit sa forme), `shell`, `working-directory` ou le `with.script`
     d'actions/github-script contient ${{ }} :
     Actions l'interpole AVANT l'interpreteur (injection) ; les valeurs passent par `env:` ;
+  - un `actions/checkout` n'a pas `with.persist-credentials: false` (B33 ; aucune exception aujourd'hui : un besoin
+    futur de git authentifie apres checkout passe par un jeton explicite dans l'etape qui en a besoin) ;
   - l'image d'un `container` ou d'un `services.<nom>` n'est pas epinglee par digest @sha256:<64 hex>, ou contient ${{ }} ;
   - le fichier n'est pas un document YAML de type mapping.
 Limite connue (B23) : la garde ne verifie pas que le SHA correspond au tag du commentaire (revue + Dependabot).
@@ -39,6 +41,7 @@ PINNED_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[^@\s]+)?@[0-9a-f]{
 DOCKER_RE = re.compile(r"^docker://[^@\s]+@sha256:[0-9a-f]{64}$")
 IMAGE_RE = re.compile(r"^[^@\s]+@sha256:[0-9a-f]{64}$")
 GITHUB_SCRIPT_RE = re.compile(r"^actions/github-script@", re.I)
+CHECKOUT_RE = re.compile(r"^actions/checkout@", re.I)
 EXPR = "${{"
 
 
@@ -96,6 +99,11 @@ def _walk(node, path: str, text: str, errs: list) -> None:
             val = node.get(key)
             if isinstance(val, str) and EXPR in val:
                 errs.append(f"{path}.{key}: expression ${{{{ }}}} interdite (interpolee dans la commande de l'etape)")
+        if isinstance(uses, str) and CHECKOUT_RE.match(uses.strip()):
+            with_ = node.get("with") if isinstance(node.get("with"), dict) else {}
+            if str(with_.get("persist-credentials", "")).lower() != "false":
+                errs.append(f"{path}.with.persist-credentials: actions/checkout doit avoir persist-credentials: false "
+                            "(jeton GITHUB_TOKEN laisse dans la config git du job sinon)")
         if isinstance(uses, str) and GITHUB_SCRIPT_RE.match(uses.strip()):
             script = (node.get("with") or {}).get("script") if isinstance(node.get("with"), dict) else None
             if isinstance(script, str) and EXPR in script:
