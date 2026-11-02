@@ -809,6 +809,7 @@ func registerRelayConnection(conn *RelayConnection) {
 	}
 	relayConnections[conn.RelayID] = conn
 	relayConnsMu.Unlock()
+	noteDirect(conn.RelayID)
 
 	if RelayStatusUpdateFunc != nil {
 		if err := RelayStatusUpdateFunc(conn.RelayID, "connected", time.Now().Unix()); err != nil {
@@ -823,6 +824,7 @@ func unregisterRelayConnection(relayID string) {
 	relayConnsMu.Lock()
 	delete(relayConnections, relayID)
 	relayConnsMu.Unlock()
+	noteDirect(relayID)
 
 	// Update DB status
 	if RelayStatusUpdateFunc != nil {

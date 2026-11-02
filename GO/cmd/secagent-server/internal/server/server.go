@@ -329,7 +329,8 @@ func Build(cfg Config) (node *Node, err error) {
 			}
 			return out
 		},
-		Known: ws.KnownRelayIDs,
+		Known:  ws.KnownRelayIDs,
+		Direct: ws.DirectLinkTimes,
 	}
 	handlers.SetLinkManager(linkMgr)
 	var linkTrust *repeater.LinkTrust // non-root: the pinned anchor, its rotation and the revocations from the parent

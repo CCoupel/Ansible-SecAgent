@@ -358,3 +358,8 @@ Sections à mettre à jour :
 - [ ] R6 : invariant `checkRelayNode` mis à jour (L1b)
 - [ ] Tests T1–T12d : tous définis dans le scope test-writer
 - [ ] SECURITY.md §2, §5, §7, §12 mis à jour (L1f)
+
+
+## 13. Décision C — la confirmation de rotation reste informative (v3.0.5, #215)
+
+`link_state` n'est pas signé : un relais intermédiaire compromis peut forger la confirmation de ses descendants. Trois options ont été examinées : A (identité asymétrique par relais), B (nonce signé par la racine, répondu par chaque relais), C (statu quo documenté). **Retenue : C** — confirmation informative, intermédiaire compromis ⇒ coupure possible (un relais forgé « confirmé » qui n'a pas la nouvelle clé est refusé à la clôture jusqu'au ré-épinglage), opérateur dans la boucle. Le dommage est une indisponibilité, jamais une usurpation. Mitigation livrée : `GET /api/admin/link/status` (`direct`, `not_direct`) et `retire-link-previous` listent les relais non connectés en direct depuis la rotation, `[SECURITY WARNING]` à la clôture. A ou B resteraient possibles (changement de modèle, maquette et dev-agent) si l'exposition change.

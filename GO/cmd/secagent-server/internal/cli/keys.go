@@ -97,6 +97,9 @@ its trust anchor is re-pinned. --force overrides, with a [SECURITY WARNING] in t
 			if u, ok := r["never_seen"].([]interface{}); ok && len(u) > 0 {
 				_, _ = fmt.Printf("WARNING: of which never seen (no link_state): %v\n", u)
 			}
+			if u, ok := r["not_direct"].([]interface{}); ok && len(u) > 0 {
+				_, _ = fmt.Printf("NOTE: not directly connected since the rotation (confirmation relayed unsigned by an intermediary): %v\n", u)
+			}
 			return nil
 		})
 	},
@@ -114,14 +117,19 @@ var keysLinkStatusCmd = &cobra.Command{
 			_, _ = fmt.Printf("root_id=%v seq=%v current=%v previous=%v\n", r["root_id"], r["seq"], r["current_kid"], r["previous_kid"])
 			rel, _ := r["relays"].([]interface{})
 			tp := newTabPrinter()
-			tp.println("RELAY\tLINK_SEQ\tKID\tCONFIRMED\tSTATE")
+			tp.println("RELAY\tLINK_SEQ\tKID\tCONFIRMED\tSTATE\tDIRECT")
 			never := 0
 			for _, x := range rel {
 				m, _ := x.(map[string]interface{})
-				tp.printf("%v\t%v\t%v\t%v\t%v\n", m["relay_id"], m["link_seq"], m["link_kid"], m["confirmed"], m["state"])
+				tp.printf("%v\t%v\t%v\t%v\t%v\t%v\n", m["relay_id"], m["link_seq"], m["link_kid"], m["confirmed"], m["state"], m["direct"])
 				if m["state"] == "never_seen" {
 					never++
 				}
+			}
+			if nd, ok := r["not_direct"].([]interface{}); ok && len(nd) > 0 {
+				defer func() {
+					_, _ = fmt.Printf("%d relay(s) not directly connected since the rotation (DIRECT=false): their confirmation was relayed, unsigned, by an intermediary that could forge it. Checking them is up to you.\n", len(nd))
+				}()
 			}
 			if never > 0 {
 				defer func() {

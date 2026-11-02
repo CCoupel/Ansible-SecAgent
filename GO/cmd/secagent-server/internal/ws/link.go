@@ -364,3 +364,49 @@ func readRelayMessage(conn *websocket.Conn, msg *RelayMessage) error {
 	}
 	return json.Unmarshal(raw, msg)
 }
+
+// ── Direct connections of the relays (#215, option C) ──────────────────────────
+
+// maxDirectSeen bounds the table of the last direct connection time per relay_id (a relay_id is only
+// accepted from an authenticated link, so the table follows the number of relays; the bound is a ceiling).
+const maxDirectSeen = 8192
+
+var (
+	directMu   sync.Mutex
+	directSeen = map[string]time.Time{}
+)
+
+// noteDirect records now as the last time relayID had a direct link to this node (connected or
+// disconnected). When the table is full the oldest entry goes.
+func noteDirect(relayID string) {
+	directMu.Lock()
+	defer directMu.Unlock()
+	if _, ok := directSeen[relayID]; !ok && len(directSeen) >= maxDirectSeen {
+		var oldest string
+		var ot time.Time
+		for id, t := range directSeen {
+			if oldest == "" || t.Before(ot) {
+				oldest, ot = id, t
+			}
+		}
+		delete(directSeen, oldest)
+	}
+	directSeen[relayID] = time.Now()
+}
+
+// DirectLinkTimes returns, per relay_id, the last time it had a direct link to this node: now for a
+// relay connected right now. In memory only: after a restart of this node it starts empty and every
+// relay that reconnects is stamped then.
+func DirectLinkTimes() map[string]time.Time {
+	directMu.Lock()
+	out := make(map[string]time.Time, len(directSeen))
+	for id, t := range directSeen {
+		out[id] = t
+	}
+	directMu.Unlock()
+	now := time.Now()
+	for _, id := range GetConnectedRelayIDs() {
+		out[id] = now
+	}
+	return out
+}

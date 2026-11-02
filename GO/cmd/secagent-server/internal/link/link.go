@@ -54,6 +54,11 @@ type Manager struct {
 	CloseByJTI func(jti string) int
 	States     func() map[string]ConfirmedState
 	Known      func() []string
+	// Direct returns, per relay_id, the last time the relay had a DIRECT link to this node (now when
+	// connected). Used by the status to tell the relays whose confirmation came from an intermediary (#215).
+	Direct func() map[string]time.Time
+
+	rotatedAt time.Time // when this process rotated the key (zero = not since it started); under mu
 
 	mu    sync.Mutex // serializes key operations and the emission of frames (ordered by seq)
 	cache struct {
@@ -321,6 +326,7 @@ func (m *Manager) Rotate(ctx context.Context) (curKID, prevKID string, seq uint6
 	if serr != nil {
 		log.Printf("link_keys not sent: %v", serr)
 	}
+	m.rotatedAt = time.Now()
 	log.Printf("[SECURITY] link key rotated: kid=%s previous=%s seq=%d", auth.LinkKID(pub(newPriv)), auth.LinkKID(pub(oldPriv)), seq)
 	return auth.LinkKID(pub(newPriv)), auth.LinkKID(pub(oldPriv)), seq, nil
 }
@@ -336,7 +342,15 @@ type RelayStatus struct {
 	// connected without having reported). A never_seen relay is NOT confirmed, outside a rotation too.
 	Confirmed bool   `json:"confirmed"`
 	State     string `json:"state"`
+	// Direct (#215, option C): the relay has had a direct link to this node since the rotation was
+	// started by this process (or since this process started). A relay that is not Direct is only known
+	// through the relays between us and it, and its link_state reached us unsigned through them.
+	Direct bool `json:"direct"`
 }
+
+// processStart is the earliest instant "since the rotation" can be known with: the direct-link times
+// are in memory, so a restart forgets them.
+var processStart = time.Now()
 
 // Relay states of RelayStatus.
 const (
@@ -353,6 +367,10 @@ type Status struct {
 	CurrentKID  string        `json:"current_kid,omitempty"`
 	PreviousKID string        `json:"previous_kid,omitempty"`
 	Relays      []RelayStatus `json:"relays"`
+	// NotDirect lists the relays that have not been directly connected since the rotation (#215):
+	// their confirmation, if any, was relayed unsigned by an intermediary that could forge it.
+	// Informative, never blocks a retire: the operator decides.
+	NotDirect []string `json:"not_direct"`
 }
 
 // Status builds the status; a relay is confirmed when its reported seq reached the rotation seq and
@@ -365,7 +383,15 @@ func (m *Manager) Status() (Status, error) {
 		return Status{}, err
 	}
 	seq, rot := m.Store.LinkSeq()
-	st := Status{RootID: m.LocalID(), Seq: seq, RotationSeq: rot, Relays: []RelayStatus{}}
+	st := Status{RootID: m.LocalID(), Seq: seq, RotationSeq: rot, Relays: []RelayStatus{}, NotDirect: []string{}}
+	since := processStart
+	if m.rotatedAt.After(since) {
+		since = m.rotatedAt
+	}
+	var direct map[string]time.Time
+	if m.Direct != nil {
+		direct = m.Direct()
+	}
 	if cur != nil {
 		st.CurrentKID = auth.LinkKID(pub(cur))
 	}
@@ -409,7 +435,12 @@ func (m *Manager) Status() (Status, error) {
 		case prev != nil && s.KID != st.CurrentKID:
 			state = StateUnconfirmed
 		}
-		st.Relays = append(st.Relays, RelayStatus{RelayID: id, LinkSeq: s.Seq, LinkKID: s.KID, Confirmed: state == StateConfirmed, State: state})
+		at, wasDirect := direct[id]
+		isDirect := wasDirect && !at.Before(since)
+		if !isDirect {
+			st.NotDirect = append(st.NotDirect, id)
+		}
+		st.Relays = append(st.Relays, RelayStatus{RelayID: id, LinkSeq: s.Seq, LinkKID: s.KID, Confirmed: state == StateConfirmed, State: state, Direct: isDirect})
 	}
 	return st, nil
 }
@@ -428,6 +459,7 @@ type RetireResult struct {
 	Seq         uint64
 	Unconfirmed []string
 	NeverSeen   []string
+	NotDirect   []string // #215: relays not directly connected since the rotation (informative)
 }
 
 // RetireDetailed is Retire with the never-seen relays told apart.
@@ -439,6 +471,7 @@ func (m *Manager) RetireDetailed(ctx context.Context, force bool) (res RetireRes
 	if st.PreviousKID == "" {
 		return res, ErrNoPrevious
 	}
+	res.NotDirect = st.NotDirect
 	for _, r := range st.Relays {
 		if r.State != StateConfirmed {
 			res.Unconfirmed = append(res.Unconfirmed, r.RelayID)
@@ -448,6 +481,9 @@ func (m *Manager) RetireDetailed(ctx context.Context, force bool) (res RetireRes
 		}
 	}
 	unconfirmed := res.Unconfirmed
+	if len(res.NotDirect) > 0 {
+		log.Printf("[SECURITY WARNING] retire-link-previous: %d relay(s) not directly connected since the rotation, their confirmation was relayed unsigned: %q", len(res.NotDirect), res.NotDirect)
+	}
 	if len(unconfirmed) > 0 {
 		if !force {
 			return res, ErrUnconfirmed

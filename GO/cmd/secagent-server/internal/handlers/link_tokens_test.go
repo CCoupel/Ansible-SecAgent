@@ -536,3 +536,47 @@ func TestLinkKeys_NeverSeenIsToldApartFromUnconfirmed(t *testing.T) {
 		t.Errorf("the remedy is missing: %q", msg)
 	}
 }
+
+// #215 (option C): a relay not directly connected since the rotation is listed as not_direct (informative:
+// it never blocks the retire); a relay connected directly after the rotation is direct.
+func TestLinkKeys_NotDirectRelaysAreListed(t *testing.T) {
+	useFreshStores(t)
+	m := useLinkRoot(t)
+	_, _ = m.PublicInfo()
+	if _, _, _, err := m.Rotate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := m.Status()
+	cur := st.CurrentKID
+	m.Known = func() []string { return []string{"child", "grandchild", "left"} }
+	m.States = func() map[string]link.ConfirmedState {
+		return map[string]link.ConfirmedState{"child": {KID: cur}, "grandchild": {KID: cur}, "left": {KID: cur}}
+	}
+	m.Direct = func() map[string]time.Time {
+		return map[string]time.Time{
+			"child": time.Now(),                      // connected now
+			"left":  time.Now().Add(-24 * time.Hour), // last direct link long before the rotation
+		}
+	}
+	st, err := m.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct := map[string]bool{}
+	for _, r := range st.Relays {
+		direct[r.RelayID] = r.Direct
+	}
+	if !direct["child"] || direct["grandchild"] || direct["left"] {
+		t.Fatalf("direct = %v, want only child", direct)
+	}
+	if len(st.NotDirect) != 2 {
+		t.Errorf("not_direct = %v, want grandchild and left", st.NotDirect)
+	}
+	res, err := m.RetireDetailed(context.Background(), false)
+	if err != nil {
+		t.Fatalf("not_direct relays must not block the retire: %v", err)
+	}
+	if len(res.NotDirect) != 2 {
+		t.Errorf("retire result not_direct = %v", res.NotDirect)
+	}
+}

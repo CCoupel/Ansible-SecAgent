@@ -226,7 +226,7 @@ func AdminLinkRetire(w http.ResponseWriter, r *http.Request) {
 		if never == nil {
 			never = []string{}
 		}
-		resp := map[string]interface{}{"error": "rotation_unconfirmed", "unconfirmed": unconfirmed, "never_seen": never}
+		resp := map[string]interface{}{"error": "rotation_unconfirmed", "unconfirmed": unconfirmed, "never_seen": never, "not_direct": nonNil(res.NotDirect)}
 		if len(never) > 0 {
 			// never_seen (#234): declared or learned, never connected. Connect it, or drop it from the topology.
 			resp["message"] = "relays never seen cannot confirm the rotation: connect them, or remove one that will not connect with 'secagent-server relays remove <id>'; --force retires anyway"
@@ -242,7 +242,14 @@ func AdminLinkRetire(w http.ResponseWriter, r *http.Request) {
 	if never == nil {
 		never = []string{}
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"retired": true, "seq": seq, "unconfirmed": unconfirmed, "never_seen": never})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"retired": true, "seq": seq, "unconfirmed": unconfirmed, "never_seen": never, "not_direct": nonNil(res.NotDirect)})
+}
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 // AdminLinkStatus: GET /api/admin/link/status.
