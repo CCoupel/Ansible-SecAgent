@@ -17,7 +17,7 @@ Le nettoyage des caches existants de l'utilisateur ne regarde pas les agents.
   (`~/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64`) : on l'**utilise en lecture seule**, on ne
   le re-télécharge pas et on n'y écrit pas.
 - Les modules du dépôt sont dans ce même cache (`~/go/pkg/mod/cache/download`) : exposé comme proxy fichier
-  (`GOPROXY=file://…`), `go` copie dans le scratchpad uniquement les modules nécessaires (3,9 Mio pour
+  (`GOPROXY=file://…`), `go` copie dans le scratchpad uniquement les modules nécessaires (quelques Mio, 2,6 Mio mesurés par qa pour
   `go build ./...`) sans rien écrire côté utilisateur et **sans réseau**. `GOFLAGS=-mod=mod` est refusé en mode
   workspace (`go.work`) : ne pas l'ajouter.
 - Si ce toolchain n'est plus dans le cache : le télécharger (`GOTOOLCHAIN=go1.25.5`) avec `GOMODCACHE` **dans le
@@ -48,6 +48,10 @@ export GOPROXY="file://$HOME/go/pkg/mod/cache/download" GOSUMDB=off GOFLAGS=-mod
 
 - Tests, depuis `GO/` : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test -race ./... -timeout 900s`.
   `-race` exige CGO (gcc présent : `/usr/bin/gcc`) ; la CI l'utilise (`.github/workflows/ci.yml`).
+  Écart de timeout : 900 s est la valeur consignée dans la mémoire projet (`MEMORY.md`, « CI GitHub et outils »),
+  prévue comme marge pour un poste d'agent (WSL sur NTFS, `-race`, CPU partagé) ; `scripts/ci.sh`, `GO/Makefile`
+  et le job `build-test` de la CI utilisent 300 s. Un dépassement à 300 s sur un poste d'agent ne prouve donc pas
+  un test bloqué : relancer avec 900 s avant de conclure. Les scripts ne sont pas modifiés.
 - Tag de build `testhelpers` : les tests d'intégration compilent eux-mêmes un nœud avec
   `go test -c -tags testhelpers` (`internal/integration/jwt_renewal_spec_test.go:65`,
   `internal/server/agent_jwt_testhelpers.go`). Il abaisse les durées minimales de JWT : **jamais dans un binaire
