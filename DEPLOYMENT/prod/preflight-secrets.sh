@@ -76,13 +76,29 @@ if [ "$CHILD" = 1 ]; then
     case "${km: -2:1}${km: -1}" in *[2367]*) bad "$k : mode $km inscriptible par le groupe/les autres (racine de confiance du sous-arbre) -> chmod 0644 $k" ;; esac
     [ "$ku" = "$OWNER" ] || case "${km: -1}" in 4|5|6|7) ;; *) bad "$k : illisible par l'UID $OWNER (mode $km, proprietaire $ku) -> chmod 0644 $k" ;; esac
   fi
-  # #232 : si le .env de l'enfant a ete charge (set -a; . ./.env), chaque adresse du parent doit etre en wss:// (le serveur
-  # refuse tout autre schema au demarrage). L'adresse n'est jamais affichee (position seulement).
-  if [ -n "${REPEATER_UPSTREAM_URL:-}" ]; then
-    i=0; IFS=',' read -r -a ups <<< "$REPEATER_UPSTREAM_URL"
+  # #232 / B17 : la liste d'adresses du parent (chargee depuis le .env de l'enfant : set -a; . ./.env; set +a) est
+  # obligatoire, et chaque adresse doit etre wss://<hote>[:port] sans identifiants, comme l'exige le serveur
+  # (endpoints.ParseSchemes(v, "wss"), 16 adresses au plus). La valeur n'est JAMAIS affichee (position seulement).
+  if [ -z "${REPEATER_UPSTREAM_URL//[[:space:]]/}" ]; then
+    bad "REPEATER_UPSTREAM_URL vide ou absente (charger le .env de l'enfant : set -a; . ./.env; set +a ; liste wss://<parent>:7772)"
+  else
+    IFS=',' read -r -a ups <<< "$REPEATER_UPSTREAM_URL,"
+    [ "${#ups[@]}" -le 16 ] || bad "REPEATER_UPSTREAM_URL : ${#ups[@]} adresses, maximum 16"
+    i=0
     for u in "${ups[@]}"; do
-      i=$((i + 1)); u="${u#"${u%%[![:space:]]*}"}"
-      case "$u" in [wW][sS][sS]://?*) ;; *) bad "REPEATER_UPSTREAM_URL adresse #$i : schema wss:// obligatoire (port WebSocket du parent, 7772)" ;; esac
+      i=$((i + 1))
+      u="${u#"${u%%[![:space:]]*}"}"; u="${u%"${u##*[![:space:]]}"}"
+      hp="${u#*://}"; hp="${hp%%[/?#]*}"
+      case "$hp" in \[*) h="${hp#\[}"; h="${h%%]*}" ;; *) h="${hp%%:*}" ;; esac
+      if [ -z "$u" ]; then
+        bad "REPEATER_UPSTREAM_URL adresse #$i vide"
+      elif ! [[ "$u" =~ ^[wW][sS][sS]:// ]]; then
+        bad "REPEATER_UPSTREAM_URL adresse #$i : schema wss:// obligatoire (port WebSocket du parent, 7772)"
+      elif [[ "$hp" == *@* ]]; then
+        bad "REPEATER_UPSTREAM_URL adresse #$i : identifiants interdits dans l'adresse (le jeton passe par repeater_upstream_token)"
+      elif [ -z "$h" ]; then
+        bad "REPEATER_UPSTREAM_URL adresse #$i : hote absent (attendu wss://<hote>:7772)"
+      fi
     done
   fi
 fi
