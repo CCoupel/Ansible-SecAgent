@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -48,4 +49,51 @@ func TestDirectLinkTimes_ALaterRelayedLinkStateClearsTheStamp(t *testing.T) {
 	if _, ok := DirectLinkTimes()["child"]; ok {
 		t.Fatal("a later link_state relayed by an intermediary must clear the direct stamp")
 	}
+}
+
+// B43: the confirmation and its provenance are stored under one lock. Concurrent link_state of the same
+// relay, direct and relayed, must always leave a stamp that agrees with the LAST stored confirmation; the
+// -race detector also covers the readers of the status.
+func TestRecordLinkState_ProvenanceAndConfirmationAreAtomic(t *testing.T) {
+	resetRelayState()
+	t.Cleanup(resetRelayState)
+	const kidD, kidR = "DDDDDDDDDDDDDDDDDDDDDD", "RRRRRRRRRRRRRRRRRRRRRR" // direct reports carry kidD, relayed ones kidR
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() { // reader: a stamp may only exist next to a confirmation that came directly
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			linkMu.RLock()
+			st, okS := linkStates["x"]
+			_, okD := directSeen["x"]
+			linkMu.RUnlock()
+			if okS && okD != (st.KID == kidD) {
+				t.Errorf("stamp (%v) disagrees with the stored confirmation (kid %s)", okD, st.KID)
+				return
+			}
+		}
+	}()
+	var writers sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		writers.Add(1)
+		go func(w int) {
+			defer writers.Done()
+			for i := 0; i < 2000; i++ {
+				if (i+w)%2 == 0 {
+					recordLinkState("x", uint64(i), kidD, provDirect)
+				} else {
+					recordLinkState("x", uint64(i), kidR, provRelayed)
+				}
+			}
+		}(w)
+	}
+	writers.Wait()
+	close(stop)
+	wg.Wait()
 }

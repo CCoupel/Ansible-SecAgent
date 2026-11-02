@@ -1469,9 +1469,9 @@ func resetRelayState() {
 	eventQuotas = map[string]*eventQuota{}
 	eventQuotaPurged = time.Time{}
 	eventQuotaMu.Unlock()
-	directMu.Lock()
+	linkMu.Lock()
 	directSeen = map[string]time.Time{}
-	directMu.Unlock()
+	linkMu.Unlock()
 	descOwnerMu.Lock()
 	for k := range descendantOwner {
 		delete(descendantOwner, k)
