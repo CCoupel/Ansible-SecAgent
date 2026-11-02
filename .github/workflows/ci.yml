@@ -158,6 +158,8 @@ jobs:
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/guard-venv"
           "$RUNNER_TEMP/guard-venv/bin/python" -m pip install --quiet --no-deps --require-hashes --only-binary=:all: -r .github/ci/requirements-guard.txt
+          # la garde est elle-meme testee (formes conformes, injections, 14 contournements YAML de M6), AVANT de juger les workflows
+          "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_actions_pinned_selftest.py
           "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_actions_pinned.py
 
   ansible-inventory:
