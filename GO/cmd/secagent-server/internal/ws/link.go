@@ -247,6 +247,9 @@ func handleLinkState(conn *RelayConnection, msg RelayMessage) {
 		return
 	}
 	RecordLinkState(id, msg.Seq, msg.CurrentKID)
+	if id == conn.RelayID {
+		noteDirect(id) // the confirmation came from the relay itself, not through an intermediary (M10)
+	}
 	frame, err := json.Marshal(RelayMessage{Type: MsgLinkState, RelayID: id, Seq: msg.Seq, CurrentKID: msg.CurrentKID})
 	if err != nil {
 		return
@@ -365,7 +368,7 @@ func readRelayMessage(conn *websocket.Conn, msg *RelayMessage) error {
 	return json.Unmarshal(raw, msg)
 }
 
-// ── Direct connections of the relays (#215, option C) ──────────────────────────
+// ── Direct confirmations of the relays (#215, option C) ────────────────────────
 
 // maxDirectSeen bounds the table of the last direct connection time per relay_id (a relay_id is only
 // accepted from an authenticated link, so the table follows the number of relays; the bound is a ceiling).
@@ -376,8 +379,9 @@ var (
 	directSeen = map[string]time.Time{}
 )
 
-// noteDirect records now as the last time relayID had a direct link to this node (connected or
-// disconnected). When the table is full the oldest entry goes.
+// noteDirect records now as the last time relayID reported its link_state ITSELF, on its own link to this
+// node (M10: provenance of the confirmation, not "was connected"; a link_state relayed for a descendant
+// by an intermediary never counts). When the table is full the oldest entry goes.
 func noteDirect(relayID string) {
 	directMu.Lock()
 	defer directMu.Unlock()
@@ -394,19 +398,15 @@ func noteDirect(relayID string) {
 	directSeen[relayID] = time.Now()
 }
 
-// DirectLinkTimes returns, per relay_id, the last time it had a direct link to this node: now for a
-// relay connected right now. In memory only: after a restart of this node it starts empty and every
-// relay that reconnects is stamped then.
+// DirectLinkTimes returns, per relay_id, the last time the relay confirmed its link_state itself, on its
+// own link. In memory only: after a restart of this node it starts empty and every relay is stamped when
+// it reports again.
 func DirectLinkTimes() map[string]time.Time {
 	directMu.Lock()
+	defer directMu.Unlock()
 	out := make(map[string]time.Time, len(directSeen))
 	for id, t := range directSeen {
 		out[id] = t
-	}
-	directMu.Unlock()
-	now := time.Now()
-	for _, id := range GetConnectedRelayIDs() {
-		out[id] = now
 	}
 	return out
 }
