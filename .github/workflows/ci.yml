@@ -149,6 +149,10 @@ jobs:
           # scripts livres et de qualif (les autotests *_selftest.sh, au style `chk "..." $(...)`, sont hors perimetre)
           git ls-files -z '*.sh' ':!:*_selftest.sh' | xargs -0 "$d/bin/shellcheck" -S warning
 
+      # LOT-2.2 : toute action epinglee par SHA 40 hex + `# vX.Y.Z` ; aucune expression ${{ }} dans un script run:
+      - name: Actions epinglees et aucune expression dans les scripts run
+        run: python3 -I scripts/ci/check_actions_pinned.py .github/workflows/*.yml
+
   ansible-inventory:
     name: Inventaire Ansible
     runs-on: ubuntu-latest
