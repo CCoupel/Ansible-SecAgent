@@ -229,7 +229,7 @@ func AdminLinkRetire(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]interface{}{"error": "rotation_unconfirmed", "unconfirmed": unconfirmed, "never_seen": never, "not_direct": nonNil(res.NotDirect)}
 		if len(never) > 0 {
 			// never_seen (#234): declared or learned, never connected. Connect it, or drop it from the topology.
-			resp["message"] = "relays never seen cannot confirm the rotation: connect them, or remove one that will not connect with 'secagent-server relays remove <id>' (if the node answers relay_not_revoked, the relay has no tracked link token: revoke it first, POST /api/admin/relays/{id}/revoke; a descendant learned from the topology has no row here, remove answers 404, and it disappears when its ancestor stops declaring it); --force retires anyway"
+			resp["message"] = "relays never seen cannot confirm the rotation: connect them, or remove one that will not connect with 'secagent-server relays remove --revoke <relay_id>' (a relay that never connected has no tracked link token: it must be revoked before it is removed; a descendant learned from the topology has no row here, remove answers 404, and it disappears when its ancestor stops declaring it); --force retires anyway"
 		}
 		writeJSON(w, http.StatusConflict, resp)
 		return

@@ -98,7 +98,7 @@ its trust anchor is re-pinned. --force overrides, with a [SECURITY WARNING] in t
 				_, _ = fmt.Printf("WARNING: of which never seen (no link_state): %v\n", u)
 			}
 			if u, ok := r["not_direct"].([]interface{}); ok && len(u) > 0 {
-				_, _ = fmt.Printf("NOTE: not directly connected since the rotation (confirmation relayed unsigned by an intermediary): %v\n", u)
+				_, _ = fmt.Printf("NOTE: not directly connected since the rotation (or since this node started) (confirmation relayed unsigned by an intermediary): %v\n", u)
 			}
 			return nil
 		})
@@ -126,14 +126,18 @@ var keysLinkStatusCmd = &cobra.Command{
 					never++
 				}
 			}
+			since := "since the rotation"
+			if p, _ := r["previous_kid"].(string); p == "" {
+				since = "since this node started (no rotation is open)"
+			}
 			if nd, ok := r["not_direct"].([]interface{}); ok && len(nd) > 0 {
 				defer func() {
-					_, _ = fmt.Printf("%d relay(s) not directly connected since the rotation (DIRECT=false): their confirmation was relayed, unsigned, by an intermediary that could forge it. Checking them is up to you.\n", len(nd))
+					_, _ = fmt.Printf("%d relay(s) not directly connected "+since+" (DIRECT=false): their confirmation was relayed, unsigned, by an intermediary that could forge it. Checking them is up to you.\n", len(nd))
 				}()
 			}
 			if never > 0 {
 				defer func() {
-					_, _ = fmt.Printf("%d relay(s) never_seen (no link_state received): connect them, or drop one that will not connect with 'secagent-server relays remove <id>'.\n", never)
+					_, _ = fmt.Printf("%d relay(s) never_seen (no link_state received): connect them, or drop one that will not connect with 'secagent-server relays remove --revoke <relay_id>' (a relay that never connected must be revoked before it is removed).\n", never)
 				}()
 			}
 			return tp.flush()

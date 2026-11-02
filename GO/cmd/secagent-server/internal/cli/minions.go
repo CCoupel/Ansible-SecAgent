@@ -23,6 +23,7 @@ func init() {
 		minionsSuspendCmd,
 		minionsResumeCmd,
 		minionsRevokeCmd,
+		minionsDeleteCmd,
 		minionsAuthorizeCmd,
 		minionsVarsCmd,
 	)
@@ -171,6 +172,52 @@ var minionsRevokeCmd = &cobra.Command{
 		fmt.Printf("Agent %s revoked\n", args[0])
 		return nil
 	},
+}
+
+// ── minions delete ────────────────────────────────────────────────────────────
+
+var minionsDeleteYes bool
+
+var minionsDeleteCmd = &cobra.Command{
+	Use:   "delete <hostname>",
+	Short: "Delete an agent permanently (state, authorized key); lifts a revocation",
+	Long: `Removes the agent from the relay state (DELETE /api/admin/minions/{hostname}) and closes its connection
+with the normal code 4000. Destructive: the agent is forgotten, a revocation on it (minions revoke) is
+lifted, and an agent that still has a valid enrollment token comes back by enrolling again. To keep a
+host out, REVOKE it and do not delete it. Asks for confirmation (type the hostname); without a terminal
+it is refused unless --yes is given.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		host := args[0]
+		data, status, err := apiRequest("GET", "/api/admin/minions/"+host, nil)
+		if err != nil {
+			return err
+		}
+		if code := checkError(data, status); code != 0 {
+			os.Exit(code)
+		}
+		var agent map[string]interface{}
+		_ = json.Unmarshal(data, &agent)
+		if st, _ := agent["status"].(string); st == "connected" {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "NOTE: %q is connected: its connection will be closed (code 4000) and it will try to reconnect; with a valid enrollment token it enrolls again. To keep it out use 'minions revoke' instead.\n", host)
+		}
+		if err := confirmDestructive(cmd, minionsDeleteYes, "delete", host); err != nil {
+			return err
+		}
+		data, status, err = apiRequest("DELETE", "/api/admin/minions/"+host, nil)
+		if err != nil {
+			return err
+		}
+		if code := checkError(data, status); code != 0 {
+			os.Exit(code)
+		}
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Agent %q deleted\n", host)
+		return nil
+	},
+}
+
+func init() {
+	minionsDeleteCmd.Flags().BoolVar(&minionsDeleteYes, "yes", false, "confirm without prompting (required in non-interactive use)")
 }
 
 // ── minions authorize ─────────────────────────────────────────────────────────

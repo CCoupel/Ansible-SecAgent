@@ -220,13 +220,14 @@ RestartPreventExitStatus=77 78
 ```bash
 # Révoquer : drapeau persistant + blacklist du JTI en une écriture, WS fermée en 4001, le minion sort en code 77
 docker exec secagent-server secagent-server minions revoke <hostname>
-# (ou : curl --cacert tls.crt -X POST -H "Authorization: Bearer $ADMIN_TOKEN" https://localhost:7771/api/admin/revoke/<hostname>)
 
 # Effet : l'hôte est refusé à l'enrôlement (403 agent_revoked, jeton non consommé, même avec un jeton réutilisable),
 # au rekey et à la connexion WS, sans limite de durée (le drapeau survit à la blacklist de 25 h).
 
-# Lever la révocation : seule voie = supprimer l'agent (pas de « unrevoke ») ; ses variables sont perdues
-curl --cacert tls.crt -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" https://localhost:7771/api/admin/minions/<hostname>
+# Lever la révocation : seule voie = supprimer l'agent (pas de « unrevoke ») ; ses variables sont perdues.
+# Destructif : confirmation (taper le nom d'hôte) ; sans terminal, refus (code 9) sauf --yes. (v3.0.5, #233)
+docker exec -it secagent-server secagent-server minions delete <hostname>
+# non interactif : minions delete <hostname> --yes
 # puis créer un jeton d'enrôlement et ré-enrôler le minion (RELAY_ENROLLMENT_TOKEN) : le JWT local devenu invalide
 # est rejeté en 401 à la connexion WS, ce qui déclenche le ré-enrôlement ; l'effacer à la main n'est pas nécessaire
 docker exec secagent-server secagent-server tokens create --role enrollment --hostname-pattern "<hostname>" --expires 24h
@@ -277,7 +278,7 @@ docker exec <racine> secagent-server keys retire-link-previous
 - **Pourquoi le nouveau jeton est obligatoire** : un jeton de lien porte dans son en-tête le `kid` de la clé qui l'a signé et le relay qui le vérifie (la racine pour un enfant direct) n'accepte que les `kid` `current` et `previous` (`auth/linkjwt.go:251-258`) : un jeton émis AVANT la rotation est signé par l'ancienne clé et est refusé (`jwt_unknown_kid`) dès `retire-link-previous`. Sans lui, le lien déjà établi survit jusqu'à sa prochaine reconnexion, puis l'enfant est refusé : le défaut est masqué jusque-là (constaté par la QA avec un test dédié et exécuté). **Symptôme différé** : si le nouveau jeton est oublié, le lien déjà établi tient encore juste après `retire-link-previous` ; l'enfant ne se reconnecte plus qu'à son redémarrage suivant et la racine journalise `jwt_unknown_kid`. **L'absence de coupure immédiate ne prouve pas que la rotation est correcte** : vérifier chaque lien après redémarrage du relay avant de considérer la rotation terminée.
 - **Mettre à jour `REPEATER_ROOT_LINK_KEY_FILE` de chaque relay non racine AVANT `retire-link-previous`.** Tant que la clé précédente existe, l'ancien fichier égale `previous` et reste accepté ; **après le retrait il n'est plus ni la clé courante ni la précédente**, et le **prochain démarrage** du relay (redémarrage du conteneur, mise à jour d'image) est refusé en boucle : `link trust anchor: pinned root link key disagrees with the persisted link_trust (outside a valid rotation chain)`. C'est voulu (fail closed) ; le lien déjà établi survit jusqu'à ce redémarrage, ce qui masque le défaut. Remède si le retrait a déjà eu lieu : remplacer le fichier par la clé courante (`keys link-pubkey`) et redémarrer le relay ; si l'ancre persistée est elle-même obsolète, `state link-trust reset --yes` (relay arrêté), nouveau fichier, redémarrage.
 
-- **Ne jamais `retire-link-previous` avant la confirmation de tous les relays** : la racine répond `409 rotation_unconfirmed` (avec la liste `unconfirmed` et, depuis v3.0.5, `never_seen` : les relais déclarés ou appris mais jamais connectés) tant qu'un relay connu n'a pas confirmé la rotation. Un relais déclaré **jamais connecté** bloque donc la clôture : le connecter, ou le retirer (`secagent-server relays remove <id>`) s'il ne doit plus exister. Un relais déclaré par `relays add` (mode pull) sans jamais s'être connecté n'a aucun JTI de jeton suivi : `relays remove` répond alors `409 relay_not_revoked` (#153, son jeton ne peut pas être mis en liste noire) ; le révoquer d'abord (`POST /api/admin/relays/<id>/revoke`), puis le retirer. Un descendant `never_seen` seulement appris de la topologie (aucune ligne `relay_nodes` sur la racine) répond `404 relay_not_found` à `remove` : il disparaît du statut quand son ancêtre cesse de le déclarer (ou au redémarrage de la racine). `keys link-status` affiche la colonne `STATE` (`confirmed` / `unconfirmed` / `never_seen`). `--force` passe outre avec un `[SECURITY WARNING]` listant les relays concernés : à n'utiliser que pour un relay définitivement perdu.
+- **Ne jamais `retire-link-previous` avant la confirmation de tous les relays** : la racine répond `409 rotation_unconfirmed` (avec la liste `unconfirmed` et, depuis v3.0.5, `never_seen` : les relais déclarés ou appris mais jamais connectés) tant qu'un relay connu n'a pas confirmé la rotation. Un relais déclaré **jamais connecté** bloque donc la clôture : le connecter, ou le retirer avec `secagent-server relays remove --revoke <relay_id>` s'il ne doit plus exister (un relais déclaré par `relays add` sans jamais s'être connecté n'a aucun JTI de jeton suivi : `relays remove` seul répond `409 relay_not_revoked`, #153 ; `--revoke` le révoque d'abord). Un descendant `never_seen` seulement appris de la topologie (aucune ligne `relay_nodes` sur la racine) répond `404 relay_not_found` à `remove` : il disparaît du statut quand son ancêtre cesse de le déclarer (ou au redémarrage de la racine). `keys link-status` affiche la colonne `STATE` (`confirmed` / `unconfirmed` / `never_seen`). `--force` passe outre avec un `[SECURITY WARNING]` listant les relays concernés : à n'utiliser que pour un relay définitivement perdu.
 - Une seule rotation à la fois (`409 previous_key_not_retired` tant que la précédente n'est pas fermée).
 - Pendant la fenêtre, les jetons signés par l'ancienne **et** la nouvelle clé sont acceptés ; après `retire-link-previous`, plus que la nouvelle.
 - Les jetons de lien déjà distribués restent valables **jusqu'à `retire-link-previous`** (leur clé reste `previous` pendant la fenêtre), puis ils sont refusés : voir la séquence ci-dessus. **Confirmé** signifie que le relay rapporte (`link_state`) le `kid` de la clé **courante** (`keys link-status`, colonne `CONFIRMED`) ; le `seq` rapporté n'est qu'informatif (non signé). Un relay déployé **après** la rotation, ancré sur la nouvelle clé, se confirme à son premier `link_state`.
@@ -334,24 +335,16 @@ docker exec <racine> secagent-server tokens revoke <token-id>
 # - racine injoignable : les liens établis continuent, la révocation descend au retour du lien
 ```
 
-### Identifiant d'un relay : l'UUID, pas le `relay_id`
+### Identifiant d'un relay : `relay_id` ou UUID (v3.0.5, #233)
 
-Les routes `/api/admin/relays/{id}/revoke` et `DELETE /api/admin/relays/{id}`, ainsi que `relays remove <id>`, attendent l'**UUID** du relay (champ `id`), **pas** son nom `relay_id` (`dmz1`) : avec le nom, la réponse est `404 relay_not_found` (`handlers/admin_relays.go` : recherche par `id`). Le tableau de `relays list` n'affiche que le `RELAY_ID` ; l'UUID se lit dans la sortie JSON :
-
-```bash
-docker exec secagent-server secagent-server relays list --format json
-# [ { "id": "3f1c…-uuid", "relay_id": "dmz1", "mode": "pull", "status": "…", … } ]
-# ou, en API : GET https://localhost:7771/api/admin/relays  →  {"relays":[{"id":"<uuid>","relay_id":"dmz1",…}]}
-RELAY_UUID=<valeur du champ "id" du relay dont "relay_id" vaut dmz1>
-```
+`relays revoke` et `relays remove` acceptent le nom `relay_id` (celui de `relays list`, ex. `dmz1`) **ou** l'UUID de la ligne (champ `id`). Le nom est résolu par `GET /api/admin/relays` ; un nom inconnu, ou porté par plusieurs lignes, est refusé avec un message (utiliser alors l'UUID, lisible dans `relays list --format json`). Les routes REST `/api/admin/relays/{id}/revoke` et `DELETE /api/admin/relays/{id}` attendent, elles, l'UUID (avec le nom : `404 relay_not_found`).
 
 ### Révoquer un relay enfant (mode pull)
 
 ```bash
-# Via API uniquement (port 7771, admin ; https si ADMIN_TLS=true) :
-# il n'existe pas de sous-commande `relays revoke` ; l'identifiant est l'UUID (voir ci-dessus)
-curl --cacert tls.crt -X POST https://localhost:7771/api/admin/relays/$RELAY_UUID/revoke \
-  -H "Authorization: Bearer <ADMIN_TOKEN>"
+# Destructif : confirmation (taper le relay_id) ; sans terminal, refus (code 9) sauf --yes
+docker exec -it secagent-server secagent-server relays revoke dmz1
+# non interactif : relays revoke dmz1 --yes
 
 # Effets :
 # - JTI du token enfant blacklisté
@@ -359,22 +352,17 @@ curl --cacert tls.crt -X POST https://localhost:7771/api/admin/relays/$RELAY_UUI
 # - Enfant ne peut plus se reconnecter
 ```
 
-### Supprimer un relay (legacy ou post-revocation)
+### Supprimer un relay (legacy ou post-révocation)
 
-⚠️ **Règle importante** : Toujours révoquer AVANT de supprimer (sinon 409 relay_not_revoked)
+⚠️ Un relais dont le nœud ne suit pas le jeton de lien (typiquement déclaré par `relays add` et **jamais connecté**, `never_seen`) doit être révoqué AVANT d'être supprimé, sinon `409 relay_not_revoked`.
 
 ```bash
-# 1. Révoquer d'abord (API, UUID du relay, voir ci-dessus)
-curl --cacert tls.crt -X POST https://localhost:7771/api/admin/relays/$RELAY_UUID/revoke \
-  -H "Authorization: Bearer <ADMIN_TOKEN>"
-
-# 2. Puis supprimer (CLI : sous-commandes relays add | list | remove <uuid> | status)
-docker exec secagent-server secagent-server relays remove $RELAY_UUID
-
-# Ou via API
-curl --cacert tls.crt -X DELETE https://localhost:7771/api/admin/relays/$RELAY_UUID \
-  -H "Authorization: Bearer <ADMIN_TOKEN>"
+# En une commande : révoque puis supprime (même confirmation que relays revoke)
+docker exec -it secagent-server secagent-server relays remove --revoke dmz1
+# ou en deux : relays revoke dmz1 ; relays remove dmz1
 ```
+
+Un descendant `never_seen` seulement appris de la topologie (aucune ligne `relay_nodes` sur la racine) répond `404` : il disparaît quand son ancêtre cesse de le déclarer.
 
 ---
 

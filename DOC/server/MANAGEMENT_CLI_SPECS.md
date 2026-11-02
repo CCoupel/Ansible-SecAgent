@@ -399,6 +399,16 @@ Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écr
 | 10 | vérification après écriture échouée (l'original a été remis en place, sauf message contraire) |
 | 11 | nouvelle clé de moins de 32 octets, rien n'est modifié (l'ancienne clé n'est pas contrôlée) |
 
+#### Commandes destructrices de v3.0.5 (#233) : `minions delete`, `relays revoke`, `relays remove`
+
+| Commande | Effet | Route |
+|---|---|---|
+| `minions delete <hostname> [--yes]` | supprime l'agent (état, clé autorisée), ferme sa connexion en 4000, **lève une révocation** ; signale un agent connecté | `DELETE /api/admin/minions/{hostname}` |
+| `relays revoke <relay_id\|uuid> [--yes]` | révoque un relay (JTI blacklisté, lien fermé en 4010) | `POST /api/admin/relays/{id}/revoke` |
+| `relays remove <relay_id\|uuid> [--revoke] [--yes]` | supprime un relay ; `--revoke` le révoque d'abord (relay jamais connecté : sans cela `409 relay_not_revoked`, la CLI le dit) | `DELETE /api/admin/relays/{id}` |
+
+Le nom `relay_id` est résolu par `GET /api/admin/relays` (inconnu ou ambigu : erreur, rien n'est envoyé). **Confirmation** : taper le nom (hôte ou `relay_id`) ; sans terminal sur stdin (`/dev/null` compris) la commande est **refusée, rien n'est fait, code de sortie 9**, sauf `--yes`. `relays remove` sans `--revoke` ne demande pas de confirmation (comportement inchangé).
+
 Le code 7 (`--min-write-seq`) n'existe que pour `state verify` / `state restore`.
 
 ---

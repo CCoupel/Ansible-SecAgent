@@ -459,7 +459,7 @@ Lu dans le journal append-only `actions.log` (#161). `limit` : 1–200 (défaut 
 | `GET /api/admin/relays` | Liste des relays |
 | `GET /api/admin/relays/status` | État des relays : `{ "relays": [...], "timestamp": "..." }` |
 | `DELETE /api/admin/relays/{id}` | Supprime un relay |
-| `POST /api/admin/relays/{id}/revoke` | Révoque un relay (c'est la seule forme de révocation : il n'y a pas de sous-commande CLI `relays revoke`) |
+| `POST /api/admin/relays/{id}/revoke` | Révoque un relay (CLI : `relays revoke <relay_id|uuid>` ou `relays remove --revoke`, depuis v3.0.5) |
 
 (`server/routers.go:96-100`, `handlers/admin_relays.go`.)
 

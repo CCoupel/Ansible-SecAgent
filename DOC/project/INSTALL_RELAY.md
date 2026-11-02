@@ -61,9 +61,9 @@ srv tokens create --role relay-child --sub dmz1 --aud <relay_id du parent direct
 > - **pendant une rotation**, il passe à `CONFIRMED=false` et **`keys retire-link-previous` répond `409 rotation_unconfirmed`**
 >   tant qu'il reste déclaré : le garde n'est pas contourné. Un enfant déclaré puis abandonné bloque donc la fermeture de la
 >   fenêtre de rotation (seul `--force` passe outre, avec un `[SECURITY WARNING]`) ;
-> - procédure pour un enfant abandonné : le **révoquer par l'API REST** (`POST /api/admin/relays/<uuid>/revoke`, UUID et non
->   `relay_id` ; il n'existe pas de sous-commande CLI, suivi #233 ; voir `DEPLOYMENT.md`, « Révoquer un relay enfant »), puis
->   `srv relays remove <uuid>` (sans révocation préalable : `409 relay_not_revoked`), puis `retire-link-previous`. La
+> - procédure pour un enfant abandonné : `srv relays remove --revoke <relay_id>` (v3.0.5 : accepte le nom `relay_id` ou l'UUID ;
+>   révoque puis retire, confirmation à taper ou `--yes` ; voir `DEPLOYMENT.md`, « Supprimer un relay »), puis
+>   `retire-link-previous`. Sans `--revoke`, `relays remove` d'un enfant jamais connecté répond `409 relay_not_revoked`. La
 >   révocation seule ne suffit pas : tant que le relay est déclaré, le retrait reste refusé.
 >
 > Ne déclarez donc que des enfants qui se connecteront.

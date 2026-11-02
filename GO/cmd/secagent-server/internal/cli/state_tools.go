@@ -281,10 +281,7 @@ const ExitRefused = 9
 var (
 	stateLTResetDir string
 	stateLTResetYes bool
-	stateLTStdinTTY = func() bool { // tests replace it
-		fi, err := os.Stdin.Stat()
-		return err == nil && fi.Mode()&os.ModeCharDevice != 0
-	}
+	stateLTStdinTTY = stdinLooksInteractive // tests replace it
 )
 
 var stateLinkTrustCmd = &cobra.Command{

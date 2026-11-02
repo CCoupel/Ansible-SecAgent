@@ -25,6 +25,7 @@ var relaysCmd = &cobra.Command{
 func init() {
 	relaysCmd.AddCommand(
 		relaysListCmd,
+		relaysRevokeCmd,
 		relaysAddCmd,
 		relaysRemoveCmd,
 		relaysStatusCmd,
@@ -190,28 +191,134 @@ func init() {
 	relaysAddCmd.Flags().StringVar(&addRelayURL, "url", "", "wss:// URL of the child relay (push mode only; comma separated list accepted)")
 	relaysAddCmd.Flags().StringVar(&addRelayToken, "token", "", "relay-parent link token minted on the root for this node (push mode only; stored sealed)")
 	relaysAddCmd.Flags().StringVar(&addRelayDescription, "description", "", "Human-readable description")
+	relaysRevokeCmd.Flags().BoolVar(&relaysRevokeYes, "yes", false, "confirm without prompting (required in non-interactive use)")
+	relaysRemoveCmd.Flags().BoolVar(&relaysRemoveRevoke, "revoke", false, "revoke the relay first (needed for a relay whose link token the node does not track)")
+	relaysRemoveCmd.Flags().BoolVar(&relaysRemoveYes, "yes", false, "with --revoke: confirm without prompting (required in non-interactive use)")
 }
 
 // ── relays remove ─────────────────────────────────────────────────────────────
 
-var relaysRemoveCmd = &cobra.Command{
-	Use:   "remove <id>",
-	Short: "Remove a registered relay node by its UUID",
-	Args:  cobra.ExactArgs(1),
+// resolveRelay maps what the operator typed to the internal id of the relay row: the row id (UUID, as
+// printed by the API) or the relay_id (the name, as in 'relays list'). An unknown or ambiguous name is an error.
+func resolveRelay(arg string) (rowID, relayID string, err error) {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return "", "", fmt.Errorf("relay id is required")
+	}
+	data, status, err := apiRequest("GET", "/api/admin/relays", nil)
+	if err != nil {
+		return "", "", err
+	}
+	if code := checkError(data, status); code != 0 {
+		os.Exit(code)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return "", "", fmt.Errorf("parse response: %w", err)
+	}
+	list, _ := result["relays"].([]interface{})
+	var byName []map[string]interface{}
+	for _, it := range list {
+		m, _ := it.(map[string]interface{})
+		if id, _ := m["id"].(string); id == arg {
+			rid, _ := m["relay_id"].(string)
+			return id, rid, nil
+		}
+		if rid, _ := m["relay_id"].(string); rid == arg {
+			byName = append(byName, m)
+		}
+	}
+	switch len(byName) {
+	case 0:
+		return "", "", fmt.Errorf("no relay with id or relay_id %q (see 'relays list')", arg)
+	case 1:
+		id, _ := byName[0]["id"].(string)
+		return id, arg, nil
+	}
+	return "", "", fmt.Errorf("relay_id %q matches %d rows: use the row id", arg, len(byName))
+}
+
+func revokeRelayRow(rowID string) error {
+	data, status, err := apiRequest("POST", "/api/admin/relays/"+rowID+"/revoke", nil)
+	if err != nil {
+		return err
+	}
+	if code := checkError(data, status); code != 0 {
+		os.Exit(code)
+	}
+	return nil
+}
+
+var relaysRevokeYes bool
+
+var relaysRevokeCmd = &cobra.Command{
+	Use:   "revoke <id|relay_id>",
+	Short: "Revoke a relay: blacklist its link token and cut its link (permanent, code 4010)",
+	Long: `Revokes a relay node (POST /api/admin/relays/{id}/revoke): its link token is blacklisted, its link is
+closed with the permanent code 4010 and it is refused until a new token is minted for it. A relay that never
+connected (never_seen) must be revoked before it can be removed. Accepts the relay_id (as in 'relays list')
+or the row id. Asks for confirmation (type the relay_id); without a terminal it is refused unless --yes.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		id := strings.TrimSpace(args[0])
-		if id == "" {
-			return fmt.Errorf("relay id is required")
+		rowID, relayID, err := resolveRelay(args[0])
+		if err != nil {
+			return err
+		}
+		if err := confirmDestructive(cmd, relaysRevokeYes, "revoke", relayID); err != nil {
+			return err
+		}
+		if err := revokeRelayRow(rowID); err != nil {
+			return err
+		}
+		fmt.Printf("Relay %q revoked.\n", relayID)
+		return nil
+	},
+}
+
+var (
+	relaysRemoveRevoke bool
+	relaysRemoveYes    bool
+)
+
+var relaysRemoveCmd = &cobra.Command{
+	Use:   "remove <id|relay_id>",
+	Short: "Remove a registered relay node (row id or relay_id); --revoke revokes it first",
+	Long: `Removes a relay node. Accepts the relay_id (as in 'relays list') or the row id (UUID). The node refuses
+(409 relay_not_revoked) a relay whose link token it does not track — typically a relay declared with
+'relays add' that never connected (never_seen): revoke it first, or pass --revoke to revoke then remove in
+one go (confirmation as for 'relays revoke'). A descendant that only appears in the topology (no row)
+cannot be removed: it disappears when its ancestor stops declaring it.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		id, relayID, err := resolveRelay(args[0])
+		if err != nil {
+			return err
+		}
+		if relaysRemoveRevoke {
+			if err := confirmDestructive(cmd, relaysRemoveYes, "revoke and remove", relayID); err != nil {
+				return err
+			}
+			if err := revokeRelayRow(id); err != nil {
+				return err
+			}
+			fmt.Printf("Relay %q revoked.\n", relayID)
 		}
 
 		data, status, err := apiRequest("DELETE", "/api/admin/relays/"+id, nil)
 		if err != nil {
 			return err
 		}
+		if status == 409 && !relaysRemoveRevoke {
+			var e map[string]interface{}
+			if json.Unmarshal(data, &e) == nil && e["error"] == "relay_not_revoked" {
+				_, _ = fmt.Fprintf(os.Stderr, "Error: relay_not_revoked (HTTP 409): the node does not track the link token of %q; run 'secagent-server relays remove --revoke %s' (or 'relays revoke' then 'relays remove')\n", relayID, relayID)
+				os.Exit(1)
+			}
+		}
 
 		// 204 No Content — success
 		if status == 204 {
-			fmt.Printf("Relay %s removed.\n", id)
+			fmt.Printf("Relay %q removed.\n", relayID)
 			return nil
 		}
 
