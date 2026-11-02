@@ -42,8 +42,8 @@ func nodeSecrets(nodes ...*node) []string {
 	var out []string
 	for _, n := range nodes {
 		out = append(out, n.adminTok, n.jwtSecret)
-		if n.plugin != "" {
-			out = append(out, n.plugin)
+		if tok := n.pluginTokenIfAny(); tok != "" {
+			out = append(out, tok)
 		}
 	}
 	return out
