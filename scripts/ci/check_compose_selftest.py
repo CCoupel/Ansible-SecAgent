@@ -54,4 +54,91 @@ for name, doc, want_fail in cases:
     got = bool(check(doc, False))
     print(("ok  " if got == want_fail else "KO  ") + name)
     bad += got != want_fail
+# #232 : REPEATER_UPSTREAM_URL doit etre en wss:// (le serveur refuse tout autre schema : « must use the wss:// scheme »).
+# Un service qui porte un REPEATER_ID est un relay ENFANT : son REPEATER_UPSTREAM_URL ne peut pas etre vide.
+def child(url, **extra):
+    env = {**ok, "REPEATER_ID": "dmz1", "REPEATER_UPSTREAM_TOKEN_FILE": "/run/secagent-link/upstream-token"}
+    if url is not None:
+        env["REPEATER_UPSTREAM_URL"] = url
+    return svc([], {**env, **extra})
+
+
+WSS_A, WSS_B = "wss://relay-a.example:7772", "wss://relay-b.example:7772"
+upstream_cases = [
+    ("upstream : wss://...:7772", child(WSS_A), False),
+    ("upstream : deux adresses wss://", child(WSS_A + "," + WSS_B), False),
+    ("upstream : adresses separees par des espaces", child(WSS_A + ", " + WSS_B), False),
+    ("upstream : wss:// sans port (7772 est une convention)", child("wss://relay-a.example"), False),
+    ("upstream : https://...:7770 refuse", child("https://relay-a.example:7770"), True),
+    ("upstream : ws:// refuse (TLS obligatoire)", child("ws://relay-a.example:7772"), True),
+    ("upstream : http:// refuse", child("http://relay-a.example:7770"), True),
+    ("upstream : sans schema refuse", child("relay-a.example:7772"), True),
+    ("upstream : vide pour un enfant refuse", child(""), True),
+    ("upstream : absent pour un enfant refuse", child(None), True),
+    ("upstream : une adresse non wss:// dans la liste suffit a refuser", child(WSS_A + ",https://relay-b.example:7770"), True),
+    ("upstream : la mauvaise adresse en premier", child("https://relay-a.example:7770," + WSS_B), True),
+    ("upstream : schema en majuscules refuse comme le serveur (sensible a la casse)", child("WSS://relay-a.example:7772"), None),
+    ("upstream : racine sans REPEATER_ID ni URL accepte", svc([], ok), False),
+    ("upstream : racine avec URL non wss:// refuse aussi", svc([], {**ok, "REPEATER_UPSTREAM_URL": "https://r:7770"}), True),
+]
+for name, doc, want_fail in upstream_cases:
+    errs = check(doc, False)
+    if want_fail is None:  # comportement a documenter, pas a figer : le test ne tranche pas
+        print("info " + name + " -> " + ("refuse" if errs else "accepte"))
+        continue
+    if want_fail:
+        good = any("REPEATER_UPSTREAM_URL" in e for e in errs)  # refuse POUR CETTE RAISON, pas pour une autre regle
+    else:
+        good = not errs
+    print(("ok  " if good else "KO  ") + name + ("" if good else "  -> " + repr(errs)))
+    bad += not good
+
+# le message d'erreur nomme le service, la variable et le schema attendu (l'operateur doit pouvoir corriger sans lire le code)
+msg = " ".join(check(child("https://relay-a.example:7770"), False))
+for want in ("service 's'", "REPEATER_UPSTREAM_URL", "wss://"):
+    if want not in msg:
+        print("KO  message d'erreur sans " + repr(want) + " : " + msg)
+        bad += 1
+        break
+else:
+    print("ok  message d'erreur upstream : service, variable, schema attendu")
+
+# bout en bout : le CLI sort en 1 avec ::error:: pour https://, en 0 pour wss://
+import json, subprocess, tempfile
+HERE = os.path.dirname(os.path.abspath(__file__))
+with tempfile.TemporaryDirectory() as tmp:
+    for name, url, want_rc in [("cli : https:// -> exit 1", "https://relay-a.example:7770", 1), ("cli : wss:// -> exit 0", WSS_A, 0)]:
+        f = os.path.join(tmp, "r.json")
+        with open(f, "w", encoding="utf-8") as fh:
+            json.dump(child(url), fh)
+        r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "check_compose.py"), f], capture_output=True, text=True)
+        good = r.returncode == want_rc and (want_rc == 0 or "::error::" in r.stdout and "REPEATER_UPSTREAM_URL" in r.stdout)
+        print(("ok  " if good else "KO  ") + name + ("" if good else "  -> rc=%d %s" % (r.returncode, r.stdout)))
+        bad += not good
+
+# les exemples livres (.env.example, README prod) respectent la regle : decommentes, ils seraient acceptes par le serveur
+ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
+def urls_in(path):
+    out = []
+    with open(os.path.join(ROOT, path), encoding="utf-8") as fh:
+        for n, line in enumerate(fh, 1):
+            m = re.match(r"^\s*#?\s*REPEATER_UPSTREAM_URL=(\S+)", line)
+            if m:
+                out += [(n, u) for u in m.group(1).split(",") if u]
+    return out
+import re
+for path in ("DEPLOYMENT/prod/.env.example", "DEPLOYMENT/prod/prod.env.example"):
+    if not os.path.exists(os.path.join(ROOT, path)):
+        continue
+    found = urls_in(path)
+    badu = [(n, u) for n, u in found if not u.startswith("wss://")]
+    good = not badu
+    print(("ok  " if good else "KO  ") + "exemple %s : REPEATER_UPSTREAM_URL en wss:// (%d adresse(s))" % (path, len(found)) + ("" if good else "  -> " + repr(badu)))
+    bad += not good
+readme = open(os.path.join(ROOT, "DEPLOYMENT/prod/README.md"), encoding="utf-8").read()
+lines = [l for l in readme.splitlines() if "REPEATER_UPSTREAM_URL" in l]
+good = any("wss://" in l for l in lines) and not re.search(r"REPEATER_UPSTREAM_URL[^\n]*https?://", readme)
+print(("ok  " if good else "KO  ") + "README prod : une ligne de REPEATER_UPSTREAM_URL precise le schema wss:// (jamais http(s)://)")
+bad += not good
+
 sys.exit(1 if bad else 0)
