@@ -219,16 +219,30 @@ func AdminLinkRetire(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	seq, unconfirmed, err := m.Retire(r.Context(), body.Force)
+	res, err := m.RetireDetailed(r.Context(), body.Force)
+	seq, unconfirmed := res.Seq, res.Unconfirmed
 	if errors.Is(err, link.ErrUnconfirmed) {
-		writeJSON(w, http.StatusConflict, map[string]interface{}{"error": "rotation_unconfirmed", "unconfirmed": unconfirmed})
+		never := res.NeverSeen
+		if never == nil {
+			never = []string{}
+		}
+		resp := map[string]interface{}{"error": "rotation_unconfirmed", "unconfirmed": unconfirmed, "never_seen": never}
+		if len(never) > 0 {
+			// never_seen (#234): declared or learned, never connected. Connect it, or drop it from the topology.
+			resp["message"] = "relays never seen cannot confirm the rotation: connect them, or remove one that will not connect with 'secagent-server relays remove <id>'; --force retires anyway"
+		}
+		writeJSON(w, http.StatusConflict, resp)
 		return
 	}
 	if err != nil {
 		writeLinkError(w, "AdminLinkRetire", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"retired": true, "seq": seq, "unconfirmed": unconfirmed})
+	never := res.NeverSeen
+	if never == nil {
+		never = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"retired": true, "seq": seq, "unconfirmed": unconfirmed, "never_seen": never})
 }
 
 // AdminLinkStatus: GET /api/admin/link/status.

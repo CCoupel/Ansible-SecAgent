@@ -467,3 +467,70 @@ func TestLinkKeys_ConfirmationIsTheReportedKidNotTheSeq(t *testing.T) {
 		t.Errorf("retire with stale/silent relays: %v %v", err, un)
 	}
 }
+
+// #234: a relay with no link_state at all is "never_seen" (not confirmed, also outside a rotation); one that
+// reported another kid is "unconfirmed". The 409 of retire keeps `unconfirmed` (every relay) and adds
+// `never_seen` (the subset that never reported) with the remedy.
+func TestLinkKeys_NeverSeenIsToldApartFromUnconfirmed(t *testing.T) {
+	useFreshStores(t)
+	m := useLinkRoot(t)
+	_, _ = m.PublicInfo()
+	call := func(h http.HandlerFunc, method, path string, body interface{}) (int, map[string]interface{}) {
+		w := httptest.NewRecorder()
+		h(w, adminReq(method, path, body))
+		var out map[string]interface{}
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+
+	// outside a rotation: a relay that never reported is not confirmed; one that reported is
+	m.Known = func() []string { return []string{"ghost", "seen"} }
+	m.States = func() map[string]link.ConfirmedState { return map[string]link.ConfirmedState{"seen": {Seq: 1, KID: "any"}} }
+	st, err := m.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]link.RelayStatus{}
+	for _, r := range st.Relays {
+		got[r.RelayID] = r
+	}
+	if g := got["ghost"]; g.State != link.StateNeverSeen || g.Confirmed {
+		t.Errorf("ghost = %+v, want never_seen and not confirmed", g)
+	}
+	if g := got["seen"]; g.State != link.StateConfirmed || !g.Confirmed {
+		t.Errorf("seen = %+v, want confirmed outside a rotation", g)
+	}
+
+	// during a rotation
+	if code, rot := call(AdminLinkRotate, "POST", "/api/admin/link/keys/rotate", map[string]string{}); code != http.StatusOK {
+		t.Fatalf("rotate: %d %v", code, rot)
+	}
+	st, _ = m.Status()
+	prev := st.PreviousKID
+	m.Known = func() []string { return []string{"ghost", "stale", "fresh"} }
+	m.States = func() map[string]link.ConfirmedState {
+		return map[string]link.ConfirmedState{"stale": {Seq: 1, KID: prev}, "fresh": {Seq: 1, KID: st.CurrentKID}}
+	}
+	st, _ = m.Status()
+	states := map[string]string{}
+	for _, r := range st.Relays {
+		states[r.RelayID] = r.State
+	}
+	if states["ghost"] != link.StateNeverSeen || states["stale"] != link.StateUnconfirmed || states["fresh"] != link.StateConfirmed {
+		t.Fatalf("states = %v", states)
+	}
+	code, e := call(AdminLinkRetire, "POST", "/api/admin/link/keys/retire-previous", map[string]bool{})
+	if code != http.StatusConflict || e["error"] != "rotation_unconfirmed" {
+		t.Fatalf("retire: %d %v", code, e)
+	}
+	if un, _ := e["unconfirmed"].([]interface{}); len(un) != 2 {
+		t.Errorf("unconfirmed = %v, want ghost and stale", e["unconfirmed"])
+	}
+	nv, _ := e["never_seen"].([]interface{})
+	if len(nv) != 1 || nv[0] != "ghost" {
+		t.Errorf("never_seen = %v, want [ghost]", e["never_seen"])
+	}
+	if msg, _ := e["message"].(string); !strings.Contains(msg, "relays remove <id>") {
+		t.Errorf("the remedy is missing: %q", msg)
+	}
+}

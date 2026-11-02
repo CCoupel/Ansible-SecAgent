@@ -327,11 +327,23 @@ func (m *Manager) Rotate(ctx context.Context) (curKID, prevKID string, seq uint6
 
 // RelayStatus is the confirmation of one relay (R2).
 type RelayStatus struct {
-	RelayID   string `json:"relay_id"`
-	LinkSeq   uint64 `json:"link_seq"`
-	LinkKID   string `json:"link_kid,omitempty"`
+	RelayID string `json:"relay_id"`
+	LinkSeq uint64 `json:"link_seq"`
+	LinkKID string `json:"link_kid,omitempty"`
+	// Confirmed is true only for State "confirmed". State (v3.0.5, #234): "confirmed" (reports the current
+	// kid, or no rotation is open), "unconfirmed" (reported a link_state but not the current kid), or
+	// "never_seen" (no link_state at all: declared or learned from the topology, never connected, or
+	// connected without having reported). A never_seen relay is NOT confirmed, outside a rotation too.
 	Confirmed bool   `json:"confirmed"`
+	State     string `json:"state"`
 }
+
+// Relay states of RelayStatus.
+const (
+	StateConfirmed   = "confirmed"
+	StateUnconfirmed = "unconfirmed"
+	StateNeverSeen   = "never_seen"
+)
 
 // Status describes the link keys and the confirmation of the rotation by the relays below.
 type Status struct {
@@ -386,12 +398,18 @@ func (m *Manager) Status() (Status, error) {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		s := states[id]
+		s, seen := states[id]
 		// Confirmed = the relay reports the CURRENT kid, i.e. it trusts the new key and verifies the tokens
 		// signed by it. Its reported seq is informational (unsigned): a relay deployed after the
 		// rotation is anchored on the new key and cannot authenticate the rotation's seq.
-		ok := prev == nil || s.KID == st.CurrentKID
-		st.Relays = append(st.Relays, RelayStatus{RelayID: id, LinkSeq: s.Seq, LinkKID: s.KID, Confirmed: ok})
+		state := StateConfirmed
+		switch {
+		case !seen:
+			state = StateNeverSeen
+		case prev != nil && s.KID != st.CurrentKID:
+			state = StateUnconfirmed
+		}
+		st.Relays = append(st.Relays, RelayStatus{RelayID: id, LinkSeq: s.Seq, LinkKID: s.KID, Confirmed: state == StateConfirmed, State: state})
 	}
 	return st, nil
 }
@@ -399,37 +417,57 @@ func (m *Manager) Status() (Status, error) {
 // Retire closes the double-acceptation window. Refused (ErrUnconfirmed, with the relays) while relays
 // below have not confirmed the rotation, unless force (then a [SECURITY WARNING] lists them) (R2).
 func (m *Manager) Retire(ctx context.Context, force bool) (seq uint64, unconfirmed []string, err error) {
+	res, err := m.RetireDetailed(ctx, force)
+	return res.Seq, res.Unconfirmed, err
+}
+
+// RetireResult is the outcome of RetireDetailed. Unconfirmed lists EVERY relay that has not confirmed
+// (never_seen ones included, for the callers of v3.0.4); NeverSeen is the subset that never reported a
+// link_state (#234): it is cleared by connecting the relay or by `relays remove <id>`.
+type RetireResult struct {
+	Seq         uint64
+	Unconfirmed []string
+	NeverSeen   []string
+}
+
+// RetireDetailed is Retire with the never-seen relays told apart.
+func (m *Manager) RetireDetailed(ctx context.Context, force bool) (res RetireResult, err error) {
 	st, err := m.Status()
 	if err != nil {
-		return 0, nil, err
+		return res, err
 	}
 	if st.PreviousKID == "" {
-		return 0, nil, ErrNoPrevious
+		return res, ErrNoPrevious
 	}
 	for _, r := range st.Relays {
-		if !r.Confirmed {
-			unconfirmed = append(unconfirmed, r.RelayID)
+		if r.State != StateConfirmed {
+			res.Unconfirmed = append(res.Unconfirmed, r.RelayID)
+		}
+		if r.State == StateNeverSeen {
+			res.NeverSeen = append(res.NeverSeen, r.RelayID)
 		}
 	}
+	unconfirmed := res.Unconfirmed
 	if len(unconfirmed) > 0 {
 		if !force {
-			return 0, unconfirmed, ErrUnconfirmed
+			return res, ErrUnconfirmed
 		}
-		log.Printf("[SECURITY WARNING] retire-link-previous FORCED while relays have not confirmed the rotation: %v (they will be refused until their trust anchor is re-pinned)", unconfirmed)
+		log.Printf("[SECURITY WARNING] retire-link-previous FORCED while relays have not confirmed the rotation: %q (never seen: %q; they will be refused until their trust anchor is re-pinned)", unconfirmed, res.NeverSeen)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, _, err := m.keys(false)
 	if err != nil || cur == nil {
-		return 0, nil, fmt.Errorf("no signing key: %v", err)
+		return res, fmt.Errorf("no signing key: %v", err)
 	}
-	seq, err = m.Store.RetireLinkPrevious()
+	seq, err := m.Store.RetireLinkPrevious()
 	if err != nil {
 		if errors.Is(err, storage.ErrNoPreviousKey) {
-			return 0, nil, ErrNoPrevious
+			return res, ErrNoPrevious
 		}
-		return 0, nil, err
+		return res, err
 	}
+	res.Seq = seq
 	if msg, serr := auth.SignLinkKeys(cur, pub(cur), nil, seq); serr == nil {
 		if frame, terr := withType(msg, "link_keys"); terr == nil && m.Broadcast != nil {
 			m.Broadcast(frame)
@@ -438,7 +476,7 @@ func (m *Manager) Retire(ctx context.Context, force bool) (seq uint64, unconfirm
 		log.Printf("link_keys (retire) not sent: %v", serr)
 	}
 	log.Printf("[SECURITY] link previous key retired: seq=%d", seq)
-	return seq, unconfirmed, nil
+	return res, nil
 }
 
 // SyncFrames (root) returns the frames of a freshly established child link, in order: link_keys while

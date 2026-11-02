@@ -80,7 +80,8 @@ var keysRetireLinkPreviousCmd = &cobra.Command{
 	Use:   "retire-link-previous",
 	Short: "Close the double-acceptation window (refused while relays have not confirmed the rotation)",
 	Long: `Removes the previous key: tokens signed with it are refused afterwards. Refused with
-409 rotation_unconfirmed (and the list of relays) while relays below have not confirmed the rotation
+409 rotation_unconfirmed (the relays that have not confirmed, and "never_seen", those that never reported:
+connect them or 'relays remove <id>') while relays below have not confirmed the rotation
 (see 'keys link-status'): a relay that missed it can no longer verify the chain and is cut until
 its trust anchor is re-pinned. --force overrides, with a [SECURITY WARNING] in the server log.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -92,6 +93,9 @@ its trust anchor is re-pinned. --force overrides, with a [SECURITY WARNING] in t
 			_, _ = fmt.Printf("Previous link key retired (seq=%v)\n", r["seq"])
 			if u, ok := r["unconfirmed"].([]interface{}); ok && len(u) > 0 {
 				_, _ = fmt.Printf("WARNING: forced while not confirmed by: %v\n", u)
+			}
+			if u, ok := r["never_seen"].([]interface{}); ok && len(u) > 0 {
+				_, _ = fmt.Printf("WARNING: of which never seen (no link_state): %v\n", u)
 			}
 			return nil
 		})
@@ -110,10 +114,19 @@ var keysLinkStatusCmd = &cobra.Command{
 			_, _ = fmt.Printf("root_id=%v seq=%v current=%v previous=%v\n", r["root_id"], r["seq"], r["current_kid"], r["previous_kid"])
 			rel, _ := r["relays"].([]interface{})
 			tp := newTabPrinter()
-			tp.println("RELAY\tLINK_SEQ\tKID\tCONFIRMED")
+			tp.println("RELAY\tLINK_SEQ\tKID\tCONFIRMED\tSTATE")
+			never := 0
 			for _, x := range rel {
 				m, _ := x.(map[string]interface{})
-				tp.printf("%v\t%v\t%v\t%v\n", m["relay_id"], m["link_seq"], m["link_kid"], m["confirmed"])
+				tp.printf("%v\t%v\t%v\t%v\t%v\n", m["relay_id"], m["link_seq"], m["link_kid"], m["confirmed"], m["state"])
+				if m["state"] == "never_seen" {
+					never++
+				}
+			}
+			if never > 0 {
+				defer func() {
+					_, _ = fmt.Printf("%d relay(s) never_seen (no link_state received): connect them, or drop one that will not connect with 'secagent-server relays remove <id>'.\n", never)
+				}()
 			}
 			return tp.flush()
 		})
