@@ -28,7 +28,7 @@ var (
 // purgeEventQuotaLocked drops the identities whose window is over (their counter restarts at zero anyway).
 // Runs at most once per window, or when the table is full (then the oldest windows are evicted).
 func purgeEventQuotaLocked(now time.Time) {
-	if now.Sub(eventQuotaPurged) < eventQuotaWindow && len(eventQuotas) < maxQuotaEntries {
+	if now.Sub(eventQuotaPurged) < eventQuotaWindow {
 		return
 	}
 	eventQuotaPurged = now
@@ -37,6 +37,11 @@ func purgeEventQuotaLocked(now time.Time) {
 			delete(eventQuotas, id)
 		}
 	}
+}
+
+// evictEventQuotaLocked makes room for a NEW identity: only an insertion may push an entry out (B41), a
+// call for an identity already in the table never gives another relay a fresh window.
+func evictEventQuotaLocked() {
 	for len(eventQuotas) >= maxQuotaEntries {
 		var oldest string
 		var ot time.Time
@@ -55,9 +60,12 @@ func allowEvent(relayID string, now time.Time) bool {
 	defer eventQuotaMu.Unlock()
 	purgeEventQuotaLocked(now)
 	q := eventQuotas[relayID]
-	if q == nil || now.Sub(q.start) >= eventQuotaWindow {
+	if q == nil {
+		evictEventQuotaLocked()
 		q = &eventQuota{start: now}
 		eventQuotas[relayID] = q
+	} else if now.Sub(q.start) >= eventQuotaWindow {
+		q.start, q.count = now, 0
 	}
 	q.count++
 	return q.count <= maxEventsPerSecond

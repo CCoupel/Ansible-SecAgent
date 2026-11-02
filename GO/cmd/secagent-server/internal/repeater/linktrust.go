@@ -56,7 +56,7 @@ func (e *AnchorMismatchError) Error() string {
 		}
 		fmt.Fprintf(&b, ": pinned kid=%s (REPEATER_ROOT_LINK_KEY_FILE), persisted current kid=%s, previous kid=%s. Probable cause: the pinned file is stale, older than a key rotation that was already retired (or belongs to another root).", e.PinnedKID, e.CurrentKID, prev)
 	}
-	b.WriteString(" Fix: export the current key on the root with 'secagent-server keys link-pubkey' and replace the pinned file, then, relay stopped, run 'secagent-server state link-trust reset' to re-pin.")
+	b.WriteString(" Fix: export the current key on the root with 'secagent-server keys link-pubkey' (a trusted channel: check the kid against the output on the root) and replace the pinned file, then, relay stopped, run 'secagent-server state link-trust reset' to re-pin; a key taken from an untrusted source makes the reset a trust-on-first-use.")
 	return b.String()
 }
 
