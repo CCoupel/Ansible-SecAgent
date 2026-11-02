@@ -145,13 +145,20 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           "$d/bin/shellcheck" --version
           "$d/bin/actionlint" -version
-          "$d/bin/actionlint" -color -shellcheck "$d/bin/shellcheck" .github/workflows/*.yml
+          # sans argument : actionlint trouve lui-meme .github/workflows/*.yml ET *.yaml
+          "$d/bin/actionlint" -color -shellcheck "$d/bin/shellcheck"
           # scripts livres et de qualif (les autotests *_selftest.sh, au style `chk "..." $(...)`, sont hors perimetre)
           git ls-files -z '*.sh' ':!:*_selftest.sh' | xargs -0 "$d/bin/shellcheck" -S warning
 
-      # LOT-2.2 : toute action epinglee par SHA 40 hex + `# vX.Y.Z` ; aucune expression ${{ }} dans un script run:
+      # LOT-2.2 / M6 : analyse YAML de tous les workflows (*.yml, *.yaml) et actions composites : actions epinglees par
+      # SHA 40 hex + `# vX.Y.Z`, images container/services par digest, aucune expression ${{ }} dans run: ni dans le
+      # script de github-script. PyYAML n'est pas suppose present sur le runner : venv jetable, version et sommes epinglees.
       - name: Actions epinglees et aucune expression dans les scripts run
-        run: python3 -I scripts/ci/check_actions_pinned.py .github/workflows/*.yml
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/guard-venv"
+          "$RUNNER_TEMP/guard-venv/bin/python" -m pip install --quiet --require-hashes --only-binary=:all: -r .github/ci/requirements-guard.txt
+          "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_actions_pinned.py
 
   ansible-inventory:
     name: Inventaire Ansible
