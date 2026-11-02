@@ -4,7 +4,7 @@
 //
 //	secagent-inventory --list             Retourne tous les hôtes connectés au format JSON Ansible
 //	secagent-inventory --host <hostname>  Retourne les hostvars d'un hôte spécifique
-//	secagent-inventory --version | -v     Affiche la version du binaire (stdout) puis quitte, sans réseau ni configuration
+//	secagent-inventory --version | -v     Affiche « secagent-inventory version <v> » (stdout) puis quitte, sans réseau ni configuration
 //
 // Configuration (variables d'environnement) :
 //
@@ -208,7 +208,7 @@ func main() {
 
 	// --version : avant loadConfig et la garde TLS — aucun accès réseau ni variable d'environnement requise.
 	if isVersionFlag(args[0]) {
-		fmt.Fprintf(os.Stdout, "secagent-inventory %s\n", Version)
+		fmt.Fprintf(os.Stdout, "secagent-inventory version %s\n", Version)
 		return
 	}
 
