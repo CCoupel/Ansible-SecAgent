@@ -135,5 +135,13 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
           SHA: ${{ steps.commit.outputs.sha }}
           IMAGE: ${{ matrix.image }}
+          ATTESTED: ${{ steps.attestable.outputs.ok }}
         run: |
-          echo "ghcr.io/ccoupel/${IMAGE}:sha-${SHA}@${DIGEST}" | tee -a "$GITHUB_STEP_SUMMARY"
+          # B39 : la ligne de promotion dit si l'image porte une attestation signee (sinon : ne pas la presenter comme prouvee)
+          if [ "$ATTESTED" = "true" ]; then
+            STATUS="ATTESTEE (provenance signee, ${GITHUB_REF})"
+          else
+            STATUS="NON ATTESTEE (commit construit != commit du workflow)"
+            echo "::warning::${IMAGE} : image candidate NON attestee, a ne pas promouvoir comme image prouvee."
+          fi
+          echo "ghcr.io/ccoupel/${IMAGE}:sha-${SHA}@${DIGEST} -- ${STATUS}" | tee -a "$GITHUB_STEP_SUMMARY"
