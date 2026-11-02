@@ -30,7 +30,13 @@ secagent-inventory --list
 
 # Vars d'un hôte spécifique
 secagent-inventory --host my-host
+
+# Version du binaire (aussi : -v) — affiche « secagent-inventory <version> » sur stdout, exit 0,
+# sans configuration ni accès réseau (« dev » si le binaire n'a pas été compilé avec la version injectée)
+secagent-inventory --version
 ```
+
+La version est injectée à la compilation : `go build -ldflags "-X main.Version=<version>" ./cmd/secagent-inventory`.
 
 ---
 

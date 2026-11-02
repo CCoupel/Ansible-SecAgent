@@ -4,12 +4,13 @@
 //
 //	secagent-inventory --list             Retourne tous les hôtes connectés au format JSON Ansible
 //	secagent-inventory --host <hostname>  Retourne les hostvars d'un hôte spécifique
+//	secagent-inventory --version | -v     Affiche la version du binaire (stdout) puis quitte, sans réseau ni configuration
 //
 // Configuration (variables d'environnement) :
 //
 //	RELAY_SERVER_URL      URL HTTPS du relay server, ou LISTE d'URL séparées par des virgules
 //	                      (relay actif/passif, #167) — défaut: https://localhost:7770
-//	RELAY_TOKEN           Bearer token (ADMIN_TOKEN)  (optionnel)
+//	RELAY_TOKEN           Bearer token : jeton plugin secagent_plg_… (optionnel)
 //	RELAY_CA_BUNDLE       CA bundle PEM custom         (optionnel)
 //	RELAY_INSECURE_TLS    "true" pour désactiver la vérification TLS (TESTS UNIQUEMENT) :
 //	                      avertissement sur stderr à chaque exécution ; refusé si l'URL n'est pas
@@ -188,12 +189,27 @@ type config struct {
 	scopeRelay    string // optional: only the subtree of this relay (RELAY_SCOPE)
 }
 
+// Version est la version du binaire, injectée au build par
+// -ldflags "-X main.Version=<version>". "dev" pour un build local sans injection.
+var Version = "dev"
+
+// isVersionFlag indique si l'argument demande l'affichage de la version.
+func isVersionFlag(arg string) bool {
+	return arg == "--version" || arg == "-v"
+}
+
 func main() {
 	args := os.Args[1:]
 
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: secagent-inventory --list | --host <hostname>\n")
+		fmt.Fprintf(os.Stderr, "Usage: secagent-inventory --list | --host <hostname> | --version\n")
 		os.Exit(1)
+	}
+
+	// --version : avant loadConfig et la garde TLS — aucun accès réseau ni variable d'environnement requise.
+	if isVersionFlag(args[0]) {
+		fmt.Fprintf(os.Stdout, "secagent-inventory %s\n", Version)
+		return
 	}
 
 	cfg := loadConfig()
@@ -225,7 +241,7 @@ func main() {
 		}
 
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown flag: %s\nUsage: secagent-inventory --list | --host <hostname>\n", args[0])
+		fmt.Fprintf(os.Stderr, "Unknown flag: %s\nUsage: secagent-inventory --list | --host <hostname> | --version\n", args[0])
 		os.Exit(1)
 	}
 }
