@@ -1,95 +1,40 @@
-.PHONY: build build-linux docker-build docker-push test clean help
+# Raccourcis de developpement (#224). La reference reste scripts/ci.sh (commands.ci, contrat C11) : la CI ne passe
+# PAS par ce Makefile pour ses controles bloquants ; `make ci` l'appelle tel quel. Les images sont construites par
+# GO/Dockerfile et GO/Dockerfile.agent (release.yml), jamais ici.
+#
+#   make build              les trois binaires dans ./build (CGO_ENABLED=0, comme les images)
+#   make secagent-server    un seul binaire (idem secagent-minion, secagent-inventory)
+#   make test               tests du module (-race : CGO requis, comme la CI)
+#   make lint               gofmt + golangci-lint (v2.14.0 en CI)
+#   make ci                 scripts/ci.sh (build, build sans CGO, tests -race, gofmt, golangci-lint)
 
 BUILD_DIR := ./build
-BINARY_NAME := relay-server
-DOCKER_IMAGE := relay-server:latest
-DOCKER_REGISTRY ?= docker.io
+BINARIES  := secagent-server secagent-minion secagent-inventory
+VERSION   ?= dev
+LDFLAGS_secagent-server := -s -w -X secagent-server/cmd/secagent-server/internal/cli.Version=$(VERSION)
+LDFLAGS_secagent-minion := -s -w -X main.Version=$(VERSION)
+LDFLAGS_secagent-inventory := -s -w
 
-# Build for current platform
-build:
-	@echo "Building $(BINARY_NAME) for $(shell go env GOOS)/$(shell go env GOARCH)..."
+.PHONY: build $(BINARIES) test lint ci clean help
+
+build: $(BINARIES)
+
+$(BINARIES):
 	@mkdir -p $(BUILD_DIR)
-	go build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/server
-	@echo "✓ Built to $(BUILD_DIR)/$(BINARY_NAME)"
+	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS_$@)" -o $(BUILD_DIR)/$@ ./cmd/$@
 
-# Build for Linux x86_64
-build-linux:
-	@echo "Cross-compiling $(BINARY_NAME) for Linux/x86_64..."
-	@mkdir -p $(BUILD_DIR)
-	GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY_NAME)-linux ./cmd/server
-	@echo "✓ Built to $(BUILD_DIR)/$(BINARY_NAME)-linux"
-
-# Build optimized binary (strip symbols)
-build-optimized:
-	@echo "Building optimized $(BINARY_NAME)..."
-	@mkdir -p $(BUILD_DIR)
-	go build -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/server
-	@echo "✓ Built optimized binary to $(BUILD_DIR)/$(BINARY_NAME)"
-
-# Docker build
-docker-build: build-linux
-	@echo "Building Docker image $(DOCKER_IMAGE)..."
-	docker build -t $(DOCKER_IMAGE) .
-	@echo "✓ Docker image built: $(DOCKER_IMAGE)"
-
-# Docker push
-docker-push: docker-build
-	@echo "Pushing $(DOCKER_IMAGE) to $(DOCKER_REGISTRY)..."
-	docker push $(DOCKER_REGISTRY)/$(DOCKER_IMAGE)
-	@echo "✓ Pushed to $(DOCKER_REGISTRY)/$(DOCKER_IMAGE)"
-
-# Run tests
 test:
-	@echo "Running tests..."
-	go test -v -cover ./...
+	JWT_SECRET_KEY=test ADMIN_TOKEN=test go test -race ./... -timeout 300s
 
-# Run tests with coverage report
-test-coverage:
-	@echo "Running tests with coverage..."
-	go test -v -coverprofile=coverage.out ./...
-	go tool cover -html=coverage.out -o coverage.html
-	@echo "✓ Coverage report: coverage.html"
-
-# Clean build artifacts
-clean:
-	@echo "Cleaning build artifacts..."
-	rm -rf $(BUILD_DIR)
-	rm -f coverage.out coverage.html
-	@echo "✓ Cleaned"
-
-# Download dependencies
-deps:
-	@echo "Downloading dependencies..."
-	go mod download
-	go mod verify
-	@echo "✓ Dependencies verified"
-
-# Format code
-fmt:
-	@echo "Formatting code..."
-	go fmt ./...
-	@echo "✓ Formatted"
-
-# Lint code
 lint:
-	@echo "Linting code..."
-	go vet ./...
-	@echo "✓ Linted"
+	@out="$$(gofmt -l .)"; if [ -n "$$out" ]; then echo "Fichiers non conformes a gofmt :"; echo "$$out"; exit 1; fi
+	golangci-lint run --timeout=5m
 
-# Help
+ci:
+	bash ../scripts/ci.sh
+
+clean:
+	rm -rf $(BUILD_DIR)
+
 help:
-	@echo "Relay Server Makefile"
-	@echo ""
-	@echo "Targets:"
-	@echo "  build              - Build for current platform"
-	@echo "  build-linux        - Cross-compile for Linux x86_64"
-	@echo "  build-optimized    - Build optimized binary (strip symbols)"
-	@echo "  docker-build       - Build Docker image"
-	@echo "  docker-push        - Build and push Docker image"
-	@echo "  test               - Run unit tests"
-	@echo "  test-coverage      - Run tests with coverage report"
-	@echo "  clean              - Clean build artifacts"
-	@echo "  deps               - Download and verify dependencies"
-	@echo "  fmt                - Format code"
-	@echo "  lint               - Lint code"
-	@echo "  help               - Show this help"
+	@sed -n '1,9p' Makefile

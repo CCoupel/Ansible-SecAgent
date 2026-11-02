@@ -105,6 +105,17 @@ d=$(mktemp -d) && cd "$d" && curl -fsSLO https://download.docker.com/linux/stati
 
 Le CLI statique n'inclut pas `docker compose` (plugin séparé) : les scripts de qualif l'exigent. Rien n'est installé par les agents hors scratchpad ; l'installation sur le poste reste une décision de l'utilisateur.
 
+### CLI Docker supporté par les scripts de qualif (#224)
+
+`chain-test.sh` et `failover-test.sh` appellent `docker` (premier trouvé dans le `PATH`) et **`docker compose`** (plugin Compose v2 ; l'ancien binaire `docker-compose` v1 n'est pas utilisé). Le démon visé est **toujours** celui de `DOCKER_HOST`.
+
+| Client | Supporté | Remarque |
+|---|---|---|
+| CLI **Linux** (statique épinglé ci-dessus, ou paquet de la distribution) + plugin Compose v2 | **oui** (seul cas utilisé en qualif v3.0.4) | `docker version` et `docker compose version` doivent répondre ; `DOCKER_HOST=tcp://192.168.1.218:2375` exporté dans le shell qui lance le script |
+| `docker.exe` (Docker Desktop Windows) appelé depuis WSL | **non** pour les scripts | voir ci-dessous |
+
+**`docker.exe` ignore `DOCKER_HOST` exporté dans WSL** : un processus Windows ne reçoit pas les variables du shell WSL (sauf déclaration dans `WSLENV`). Sans option, `docker.exe` vise donc le démon **local** de Docker Desktop — arrêté sur ce poste, et qu'aucun agent ne démarre — et échoue, ou pire agit sur un autre démon s'il tourne. Pour une commande ponctuelle depuis WSL, passer l'hôte explicitement à **chaque** appel : `docker.exe -H tcp://192.168.1.218:2375 ps`. Les scripts, eux, s'appuient sur `DOCKER_HOST` et sur des chemins Linux (fichiers temporaires, volumes alimentés par conteneur éphémère) : ne pas les faire tourner avec `docker.exe` (ni par alias `docker=docker.exe`). Contrôle avant tout lancement : `command -v docker` doit désigner un binaire Linux (pas `/mnt/c/...`) et `docker info --format '{{.Name}}'` doit renvoyer le nom de l'hôte de qualif.
+
 ## Prérequis
 
 - Docker remote access actif sur `192.168.1.218:2375`

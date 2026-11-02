@@ -457,8 +457,8 @@ negative_ca() {
   local m; m="$(master)" || fail "pas de maitre sur la racine"
   echo "== minion sans la CA privee (store systeme seul) : doit etre REFUSE"
   "${DC[@]}" --profile negative up -d --no-deps minion-negca
-  local ok=0 i
-  for i in $(seq 1 30); do
+  local ok=0
+  for _ in $(seq 1 30); do
     if "${DC[@]}" --profile negative logs minion-negca 2>&1 | grep -Eiq 'x509|certificate|unknown authority'; then ok=1; break; fi
     sleep 2
   done

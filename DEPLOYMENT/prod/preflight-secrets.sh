@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --child) CHILD=1 ;;
     --fix) MODE=fix ;;
-    --write) MODE=write; WRITE="${2:-}"; shift ;;
+    --write) MODE="write"; WRITE="${2:-}"; shift ;;
     -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "argument inconnu: $1" >&2; exit 2 ;;
   esac

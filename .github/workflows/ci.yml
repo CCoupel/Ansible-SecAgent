@@ -123,6 +123,32 @@ jobs:
           working-directory: GO
           args: --timeout=5m
 
+      # #224 : workflows (actionlint) ET scripts de leurs etapes run: (shellcheck, appele par actionlint), puis scripts
+      # shell du depot. Binaires epingles, sommes SHA-256 relevees dans les publications amont (fichier de sommes
+      # d'actionlint, digest d'asset GitHub pour shellcheck) ; le shellcheck preinstalle du runner n'est jamais utilise.
+      - name: actionlint + shellcheck (versions epinglees)
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          SHELLCHECK_VERSION: 0.11.0
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/lint-tools"; mkdir -p "$d/bin"; cd "$d"
+          a="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          s="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSLo "$a" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$a"
+          curl -fsSLo "$s" "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/$s"
+          printf '%s  %s\n%s  %s\n' "$ACTIONLINT_SHA256" "$a" "$SHELLCHECK_SHA256" "$s" | sha256sum -c -
+          tar -xzf "$a" -C bin actionlint
+          tar -xJf "$s" --strip-components=1 -C bin "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          cd "$GITHUB_WORKSPACE"
+          "$d/bin/shellcheck" --version
+          "$d/bin/actionlint" -version
+          "$d/bin/actionlint" -color -shellcheck "$d/bin/shellcheck" .github/workflows/*.yml
+          # scripts livres et de qualif (les autotests *_selftest.sh, au style `chk "..." $(...)`, sont hors perimetre)
+          git ls-files -z '*.sh' ':!:*_selftest.sh' | xargs -0 "$d/bin/shellcheck" -S warning
+
   ansible-inventory:
     name: Inventaire Ansible
     runs-on: ubuntu-latest
@@ -231,6 +257,7 @@ jobs:
           python3 scripts/ci/check_no_binds_selftest.py
           bash scripts/ci/assert_version_selftest.sh
           bash scripts/ci/release_notes_selftest.sh
+          bash scripts/ci/makefile_selftest.sh
           bash scripts/ci/build_compose_archive_selftest.sh
           bash scripts/ci/minion_entrypoint_selftest.sh
           bash scripts/ci/preflight_secrets_selftest.sh
@@ -430,7 +457,8 @@ jobs:
           DOCKERFILE: ${{ matrix.dockerfile }}
         run: |
           set -euo pipefail
-          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
           for n in 1 2; do
             docker buildx build --provenance=false --sbom=false --no-cache \
               --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
@@ -494,7 +522,8 @@ jobs:
         run: |
           set -euo pipefail
           SHA12="${GITHUB_SHA::12}"
-          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
           mkdir -p out
           docker build --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" -t "secagent-server:ci-${SHA12}" -f GO/Dockerfile GO
           docker build --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" -t "secagent-minion:ci-${SHA12}" -f GO/Dockerfile.agent GO
