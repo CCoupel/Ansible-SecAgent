@@ -246,7 +246,7 @@ jobs:
           SECAGENT_IMAGE: ghcr.io/ccoupel/secagent-server:sha-0000000
           SECAGENT_MINION_IMAGE: ghcr.io/ccoupel/secagent-minion:sha-0000000
           REPEATER_ID: ci
-          REPEATER_UPSTREAM_URL: https://parent.example:7770
+          REPEATER_UPSTREAM_URL: wss://parent.example:7772
           REPEATER_ROOT_ID: root
           ROOT_LINK_KEY_FILE: /etc/tls/root-link.pub
         run: |
@@ -384,7 +384,7 @@ jobs:
           STATE_HOST_DIR: /mnt/state
           TLS_CERT_DIR: /etc/tls
           REPEATER_ID: ci
-          REPEATER_UPSTREAM_URL: https://parent.example:7770
+          REPEATER_UPSTREAM_URL: wss://parent.example:7772
           REPEATER_ROOT_ID: root
           ROOT_LINK_KEY_FILE: /etc/tls/root-link.pub
         run: |

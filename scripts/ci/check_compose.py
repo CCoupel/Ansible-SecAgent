@@ -11,6 +11,8 @@ Echec (exit 1) si, pour un service :
   - TLS_DISABLE vaut true ;
   - une image est `latest` ou sans tag, ou un `build:` est present (sauf --allow-build : qualif locale) ;
   - --require-memory-limit : pas de limite memoire de conteneur, ou GOMEMLIMIT absent ;
+  - REPEATER_UPSTREAM_URL contient une adresse qui n'est pas en wss:// (#232, meme regle que le serveur :
+    config/repeater.go -> endpoints.ParseSchemes(v, "wss")), ou un relay enfant (REPEATER_ID defini) n'en a pas ;
   - la configuration mentionne NATS / JetStream / Caddy.
 """
 import json
@@ -42,6 +44,38 @@ def admin_host(addr: str) -> str:
     if addr.startswith("["):
         return addr[1:addr.index("]")]
     return addr.rsplit(":", 1)[0] if ":" in addr else addr
+
+
+MAX_UPSTREAM = 16  # endpoints.MaxAddresses
+
+
+def check_upstream(env: dict, where: str, errs: list) -> None:
+    """#232 : liste d'adresses du parent, chacune en wss://<hote>[:port] (TLS obligatoire), sans userinfo.
+
+    Meme regle que le serveur (schema insensible a la casse, espaces autour des elements ignores, 16 adresses au plus).
+    Les erreurs citent la POSITION de l'adresse, jamais son contenu (elle pourrait porter des identifiants).
+    Le port WebSocket du parent (7772 dans les Compose du depot) est une convention, pas une exigence du serveur."""
+    url = env.get("REPEATER_UPSTREAM_URL", "")
+    if not url.strip():
+        if env.get("REPEATER_ID", "").strip():
+            errs.append(f"{where}: REPEATER_ID defini mais REPEATER_UPSTREAM_URL vide ou absent "
+                        "(relay enfant : liste wss://<parent>:7772 obligatoire)")
+        return
+    items = url.split(",")
+    if len(items) > MAX_UPSTREAM:
+        errs.append(f"{where}: REPEATER_UPSTREAM_URL : {len(items)} adresses, maximum {MAX_UPSTREAM}")
+    for pos, raw in enumerate(items, 1):
+        u = raw.strip()
+        scheme, sep, rest = u.partition("://")
+        host = rest.split("/", 1)[0]
+        if not sep or scheme.lower() != "wss":
+            errs.append(f"{where}: REPEATER_UPSTREAM_URL adresse #{pos} : schema wss:// obligatoire "
+                        "(le serveur refuse https://, ws:// et l'absence de schema ; port WebSocket du parent, 7772)")
+        elif "@" in host:
+            errs.append(f"{where}: REPEATER_UPSTREAM_URL adresse #{pos} : identifiants interdits dans l'adresse "
+                        "(le jeton passe par REPEATER_UPSTREAM_TOKEN_FILE)")
+        elif not host or host.startswith(":"):
+            errs.append(f"{where}: REPEATER_UPSTREAM_URL adresse #{pos} : hote absent (attendu wss://<hote>:7772)")
 
 
 def env_of(svc: dict) -> dict:
@@ -80,6 +114,7 @@ def check(doc: dict, allow_build: bool, require_mem: bool = False, require_diges
                 errs.append(f"{where}: ADMIN_ADDR={admin!r} non loopback sans ADMIN_TLS=true ni derogation complete")
         if tls_disable:
             errs.append(f"{where}: TLS_DISABLE interdit")
+        check_upstream(env, where, errs)
         image = svc.get("image", "")
         if image:
             ref = image.split("@")[0]

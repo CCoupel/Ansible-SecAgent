@@ -76,6 +76,15 @@ if [ "$CHILD" = 1 ]; then
     case "${km: -2:1}${km: -1}" in *[2367]*) bad "$k : mode $km inscriptible par le groupe/les autres (racine de confiance du sous-arbre) -> chmod 0644 $k" ;; esac
     [ "$ku" = "$OWNER" ] || case "${km: -1}" in 4|5|6|7) ;; *) bad "$k : illisible par l'UID $OWNER (mode $km, proprietaire $ku) -> chmod 0644 $k" ;; esac
   fi
+  # #232 : si le .env de l'enfant a ete charge (set -a; . ./.env), chaque adresse du parent doit etre en wss:// (le serveur
+  # refuse tout autre schema au demarrage). L'adresse n'est jamais affichee (position seulement).
+  if [ -n "${REPEATER_UPSTREAM_URL:-}" ]; then
+    i=0; IFS=',' read -r -a ups <<< "$REPEATER_UPSTREAM_URL"
+    for u in "${ups[@]}"; do
+      i=$((i + 1)); u="${u#"${u%%[![:space:]]*}"}"
+      case "$u" in [wW][sS][sS]://?*) ;; *) bad "REPEATER_UPSTREAM_URL adresse #$i : schema wss:// obligatoire (port WebSocket du parent, 7772)" ;; esac
+    done
+  fi
 fi
 
 if [ "$ERR" = 0 ]; then echo "preflight secrets OK (${SECRETS[*]} dans $DIR)"; exit 0; fi
