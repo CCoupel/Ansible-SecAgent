@@ -485,7 +485,9 @@ func TestLinkKeys_NeverSeenIsToldApartFromUnconfirmed(t *testing.T) {
 
 	// outside a rotation: a relay that never reported is not confirmed; one that reported is
 	m.Known = func() []string { return []string{"ghost", "seen"} }
-	m.States = func() map[string]link.ConfirmedState { return map[string]link.ConfirmedState{"seen": {Seq: 1, KID: "any"}} }
+	m.States = func() map[string]link.ConfirmedState {
+		return map[string]link.ConfirmedState{"seen": {Seq: 1, KID: "any"}}
+	}
 	st, err := m.Status()
 	if err != nil {
 		t.Fatal(err)
