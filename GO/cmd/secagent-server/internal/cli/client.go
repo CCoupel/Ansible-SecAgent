@@ -205,7 +205,25 @@ func checkError(data []byte, status int) int {
 			msg = string(data)
 		}
 		_, _ = fmt.Fprintf(os.Stderr, "Error: %s (HTTP %d)\n", msg, status)
+		printErrorDetails(data)
 		return 1
+	}
+}
+
+// printErrorDetails prints the extra fields of an error body that an operator needs to act: the
+// "message" (remedy) and the relay lists of a refused link-key retirement (#234, #215).
+func printErrorDetails(data []byte) {
+	var e map[string]interface{}
+	if json.Unmarshal(data, &e) != nil {
+		return
+	}
+	for _, k := range []string{"unconfirmed", "never_seen", "not_direct"} {
+		if l, ok := e[k].([]interface{}); ok && len(l) > 0 {
+			_, _ = fmt.Fprintf(os.Stderr, "  %s: %v\n", k, l)
+		}
+	}
+	if m, ok := e["message"].(string); ok && m != "" {
+		_, _ = fmt.Fprintf(os.Stderr, "  %s\n", m)
 	}
 }
 
