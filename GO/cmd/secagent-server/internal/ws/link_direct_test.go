@@ -31,3 +31,21 @@ func TestDirectLinkTimes_OnlyASelfReportedLinkStateCounts(t *testing.T) {
 		t.Fatal("a connection without a link_state must not count as direct")
 	}
 }
+
+// M10: the LAST link_state decides — a relay that was direct and is then reported through an
+// intermediary stops being direct.
+func TestDirectLinkTimes_ALaterRelayedLinkStateClearsTheStamp(t *testing.T) {
+	resetRelayState()
+	t.Cleanup(resetRelayState)
+	kid := "AAAAAAAAAAAAAAAAAAAAAA"
+	child := &RelayConnection{RelayID: "child"}
+	inter := &RelayConnection{RelayID: "inter", descendants: map[string]struct{}{"child": {}}}
+	handleLinkState(child, RelayMessage{Type: MsgLinkState, RelayID: "child", Seq: 1, CurrentKID: kid})
+	if _, ok := DirectLinkTimes()["child"]; !ok {
+		t.Fatal("child confirmed itself: direct")
+	}
+	handleLinkState(inter, RelayMessage{Type: MsgLinkState, RelayID: "child", Seq: 2, CurrentKID: kid})
+	if _, ok := DirectLinkTimes()["child"]; ok {
+		t.Fatal("a later link_state relayed by an intermediary must clear the direct stamp")
+	}
+}

@@ -249,6 +249,8 @@ func handleLinkState(conn *RelayConnection, msg RelayMessage) {
 	RecordLinkState(id, msg.Seq, msg.CurrentKID)
 	if id == conn.RelayID {
 		noteDirect(id) // the confirmation came from the relay itself, not through an intermediary (M10)
+	} else {
+		forgetDirect(id) // the LAST link_state of this relay came through an intermediary: no longer direct
 	}
 	frame, err := json.Marshal(RelayMessage{Type: MsgLinkState, RelayID: id, Seq: msg.Seq, CurrentKID: msg.CurrentKID})
 	if err != nil {
@@ -396,6 +398,13 @@ func noteDirect(relayID string) {
 		delete(directSeen, oldest)
 	}
 	directSeen[relayID] = time.Now()
+}
+
+// forgetDirect drops the direct stamp of relayID: its latest confirmation arrived through another relay.
+func forgetDirect(relayID string) {
+	directMu.Lock()
+	delete(directSeen, relayID)
+	directMu.Unlock()
 }
 
 // DirectLinkTimes returns, per relay_id, the last time the relay confirmed its link_state itself, on its
