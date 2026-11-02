@@ -237,15 +237,22 @@ func TestSpec217_MinionWithShortTTLReceivesAtLeastTwoRekeys(t *testing.T) {
 // connection of the live agent goes on; exactly one JTI is current per host.
 func TestSpec217_I2_AReplacedJTIIsRefusedWith401TokenReplaced(t *testing.T) {
 	parallel(t)
-	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: renewalEnv("16s", "4s")})
+	// The TTL is long compared with the three renewals awaited below (~12 s, more on a loaded runner): the replayed
+	// tokens must still be UNEXPIRED when they are presented, otherwise they are refused as expired ("WS auth
+	// rejected"), not as replaced, and no token_replaced line is journalized (flaky on CI with a 16 s TTL).
+	n := startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: renewalEnv("90s", "4s")})
 	host := "renew-replaced"
 	original := n.enrollAgent(host)
 	m := connectMinionWithToken(t, n, host, original)
 	waitRekeys(t, m, 3) // current = f3, predecessor = f2: the enrollment JWT and f1 are older
 	jwts := rekeyJWTs(t, m)
 
+	base := replacedRefusals(n, host)
 	refused := 0
 	for name, tok := range map[string]string{"the enrollment JWT": original, "the first renewed JWT": jwts[0]} {
+		if exp := expOf(claimsOf(t, tok)); time.Now().Unix() >= exp-2 {
+			t.Fatalf("%s expired before the replay (exp %d): the scenario needs a TTL longer than the time taken by the renewals", name, exp)
+		}
 		conn, code, body := dialAgent(t, n, tok)
 		if conn != nil {
 			_ = conn.Close()
@@ -259,7 +266,7 @@ func TestSpec217_I2_AReplacedJTIIsRefusedWith401TokenReplaced(t *testing.T) {
 			t.Errorf("%s: the 401 body must not reveal the reason: %q", name, body)
 		}
 	}
-	waitFor(t, "the refusals are journalized as token_replaced", func() bool { return replacedRefusals(n, host) >= refused })
+	waitFor(t, "the refusals are journalized as token_replaced", func() bool { return replacedRefusals(n, host)-base >= refused })
 	if _, ended := m.closeCode(100 * time.Millisecond); ended {
 		t.Error("refusing an old token must not cut the live link")
 	}
