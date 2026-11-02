@@ -399,6 +399,12 @@ Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écr
 | 10 | vérification après écriture échouée (l'original a été remis en place, sauf message contraire) |
 | 11 | nouvelle clé de moins de 32 octets, rien n'est modifié (l'ancienne clé n'est pas contrôlée) |
 
+#### Codes de sortie des groupes et sauvegardes (v3.0.5, #219)
+
+- **Groupe seul ou `--help`** (`minions`, `security`, `inventory`, `server`, `tokens`, `hooks`, `relays`, `state`, `keys`, ainsi que `minions vars` et `state link-trust`) : aide sur stdout, code **0**.
+- **Mot inconnu après un groupe** (`state frob`) : `Error: unknown command "frob" for "secagent-server state"` et l'aide du groupe sur **stderr**, code **1** (avant : aide et code 0, une faute de frappe dans un script passait pour un succès).
+- **Sauvegardes de `state rekey` et `state link-trust reset`** : `relay.state.rekey.<UTC à la nanoseconde>.bak` et `relay.state.linktrust-reset.<UTC à la nanoseconde>.bak`, avec un suffixe `.<n>` si le nom existe (création exclusive inchangée) : deux exécutions dans la même seconde réussissent toutes les deux, aucune sauvegarde n'est écrasée.
+
 #### Commandes destructrices de v3.0.5 (#233) : `minions delete`, `relays revoke`, `relays remove`
 
 | Commande | Effet | Route |

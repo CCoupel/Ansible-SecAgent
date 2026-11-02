@@ -277,8 +277,8 @@ func Rekey(o RekeyOptions) (*RekeyResult, error) {
 	}
 
 	// 1. the backup, BEFORE any change: no backup, no rekey
-	backup := rekeyBackupPrefix + now().UTC().Format("20060102T150405Z") + rekeyBackupSuffix
-	if err := writeBackup(o.FS, filepath.Join(o.Dir, backup), raw); err != nil {
+	backup, err := writeUniqueBackup(o.FS, o.Dir, rekeyBackupPrefix, rekeyBackupSuffix, now(), raw)
+	if err != nil {
 		return nil, fmt.Errorf("state rekey: backup failed, nothing modified: %w", err)
 	}
 	if err := o.FS.SyncDir(o.Dir); err != nil {

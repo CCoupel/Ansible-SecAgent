@@ -103,9 +103,8 @@ func ResetLinkTrust(o LinkTrustResetOptions) (*LinkTrustResetResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("state link-trust reset: cannot read the state to back it up: %w", err)
 	}
-	stamp := now().UTC().Format("20060102T150405Z")
-	backup := linkTrustResetBackupPrefix + stamp + linkTrustResetBackupSuffix
-	if err := writeBackup(o.FS, filepath.Join(o.Dir, backup), raw); err != nil {
+	backup, err := writeUniqueBackup(o.FS, o.Dir, linkTrustResetBackupPrefix, linkTrustResetBackupSuffix, now(), raw)
+	if err != nil {
 		return nil, fmt.Errorf("state link-trust reset: backup failed, nothing modified: %w", err)
 	}
 	if err := o.FS.SyncDir(o.Dir); err != nil {

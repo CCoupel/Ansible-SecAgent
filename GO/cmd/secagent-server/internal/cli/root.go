@@ -44,6 +44,7 @@ func init() {
 
 // Execute runs the CLI and exits with the appropriate code.
 func Execute() {
+	hardenGroups(rootCmd)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		var ee *ExitError
