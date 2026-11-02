@@ -193,8 +193,8 @@ func TestTaskLimits_Load3000AgentsNominalThenSaturation(t *testing.T) {
 	if nominal.refused() != 0 {
 		t.Fatalf("%d nominal exec(s) refused by the server with the default limits", nominal.refused())
 	}
-	if nominal.slow.Load() > 3*forks/4 { // a node that answers nothing is not "a slow runner"
-		t.Fatalf("%d of %d nominal execs ended by a harness timeout: the node is not serving", nominal.slow.Load(), 3*forks)
+	if nominal.slow.Load() > 3*forks/4 { // 150 of 600 = 25 %: a node that answers nothing is not "a slow runner"
+		t.Fatalf("%d of %d nominal execs ended by a harness timeout (> 25 %%): the node is not serving (%s)", nominal.slow.Load(), 3*forks, nominal.kinds())
 	}
 
 	// saturation: 1 000 concurrent tasks, each one producing 5 MiB (5 GiB asked for, budget 1 GiB)
@@ -238,6 +238,12 @@ func TestTaskLimits_Load3000AgentsNominalThenSaturation(t *testing.T) {
 	if hwm == 0 {
 		t.Fatal("no RSS sample: the memory criterion cannot be checked")
 	}
+	// B45: a transport error can also be the server refusing connections (file descriptors, accept queue), not only a
+	// slow harness: bound it under saturation too (a quarter of the requests, like the nominal guard), and show the kinds
+	t.Logf("harness-slow by kind: nominal %s ; saturation %s", nominal.kinds(), sat.kinds())
+	if sat.slow.Load() > saturating/4 {
+		t.Errorf("%d of %d saturating execs ended by a harness timeout / transport error (> 25 %%): the node is not serving (%s)", sat.slow.Load(), saturating, sat.kinds())
+	}
 	if sat.other.Load() != 0 {
 		t.Errorf("%d request(s) ended in anything but 200 / 429 / 503 memory_budget_exhausted / a harness timeout: refusals must be clean", sat.other.Load())
 	}
@@ -247,11 +253,16 @@ func TestTaskLimits_Load3000AgentsNominalThenSaturation(t *testing.T) {
 	if hwm > 2<<30 {
 		t.Errorf("node peak RSS %.0f MiB exceeds 2 GiB under saturation", float64(hwm)/(1<<20))
 	}
-	// the node is healthy afterwards and the slots are back
-	if r := rawExecOn(client, n, "load-2999", nominalTimeout); r.Code != http.StatusOK && r.Err == nil && r.Code != http.StatusGatewayTimeout {
-		t.Errorf("after the saturation: %+v", r)
-	} else if r.Code != http.StatusOK {
-		t.Logf("after the saturation: harness timeout (%+v), not a server refusal", r)
+	// the node is healthy afterwards and the slots are back (M11): a harness delay may cost an attempt, never the
+	// check — the node must answer 200 within a bounded number of spaced attempts, whatever the CPU available
+	if lastReply, ok := requireHealthyAfter(func() execReply { return rawExecOn(client, n, "load-2999", nominalTimeout) }, 4, time.Duration(2*f)*time.Second, t.Logf); !ok {
+		t.Errorf("the node is not healthy after the saturation: no 200 in 4 attempts, last answer %+v (a blocked node, slots not given back, refused connections)", lastReply)
+	}
+	// B46: a node that survived by luck would still have said so in its logs
+	for _, bad := range []string{"panic:", "too many open files", "fatal error:"} {
+		if n.logs.has(bad) {
+			t.Errorf("the node log contains %q after the load", bad)
+		}
 	}
 }
 
@@ -281,12 +292,43 @@ func loadFactor() int {
 //	slow    the HARNESS was too slow: a client-side timeout / transport error, or a 504 task_timeout / 503
 //	        agent_disconnected (the fake agent, starved of CPU, did not answer or lost its link in time)
 //	other   any other code: a wrong server answer
-type execTally struct{ ok, busy, memory, slow, other atomic.Int32 }
+type execTally struct {
+	ok, busy, memory, slow, other atomic.Int32
+	mu                            sync.Mutex
+	why                           map[string]int // harness-slow answers by kind (timeout, reset, EOF, refused, 504, 503)
+}
+
+func (c *execTally) note(kind string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.why == nil {
+		c.why = map[string]int{}
+	}
+	c.why[kind]++
+}
+
+func (c *execTally) kinds() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return fmt.Sprint(c.why)
+}
+
+// transportKind names a client-side error without its text (which carries addresses).
+func transportKind(err error) string {
+	msg := strings.ToLower(err.Error())
+	for _, k := range []string{"timeout", "deadline", "connection reset", "eof", "refused", "too many open files", "broken pipe"} {
+		if strings.Contains(msg, k) {
+			return k
+		}
+	}
+	return "other-transport"
+}
 
 func (c *execTally) add(r execReply) string {
 	switch {
 	case r.Err != nil:
 		c.slow.Add(1)
+		c.note(transportKind(r.Err))
 		return "slow"
 	case r.Code == http.StatusOK:
 		c.ok.Add(1)
@@ -299,6 +341,7 @@ func (c *execTally) add(r execReply) string {
 		return "memory"
 	case r.Code == http.StatusGatewayTimeout && r.Error == "task_timeout", r.Code == http.StatusServiceUnavailable && r.Error == "agent_disconnected":
 		c.slow.Add(1)
+		c.note(fmt.Sprintf("%d %s", r.Code, r.Error))
 		return "slow"
 	}
 	c.other.Add(1)
