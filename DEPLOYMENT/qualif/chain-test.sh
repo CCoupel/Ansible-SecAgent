@@ -84,7 +84,7 @@ push_tls() {
   local f; for f in tls.crt tls.key ca.crt; do [ -f "$QUALIF_TLS_DIR/$f" ] || fail "$QUALIF_TLS_DIR/$f absent (lancer ci-prepare)"; done
   docker volume create "$SECAGENT_TLS_VOLUME" >/dev/null
   tar -C "$QUALIF_TLS_DIR" -cf - tls.crt tls.key ca.crt | docker run --rm -i -v "$SECAGENT_TLS_VOLUME:/certs" \
-    alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
+    alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'tar -xf - -C /certs && chmod 755 /certs && chmod 644 /certs/tls.crt /certs/tls.key /certs/ca.crt'
   echo "certificats de test pousses dans le volume $SECAGENT_TLS_VOLUME"
 }
@@ -95,7 +95,7 @@ push_hooks() {
   [ -f "$HERE/hooks.json" ] || fail "$HERE/hooks.json absent"
   docker volume create "$SECAGENT_HOOKS_VOLUME" >/dev/null
   tar -C "$HERE" -cf - hooks.json | docker run --rm -i -v "$SECAGENT_HOOKS_VOLUME:/hooks" \
-    alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
+    alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'set -e; tar -xf - -C /hooks; chown 0:0 /hooks /hooks/hooks.json; chmod 755 /hooks; chmod 644 /hooks/hooks.json'
   echo "hooks.json depose dans le volume $SECAGENT_HOOKS_VOLUME"
 }
@@ -265,7 +265,7 @@ backup_restore() {
   docker cp "$m:/data/relay.state" "$bk/relay.state"; chmod 755 "$bk"; chmod 644 "$bk/relay.state"
   docker volume create "$bkvol" >/dev/null
   tar -C "$bk" -cf - relay.state | docker run --rm -i -v "$bkvol:/backup" \
-    alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
+    alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'tar -xf - -C /backup && chmod 755 /backup && chmod 644 /backup/relay.state'
 
   grep '^RSA_MASTER_KEY=' "$HERE/qualif.env" | write_secret "backup-key/rsa_master_key"
@@ -316,7 +316,7 @@ push_link_key() {
   docker volume create "$SECAGENT_LINK_VOLUME" >/dev/null
   # shellcheck disable=SC2086
   tar -C "$CHAIN_DIR" -cf - $files | docker run --rm -i -v "$SECAGENT_LINK_VOLUME:/link" \
-    alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
+    alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'set -e; tar -xf - -C /link; chmod 755 /link; chown 0:0 /link/root-link.pub; chmod 644 /link/root-link.pub
            if [ -f /link/upstream-token ]; then chown 10001:10001 /link/upstream-token; chmod 0400 /link/upstream-token; fi'
   rm -f "$CHAIN_DIR/upstream-token"

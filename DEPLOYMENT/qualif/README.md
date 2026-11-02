@@ -57,7 +57,7 @@ set -a; . images/images.env; set +a              # SECAGENT_IMAGE, SECAGENT_MINI
 export INVENTORY_BIN="$PWD/images/secagent-inventory"
 ```
 `load-images` enregistre l'empreinte stable des images (sha256 des couches `RootFS.Layers`, `chain/image-ids`, non secrets ; l'ID `.Id` varie selon le magasin containerd) et `bootstrap`/`failover`/`backup-restore` **refusent** de démarrer si l'empreinte réelle d'une image du démon diffère (tag local préexistant) ou si `load-images` n'a pas été lancé.
-**Exception à « sans registre »** : « sans registre » vaut pour les **images secagent**. Deux commandes (`chain-test.sh push-tls` et `backup-restore`) utilisent aussi `alpine:3.20@sha256:d9e853e8…` (épinglée par digest, identique à celle du `GO/Dockerfile`), **tirée de Docker Hub** par l'hôte au premier usage ; sur un hôte sans accès au Hub, charger cette image au préalable (`docker pull` ailleurs puis `docker save | docker load`).
+**Exception à « sans registre »** : « sans registre » vaut pour les **images secagent**. Deux commandes (`chain-test.sh push-tls` et `backup-restore`) utilisent aussi `alpine:3.24@sha256:be265606…` (épinglée par digest, identique à celle du `GO/Dockerfile`), **tirée de Docker Hub** par l'hôte au premier usage ; sur un hôte sans accès au Hub, charger cette image au préalable (`docker pull` ailleurs puis `docker save | docker load`).
 `SECAGENT_PULL_POLICY=never` empêche Compose de chercher ces tags locaux dans un registre. La production, elle, exige `tag@sha256` (archive de release, `check_compose.py --require-digest`).
 
 **Procédure « qualification sans registre »** (le job `images-artifact` ne tourne que sur un **push**, après `docker-compose-checks`) :
