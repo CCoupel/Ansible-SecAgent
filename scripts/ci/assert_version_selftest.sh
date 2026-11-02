@@ -9,7 +9,7 @@ mk() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$T/$1"; chmod +x "$T/$1"; }
 mk good "secagent-server version 3.0.4"; mk dev "secagent-server version dev"; mk other "secagent-server version 3.0.40"
 mk garbage "usage: something else"
 mk minion "secagent-minion version 3.0.4"; mk minion_dev "secagent-minion version dev"
-mk inv "secagent-inventory 3.0.4"; mk inv_dev "secagent-inventory dev"; mk inv_prefix "secagent-inventory 3.0.40"; mk inv_words "secagent-inventory version 3.0.4"
+mk inv "secagent-inventory version 3.0.4"; mk inv_dev "secagent-inventory version dev"; mk inv_prefix "secagent-inventory version 3.0.40"
 expect() { local want="$1" what="$2"; shift 2; "$@" >/dev/null 2>&1; local rc=$?
   local good=0
   if [ "$want" = ok ]; then [ $rc -eq 0 ] && good=1; else [ $rc -ne 0 ] && good=1; fi
@@ -27,7 +27,6 @@ expect ko "un binaire serveur n'est pas accepte comme minion" env COMPONENT=seca
 expect ok "inventory : version attendue (COMPONENT=secagent-inventory)" env COMPONENT=secagent-inventory bash "$A" 3.0.4 "$T/inv"
 expect ko "inventory : binaire en version dev refuse" env COMPONENT=secagent-inventory bash "$A" 3.0.4 "$T/inv_dev"
 expect ko "inventory : prefixe de version (3.0.40) refuse" env COMPONENT=secagent-inventory bash "$A" 3.0.4 "$T/inv_prefix"
-expect ko "inventory : format « version » (serveur/minion) refuse" env COMPONENT=secagent-inventory bash "$A" 3.0.4 "$T/inv_words"
 expect ko "un binaire inventory n'est pas accepte comme serveur (composant par defaut)" bash "$A" 3.0.4 "$T/inv"
 expect ko "un binaire minion n'est pas accepte comme inventory" env COMPONENT=secagent-inventory bash "$A" 3.0.4 "$T/minion"
 expect ko "composant inconnu refuse" env COMPONENT=autre bash "$A" 3.0.4 "$T/good"
