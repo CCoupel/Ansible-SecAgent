@@ -189,6 +189,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write       # #213 : jeton OIDC pour signer l'attestation de provenance (Sigstore)
+      attestations: write   # #213 : enregistrement de l'attestation par GitHub
     strategy:
       fail-fast: false
       matrix:
@@ -243,11 +245,23 @@ jobs:
           build-args: |
             VERSION=${{ needs.prepare.outputs.version }}
           outputs: type=image,push=true,rewrite-timestamp=true
-          # M10 : SBOM et attestation de provenance attaches aux images (signature cosign : a proposer)
+          # M10 : SBOM et attestation de provenance BuildKit attaches aux images (non signes ; la provenance signee est
+          # produite par l'etape suivante, #213 ; pas de cosign, D7)
           provenance: true
           sbom: true
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      # #213 : provenance SLSA SIGNEE (Sigstore, jeton OIDC du job) et rangee par GitHub ; les attestations BuildKit ci-dessus
+      # (provenance + SBOM) restent attachees a l'image mais ne sont PAS signees. Verification : DOC/project/DEPLOYMENT.md.
+      # create-storage-record: false : le storage record exige `artifact-metadata: write` (API d'organisation, non accordee).
+      - name: Attestation de provenance signee
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/ccoupel/${{ matrix.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
 
       # M2 : le digest est transmis au job release (les sorties de matrice s'ecrasent : artefact par image).
       - name: Exporter le digest

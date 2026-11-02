@@ -132,6 +132,31 @@ Le déploiement se fait ensuite dans le projet Compose **`secagent-qualif`** (mo
 
 **Production** : le Compose de la release exige des images **`tag@sha256:<digest>`** (`vX.Y.Z@sha256:…`, jamais `latest`, jamais de tag local) ; la répétition à vide de l'archive de release le vérifie par `check_compose.py --require-digest`. Les images chargées par `docker load` ne sont acceptées qu'en qualif.
 
+### Vérifier l'origine d'une image publiée (attestation de provenance signée, #213)
+
+À partir de v3.0.5, chaque image poussée sur GHCR par `release.yml` (job `images`) ou par `candidate-images.yml` reçoit une **attestation de provenance SLSA signée** (`actions/attest-build-provenance`) : signature Sigstore par un certificat éphémère lié à l'identité OIDC du workflow GitHub, enregistrée dans le journal de transparence public (dépôt public), rangée par GitHub et poussée à côté de l'image dans GHCR. Vérifier **toujours par digest**, avant un déploiement ou une promotion (CLI `gh` récente, commande `gh attestation`) :
+
+```bash
+IMG=ghcr.io/ccoupel/secagent-server@sha256:<digest>      # digest de la release (archive Compose, SHA256SUMS) ou de la candidate
+
+# Image de RELEASE : signée par release.yml, depuis le tag attendu
+gh attestation verify "oci://$IMG" --owner CCoupel \
+  --signer-workflow CCoupel/Ansible-SecAgent/.github/workflows/release.yml \
+  --source-ref refs/tags/vX.Y.Z --deny-self-hosted-runners
+
+# Image CANDIDATE (qualif) : signée par candidate-images.yml
+gh attestation verify "oci://$IMG" --owner CCoupel \
+  --signer-workflow CCoupel/Ansible-SecAgent/.github/workflows/candidate-images.yml --deny-self-hosted-runners
+
+# Variante : attestation lue dans le registre plutôt que via l'API GitHub
+gh attestation verify "oci://$IMG" --owner CCoupel --bundle-from-oci \
+  --signer-workflow CCoupel/Ansible-SecAgent/.github/workflows/release.yml
+```
+
+Code 0 = vérifié. **Ce que cela prouve** : l'image de **ce digest** a été construite par un workflow GitHub Actions du dépôt `CCoupel/Ansible-SecAgent` (le fichier de workflow nommé, sur un runner hébergé par GitHub), à partir du commit et du ref inscrits dans la provenance (`--source-ref` impose le tag), et l'attestation n'a pas été modifiée depuis sa signature. **Ce que cela ne prouve pas** : que le code de ce commit est sûr (revue et tests), ni que l'image d'un **tag** mutable est la bonne (seul le digest compte) ; les images antérieures à v3.0.5 n'ont pas d'attestation signée (la vérification échoue).
+
+Les attestations **BuildKit** attachées à l'image (`provenance: true`, `sbom: true`) restent présentes mais **ne sont pas signées** : elles se consultent, sans valeur de preuve, avec `docker buildx imagetools inspect "$IMG" --format '{{json .Provenance}}'` (et `'{{json .SBOM}}'`). Les images ne sont pas signées par cosign (décision v3.0.5).
+
 ---
 
 ## Arguments du binaire `secagent-server` (v3.0.4)
