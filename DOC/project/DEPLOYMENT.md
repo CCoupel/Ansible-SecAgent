@@ -167,6 +167,8 @@ Code 0 = vérifié. **Ce que cela prouve** : l'image de **ce digest** a été co
 
 **Ce qui rend la preuve fiable** (réglages du dépôt, à faire avant de s'appuyer sur l'attestation en production) : (1) `--source-ref` à chaque vérification ; (2) la **protection des refs** : *ruleset* sur les tags `v*` (création, mise à jour et suppression réservées au mainteneur — sinon un collaborateur peut pousser un tag `v9.9.9` sur un workflow modifié et obtenir une attestation pour `refs/tags/v9.9.9`) et protection de `main` (et `milestone/*` pour les candidates) ; (3) la limitation de qui peut écrire dans le dépôt et lancer les workflows. Un *Environment* GitHub protégé (relecteur obligatoire, refs autorisées) n'est qu'un **complément** pour les exécutions légitimes : déclaré dans le fichier de workflow, il peut être retiré par l'auteur d'un workflow modifié, et le certificat Sigstore ne porte pas son nom.
 
+**État en v3.0.5** : ni le *ruleset* de tags `v*` ni la protection de `main` ne sont encore configurés (réglage du dépôt, décision du mainteneur). Tant que le *ruleset* de tags n'existe pas, une attestation de release vérifiée prouve le workflow et le ref, mais pas que le tag a été créé par le mainteneur : ne pas s'appuyer dessus seule pour la production. Dans le résumé d'un run `candidate-images`, chaque ligne de promotion indique `ATTESTEE` ou `NON ATTESTEE`.
+
 Les attestations **BuildKit** attachées à l'image (`provenance: true`, `sbom: true`) restent présentes mais **ne sont pas signées** : elles se consultent, sans valeur de preuve, avec `docker buildx imagetools inspect "$IMG" --format '{{json .Provenance}}'` (et `'{{json .SBOM}}'`). Les images ne sont pas signées par cosign (décision v3.0.5).
 
 ---
