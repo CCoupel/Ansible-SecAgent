@@ -25,11 +25,23 @@ Environment variables:
   ADMIN_TOKEN    Admin bearer token (required)`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
-	Version:       Version,
+	// --version is handled here, not by cobra's built-in flag (which answered before looking at the
+	// arguments: `--version extra` exited 0). D5 (#220): same as the minion, an extra argument is an error.
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if rootShowVersion {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s version %s\n", cmd.Name(), Version)
+			return nil
+		}
+		return cmd.Help()
+	},
 }
+
+var rootShowVersion bool
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&globalFormat, "format", "table", "Output format: table, json, yaml")
+	rootCmd.Flags().BoolVarP(&rootShowVersion, "version", "v", false, "print the version and exit")
 
 	rootCmd.AddCommand(
 		minionsCmd,

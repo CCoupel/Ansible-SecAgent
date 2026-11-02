@@ -23,6 +23,7 @@ func isCLIMode() bool {
 }
 
 func main() {
+	server.Version = cli.Version // injected at build time (-ldflags -X .../internal/cli.Version=...)
 	// Dual-mode: CLI or server
 	if isCLIMode() {
 		cli.Execute()

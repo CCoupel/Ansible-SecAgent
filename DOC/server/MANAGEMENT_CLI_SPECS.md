@@ -399,6 +399,10 @@ Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écr
 | 10 | vérification après écriture échouée (l'original a été remis en place, sauf message contraire) |
 | 11 | nouvelle clé de moins de 32 octets, rien n'est modifié (l'ancienne clé n'est pas contrôlée) |
 
+#### `--version` (v3.0.5, #220, D5)
+
+`secagent-server --version` (ou `-v`) affiche `secagent-server version <version>` et sort en **0** ; la version est injectée à la compilation (`-ldflags -X secagent-server/cmd/secagent-server/internal/cli.Version=…`, `dev` sinon) et figure aussi dans la ligne `[INIT] Ansible-SecAgent GO Server <version>` du démarrage (elle disait `v1.0` en dur). `--version` suivi d'un argument supplémentaire (`--version extra`) sort en **1** avec un message, comme `secagent-minion` (avant : 0).
+
 #### Codes de sortie des groupes et sauvegardes (v3.0.5, #219)
 
 - **Groupe seul ou `--help`** (`minions`, `security`, `inventory`, `server`, `tokens`, `hooks`, `relays`, `state`, `keys`, ainsi que `minions vars` et `state link-trust`) : aide sur stdout, code **0**.

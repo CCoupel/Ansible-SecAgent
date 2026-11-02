@@ -78,6 +78,9 @@ type Node struct {
 	addrMu     sync.Mutex
 }
 
+// Version is the build version shown in the [INIT] line (set by main from cli.Version).
+var Version = "dev"
+
 // Build wires every component in the production order (store, JWT secrets, hooks, revocation and
 // blacklist checks BEFORE any listener exists) and returns the Node. It does not listen.
 // On error everything already opened is released.
@@ -97,7 +100,7 @@ func Build(cfg Config) (node *Node, err error) {
 	}
 
 	repeaterCfg := cfg.Repeater
-	log.Printf("[INIT] Ansible-SecAgent GO Server v1.0")
+	log.Printf("[INIT] Ansible-SecAgent GO Server %s", Version)
 	if os.Getenv("NATS_URL") != "" {
 		// NATS was never on the dispatch path (WebSocket direct): ignoring the variable has no
 		// functional effect, so this is a warning, not an error (unlike DATABASE_URL, #160).
