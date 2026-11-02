@@ -101,7 +101,10 @@ func TestUnauthRetryTransient401ThenSuccessKeepsJWT(t *testing.T) {
 	writeFileT(t, jwtPath, "kept-jwt")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = d.Run(ctx) }()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = d.Run(ctx) }()
+	// d.Run reads reEnrollOnce: it must be over before the deferred restore of the variable (LIFO: this runs first)
+	defer func() { cancel(); <-done }()
 	waitFor(t, "WS connected", func() bool { return d.connected.Load() })
 	cancel()
 
@@ -144,8 +147,10 @@ func TestUnauthRetryPersistent401ThenReenrollAfterN(t *testing.T) {
 	d.unauthRetryMax = 3
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = d.Run(ctx) }()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = d.Run(ctx) }()
+	// d.Run reads reEnrollOnce: wait for it before the deferred restore of the variable (LIFO: this runs first)
+	defer func() { cancel(); <-done }()
 	waitFor(t, "re-enrollment after the retries", func() bool { return reenrolls.Load() >= 1 })
 
 	if n := reqs.Load(); n < 4 {
