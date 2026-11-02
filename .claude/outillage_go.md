@@ -36,6 +36,11 @@ export GOLANGCI_LINT_CACHE="$S/go/lint"
 export GOPROXY="file://$HOME/go/pkg/mod/cache/download" GOSUMDB=off GOFLAGS=-modcacherw
 ```
 
+> **Avertissement** : `GOSUMDB=off` et le proxy fichier sont réservés à la compilation et aux tests. Cet
+> environnement **interdit d'ajouter ou de mettre à jour une dépendance** (`go get`, `go mod tidy`) : sans base de
+> sommes, une dépendance altérée ne serait pas détectée. Tout changement de `go.mod` ou `go.sum` est relu à la main
+> en revue.
+
 `GOFLAGS=-modcacherw` rend le cache du scratchpad supprimable sans `chmod`. `GOSUMDB=off` est sans risque ici :
 `go.sum` reste vérifié, seule la base de sommes publique est désactivée (le proxy est local).
 
@@ -60,15 +65,15 @@ scratchpad et **vérifier sa somme SHA-256** :
 V=2.14.0; B=https://github.com/golangci/golangci-lint/releases/download/v$V
 mkdir -p "$S/dl" && cd "$S/dl"
 curl -fsSL -O $B/golangci-lint-$V-linux-amd64.tar.gz -O $B/golangci-lint-$V-checksums.txt
-sha256sum -c --ignore-missing golangci-lint-$V-checksums.txt   # attendu : OK
-# somme attendue : ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab
+# vérification sur la somme ÉPINGLÉE ici (pas sur le fichier téléchargé avec l'archive) ; attendu : OK
+echo "ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab  golangci-lint-$V-linux-amd64.tar.gz" | sha256sum -c -
 tar -xzf golangci-lint-$V-linux-amd64.tar.gz -C "$S/dl" --strip-components=1 golangci-lint-$V-linux-amd64/golangci-lint
 mv "$S/dl/golangci-lint" "$S/go/bin/"
 cd <racine>/GO && golangci-lint run --timeout=5m
 ```
 
-La somme ci-dessus a été relevée dans le fichier de sommes publié avec la release ; comparer aussi à la valeur
-attendue du bloc, pas seulement au fichier téléchargé avec l'archive. Même principe pour tout autre outil Go
+La somme épinglée a été relevée dans le fichier de sommes publié avec la release (`curl -O …-checksums.txt` pour
+la recontrôler lors d'une montée de version). Même principe pour tout autre outil Go
 (`actionlint`…) : binaire vérifié par somme, ou `go install` avec `GOBIN`, `GOMODCACHE` et `GOCACHE` du bloc.
 
 ## Piège `/mnt/c` (NTFS)
