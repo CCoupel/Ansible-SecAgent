@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -286,5 +288,78 @@ func TestWiring_ReplacedJTIProbeDecidesBetweenALiveAndADeadConnection(t *testing
 	_ = c.Close()
 	if d := time.Since(start); d > 5*time.Second {
 		t.Errorf("the handshake waited %s for the probe (probe delay 1 s)", d)
+	}
+}
+
+// M12 (#233): after `minions delete`, the old JWT is refused at the handshake (the row is gone and the JTIs are
+// blacklisted) and the live socket is closed; a reconnection DURING the deletion cannot be accepted either, since
+// the JTI is refused before the row goes.
+func TestWiring_DeletedAgentCannotComeBackWithItsJWT(t *testing.T) {
+	n, _, admin, wsAddr := startNode(t, nil)
+	ctx := context.Background()
+	secret := serverJWTSecret()
+	if _, err := n.store.RegisterAgent(ctx, "del-host", "pem", "jti-d1"); err != nil {
+		t.Fatal(err)
+	}
+	tok := signAgentToken(t, secret, "del-host", "jti-d1")
+	live, status, err := dialAgentWS(wsAddr, tok)
+	if err != nil {
+		t.Fatalf("connect: %v (%d)", err, status)
+	}
+	defer live.Close()
+	closed := make(chan struct{})
+	go func() {
+		for {
+			if _, _, rerr := live.ReadMessage(); rerr != nil {
+				close(closed)
+				return
+			}
+		}
+	}()
+
+	// hammer the handshake with the old JWT while the deletion runs: once it is blacklisted, nothing is accepted
+	stop := make(chan struct{})
+	var accepted atomic.Int32
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if c, _, derr := dialAgentWS(wsAddr, tok); derr == nil {
+				accepted.Add(1)
+				_ = c.Close()
+			}
+		}
+	}()
+	time.Sleep(100 * time.Millisecond)
+	code, body := adminCall(t, admin, "DELETE", "/api/admin/minions/del-host", nil)
+	if code != http.StatusOK {
+		t.Fatalf("delete: %d %s", code, body)
+	}
+	before := accepted.Load()
+	time.Sleep(300 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+	if accepted.Load() != before {
+		t.Errorf("%d handshake(s) accepted AFTER the deletion returned", accepted.Load()-before)
+	}
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Error("the live socket was not closed")
+	}
+	if c, st, derr := dialAgentWS(wsAddr, tok); derr == nil || st != http.StatusUnauthorized {
+		if c != nil {
+			_ = c.Close()
+		}
+		t.Errorf("the old JWT after the deletion: status %d err %v, want 401", st, derr)
+	}
+	if bl, _ := n.store.IsJTIBlacklisted(ctx, "jti-d1"); !bl {
+		t.Error("the deleted agent's JTI must be blacklisted")
 	}
 }

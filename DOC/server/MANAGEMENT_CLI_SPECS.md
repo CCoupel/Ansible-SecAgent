@@ -417,7 +417,7 @@ Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écr
 | `relays revoke <relay_id\|uuid> [--yes]` | révoque un relay (JTI blacklisté, lien fermé en 4010) | `POST /api/admin/relays/{id}/revoke` |
 | `relays remove <relay_id\|uuid> [--revoke] [--yes]` | supprime un relay ; `--revoke` le révoque d'abord (relay jamais connecté : sans cela `409 relay_not_revoked`, la CLI le dit) | `DELETE /api/admin/relays/{id}` |
 
-Le nom `relay_id` est résolu par `GET /api/admin/relays` (inconnu ou ambigu : erreur, rien n'est envoyé). **Confirmation** : taper le nom (hôte ou `relay_id`) ; sans terminal sur stdin (`/dev/null` compris) la commande est **refusée, rien n'est fait, code de sortie 9**, sauf `--yes`. `relays remove` sans `--revoke` ne demande pas de confirmation (comportement inchangé).
+Le nom `relay_id` est résolu par `GET /api/admin/relays` (inconnu ou ambigu : erreur, rien n'est envoyé). **Confirmation** : taper le nom (hôte ou `relay_id`) ; sans terminal sur stdin (`/dev/null` compris) la commande est **refusée, rien n'est fait, code de sortie 9**, sauf `--yes`. `relays remove` est destructif avec ou sans `--revoke` : même confirmation (taper le `relay_id`), refus code 9 sans terminal sauf `--yes` (B49). Les arguments (hostname, id, clé de variable) sont échappés comme segment de chemin (`/` ⇒ `%2F`, B50). `minions delete` d'un agent révoqué avertit avant la confirmation que la suppression **lève la révocation** (B51).
 
 Le code 7 (`--min-write-seq`) n'existe que pour `state verify` / `state restore`.
 

@@ -10,6 +10,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -193,7 +194,7 @@ func init() {
 	relaysAddCmd.Flags().StringVar(&addRelayDescription, "description", "", "Human-readable description")
 	relaysRevokeCmd.Flags().BoolVar(&relaysRevokeYes, "yes", false, "confirm without prompting (required in non-interactive use)")
 	relaysRemoveCmd.Flags().BoolVar(&relaysRemoveRevoke, "revoke", false, "revoke the relay first (needed for a relay whose link token the node does not track)")
-	relaysRemoveCmd.Flags().BoolVar(&relaysRemoveYes, "yes", false, "with --revoke: confirm without prompting (required in non-interactive use)")
+	relaysRemoveCmd.Flags().BoolVar(&relaysRemoveYes, "yes", false, "confirm without prompting (required in non-interactive use)")
 }
 
 // ── relays remove ─────────────────────────────────────────────────────────────
@@ -239,7 +240,7 @@ func resolveRelay(arg string) (rowID, relayID string, err error) {
 }
 
 func revokeRelayRow(rowID string) error {
-	data, status, err := apiRequest("POST", "/api/admin/relays/"+rowID+"/revoke", nil)
+	data, status, err := apiRequest("POST", "/api/admin/relays/"+url.PathEscape(rowID)+"/revoke", nil)
 	if err != nil {
 		return err
 	}
@@ -286,7 +287,7 @@ var relaysRemoveCmd = &cobra.Command{
 	Long: `Removes a relay node. Accepts the relay_id (as in 'relays list') or the row id (UUID). The node refuses
 (409 relay_not_revoked) a relay whose link token it does not track — typically a relay declared with
 'relays add' that never connected (never_seen): revoke it first, or pass --revoke to revoke then remove in
-one go (confirmation as for 'relays revoke'). A descendant that only appears in the topology (no row)
+one go. Destructive: confirmation as for 'relays revoke' (type the relay_id; without a terminal it is refused unless --yes). A descendant that only appears in the topology (no row)
 cannot be removed: it disappears when its ancestor stops declaring it.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -294,17 +295,21 @@ cannot be removed: it disappears when its ancestor stops declaring it.`,
 		if err != nil {
 			return err
 		}
+		what := "remove"
 		if relaysRemoveRevoke {
-			if err := confirmDestructive(cmd, relaysRemoveYes, "revoke and remove", relayID); err != nil {
-				return err
-			}
+			what = "revoke and remove"
+		}
+		if err := confirmDestructive(cmd, relaysRemoveYes, what, relayID); err != nil {
+			return err
+		}
+		if relaysRemoveRevoke {
 			if err := revokeRelayRow(id); err != nil {
 				return err
 			}
 			fmt.Printf("Relay %q revoked.\n", relayID)
 		}
 
-		data, status, err := apiRequest("DELETE", "/api/admin/relays/"+id, nil)
+		data, status, err := apiRequest("DELETE", "/api/admin/relays/"+url.PathEscape(id), nil)
 		if err != nil {
 			return err
 		}

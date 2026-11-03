@@ -499,3 +499,48 @@ func TestAdminGetMinion_StatusFollowsTheLiveConnection(t *testing.T) {
 		t.Fatalf("a live connection must show connected, got %q", st)
 	}
 }
+
+// M12 (#233): the holders of the JWT are refused BEFORE the WebSocket is closed. At the moment of the first
+// close the current and the previous JTI are blacklisted and the row is gone; a connection that slipped in
+// meanwhile is closed again.
+func TestAdminDeleteMinion_RefusesTheJWTBeforeClosingTheSocket(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+	ctx := context.Background()
+	if _, err := s.RegisterAgent(ctx, "del-order", "pem", "jti-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateTokenJTIUnlessRevoked(ctx, "del-order", "jti-2"); err != nil { // jti-1 becomes the previous JTI
+		t.Fatal(err)
+	}
+	prev := closeAgentFn
+	t.Cleanup(func() { closeAgentFn = prev })
+	calls := 0
+	closeAgentFn = func(host string, code int, reason string) bool {
+		calls++
+		if calls == 1 {
+			for _, jti := range []string{"jti-1", "jti-2"} {
+				if bl, _ := s.IsJTIBlacklisted(ctx, jti); !bl {
+					t.Errorf("at the first close, %s must already be blacklisted", jti)
+				}
+			}
+			if a, _ := s.GetAgent(ctx, "del-order"); a != nil {
+				t.Errorf("at the first close the row must already be deleted: %+v", a)
+			}
+			// a connection slips in between the deletion and the close
+			ws.RegisterConnection("del-order", &ws.AgentConnection{Hostname: "del-order"})
+		}
+		return true
+	}
+	t.Cleanup(func() { ws.UnregisterConnection("del-order") })
+	req := adminReq("DELETE", "/api/admin/minions/del-order", nil)
+	req.SetPathValue("hostname", "del-order")
+	w := httptest.NewRecorder()
+	AdminDeleteMinion(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	}
+	if calls != 2 {
+		t.Errorf("closeAgent called %d times, want 2 (a second close for the connection that slipped in)", calls)
+	}
+}

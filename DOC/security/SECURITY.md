@@ -205,7 +205,7 @@ Agent                         Server
 | Code | Signification | Comportement agent |
 |---|---|---|
 | `4001` | Révocation admin (JTI blacklisté) | **Arrêt définitif** — ne jamais reconnecter (code de sortie 77) |
-| `4000` | Agent supprimé (`DELETE /api/admin/minions/{hostname}`) | Reconnexion avec backoff exponentiel |
+| `4000` | Agent supprimé (`DELETE /api/admin/minions/{hostname}`) : émis **après** la mise en liste noire des JTI et la suppression de la ligne (v3.0.5, M12) | Reconnexion avec backoff exponentiel (refusée en 401 : l'agent est inconnu) |
 | `1001` | Arrêt propre du serveur, perte du verrou maître, coupure réseau | Reconnexion avec backoff exponentiel (1s→2s→4s→…→60s max) |
 
 Le serveur n'émet vers les agents que `4000`, `4001` et `1001`. `4002` existe comme constante (`ws/handler.go:24`) mais n'est jamais émis ; `4003` et `4004` n'existent pas. Un JWT expiré ou invalide n'est pas signalé par un code de fermeture : l'upgrade WebSocket est refusé en **HTTP 401** et l'agent se ré-enrôle (voir « Gestion du 401 »). Tout code autre que `4001` provoque une reconnexion.

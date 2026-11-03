@@ -24,7 +24,7 @@ func adminAPI(t *testing.T, minionStatus string, removeStatus int, removeBody st
 	t.Helper()
 	c := &calls{}
 	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
-		c.add(r.Method + " " + r.URL.Path)
+		c.add(r.Method + " " + r.URL.EscapedPath())
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/api/admin/relays":
@@ -99,7 +99,7 @@ func TestRelaysResolve_UnknownAndAmbiguousNamesAreErrors(t *testing.T) {
 
 func TestRelaysRemove_NotRevokedPointsAtRevoke(t *testing.T) {
 	c := adminAPI(t, "", 409, `{"error":"relay_not_revoked"}`)
-	_, errOut, code := runCLI(t, "relays", "remove", "ghost")
+	_, errOut, code := runCLI(t, "relays", "remove", "ghost", "--yes")
 	if code == 0 || !strings.Contains(errOut, "relay_not_revoked") || !strings.Contains(errOut, "remove --revoke ghost") {
 		t.Fatalf("exit %d stderr %q: the 409 must name the --revoke remedy", code, errOut)
 	}
@@ -130,5 +130,57 @@ func TestKeysLinkStatus_WithoutARotationDoesNotSaySinceTheRotation(t *testing.T)
 	out, _, code := runCLI(t, "keys", "link-status")
 	if code != 0 || strings.Contains(out, "since the rotation") || !strings.Contains(out, "since this node started") {
 		t.Fatalf("exit %d out=%q: outside a rotation the wording must not mention the rotation", code, out)
+	}
+}
+
+// B49: relays remove is destructive with or without --revoke: confirmation or --yes, else refused (exit 9).
+func TestRelaysRemove_WithoutRevokeStillNeedsConfirmation(t *testing.T) {
+	c := adminAPI(t, "", 204, "")
+	if _, errOut, code := runCLI(t, "relays", "remove", "ghost"); code != ExitRefused || !strings.Contains(errOut, "--yes") {
+		t.Fatalf("exit %d stderr %q: want %d", code, errOut, ExitRefused)
+	}
+	if strings.Contains(c.all(), "DELETE") {
+		t.Fatalf("nothing may be removed without confirmation:\n%s", c.all())
+	}
+	if out, errOut, code := runCLI(t, "relays", "remove", "ghost", "--yes"); code != 0 || !strings.Contains(out, "removed") {
+		t.Fatalf("exit %d out=%q err=%q", code, out, errOut)
+	}
+}
+
+// B50: a hostname or an id with a slash is one path segment, escaped.
+func TestPathsAreEscaped(t *testing.T) {
+	c := adminAPI(t, "disconnected", 204, "")
+	runCLI(t, "minions", "delete", "web/1", "--yes")
+	runCLI(t, "minions", "get", "a/b")
+	runCLI(t, "minions", "vars", "delete", "h/1", "k/2")
+	all := c.all()
+	for _, want := range []string{"GET /api/admin/minions/web%2F1", "DELETE /api/admin/minions/web%2F1", "GET /api/admin/minions/a%2Fb", "/api/admin/minions/h%2F1/vars/k%2F2"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("missing %q in the requests:\n%s", want, all)
+		}
+	}
+	if strings.Contains(all, "web/1") || strings.Contains(all, "a/b") {
+		t.Errorf("a raw slash reached the path:\n%s", all)
+	}
+}
+
+// B51: deleting a revoked agent says that the revocation is lifted, before the confirmation.
+func TestMinionsDelete_WarnsThatARevocationIsLifted(t *testing.T) {
+	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "GET" {
+			_, _ = w.Write([]byte(`{"hostname":"web1","status":"disconnected","revoked":true}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"deleted"}`))
+	})
+	out, _, code := runCLI(t, "minions", "delete", "web1", "--yes")
+	if code != 0 || !strings.Contains(out, "REVOKED") || !strings.Contains(out, "LIFTS the revocation") {
+		t.Fatalf("exit %d out=%q", code, out)
+	}
+	// a refusal (no --yes, no terminal) still shows the warning
+	out, _, code = runCLI(t, "minions", "delete", "web1")
+	if code != ExitRefused || !strings.Contains(out, "LIFTS the revocation") {
+		t.Fatalf("exit %d out=%q: the warning must come before the confirmation", code, out)
 	}
 }

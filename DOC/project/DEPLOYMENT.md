@@ -359,7 +359,7 @@ docker exec -it secagent-server secagent-server relays revoke dmz1
 ```bash
 # En une commande : révoque puis supprime (même confirmation que relays revoke)
 docker exec -it secagent-server secagent-server relays remove --revoke dmz1
-# ou en deux : relays revoke dmz1 ; relays remove dmz1
+# ou en deux : relays revoke dmz1 ; relays remove dmz1 (chacune demande la confirmation, ou --yes en non interactif)
 ```
 
 Un descendant `never_seen` seulement appris de la topologie (aucune ligne `relay_nodes` sur la racine) répond `404` : il disparaît quand son ancêtre cesse de le déclarer.

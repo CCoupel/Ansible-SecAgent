@@ -45,7 +45,7 @@ Authorization: Bearer <ADMIN_TOKEN>
 
 ### `GET /api/admin/minions/{hostname}` — Détail d'un agent
 
-**Réponse 200 :** `hostname`, `status`, `last_seen`, `suspended`, `enrolled_at`, `key_fingerprint` (début de la clef publique, 16 caractères + `...`) et `vars` (variables Ansible de l'hôte) — `MinionDetail`, `handlers/admin.go`. La clef publique complète n'est pas renvoyée. **`status` suit la connexion WebSocket vivante** (`connected` si l'agent est connecté à ce nœud, comme la liste `GET /api/admin/minions`), sinon le dernier statut de l'état (v3.0.5, #233 : il valait avant le seul statut persisté, `disconnected` pour un agent connecté).
+**Réponse 200 :** `hostname`, `status`, `last_seen`, `suspended`, `revoked`, `enrolled_at`, `key_fingerprint` (début de la clef publique, 16 caractères + `...`) et `vars` (variables Ansible de l'hôte) — `MinionDetail`, `handlers/admin.go`. La clef publique complète n'est pas renvoyée. `revoked` (booléen, additif en v3.0.5) : l'hôte est révoqué (`minions revoke`) ; `minions delete` s'en sert pour avertir que la suppression lève la révocation. **`status` suit la connexion WebSocket vivante** (`connected` si l'agent est connecté à ce nœud, comme la liste `GET /api/admin/minions`), sinon le dernier statut de l'état (v3.0.5, #233 : il valait avant le seul statut persisté, `disconnected` pour un agent connecté).
 
 **Codes d'erreur :**
 
@@ -109,7 +109,7 @@ Effets (#193) :
 
 ### `DELETE /api/admin/minions/{hostname}` — Supprimer un agent
 
-Ferme la WS (code `4000`), supprime l'agent **et sa clef autorisée** de l'état et émet l'événement `host.deleted`. Réponse 200 : `{ "hostname", "status": "deleted", "ws_disconnected" }` ; `404 agent_not_found`. Différent de la révocation, qui blackliste et pose le drapeau sans supprimer.
+**Ordre (v3.0.5, M12)** : (1) le JTI courant et le précédent sont mis en liste noire et l'hôte marqué révoqué, en une écriture d'état (aucune poignée de main avec l'ancien JWT n'est plus acceptée dès cet instant ; état en lecture seule ⇒ erreur, rien d'autre n'est fait) ; (2) la ligne est supprimée, **avec sa clef autorisée** ; (3) **puis** la WS est fermée (code `4000`), et fermée une seconde fois si une connexion est apparue entre-temps ; l'événement `host.deleted` est émis. Avant, la WS était fermée en premier : l'agent pouvait se reconnecter avec son JWT encore valide. Réponse 200 : `{ "hostname", "status": "deleted", "ws_disconnected" }` ; `404 agent_not_found`. Différent de la révocation, qui blackliste et pose le drapeau sans supprimer.
 
 **C'est aussi la levée explicite d'une révocation** : l'agent disparaît, donc son drapeau `revoked` aussi ; l'hôte peut alors s'enrôler de nouveau avec un jeton d'enrôlement. Ses variables sont perdues. (`storage/store.go:339` `DeleteAgent`.)
 
