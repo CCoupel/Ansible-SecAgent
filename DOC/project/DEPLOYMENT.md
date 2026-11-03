@@ -431,6 +431,10 @@ docker compose -p secagent-qualif -f docker-compose.server.yml down -v
 | `ADMIN_ADDR` | `:7771` | Adresse admin (toutes interfaces par défaut ; `127.0.0.1:7771` pour la boucle locale) |
 | `ADMIN_TLS` | `false` | TLS sur admin ; **obligatoire** si `ADMIN_ADDR` n'est pas loopback (sinon refus de démarrer, ou dérogation `ADMIN_INSECURE_HTTP` + ACK) |
 
+#### Rechargement à chaud du certificat TLS
+
+Le serveur relit la paire `TLS_CERT` / `TLS_KEY` au sondage suivant (60 s par défaut, `DefaultTLSReloadInterval`, `server/tls.go:49-50`) ou sur `SIGHUP`, sans coupure. Remplacer le certificat et la clé ensemble (répertoire versionné + bascule d'un lien symbolique par un seul `rename`) ; sinon un `[SECURITY WARNING] TLS certificate reload refused, keeping the previous pair` transitoire est attendu (`server/tls.go:153`), l'ancien certificat reste servi et le rechargement réussit au sondage suivant.
+
 #### Secrets par fichier (`*_FILE`, #196)
 
 Chaque secret peut être donné par une variable **ou** par un fichier : `JWT_SECRET_KEY` / `JWT_SECRET_KEY_FILE`, `ADMIN_TOKEN` / `ADMIN_TOKEN_FILE`, `RSA_MASTER_KEY` / `RSA_MASTER_KEY_FILE`, `REPEATER_UPSTREAM_TOKEN` / `REPEATER_UPSTREAM_TOKEN_FILE` (serveur seulement : la CLI ne lit que `ADMIN_TOKEN[_FILE]` et `RSA_MASTER_KEY[_FILE]`, `cli/client.go`), `RELAY_ENROLLMENT_TOKEN` / `RELAY_ENROLLMENT_TOKEN_FILE` (minion). Avantage : le secret n'apparaît plus dans `docker inspect` ni dans l'environnement du processus.
