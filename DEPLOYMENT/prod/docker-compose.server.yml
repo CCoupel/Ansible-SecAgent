@@ -32,7 +32,7 @@ services:
     # d'hote : il doit APPARTENIR a l'UID 10001 (celui du conteneur) en mode 0400 (ou 0600), sinon le serveur refuse de
     # demarrer. Creer/corriger avec ./preflight-secrets.sh (--write, --fix) et le LANCER AVANT `docker compose up`.
     # Ne JAMAIS definir en plus la variable directe (JWT_SECRET_KEY...) : les deux ensemble = refus de demarrer.
-    # (l'ancien `env_file: prod.env` est supprime ; `docker exec ... secagent-server <cmd>` herite des *_FILE.)
+    # (l'ancien `env_file: prod.env` est supprime ; `docker exec ... /app/secagent-server <cmd>` herite des *_FILE.)
     secrets:
       - jwt_secret_key
       - admin_token

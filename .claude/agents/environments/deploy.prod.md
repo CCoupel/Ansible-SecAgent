@@ -32,7 +32,7 @@ Docker Compose. Pas de Kubernetes/Helm, pas de Swarm, pas de NATS, pas de Caddy,
 1. Vérifier que `DEPLOYMENT/prod/docker-compose.server.yml` existe, que `.env` et le répertoire `secrets/` sont en place et que `./preflight-secrets.sh` (enfant : `--child`) retourne 0 (enfant : aussi `REPEATER_ROOT_ID` et `ROOT_LINK_KEY_FILE`) et que l'image/tag publié est présent. Sinon `BLOQUE` au teamleader (le scaffold est du ressort de l'agent `infra`).
 2. Première installation uniquement, depuis UN seul hôte : `docker compose -p secagent-prod-<relay_id> -f docker-compose.server.yml run --rm --no-deps secagent-server state init`.
 3. Sur chaque hôte : `docker compose -p secagent-prod-<relay_id> -f docker-compose.server.yml pull` puis `up -d`.
-4. Vérifier `ps` et `logs --tail=50` : une instance maître (ports ouverts), les autres secondaires (aucun port) ; `exec secagent-server secagent-server status --local` code 0 sur chaque hôte (healthy).
+4. Vérifier `ps` et `logs --tail=50` : une instance maître (ports ouverts), les autres secondaires (aucun port) ; `exec secagent-server /app/secagent-server status --local` code 0 sur chaque hôte (healthy).
 5. Smoke : `/health` du maître (`https://<hôte>:7770/health` → `"role":"master"`, TLS natif, sans proxy) et `/api/inventory` avec un jeton plugin (le jeton admin est refusé).
 6. Rapport : services + statut (maître / secondaires), URL accessible oui/non, logs d'erreur, `RÉSULTAT : OK / ÉCHEC`.
 

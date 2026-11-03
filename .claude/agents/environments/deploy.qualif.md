@@ -30,7 +30,7 @@ Tu déploies les composants sur le serveur de qualification via Docker Compose.
 1. Vérifier que les Compose ci-dessus sont présents et que `docker compose config` les rend (variables `SECAGENT_IMAGE`, `QUALIF_TLS_DIR` obligatoires).
 2. Initialiser l'état AVANT le premier démarrage (le serveur refuse de démarrer sans `relay.state`) : `docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent-server-a state init`.
 3. Déployer : `DOCKER_HOST=tcp://192.168.1.218:2375 docker compose -p secagent-qualif -f docker-compose.server.yml up -d` (chaîne : `bash chain-test.sh bootstrap`, qui fait `state init`, `relays add`, crée les jetons dans `./chain/` en 0600 et démarre).
-4. Vérifier : un seul maître, le secondaire n'ouvre aucun port ; santé locale de chaque instance par `exec <service> secagent-server status --local` (code 0) ; `/health` du maître (`curl --cacert <ca> https://<hôte>:7770/health` → `"role":"master"`).
+4. Vérifier : un seul maître, le secondaire n'ouvre aucun port ; santé locale de chaque instance par `exec <service> /app/secagent-server status --local` (code 0) ; `/health` du maître (`curl --cacert <ca> https://<hôte>:7770/health` → `"role":"master"`).
 5. Smoke chaîne : `bash chain-test.sh smoke` (relais et minions connectés, inventaire hiérarchique, `ansible -m ping`) ; bascule : `bash chain-test.sh failover` (arrêt propre du maître) ; `kill` : `failover-test.sh run kill`.
 
 ## Règles réseau et sécurité
