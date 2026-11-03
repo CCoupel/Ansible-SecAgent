@@ -282,6 +282,9 @@ backup_restore() {
   # seraient refusees au demarrage (ambiguite), et un fichier inexistant donne un code 1 (lecture impossible), d'ou ce choix.
   local badkey="${PROJECT}_badkey" bkd; bkd="$(mktemp -d -p "$CHAIN_DIR")"
   ( umask 077; openssl rand -hex 32 | tr -d '\n' > "$bkd/rsa_master_key" ); chmod 400 "$bkd/rsa_master_key"
+  # Nettoyage garanti meme en cas d'echec (fail() quitte le script) : volume de la mauvaise cle et repertoire temporaire.
+  # shellcheck disable=SC2064
+  trap "docker volume rm '$badkey' >/dev/null 2>&1 || true; rm -rf '$bkd'" EXIT
   push_secrets "$bkd" "$badkey"
   local rc=0
   "${DC[@]}" run --rm --no-deps -e RSA_MASTER_KEY_FILE= -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
@@ -292,7 +295,7 @@ backup_restore() {
   [ "$rc" = 2 ] || fail "avec une mauvaise cle : code 2 attendu, obtenu $rc"
   echo "mauvaise cle : refus (code 2) comme attendu"
   docker volume rm "$badkey" >/dev/null || true
-  rm -f "$bkd/rsa_master_key"; rmdir "$bkd"
+  rm -rf "$bkd"; trap - EXIT
   echo "== restauration de la cle (depuis la sauvegarde distincte) puis de l'etat sur un volume vierge"
   push_secrets "$key"   # remet la cle sauvegardee a part dans le volume de secrets (jwt/admin conserves : push partiel)
   "${DC[@]}" run --rm --no-deps -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null || fail "etat sauvegarde refuse avec la cle restauree"

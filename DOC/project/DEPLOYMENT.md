@@ -47,7 +47,7 @@ Les anciens Compose `proxy`, `minion` et `ansible` ont été supprimés (#188). 
 ### Prérequis
 - Docker et Docker Compose installés
 - Certificat TLS auto-signé **avec SAN** : `tls/tls.crt` + `tls/tls.key` (répertoire désigné par `QUALIF_TLS_DIR`)
-- Secrets du serveur (v3.0.5) : trois fichiers `DEPLOYMENT/qualif/secrets/{jwt_secret_key,admin_token,rsa_master_key}` (0400, hors dépôt), déposés dans le volume `secagent-qualif_secrets` par `bash chain-test.sh push-secrets` (propriétaire 10001, mode 0400) et lus via `JWT_SECRET_KEY_FILE`, `ADMIN_TOKEN_FILE`, `RSA_MASTER_KEY_FILE` ; plus de `qualif.env`, plus aucun secret en variable d'environnement
+- Secrets du serveur (v3.0.5) : trois fichiers `DEPLOYMENT/qualif/secrets/{jwt_secret_key,admin_token,rsa_master_key}` (0400, hors dépôt), déposés dans le volume `secagent-qualif_secrets` par `bash chain-test.sh push-secrets` (propriétaire 10001, mode 0400) et lus via `JWT_SECRET_KEY_FILE`, `ADMIN_TOKEN_FILE`, `RSA_MASTER_KEY_FILE` ; plus de `qualif.env`, plus aucun secret en variable d'environnement ; Variables requises par `push-secrets` : `DOCKER_HOST` (hôte cible), `SECRETS_DIR` (défaut `./secrets`), `PROJECT` (défaut `secagent-qualif`) ; sur un hôte distant aussi `TLS_MODE=volume` et `SECAGENT_ENDPOINT_HOST` (le script refuse sinon).
 - Image : `SECAGENT_IMAGE` (candidate `sha-<commit>@sha256:<digest>`)
 - **Pas de NATS, pas de FastAPI, pas de Caddy** — v3.0.3+ utilise GO server natif + TLS natif
 
@@ -585,6 +585,8 @@ Table complète : [DEPLOYMENT/README.md](../../DEPLOYMENT/README.md). `RELAY_HOS
 ```
 
 **Production** : Docker Compose multi-hôtes avec NFS `STATE_DIR` partagé. Un relay acquiert le verrou et ouvre ses ports ; les autres sont secondaires et n'ouvrent aucun port.
+
+**Stockage partagé qualifié (v3.0.5, #239, 2026-11-03)** : MooseFS (FUSE `mfs#192.168.1.231:9421`, `rw,relatime,allow_other`) monté sur 192.168.1.218 et 192.168.1.211 ; `STATE_DIR` en bind mount, une instance du relay par hôte. `test_shared_storage.py` : 3 exécutions CONFORMES (écrivain alterné), 0 lecture partielle. Basculement mesuré, **jamais deux maîtres** : arrêt propre **2,3 s** ; gel (SIGSTOP) maître `unhealthy` à **62,9 s**, reprise à **218,7 s**, le maître gelé s'auto-retire au dégel (code 75) ; `kill` **305,3 s**. Le test de coupure du montage n'a **pas** été réalisé (le montage partagé ne peut pas être coupé) ; détail et statut « non testé = non supporté » pour les autres stockages : `DEPLOYMENT/prod/README.md`, « Stockages partagés qualifiés »
 
 
 ## Supervision du lien amont (relay enfant)

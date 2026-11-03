@@ -97,16 +97,24 @@ Pour un poste sans Docker (WSL sans intégration Docker Desktop, runner), le CLI
 
 ```bash
 set -euo pipefail
+FPR=9DC858229FC7DD38854AE2D88D81803C0EBFCD88                       # empreinte epinglee de la cle de signature Docker
 B=https://download.docker.com/linux/ubuntu
+cu() { curl --proto '=https' --tlsv1.2 -fsSLO "$@"; }              # HTTPS impose, jamais de repli vers http
 d=$(mktemp -d) && cd "$d" && export GNUPGHOME="$d/gnupg" && mkdir -m700 "$GNUPGHOME"      # trousseau jetable : ni ~/.gnupg ni installation
-curl -fsSLO "$B/gpg" && gpg --import gpg && gpg --fingerprint 9DC858229FC7DD38854AE2D88D81803C0EBFCD88   # comparer a la valeur epinglee
-curl -fsSLO "$B/dists/noble/InRelease" && gpg --verify InRelease                              # « Good signature » exigee
+cu "$B/gpg"
+# 1. Fail-closed sur la cle : la cle telechargee doit avoir EXACTEMENT l'empreinte epinglee AVANT tout import
+[ "$(gpg --with-colons --show-keys gpg | awk -F: '$1=="fpr"{print $10; exit}')" = "$FPR" ] || { echo "ECHEC : empreinte de la cle Docker inattendue" >&2; exit 1; }
+gpg --import gpg
+cu "$B/dists/noble/InRelease"
+# 2. Fail-closed sur la signature : VALIDSIG obligatoire, et la cle PRIMAIRE (dernier champ) doit etre l'empreinte epinglee
+gpg --status-fd 1 --verify InRelease 2>/dev/null | awk -v f="$FPR" '$2=="VALIDSIG" && $NF==f {ok=1} END{exit !ok}' \
+  || { echo "ECHEC : InRelease n'est pas signe par la cle epinglee" >&2; exit 1; }
 gpg --decrypt InRelease 2>/dev/null > Release
-curl -fsSLO "$B/dists/noble/stable/binary-amd64/Packages"
+cu "$B/dists/noble/stable/binary-amd64/Packages"
 want=$(awk '$3=="stable/binary-amd64/Packages" && length($1)==64 {print $1}' Release | head -1)
 echo "$want  Packages" | sha256sum -c -                                                        # Packages conforme a InRelease signe
 for f in docker-ce-cli_29.8.2-1~ubuntu.24.04~noble_amd64.deb docker-compose-plugin_5.7.0-1~ubuntu.24.04~noble_amd64.deb; do
-  curl -fsSLO "$B/dists/noble/pool/stable/amd64/$f"
+  cu "$B/dists/noble/pool/stable/amd64/$f"
 done
 echo "008b3b49b474136063fe0fbe8999b0e77c3e8556d7f7de21f98f05715e2f76ba  docker-ce-cli_29.8.2-1~ubuntu.24.04~noble_amd64.deb" | sha256sum -c -
 echo "61dd23ec4d0f6e4a99ef841f2ea2c0dc9cbada2c6ad99ffbd4f980ae957cc691  docker-compose-plugin_5.7.0-1~ubuntu.24.04~noble_amd64.deb" | sha256sum -c -

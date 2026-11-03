@@ -82,7 +82,7 @@ chmod 0644 tls/tls.key      # lisible par l'UID 10001 du conteneur (essai local 
 
 # Secrets du serveur (hors dépôt) : trois FICHIERS dans secrets/ (0400), déposés dans le volume secagent-qualif_secrets (v3.0.5, #197)
 ( umask 077; mkdir -p secrets; for n in jwt_secret_key admin_token rsa_master_key; do openssl rand -base64 48 | tr -d '\n' > secrets/$n; done )
-bash chain-test.sh push-secrets     # volume externe, propriétaire 10001, mode 0400 ; lus via JWT_SECRET_KEY_FILE etc.
+bash chain-test.sh push-secrets     # [vars requises : DOCKER_HOST, SECRETS_DIR (def. ./secrets), PROJECT ; hote distant : + TLS_MODE=volume SECAGENT_ENDPOINT_HOST] volume externe, propriétaire 10001, mode 0400 ; lus via JWT_SECRET_KEY_FILE etc.
 
 export SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-<commit>@sha256:<digest>
 export QUALIF_TLS_DIR="$PWD/tls"

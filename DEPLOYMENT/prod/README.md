@@ -61,10 +61,10 @@ d'un maître pendant l'écriture, puis `secagent-server state verify <STATE_DIR>
 
 | Stockage | Statut | Preuve |
 |---|---|---|
-| **MooseFS** (FUSE `mfs#<maître>:9421`, `rw,relatime,allow_other`, monté sur deux hôtes) | **validé** le 2026-11-03 (qualif 192.168.1.218 + 192.168.1.211, v3.0.5, #239) | `test_shared_storage.py` : 3 exécutions (écrivain h218, h211, h218), 500 fichiers `O_EXCL` à un seul gagnant chacune, 0 lecture partielle sur ≈ 50 000 lectures ; paire a/b répartie sur deux hôtes, `STATE_DIR` en bind mount du partage : arrêt propre du maître → reprise en 2,3 s ; gel (SIGSTOP) → maître `unhealthy` à 63 s, reprise par l'autre nœud à 219 s, le maître gelé s'auto-retire au dégel (`lock lost`, code 75, redémarré en secondaire par la politique de redémarrage) : jamais deux maîtres ; `kill` → reprise en 305 s, un seul `relay.lock`, `state verify` OK. |
+| **MooseFS** (FUSE `mfs#192.168.1.231:9421`, `rw,relatime,allow_other`, monté sur deux hôtes) | **validé** le 2026-11-03 (hôtes 192.168.1.218 « srv8 » et 192.168.1.211 « srv1 », images v3.0.5 attestées, #239) | `test_shared_storage.py` : **3 exécutions CONFORMES** (écrivain h218, h211, h218), 500 fichiers `O_EXCL` à un seul gagnant chacune, 0 lecture partielle sur ≈ 48 000-50 000 lectures. Paire a (.218) / b (srv1), `STATE_DIR` en bind mount du partage, **jamais deux maîtres** : arrêt propre du maître → reprise en **2,3 s** ; gel (SIGSTOP) → maître `unhealthy` à **62,9 s**, reprise par l'autre nœud à **218,7 s**, le maître gelé s'auto-retire au dégel (`lock lost`, code 75, redémarré en secondaire par la politique de redémarrage) ; `kill` → reprise en **305,3 s**, un seul `relay.lock`, `state verify` OK. |
 | NFS, CIFS/SMB, autres | non testé = **non supporté** | — |
 
-Non réalisé : la coupure du montage lui-même (nécessite d'agir sur le réseau ou le montage de l'hôte, hors périmètre d'une qualification qui ne touche pas au cluster MooseFS) ; le test manuel de coupure reste à faire avant toute mise en production sur un autre stockage.
+Non réalisé : le **test de coupure du montage** (coupure du partage pendant une écriture) : l'équipe ne peut pas couper le montage MooseFS partagé avec d'autres services (`chunks`) ; #239 est close sans ce test. Il reste à faire avant toute mise en production sur un autre stockage, et ne dispense pas de l'essai `kill -9` + `state verify` décrit ci-dessus.
 
 ## Variables d'environnement essentielles
 

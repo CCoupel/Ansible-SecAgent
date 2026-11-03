@@ -30,7 +30,7 @@ sudo chown 10001:10001 tls/tls.key && sudo chmod 0400 tls/tls.key
 # Secrets du serveur (hors dépôt)
 # v3.0.5 : trois fichiers (0400) dans secrets/, déposés dans le volume secagent-qualif_secrets (lus via *_FILE)
 #   mkdir -p secrets && for n in jwt_secret_key admin_token rsa_master_key; do openssl rand -base64 48 | tr -d '\n' > secrets/$n; done
-#   bash chain-test.sh push-secrets
+#   bash chain-test.sh push-secrets   # vars requises : DOCKER_HOST, SECRETS_DIR (def. ./secrets), PROJECT ; hote distant : + TLS_MODE=volume SECAGENT_ENDPOINT_HOST
 #   (valeurs aléatoires fictives à générer, ex. `openssl rand -base64 48` pour les trois, comme dans INSTALL_SERVER.md ;
 #    RSA_MASTER_KEY : 32 octets minimum, sinon `state init` et le démarrage sont refusés ; c'est un secret
 #    dont dérivent l'HMAC de l'état et le chiffrement AES-GCM de ses secrets, pas une clef RSA)
