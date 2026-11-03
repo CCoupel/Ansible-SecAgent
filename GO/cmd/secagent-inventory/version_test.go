@@ -42,7 +42,7 @@ func TestVersionFlagBinary(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v (stderr %q)", flag, err, stderr.String())
 		}
-		if got := string(out); got != "secagent-inventory version 9.9.9-test\n" {
+		if got := string(out); got != "secagent-inventory version 9.9.9-test\nLicense: AGPL-3.0-or-later\nSource: https://github.com/CCoupel/Ansible-SecAgent\n" {
 			t.Errorf("%s: stdout = %q", flag, got)
 		}
 		if stderr.Len() != 0 {
