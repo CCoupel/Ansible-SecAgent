@@ -84,11 +84,12 @@ La CLI parle à l'API d'administration (7771, TLS). Dans le conteneur : `RELAY_A
 srv() {
   docker compose -p secagent-qualif -f docker-compose.server.yml exec -T \
     -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
-    secagent-server-a secagent-server "$@"
+    secagent-server-a /app/secagent-server "$@"
 }
 
 # Jeton d'enrôlement (1 h). Jeton opaque `secagent_enr_` + 64 hex (77 car.), pas un JWT.
 # Le jeton va directement dans un fichier 0600 (umask 077) : jamais affiché, jamais en variable d'environnement
+# (à lancer hors /mnt/c : NTFS n'honore ni umask ni chmod, le fichier y serait lisible par tous ; vérifier `ls -l enrollment.token`)
 (umask 077; srv tokens create --role enrollment --hostname-pattern 'qualif-host-.*' --expires 1h \
       | grep -oE 'secagent_enr_[0-9a-f]{64}' | tail -1 > enrollment.token)
 ```
@@ -165,7 +166,7 @@ docker compose -p secagent-qualif -f docker-compose.server.yml logs -f
 
 # Statut local d'une instance (maître / secondaire)
 docker compose -p secagent-qualif -f docker-compose.server.yml exec secagent-server-a \
-  secagent-server status --local
+  /app/secagent-server status --local
 
 # Arrêter tout
 docker compose -p secagent-qualif -f docker-compose.server.yml down

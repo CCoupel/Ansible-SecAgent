@@ -221,7 +221,7 @@ Validation JWT dual-key (dans `ws/jwt.go`) :
 
 ```bash
 # Depuis le container du maître (la CLI lit ADMIN_TOKEN dans son environnement ; RELAY_API_URL = liste d'adresses admin)
-docker exec <conteneur-du-maitre> secagent-server <commande>
+docker exec <conteneur-du-maitre> /app/secagent-server <commande>
 
 # Minions
 secagent-server minions list [--format table|json|yaml]

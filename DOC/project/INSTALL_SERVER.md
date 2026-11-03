@@ -126,7 +126,7 @@ docker compose up -d
 
 # 3. Contrôles
 docker compose ps                                          # tous « healthy »
-docker compose exec secagent-server secagent-server status --local   # code 0 : maître sain ou secondaire sain
+docker compose exec secagent-server /app/secagent-server status --local   # code 0 : maître sain ou secondaire sain
 curl -s --cacert <ca.pem> https://<hôte>:7770/health        # seul le MAÎTRE répond sur 7770/7772
 ```
 
@@ -146,7 +146,7 @@ production l'admin est en TLS ; l'alias suivant fournit l'URL et la CA :
 ```bash
 srv() {
   docker compose exec -T -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
-    secagent-server secagent-server "$@"
+    secagent-server /app/secagent-server "$@"
 }
 ```
 

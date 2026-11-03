@@ -34,7 +34,7 @@ curl -s --cacert tls/tls.crt https://localhost:7770/health
 # 3. Jetons (CLI du serveur ; rôles : enrollment | plugin | relay-child | relay-parent)
 docker compose -p secagent-qualif -f docker-compose.server.yml exec -T \
   -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
-  secagent-server-a secagent-server tokens create --role enrollment --hostname-pattern 'qualif-host-.*' --expires 1h   # --hostname-pattern obligatoire (regexp ancrée)
+  secagent-server-a /app/secagent-server tokens create --role enrollment --hostname-pattern 'qualif-host-.*' --expires 1h   # --hostname-pattern obligatoire (regexp ancrée)
 ```
 
 L'agent (`secagent-minion`) se configure par variables d'environnement

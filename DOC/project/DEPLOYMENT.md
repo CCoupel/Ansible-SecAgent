@@ -89,7 +89,7 @@ curl --cacert tls/tls.crt https://localhost:7770/health
 srv() {
   docker compose -p secagent-qualif -f docker-compose.server.yml exec -T \
     -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
-    secagent-server-a secagent-server "$@"
+    secagent-server-a /app/secagent-server "$@"
 }
 
 # Jeton d'enrôlement de démonstration valide 1 h (qualification) : `secagent_enr_` + 64 hex (77 caractères), pas un JWT.
@@ -224,13 +224,13 @@ Le Compose de production active `ADMIN_TLS=true` et l'API admin écoute en HTTPS
 
 Le Compose de production ne fixe pas de `container_name` (`DEPLOYMENT/prod/docker-compose.server.yml`) : le conteneur s'appelle
 `<projet>-secagent-server-1`, et `docker exec secagent-server …` échoue. On passe donc par `docker compose exec` sur le **service**
-`secagent-server`, depuis le dossier du Compose de l'hôte concerné (ou avec `-f` / `-p`, ou `COMPOSE_FILE` / `COMPOSE_PROJECT_NAME`). Pour
+`secagent-server`, depuis le dossier du Compose de l'hôte concerné (ou avec `-f` / `-p`, ou `COMPOSE_FILE` / `COMPOSE_PROJECT_NAME`). Le binaire est appelé par son chemin absolu `/app/secagent-server` (`GO/Dockerfile:32,54` ; aucun `PATH` ne le couvre dans l'image, comme `chain-test.sh`). Pour
 « la racine », ouvrir la session sur l'hôte de la racine ; pour un relay, sur son hôte. Les fonctions suivantes (elles redéfinissent
 l'alias `srv` de l'étape 3, propre à la qualif) servent à toutes les commandes `srv …` / `srvt …` de ce guide :
 
 ```bash
-srv()  { docker compose exec -T -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt secagent-server secagent-server "$@"; }
-srvt() { docker compose exec    -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt secagent-server secagent-server "$@"; }
+srv()  { docker compose exec -T -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt secagent-server /app/secagent-server "$@"; }
+srvt() { docker compose exec    -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt secagent-server /app/secagent-server "$@"; }
 # Exemple : srv minions list
 ```
 
@@ -239,7 +239,7 @@ sinon des retours chariot s'y glissent) et les tubes (`srv … | grep …`, `pri
 `srvt` n'a pas `-T` : `docker compose exec` alloue un terminal, nécessaire à la confirmation à taper des commandes destructives (`minions delete`, `relays revoke`, `relays remove`) ; en non interactif on garde `srv` avec `--yes`.
 
 Le certificat du serveur doit contenir `localhost` dans ses SAN (c'est le cas de celui des guides) ; sinon viser un nom présent dans les SAN
-dans `RELAY_API_URL`. Les commandes hors ligne (`state …`) n'appellent pas l'API et se lancent avec `docker compose exec secagent-server secagent-server state …` (nœud arrêté : `docker compose run --rm`).
+dans `RELAY_API_URL`. Les commandes hors ligne (`state …`) n'appellent pas l'API et se lancent avec `docker compose exec secagent-server /app/secagent-server state …` (nœud arrêté : `docker compose run --rm`).
 
 ### Révoquer un agent, lever la révocation, retour arrière (#193)
 

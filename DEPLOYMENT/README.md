@@ -119,7 +119,7 @@ Les jetons se créent avec la CLI du serveur, via l'API admin (7771, TLS ; `ADMI
 srv() {
   docker compose -p secagent-qualif -f docker-compose.server.yml exec -T \
     -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
-    secagent-server-a secagent-server "$@"
+    secagent-server-a /app/secagent-server "$@"
 }
 
 # Jeton d'enrôlement opaque : secagent_enr_ + 64 hex (77 caractères), affiché UNE seule fois
@@ -141,7 +141,7 @@ Il n'existe pas de commande `docker compose set-env` : renseigner l'environnemen
 ```bash
 # Santé locale d'une instance (maître ou secondaire sain : code 0)
 docker compose -p secagent-qualif -f docker-compose.server.yml exec secagent-server-a \
-  secagent-server status --local
+  /app/secagent-server status --local
 
 # Santé HTTP du maître (jeton non requis)
 curl -s --cacert tls/tls.crt https://localhost:7770/health

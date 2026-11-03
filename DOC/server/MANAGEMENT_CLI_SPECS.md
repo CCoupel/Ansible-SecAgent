@@ -409,7 +409,7 @@ Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écr
 
 #### `relays add --token-file` (v3.0.5, M14)
 
-Le jeton relay-parent d'un lien push ne doit pas passer par `argv` (visible dans la liste des processus et l'historique du shell). `relays add --mode push … --token-file <chemin>` le lit dans un fichier régulier (pas de lien symbolique, mode 0600 ou plus strict, 64 Kio au plus, espaces finaux retirés, non vide : mêmes règles que les `*_FILE`) ; `--token-file -` le lit sur l'entrée standard. `--token` et `--token-file` ensemble sont refusés. `--token` reste accepté (compatibilité) mais écrit un `WARNING` sur stderr. La valeur n'est jamais affichée ni placée dans une erreur.
+Le jeton relay-parent d'un lien push ne doit pas passer par `argv` (visible dans la liste des processus et l'historique du shell). `relays add --mode push … --token-file <chemin>` le lit dans un fichier régulier (pas de lien symbolique, mode 0600 ou plus strict, 64 Kio au plus, espaces finaux retirés, non vide : mêmes règles que les `*_FILE`) ; `--token-file -` le lit sur l'entrée standard : l'utiliser avec un tube (`printf '%s' "$JETON" | … --token-file -`), car lu sur un terminal la saisie s'affiche à l'écran. `--token` et `--token-file` ensemble sont refusés. `--token` reste accepté (compatibilité) mais écrit un `WARNING` sur stderr. La valeur n'est jamais affichée ni placée dans une erreur.
 
 **Option globale `--token <jwt>` (section « Global Options » ci-dessous)** : c'est une maquette historique, elle n'existe pas dans le binaire réel (seule option globale : `--format`). Le jeton d'administration de la vraie CLI se donne par `ADMIN_TOKEN` ou `ADMIN_TOKEN_FILE` (jamais en argument) ; `RELAY_TOKEN` n'est pas lu.
 
