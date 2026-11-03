@@ -145,7 +145,11 @@ func TestLot4_RelaysRevokeAndRemove_RealBinaryAndTheHintWorksAsWritten(t *testin
 
 	// never_seen relay: a plain remove is refused by the node and the message gives a remedy
 	declare("nv-name")
-	code, _, se := runBin(t, bin, env, "relays", "remove", "nv-name")
+	// B49: remove always asks for confirmation: without --yes and without a terminal it is refused (9), nothing done
+	if code, _, se := runBin(t, bin, env, "relays", "remove", "nv-name"); code != 9 || !strings.Contains(se, "--yes") || !listed("nv-name") {
+		t.Fatalf("remove without --yes: rc=%d stderr=%q listed=%v, want rc 9, the hint to pass --yes and the relay left in place", code, se, listed("nv-name"))
+	}
+	code, _, se := runBin(t, bin, env, "relays", "remove", "--yes", "nv-name")
 	if code != 1 || !strings.Contains(se, "relay_not_revoked") {
 		t.Fatalf("remove of a never_seen relay: rc=%d stderr=%q, want rc 1 and relay_not_revoked", code, se)
 	}
@@ -173,7 +177,7 @@ func TestLot4_RelaysRevokeAndRemove_RealBinaryAndTheHintWorksAsWritten(t *testin
 	if code, so, se := runBin(t, bin, env, "relays", "revoke", uuid, "--yes"); code != 0 {
 		t.Fatalf("revoke --yes by uuid: rc=%d stdout=%q stderr=%q", code, so, se)
 	}
-	if code, so, se := runBin(t, bin, env, "relays", "remove", uuid); code != 0 {
+	if code, so, se := runBin(t, bin, env, "relays", "remove", "--yes", uuid); code != 0 {
 		t.Errorf("remove after revoke by uuid: rc=%d stdout=%q stderr=%q", code, so, se)
 	}
 	if listed("nv-uuid") {
