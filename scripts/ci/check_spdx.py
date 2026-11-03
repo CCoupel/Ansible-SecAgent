@@ -26,6 +26,7 @@ et tout fichier genere (ligne `// Code generated ... DO NOT EDIT.` ou `# Code ge
   - fichier sans aucune ligne SPDX : insertion de l'en-tete apres le preambule, suivie d'une ligne vide si la ligne
     suivante n'est pas deja vide ; shebang, coding, shellcheck et `//go:build` restent a leur place relative ;
   - en-tete correct mais sans ligne vide apres : insertion de la ligne vide.
+  Seules les lignes de commentaire (`//` ou `#` en tete de ligne) portant une balise SPDX sont prises en compte.
   Jamais corrige (erreur restante, a traiter a la main) : identifiant ou copyright different, en-tete mal place
   (apres `package` ou du code), doublon, fichier CRLF / non UTF-8. Un identifiant different peut etre une licence
   tierce legitime : la garde ne la reecrit pas. Fins de ligne : LF uniquement ; le mode du fichier est conserve.
@@ -45,7 +46,9 @@ MAX_HEADER_START = 4  # 0-based index max de la 1re ligne d'en-tete (=> en-tete 
 GENERATED_RE = re.compile(r"^(?://|#) Code generated .* DO NOT EDIT\.?$")
 CODING_RE = re.compile(r"^#.*coding[:=]\s*[-\w.]+")
 SHELLCHECK_RE = re.compile(r"^#\s*shellcheck\s+shell=")
-SPDX_ANY_RE = re.compile(r"SPDX-(?:FileCopyrightText|License-Identifier)\s*:")
+# Seules les lignes de COMMENTAIRE comptent (comme REUSE) : une chaine ou une docstring qui cite une balise SPDX
+# (ex. cette garde elle-meme) n'est pas un en-tete.
+SPDX_ANY_RE = re.compile(r"^\s*(?://|#)\s*SPDX-(?:FileCopyrightText|License-Identifier)\s*:")
 
 
 def is_excluded(rel: str) -> bool:
