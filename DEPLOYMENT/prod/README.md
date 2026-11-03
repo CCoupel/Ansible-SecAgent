@@ -27,6 +27,13 @@ Booléens du serveur **stricts** : `ADMIN_TLS`, `ADMIN_INSECURE_HTTP`, `TLS_DISA
 - 7770 et 7772 sont publiés. **7771 (admin)** : le serveur y écoute sur `0.0.0.0` *dans le conteneur* avec `ADMIN_TLS=true` ;
   l'hôte ne le publie que sur `ADMIN_PUBLISH_ADDR` (boucle locale par défaut, ou réseau d'administration), **jamais** sur `0.0.0.0`
   ni sans adresse. Contrôlé en CI sur le rendu (`scripts/ci/check_compose.py`).
+- **Ports d'hôte paramétrables (v3.0.5)** : `API_PUBLISH_PORT`, `WS_PUBLISH_PORT`, `ADMIN_PUBLISH_PORT` (défauts 7770 / 7772 / 7771 ; les
+  ports **du conteneur** ne changent jamais). Sur un hôte qui porte aussi la QUALIF (192.168.1.218 : `secagent-qualif` y tient 7770-7772,
+  8770-8772 et 9771), la PROD publie **17770 / 17772 / 17771** (`.env.example`), l'admin restant sur `ADMIN_PUBLISH_ADDR` (boucle locale).
+  Les clients visent alors ces ports d'hôte : minions `RELAY_SERVER_URL=https://<hôte>:17770` et `RELAY_WS_URL=wss://<hôte>:17772/ws/agent`,
+  plugin Ansible (adresse du relay en `:17770`), relays enfants `REPEATER_UPSTREAM_URL=wss://<hôte>:17772`, admin
+  `https://127.0.0.1:17771` sur l'hôte. Le certificat TLS couvre le nom/l'adresse, pas le port. Avant `up` sur un hôte partagé :
+  `docker ps --format '{{.Names}} {{.Ports}}'` ne doit montrer aucun de ces ports.
 - Conteneur non-root `10001:10001`, système de fichiers en lecture seule, `cap_drop: ALL`.
   **Le même UID/GID 10001 doit avoir les droits d'écriture sur le partage depuis tous les hôtes** :
   `chown 10001:10001 <partage>` ; `chmod 0700`.
@@ -122,7 +129,7 @@ Limites de tâches (#179) : chaque tâche admise réserve 5 Mio de budget stdout
 
 ## Premier déploiement
 
-1. Sur chaque hôte : `.env`, répertoire `secrets/` (voir `prod.env.example`), **`./preflight-secrets.sh` (code 0 exigé : propriétaire UID 10001, mode 0400)**, certificats, partage monté, `docker login ghcr.io` si l'image est privée.
+1. Sur chaque hôte : `.env`, répertoire `secrets/` (voir `prod.env.example`), **`./preflight-secrets.sh` (code 0 exigé : propriétaire UID 10001, mode 0400)**, certificats, partage monté. Les images `ghcr.io/ccoupel/secagent-*` sont **publiques** (pull anonyme, sans `docker login`) ; **avant tout pull, vérifier l'attestation** sur le poste : `gh attestation verify oci://ghcr.io/ccoupel/secagent-server@<digest> --repo CCoupel/Ansible-SecAgent --signer-workflow CCoupel/Ansible-SecAgent/.github/workflows/release.yml` (`gh` ≥ 2.49), puis tirer **par digest** (archive de release : `image:` déjà en `tag@sha256`).
 2. **Initialiser l'état une seule fois**, depuis un seul hôte, avant de démarrer les autres :
    `docker compose run --rm --no-deps secagent-server state init` (nécessite `RSA_MASTER_KEY`).
 3. `docker compose -p secagent-prod-<relay_id> up -d` sur chaque hôte.
@@ -134,7 +141,7 @@ Limites de tâches (#179) : chaque tâche admise réserve 5 Mio de budget stdout
        docker compose ps --format '{{.Name}} {{.Ports}}' | grep 7771   # jamais 0.0.0.0:7771 ni :::7771
 
    (`check_compose.py` est livré dans l'archive à côté de ce README.) Toute erreur = ne pas déployer.
-5. Contrôle : exactement **un** hôte écoute sur 7770/7771/7772 (le maître ; les secondaires n'ouvrent aucun port) ; `docker ps` : tous `healthy`.
+5. Contrôle : exactement **un** hôte écoute sur les ports d'hôte publiés (7770/7771/7772 par défaut, 17770/17771/17772 sur 192.168.1.218) (le maître ; les secondaires n'ouvrent aucun port) ; `docker ps` : tous `healthy`.
 
 ## Bascule manuelle
 

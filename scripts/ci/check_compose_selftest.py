@@ -212,6 +212,33 @@ for name, doc, pred in minion_cases:
     print(("ok  " if good else "KO  ") + name + ("" if good else "  -> " + repr(check(doc, False))))
     bad += not good
 
+# --- v3.0.5 : ports d'HOTE parametrables (API_PUBLISH_PORT / WS_PUBLISH_PORT / ADMIN_PUBLISH_PORT) -------------------
+def pub(t, published, ip=None):
+    return {"target": t, "published": str(published), "protocol": "tcp", **({"host_ip": ip} if ip is not None else {})}
+
+
+def two(p1, p2):
+    return {"services": {"a": {"image": "ghcr.io/ccoupel/secagent-server:v1", "environment": ok, "ports": p1},
+                         "b": {"image": "ghcr.io/ccoupel/secagent-server:v1", "environment": ok, "ports": p2}}}
+
+
+PROD_PORTS = [pub(7770, 17770), pub(7772, 17772), pub(7771, 17771, "127.0.0.1")]
+port_cases = [
+    ("ports PROD 17770/17772/17771 (admin loopback) acceptes", svc(PROD_PORTS, ok), lambda d: not check(d, False)),
+    ("admin publie sur un port d'hote non standard mais en 0.0.0.0 refuse (regle sur le port CONTENEUR)",
+     svc([pub(7771, 17771, "0.0.0.0")], ok), lambda d: why(d, "port admin 7771")),
+    ("admin publie sur un port d'hote non standard sans host_ip refuse", svc([pub(7771, 17771)], ok), lambda d: why(d, "port admin 7771")),
+    ("collision : deux services sur le meme port d'hote refuse", two([pub(7770, 7770)], [pub(7770, 7770)]), lambda d: why(d, "meme port d'hote 7770")),
+    ("collision : wildcard contre adresse precise refuse", two([pub(7770, 7770, "0.0.0.0")], [pub(7770, 7770, "192.168.1.218")]), lambda d: why(d, "meme port d'hote 7770")),
+    ("pas de collision : ports d'hote distincts (qualif a 7770 / b 8770)", two([pub(7770, 7770)], [pub(7770, 8770)]), lambda d: not why(d, "meme port d'hote")),
+    ("pas de collision : meme port sur deux loopbacks distinctes", two([pub(7771, 7771, "127.0.0.1")], [pub(7771, 7771, "127.0.0.2")]), lambda d: not why(d, "meme port d'hote")),
+    ("pas de collision : port non publie (ephemere)", two([{"target": 7770}], [{"target": 7770}]), lambda d: not why(d, "meme port d'hote")),
+]
+for name, doc, pred in port_cases:
+    good = pred(doc)
+    print(("ok  " if good else "KO  ") + name + ("" if good else "  -> " + repr(check(doc, False))))
+    bad += not good
+
 # bout en bout : le CLI sort en 1 avec ::error:: (secret en environnement, minion non durci), en 0 sinon
 with tempfile.TemporaryDirectory() as tmp:
     for name, doc, flags, want_rc, word in [

@@ -22,6 +22,9 @@ Echec (exit 1) si, pour un service :
     --require-secret-files exige en plus les trois `<NOM>_FILE` sur chaque service serveur ;
   - un service minion (image secagent-minion ou nom `minion-*`) n'a pas `cap_drop: [ALL]` ou pas
     `security_opt: no-new-privileges` (#238), ou un `cap_add` hors liste blanche CHOWN / SETUID / SETGID ;
+  - deux services du rendu publient le meme port d'HOTE (meme protocole) sur des adresses qui se recouvrent
+    (meme host_ip, ou l'une des deux en wildcard) : `up` echouerait sur l'allocation du port (v3.0.5, ports PROD
+    parametrables API_PUBLISH_PORT / WS_PUBLISH_PORT / ADMIN_PUBLISH_PORT) ;
   - la configuration mentionne NATS / JetStream / Caddy.
 """
 import json
@@ -142,9 +145,29 @@ def is_minion(name: str, svc: dict) -> bool:
     return "secagent-minion" in svc.get("image", "") or name.startswith("minion-")
 
 
+def host_port_collisions(doc: dict) -> list:
+    """Ports d'hote publies deux fois dans le rendu (forme longue de `config --format json` ; un `published` absent =
+    port ephemere, ignore). Deux publications se recouvrent si meme port et meme protocole, et meme host_ip ou l'une en
+    wildcard (0.0.0.0 / :: / vide)."""
+    seen, errs = [], []
+    for name, svc in (doc.get("services") or {}).items():
+        for p in svc.get("ports") or []:
+            if not isinstance(p, dict) or not str(p.get("published") or "").strip():
+                continue
+            pub, proto = str(p["published"]).strip(), p.get("protocol") or "tcp"
+            ip = (p.get("host_ip") or "").strip("[]")
+            for other, opub, oproto, oip in seen:
+                if opub == pub and oproto == proto and (ip == oip or ip in WILDCARD or oip in WILDCARD):
+                    errs.append(f"services '{other}' et '{name}': meme port d'hote {pub}/{proto} publie deux fois "
+                                f"(host_ip {oip or '*'} / {ip or '*'})")
+            seen.append((name, pub, proto, ip))
+    return errs
+
+
 def check(doc: dict, allow_build: bool, require_mem: bool = False, require_digest: bool = False,
           require_secret_files: bool = False) -> list:
     errs = []
+    errs += host_port_collisions(doc)
     for name, svc in (doc.get("services") or {}).items():
         where = f"service '{name}'"
         env = env_of(svc)
