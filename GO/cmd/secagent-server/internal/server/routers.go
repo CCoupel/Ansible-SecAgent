@@ -69,7 +69,7 @@ func (n *Node) buildRouters() {
 	// Inventory (admin CLI access via port 7771 — same data as /api/inventory on 7770)
 	adminH("GET /api/inventory", handlers.AdminGetInventory)
 
-	// Enrollment + plugin tokens (Phase 10)
+	// Enrollment + plugin tokens
 	adminH("POST /api/admin/tokens", handlers.AdminCreateToken)
 	adminH("GET /api/admin/tokens", handlers.AdminListTokens)
 	adminH("POST /api/admin/tokens/{id}/revoke", handlers.AdminRevokeToken)
@@ -89,10 +89,10 @@ func (n *Node) buildRouters() {
 	// Agent deletion (distinct from revoke — removes the DB row)
 	adminH("DELETE /api/admin/minions/{hostname}", handlers.AdminDeleteMinion)
 
-	// Hooks execution log (Phase 11 revised)
+	// Hooks execution log
 	adminH("GET /api/admin/hooks/log", handlers.AdminHooksLog)
 
-	// Relay nodes management (Phase 12 — proxy/gateway mode)
+	// Relay nodes management (proxy/gateway mode)
 	adminH("POST /api/admin/relays", handlers.AdminCreateRelay)
 	adminH("GET /api/admin/relays", handlers.AdminListRelays)
 	adminH("GET /api/admin/relays/status", handlers.AdminRelaysStatus)
