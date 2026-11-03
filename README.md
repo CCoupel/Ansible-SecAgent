@@ -165,6 +165,10 @@ Voir [DOC/security/SECURITY.md](./DOC/security/SECURITY.md) pour le modèle comp
 
 **Dernière version publiée : v3.0.3** — GO rewrite 100%, state file HA. **v3.0.4** (jetons de lien EdDSA signés par la racine, `state rekey`, limites de concurrence) est fusionnée dans `main` mais pas encore publiée : voir `docs/releases/v3.0.4.md`.
 
+## Licence
+
+Ansible-SecAgent est distribué sous **licence MIT** : voir le fichier [`LICENSE`](LICENSE) (Copyright (c) 2025-2026 Cyril Coupel).
+
 ## Contacts & Support
 
 - **Architecture** : Voir `ARCHITECTURE.md` et `HLD.md`
