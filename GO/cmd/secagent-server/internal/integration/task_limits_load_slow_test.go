@@ -255,8 +255,8 @@ func TestTaskLimits_Load3000AgentsNominalThenSaturation(t *testing.T) {
 	}
 	// the node is healthy afterwards and the slots are back (M11): a harness delay may cost an attempt, never the
 	// check — the node must answer 200 within a bounded number of spaced attempts, whatever the CPU available
-	if lastReply, ok := requireHealthyAfter(func() execReply { return rawExecOn(client, n, "load-2999", nominalTimeout) }, 4, time.Duration(2*f)*time.Second, t.Logf); !ok {
-		t.Errorf("the node is not healthy after the saturation: no 200 in 4 attempts, last answer %+v (a blocked node, slots not given back, refused connections)", lastReply)
+	if lastReply, ok := requireHealthyAfter(func() execReply { return rawExecOn(client, n, "load-2999", nominalTimeout) }, healthyAfterAttempts, time.Duration(2*f)*time.Second, t.Logf); !ok {
+		t.Errorf("the node is not healthy after the saturation: no 200 in %d attempts, last answer %+v (a blocked node, slots not given back, refused connections)", healthyAfterAttempts, lastReply)
 	}
 	// B46: a node that survived by luck would still have said so in its logs
 	for _, bad := range []string{"panic:", "too many open files", "fatal error:"} {

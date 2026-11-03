@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// healthyAfterAttempts is the number of spaced probes the final health check of the load test is allowed (B48).
+const healthyAfterAttempts = 4
+
 // requireHealthyAfter is the final "the node is healthy" check of the load test (M11): a harness delay may cost an
 // attempt, never the check. It returns true only when one of the `attempts` spaced probes answers exactly 200 with no
 // transport error; a timeout, a 504, a 429 or any other answer on every attempt is a failure.
@@ -45,7 +48,7 @@ func TestRequireHealthyAfter(t *testing.T) {
 		{"200 with a transport error is not a success", seq(execReply{Code: http.StatusOK, Err: errors.New("EOF")}), false},
 	}
 	for _, c := range cases {
-		if _, got := requireHealthyAfter(c.probe, 4, time.Millisecond, t.Logf); got != c.want {
+		if _, got := requireHealthyAfter(c.probe, healthyAfterAttempts, time.Millisecond, t.Logf); got != c.want {
 			t.Errorf("%s: healthy = %v, want %v", c.name, got, c.want)
 		}
 	}
