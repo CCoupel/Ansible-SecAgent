@@ -30,9 +30,15 @@ ADM503_PIDS=()                       # PID des exec de fond lances par cette eta
 ADM503_OVERRIDE=""
 ADM503_DIR=""
 
-adm503_cleanup() { # sortie de l'etape (succes ou echec) : plus de tache en fond, plafond par defaut restaure
+adm503_kill_tree() { # $1 PID : tue ses descendants (le `curl` est petit-fils du sous-shell) puis lui-meme ; par PID parent, jamais par nom
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null || true); do adm503_kill_tree "$c"; done
+  kill "$1" 2>/dev/null || true
+}
+
+adm503_cleanup() { # sortie de l'etape (succes ou echec) : plus de tache en fond (curl compris), plafond par defaut restaure
   local p
-  for p in "${ADM503_PIDS[@]:-}"; do if [ -n "$p" ]; then kill "$p" 2>/dev/null || true; fi; done
+  for p in "${ADM503_PIDS[@]:-}"; do if [ -n "$p" ]; then adm503_kill_tree "$p"; fi; done
   ADM503_PIDS=()
   if [ -n "$ADM503_OVERRIDE" ] && [ -f "$ADM503_OVERRIDE" ]; then
     echo "== nettoyage : plafond memoire par defaut restaure" >&2
@@ -75,7 +81,17 @@ adm503_fill() {
 }
 
 adm503_lot_alive() { local p; for p in "${ADM503_LOT[@]}"; do kill -0 "$p" 2>/dev/null || return 1; done; }
-adm503_lot_wait() { local p; for p in "${ADM503_LOT[@]}"; do wait "$p" 2>/dev/null || true; done; }
+adm503_lot_wait() { # attend le lot, puis retire ses PID de ADM503_PIDS (deja attendus : un PID recycle ne doit pas etre vise par le nettoyage)
+  local p q keep=()
+  for p in "${ADM503_LOT[@]}"; do wait "$p" 2>/dev/null || true; done
+  for q in "${ADM503_PIDS[@]:-}"; do
+    [ -n "$q" ] || continue
+    for p in "${ADM503_LOT[@]}"; do [ "$q" = "$p" ] && continue 2; done
+    keep+=("$q")
+  done
+  ADM503_PIDS=()
+  if [ "${#keep[@]}" -gt 0 ]; then ADM503_PIDS=("${keep[@]}"); fi
+}
 
 # $1 prefixe, $2 nombre attendu : tous les exec du lot ont recu 200 avec rc 0.
 adm503_lot_all_ok() {
@@ -201,7 +217,7 @@ admission_503() {
     for n in $(seq 1 6); do echo "adm-root-$n ansible_host=minion-root ansible_connection=relay"; done
     for n in $(seq 1 6); do echo "adm-child-$n ansible_host=minion-child ansible_connection=relay"; done
   } > "$inv"
-  ANSIBLE_CONNECTION_PLUGINS="$REPO/SECAGENT-PYTHON/ansible_plugins/connection_plugins" ANSIBLE_HOST_KEY_CHECKING=False \
+  ANSIBLE_CONNECTION_PLUGINS="$REPO/SECAGENT-PYTHON/ansible_plugins/connection_plugins" \
     "${ANSIBLE_BIN:-ansible}" all -i "$inv" -f 12 -m command -a "sleep 20" > "$out" 2>&1 || true   # rc != 0 attendu (UNREACHABLE)
   local unreach ok_hosts
   unreach="$(grep -c 'UNREACHABLE!' "$out" || true)"; ok_hosts="$(grep -c 'CHANGED\|SUCCESS' "$out" || true)"

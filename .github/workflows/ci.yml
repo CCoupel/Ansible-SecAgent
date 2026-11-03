@@ -364,7 +364,14 @@ jobs:
           # chain-test.sh ajoute TOUJOURS docker-compose.hooks.yml (hooks.json par volume nomme)
           docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml config --format json > render/qualif-chain.json
           docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.remote-tls.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml config --format json > render/qualif-chain-remote.json
-          python3 scripts/ci/check_compose.py --require-memory-limit --require-secret-files render/prod-root.json render/prod-child.json render/qualif-server.json render/qualif-chain.json render/qualif-chain-remote.json
+          # Profil `negative` (minion-negca) : absent du rendu par defaut, donc de tout controle sans --profile
+          docker compose --profile negative -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml config --format json > render/qualif-chain-negative.json
+          python3 - <<'PY'
+          import json, sys
+          if "minion-negca" not in json.load(open("render/qualif-chain-negative.json"))["services"]:
+              sys.exit("::error::minion-negca absent du rendu --profile negative : le controle de durcissement ne le verrait pas")
+          PY
+          python3 scripts/ci/check_compose.py --require-memory-limit --require-secret-files render/prod-root.json render/prod-child.json render/qualif-server.json render/qualif-chain.json render/qualif-chain-remote.json render/qualif-chain-negative.json
           # Rendu destine a un demon Docker DISTANT (qualif reelle) : aucun chemin du client (bind, secret/config file:, build).
           # Le CI a un demon local et ne peut pas voir ce defaut a l'execution : ce controle statique est la seule garde.
           python3 scripts/ci/check_no_binds.py < render/qualif-chain-remote.json

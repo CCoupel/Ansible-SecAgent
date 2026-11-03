@@ -18,7 +18,7 @@ Echec (exit 1) si, pour un service :
     ces secrets passent par `<NOM>_FILE` (secret Compose ou fichier), jamais par `docker inspect` ;
     --require-secret-files exige en plus les trois `<NOM>_FILE` sur chaque service serveur ;
   - un service minion (image secagent-minion ou nom `minion-*`) n'a pas `cap_drop: [ALL]` ou pas
-    `security_opt: no-new-privileges` (#238) ;
+    `security_opt: no-new-privileges` (#238), ou un `cap_add` hors liste blanche CHOWN / SETUID / SETGID ;
   - la configuration mentionne NATS / JetStream / Caddy.
 """
 import json
@@ -119,10 +119,17 @@ def check_server_secrets(svc: dict, env: dict, where: str, errs: list, require_f
                         "(les secrets passent par *_FILE ; seul child.env, sans secret, est tolere)")
 
 
+MINION_CAP_ALLOW = {"CHOWN", "SETUID", "SETGID"}  # strictement ce que su-exec (entrypoint minion) requiert
+
+
 def check_minion_hardening(svc: dict, where: str, errs: list) -> None:
     """#238 : un minion de qualif demarre en root (su-exec) : cap_drop ALL et no-new-privileges obligatoires."""
     if not any(str(c).upper() in ("ALL", "CAP_ALL") for c in svc.get("cap_drop") or []):
         errs.append(f"{where}: minion sans cap_drop: [ALL] (ajouter seulement les cap_add necessaires a su-exec)")
+    for cap in svc.get("cap_add") or []:
+        name = str(cap).upper().removeprefix("CAP_")
+        if name not in MINION_CAP_ALLOW:
+            errs.append(f"{where}: minion avec cap_add {cap} hors liste blanche (CHOWN, SETUID, SETGID)")
     opts = [str(o).replace("=", ":").lower() for o in svc.get("security_opt") or []]
     if not any(o in ("no-new-privileges", "no-new-privileges:true") for o in opts):
         errs.append(f"{where}: minion sans security_opt: no-new-privileges:true")

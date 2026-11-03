@@ -198,6 +198,9 @@ minion_cases = [
     ("minion : ni l'un ni l'autre = deux erreurs", minion(), lambda d: why(d, "sans cap_drop") and why(d, "no-new-privileges")),
     ("minion : reconnu par le nom minion-child (image locale)", minion("minion-child", "secagent-minion:ci-0123456789ab"), lambda d: why(d, "sans cap_drop")),
     ("minion : reconnu par l'image (nom libre)", minion("agent-a"), lambda d: why(d, "sans cap_drop")),
+    ("minion : cap_add limite a CHOWN/SETUID/SETGID accepte (prefixe CAP_ et minuscules toleres)", minion(cap_drop=["ALL"], cap_add=["cap_chown", "SETUID", "setgid"], security_opt=HARD["security_opt"]), lambda d: not check(d, False)),
+    ("minion : cap_add SYS_ADMIN refuse (hors liste blanche)", minion(cap_drop=["ALL"], cap_add=["SETUID", "SYS_ADMIN"], security_opt=HARD["security_opt"]), lambda d: why(d, "cap_add SYS_ADMIN")),
+    ("minion : cap_add NET_RAW refuse sur minion-negca", minion("minion-negca", profiles=["negative"], cap_drop=["ALL"], cap_add=["NET_RAW"], security_opt=HARD["security_opt"]), lambda d: why(d, "cap_add NET_RAW")),
     ("minion : minion-negca (profil negative) soumis a la meme regle", minion("minion-negca", profiles=["negative"], restart="no"), lambda d: why(d, "sans cap_drop")),
     ("minion : un service serveur n'est pas soumis a la regle minion", srv(FILES), lambda d: not why(d, "minion")),
 ]
