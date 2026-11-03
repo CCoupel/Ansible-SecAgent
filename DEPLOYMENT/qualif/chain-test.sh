@@ -14,6 +14,7 @@
 #   chain-test.sh link-revoke    # revocation du lien d'un enfant : fermeture 4010, pas de reconnexion, puis remise en etat
 #   chain-test.sh hooks        # journal des hooks (host.up/host.down) de la racine et de l'enfant (#197, hooks.json)
 #   chain-test.sh negative-ca  # essai CA negatif (profil Compose `negative`) : un minion sans la CA est refuse (#197)
+#   chain-test.sh admission-503  # refus 503 memory_budget_exhausted en reel (#241) : plafond abaisse, voir admission-503.sh
 #   chain-test.sh logs | down
 #
 # Variables : SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (obligatoires, references promues ou locales),
@@ -49,6 +50,8 @@ LINK_TTL="${LINK_TTL:-$TOKEN_TTL}"
 CHAIN_DIR="$HERE/chain"
 # shellcheck source=failover-test.sh
 source "$HERE/failover-test.sh"   # fonctions : listening, is_master, wait_for, health, fail, DC...
+# shellcheck source=admission-503.sh
+source "$HERE/admission-503.sh"   # etape admission-503 (#241)
 
 adm() { # $1 conteneur, puis la commande secagent-server : CLI admin en TLS (CA de test), ADMIN_TOKEN du conteneur
   local c="$1"; shift
@@ -496,9 +499,10 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     link-revoke) link_revoke ;;
     hooks) check_hooks ;;
     negative-ca) negative_ca ;;
+    admission-503) admission_503 ;;
     down) guard_project; "${DC[@]}" down -v
           # le volume du jeton de lien est EXTERNE (non supprime par down -v) et contient un secret : retrait explicite
           docker volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" >/dev/null 2>&1 || true ;;
-    *) sed -n '2,26p' "$0"; exit 2 ;;
+    *) sed -n '2,27p' "$0"; exit 2 ;;
   esac
 fi
