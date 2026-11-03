@@ -365,7 +365,7 @@ Commande **hors ligne** (elle ouvre `STATE_DIR` directement, pas l'API) qui effa
 | `--yes` | confirme sans invite ; **obligatoire** hors terminal interactif |
 | `--i-know-no-instance-is-running` | passe outre un `relay.lock` orphelin (stockage figé) ; `[SECURITY WARNING]` |
 
-Sans `--yes` en terminal, la commande demande de taper `reset`. Avant toute écriture : copie de `relay.state` dans `relay.state.linktrust-reset.<UTC>.bak` (0600) ; si elle échoue, rien n'est modifié. Une ligne est ajoutée à `state-restore.log` (`source: link-trust-reset`).
+Sans `--yes` en terminal, la commande demande de taper `reset`. Avant toute écriture : copie de `relay.state` dans `relay.state.linktrust-reset.<UTC ns>.bak` (0600) ; si elle échoue, rien n'est modifié. Une ligne est ajoutée à `state-restore.log` (`source: link-trust-reset`).
 
 | Code | Signification | Preuve |
 |---|---|---|
@@ -388,7 +388,7 @@ Commande **hors ligne** (ouvre `STATE_DIR` directement) qui fait la rotation de 
 | `--yes` | confirme sans invite ; **obligatoire** hors terminal interactif |
 | `--i-know-no-instance-is-running` | passe outre un `relay.lock` orphelin (stockage figé) ; `[SECURITY WARNING]` |
 
-Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écriture : `relay.state.rekey.<UTC>.bak` (0600, **lisible avec l'ancienne clé** : à détruire une fois la nouvelle clé en service). Un état encore en schéma 1 est accepté et migré en schéma 2 par la même écriture (`relay.state.v1.bak` = copie de l'original, en plus de la sauvegarde `rekey`). Après l'écriture : relecture avec la nouvelle clé et comparaison des clairs ; échec = original remis en place.
+Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écriture : `relay.state.rekey.<UTC ns>.bak` (0600, **lisible avec l'ancienne clé** : à détruire une fois la nouvelle clé en service). Un état encore en schéma 1 est accepté et migré en schéma 2 par la même écriture (`relay.state.v1.bak` = copie de l'original, en plus de la sauvegarde `rekey`). Après l'écriture : relecture avec la nouvelle clé et comparaison des clairs ; échec = original remis en place.
 
 | Code | Signification |
 |---|---|

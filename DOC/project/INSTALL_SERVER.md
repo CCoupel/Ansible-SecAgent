@@ -216,7 +216,7 @@ par des tests mais n'a pas été exercé en qualification réelle (il faut ≥ 2
   fichiers ; la reprise attend sa péremption (**≈ 5 minutes**). Un maître qui perd le verrou en étant vivant sort avec le
   code 75 et redémarre secondaire.
 - **Rotation de `RSA_MASTER_KEY`** : commande hors ligne `state rekey` (arrêter *tous* les nœuds, une seule exécution sur
-  le `STATE_DIR` partagé, sauvegarde obligatoire `relay.state.rekey.<UTC>.bak` lisible avec l'**ancienne** clé : à
+  le `STATE_DIR` partagé, sauvegarde obligatoire `relay.state.rekey.<UTC ns>.bak` lisible avec l'**ancienne** clé : à
   détruire ensuite). La nouvelle clé doit faire au moins 32 octets. Procédure et limites : `SECURITY.md` §11.
 
 ## 11. Mise à jour depuis la v3.0.3

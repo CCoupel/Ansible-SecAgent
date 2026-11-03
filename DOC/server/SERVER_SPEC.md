@@ -186,7 +186,7 @@ Il n'y a **plus de SQL** (SQLite retiré en v3.0.3, #159/#160). Les données per
 | `link_tokens` (v3.0.4, schéma 2) | registre des jetons de lien émis par la racine : id, `jti`, `role` (`relay-child`\|`relay-parent`), `sub`, `aud`, `kid`, `expires_at`, `revoked_at` (jamais le jeton ni son hash) — voir `STATE_SPEC.md` |
 | `relay_parent_tokens` | hérité de la v3.0.3 (jetons `relay-parent` signés par l'enfant) : id, `jti`, `parent_id`, `expires_at`, `revoked_at` ; en v3.0.4 les jetons de lien sont enregistrés dans `link_tokens` |
 | `blacklist` | `jti`, `hostname`, `revoked_at`, `reason`, `expires_at` (purge automatique) |
-| `relay_nodes` | configuration d'un relay enfant : `relay_id`, `urls`, `mode` (pull/push), `jti`, `token_exp`, `revoked`, `group_vars`, `token_hash`/`token_secret` (secret chiffré `enc:`) |
+| `relay_nodes` | configuration d'un relay enfant : `relay_id`, `urls`, `mode` (pull/push), `jti`, `token_exp`, `revoked`, `group_vars`, `token_secret` (relay push, secret chiffré `enc:`) ; `token_hash` est un champ **hérité**, non renseigné pour un relay pull v3.0.4 (`state/model.go:177-179`) |
 | `server_config` | secrets chiffrés : `jwt_secret_current`, `jwt_secret_previous`, `key_rotation_deadline`, clefs RSA du serveur |
 
 Les regexp `hostname_pattern` / `allowed_hostname_pattern` sont validées et ancrées `^(?:pattern)$` à la création (400 `invalid_hostname_pattern` si invalide).
@@ -799,16 +799,16 @@ Un hôte connecté directement au relay GAGNE TOUJOURS sur la table `relay_routi
 Plus de tables SQL : ces données sont dans `relay.state` (`relay_nodes`, `relay_parent_tokens`, `blacklist`, voir §5 et `internal/state/model.go`) ;
 le routage (`relay_routing` : clé simple `hostname`, `relay_id`, `hop_type` agent|relay, `relay_chain`) et le statut/`last_seen` sont **en mémoire**
 (reconstruits par `topology_snapshot`). Champs de `relay_nodes` : `relay_id`, `urls`, `mode`, `jti`, `token_exp`, `revoked`, `group_vars`,
-`token_hash` (pull : SHA-256 du JWT complet, pas du JTI) ou `token_secret` (push : token chiffré AES-256-GCM, préfixe `enc:`).
+`token_secret` (push : token chiffré AES-256-GCM, préfixe `enc:`). Un relay **pull** n'est que déclaré depuis la v3.0.4 : aucun hash de jeton n'est stocké (`handlers/admin_relays.go:222` : « Nothing is minted nor returned, and no token hash is stored » ; `state/hardening_test.go:408` `TestPullRelayWithoutTokenHashIsLogged`) ; `token_hash` reste un champ hérité (relais antérieurs, `relay_parent_tokens`, jetons d'enrôlement et plugin).
 
 **Changement clé** : clé de routage simple `hostname` (pas de composite). Topologie arbre = un seul chemin par hôte.
 
 **Sémantique mode** (v3.0.1) :
-- `pull` = connexion WSS entrante (enfant se connecte, auto-registration relay_hello); le `jti` est relevé et persisté ; `token_hash` = SHA-256 du JWT complet
+- `pull` = connexion WSS entrante (enfant se connecte, auto-registration relay_hello); le `jti` est relevé et persisté ; le jeton `relay-child` est miné sur la racine et porté par l'enfant, aucun hash n'est stocké côté parent
 - `push` = connexion WSS sortante (parent ouvre vers enfant, déclaré via API); token persisté chiffré (enc:AES-GCM)
 
 **Notes** :
-- Le champ `token_hash` d'un relay pull stocke le SHA-256 du JWT complet (pas du JTI) ; le token d'un relay push est dans `token_secret` (chiffré).
+- Un relay pull ne porte plus de `token_hash` (v3.0.4, #141/#146) ; le token d'un relay push est dans `token_secret` (chiffré).
 - Relais antérieurs à #153 (sans `jti`) : `revoked` = true suffit pour refuser ; un `DELETE` d'un tel relais ne peut pas blacklister de JTI inexistant (contrainte : révoquer avant de supprimer)
 - `link_tokens` (et `relay_parent_tokens`, hérité v3.0.3) : jamais le jeton en clair persisté ; métadonnées uniquement pour audit et gestion du cycle de vie
 

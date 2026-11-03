@@ -47,8 +47,9 @@ GO/cmd/secagent-minion/
 |---|---|---|---|
 | `/etc/secagent-minion/id_rsa` | `RELAY_PRIVATE_KEY` | Clef privée RSA-4096 PEM | 0600 |
 | `/etc/secagent-minion/token.jwt` | `RELAY_JWT_PATH` | JWT courant (réécrit à chaque enrollment) | 0600 |
-| `/var/lib/secagent-minion/async_jobs.json` | — | Registre jobs async persisté | 0644 |
-| `/var/log/secagent-minion/agent.log` | — | Logs (become_pass masqué) | 0644 |
+| `/var/lib/secagent-minion/async/jobs.json` (`<RELAY_ASYNC_DIR>/jobs.json`, `main.go:113,432`) | `RELAY_ASYNC_DIR` | Registre jobs async persisté (écriture atomique, `registry/registry.go:229`) ; répertoire créé en 0755 (`registry.go:224`) | 0600 |
+
+Il n'y a pas de fichier de log : le minion journalise sur la sortie d'erreur (`log` standard, journald sous systemd), `become_pass` masqué.
 
 ---
 
@@ -244,7 +245,7 @@ Agent daemonise le subprocess, répond immédiatement :
 }
 ```
 
-Job persisté dans `async_jobs.json` :
+Job persisté dans `jobs.json` :
 ```json
 {
   "jid-uuid": {

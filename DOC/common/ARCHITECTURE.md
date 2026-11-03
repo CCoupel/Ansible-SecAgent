@@ -791,7 +791,7 @@ L'agent **daemonise** le subprocess et répond immédiatement :
 Le job est enregistré dans le registre async persisté sur disque :
 
 ```json
-// ~/.ansible-secagent/async_jobs.json
+// <RELAY_ASYNC_DIR>/jobs.json
 {
   "jid-uuid": {
     "pid": 4521,
@@ -820,7 +820,7 @@ L'agent intercepte cette commande et consulte son registre :
 
 ### Persistance du registre
 
-Le fichier `async_jobs.json` est mis à jour à chaque changement d'état.
+Le fichier `jobs.json` est mis à jour à chaque changement d'état.
 Lors du redémarrage de l'agent :
 - Si le PID est toujours actif (`/proc/{pid}` existe) : job considéré toujours en cours
 - Si le PID est mort : job marqué terminé avec `rc: -1, error: "agent_restarted"`
@@ -1246,7 +1246,7 @@ variables d'environnement (§16).
 /etc/secagent-minion/
   env                     # variables d'environnement (EnvironmentFile)
   id_rsa                  # clef privée (RELAY_PRIVATE_KEY, mode 600, owner secagent-minion)
-  token.jwt               # JWT courant (RELAY_JWT_PATH, renouvelé automatiquement)
+  token.jwt               # JWT courant (RELAY_JWT_PATH, renouvelé par `rekey` périodique sur la WebSocket authentifiée, #217)
 
 /var/lib/secagent-minion/
   async/                  # registres JSON des jobs async (RELAY_ASYNC_DIR)

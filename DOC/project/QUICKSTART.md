@@ -22,14 +22,16 @@ mkdir -p tls
 openssl req -x509 -newkey rsa:2048 -keyout tls/tls.key -out tls/tls.crt \
   -days 365 -nodes -subj "/CN=localhost" \
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
-# Le conteneur tourne en UID 10001 : la clef doit lui être lisible (essai local UNIQUEMENT).
-chmod 0644 tls/tls.key
+# Le conteneur tourne en UID 10001 : la clef lui appartient, lecture seule, et n'est lisible par personne d'autre.
+# (à lancer hors /mnt/c : NTFS ignore chown/chmod)
+sudo chown 10001:10001 tls/tls.key && sudo chmod 0400 tls/tls.key
+# (sans sudo, essai local UNIQUEMENT : `chmod 0644 tls/tls.key` rend la clé privée lisible par tous, ne jamais le reproduire ailleurs)
 
 # Secrets du serveur (hors dépôt)
 cp qualif.env.example qualif.env
 # Renseigner dans qualif.env : JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY
-#   (chaînes aléatoires, ex. `openssl rand -hex 32` ; RSA_MASTER_KEY : 32 octets minimum, sinon
-#    `state init` et le démarrage sont refusés (`openssl rand -base64 48` convient) ; c'est un secret
+#   (valeurs aléatoires fictives à générer, ex. `openssl rand -base64 48` pour les trois, comme dans INSTALL_SERVER.md ;
+#    RSA_MASTER_KEY : 32 octets minimum, sinon `state init` et le démarrage sont refusés ; c'est un secret
 #    dont dérivent l'HMAC de l'état et le chiffrement AES-GCM de ses secrets, pas une clef RSA)
 
 # Image candidate (voir l'en-tête de docker-compose.server.yml) et répertoire TLS
@@ -88,8 +90,9 @@ srv() {
 # Jeton d'enrôlement (1 h). Jeton opaque `secagent_enr_` + 64 hex (77 car.), pas un JWT.
 ENR=$(srv tokens create --role enrollment --hostname-pattern 'qualif-host-.*' --expires 1h \
       | grep -oE 'secagent_enr_[0-9a-f]{64}' | tail -1)
-echo "$ENR"
 ```
+
+> Ne pas afficher `$ENR` (terminal, historique) : l'utiliser directement (`RELAY_ENROLLMENT_TOKEN="$ENR"` ci-dessous) ou l'écrire dans un fichier 0600.
 
 > Un jeton n'est affiché qu'**une seule fois**. Rôles possibles : `enrollment`, `plugin`, `relay-child`, `relay-parent` (les deux derniers sont des jetons de lien, créés sur la racine seulement)
 > (il n'existe pas de rôle `agent` ou `admin`). Le jeton d'enrôlement est à usage unique sauf `--reusable`.

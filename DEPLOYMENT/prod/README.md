@@ -103,7 +103,7 @@ Le lien enfant → parent est authentifié par un **jeton de lien** Ed25519 sign
 
 ## Dimensionnement (parc > 3 000 hôtes)
 
-Mesures QA (#160) : fichier d'état 5,9 Mio à 3 000 agents, 19,7 Mio à 10 000 ; RSS établi 111 à 349 Mio, mais **pic de 640 à 884 Mio**
+Mesures QA (#160) : fichier d'état 5,9 Mio à 3 000 agents, ≈ 10 Mio à 10 000 (valeur de `DOC/server/STATE_SPEC.md`, « Dimensionnement mesuré ») ; RSS établi 111 à 349 Mio, mais **pic de 640 à 884 Mio**
 pendant des rafales d'enrôlement à 10 000 agents (déchets des opérations RSA-4096, copies du modèle d'état) ; 253 enrôlements/s ;
 exec 5,8 ms à 10 000 agents. Valeur de départ : **limite mémoire 2 GiB** (`SECAGENT_MEM_LIMIT`) et `GOMEMLIMIT` à ~80 %
 (`1638MiB`) pour que le GC travaille avant l'OOM-kill. Modifier les deux ensemble (ex. 4g → 3276MiB). Surveiller le RSS et
@@ -140,7 +140,7 @@ secondaire (`restart: unless-stopped`).
 ### État (`relay.state`)
 Fichier unique, cohérent par construction : copier `relay.state` (ou `relay.state.prev`) **hors hôte et hors du partage**,
 à intervalle régulier et avant chaque montée de version. Restauration : relay arrêté sur tous les hôtes,
-`secagent-server state verify <fichier>` puis `state restore --from <fichier>` (qui revérifie le fichier, sauvegarde l'état courant en `relay.state.bak-<UTC>` et journalise dans `state-restore.log`), redémarrage. `RSA_MASTER_KEY` doit être défini. Le fichier d'état n'est pas rétrocompatible au-delà d'un
+`secagent-server state verify <fichier>` puis `state restore --from <fichier>` (qui revérifie le fichier, sauvegarde l'état courant en `relay.state.bak-<UTC ns>` et journalise dans `state-restore.log`), redémarrage. `RSA_MASTER_KEY` doit être défini. Le fichier d'état n'est pas rétrocompatible au-delà d'un
 changement de `schema_version`.
 
 ### `RSA_MASTER_KEY` — procédure **distincte**

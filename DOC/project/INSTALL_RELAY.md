@@ -55,12 +55,12 @@ srv tokens create --role relay-child --sub dmz1 --aud <relay_id du parent direct
   `RSA_MASTER_KEY`.
 
 > `relays add` n'est **pas requis** en mode pull : un enfant muni d'un jeton valide se lie sans déclaration préalable.
-> **Attention à un relay déclaré mais jamais connecté** (comportement rejoué en test) :
-> - **hors rotation**, `keys link-status` l'affiche `CONFIRMED=true` avec un `kid` vide (`<nil>`) : affichage trompeur, sans
->   effet (suivi : #234, trois états prévus, **non livré**) ;
-> - **pendant une rotation**, il passe à `CONFIRMED=false` et **`keys retire-link-previous` répond `409 rotation_unconfirmed`**
->   tant qu'il reste déclaré : le garde n'est pas contourné. Un enfant déclaré puis abandonné bloque donc la fermeture de la
->   fenêtre de rotation (seul `--force` passe outre, avec un `[SECURITY WARNING]`) ;
+> **Attention à un relay déclaré mais jamais connecté** (v3.0.5, #234) :
+> - `keys link-status` l'affiche en `STATE=never_seen` (colonne `STATE` : `confirmed`, `unconfirmed`, `never_seen`), avec
+>   un rappel du remède ; ce n'est plus un `CONFIRMED=true` trompeur ;
+> - **pendant une rotation**, `keys retire-link-previous` répond `409 rotation_unconfirmed` (listes `unconfirmed` et
+>   `never_seen`) tant qu'il reste déclaré : le garde n'est pas contourné. Un enfant déclaré puis abandonné bloque donc la
+>   fermeture de la fenêtre de rotation (seul `--force` passe outre, avec un `[SECURITY WARNING]`) ;
 > - procédure pour un enfant abandonné : `srv relays remove --revoke <relay_id>` (v3.0.5 : accepte le nom `relay_id` ou l'UUID ;
 >   révoque puis retire, confirmation à taper ou `--yes` ; voir `DEPLOYMENT.md`, « Supprimer un relay »), puis
 >   `retire-link-previous`. Sans `--revoke`, `relays remove` d'un enfant jamais connecté répond `409 relay_not_revoked`. La
@@ -225,7 +225,7 @@ docker compose run --rm --no-deps secagent-server state link-trust reset --yes
 ```
 
 La commande n'efface que l'ancre persistée (ni agents, ni jetons, ni blacklist, ni clés), écrit une sauvegarde
-`relay.state.linktrust-reset.<UTC>.bak` (0600, copie complète de l'état : à protéger puis détruire), exige `--yes` hors
+`relay.state.linktrust-reset.<UTC ns>.bak` (0600, copie complète de l'état : à protéger puis détruire), exige `--yes` hors
 terminal, refuse une racine et un verrou actif (code 8 : arrêtez *toutes* les instances), 9 pour les autres refus. Un
 relais en cours de re-racine : procédure complète dans `DEPLOYMENT.md`, « Re-racine ».
 

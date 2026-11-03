@@ -340,7 +340,7 @@ StartLimitBurst=5
 secagent-server state verify "$STATE_DIR/relay.state"
 
 # Si HMAC invalid ou schema corrompu : restauration depuis backup (TOUTES les instances arrêtées).
-# `restore` revérifie le fichier, sauvegarde l'état courant en relay.state.bak-<UTC> et journalise
+# `restore` revérifie le fichier, sauvegarde l'état courant en relay.state.bak-<UTC ns> et journalise
 # dans state-restore.log. Options : --state-dir, --min-write-seq, --i-know-no-instance-is-running
 secagent-server state restore --from /backup/relay.state
 
