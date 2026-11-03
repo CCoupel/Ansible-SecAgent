@@ -4,7 +4,22 @@
 # Toute etape ajoutee ici doit l'etre aussi dans ci.yml (et inversement) tant que ci.yml ne l'appelle pas.
 set -euo pipefail
 
-cd "$(dirname "$0")/../GO"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Etapes du job « Lint Go » sur l'arbre entier (LOT-7, #237) : en-tetes SPDX (garde auto-testee) et mentions tierces.
+echo "==> En-tetes SPDX"
+python3 -I "$ROOT/scripts/ci/check_spdx_selftest.py"
+python3 -I "$ROOT/scripts/ci/check_spdx.py" --root "$ROOT"
+
+echo "==> Mentions tierces (go-licenses)"
+if command -v go-licenses >/dev/null 2>&1; then
+  bash "$ROOT/scripts/ci/gen_third_party_notices.sh" --check
+else
+  echo "go-licenses absent du PATH (CI : go install github.com/google/go-licenses/v2@v2.0.1) — etape non jouee localement" >&2
+  exit 1
+fi
+
+cd "$ROOT/GO"
 
 echo "==> Build"
 go build ./...
