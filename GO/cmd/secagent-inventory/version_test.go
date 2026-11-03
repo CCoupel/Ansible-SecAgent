@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package main
 
 import (
@@ -35,19 +38,14 @@ func TestVersionFlagBinary(t *testing.T) {
 	}
 	for _, flag := range []string{"--version", "-v"} {
 		cmd := exec.Command(bin, flag)
-		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "RELAY_SERVER_URL=http://127.0.0.1:1"}
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 		var stderr strings.Builder
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("%s: %v (stderr %q)", flag, err, stderr.String())
 		}
-		if got := string(out); got != "secagent-inventory version 9.9.9-test\nLicense: AGPL-3.0-or-later\nSource: https://github.com/CCoupel/Ansible-SecAgent\n" {
-			t.Errorf("%s: stdout = %q", flag, got)
-		}
-		if stderr.Len() != 0 {
-			t.Errorf("%s: stderr non vide: %q", flag, stderr.String())
-		}
+		assertVersionThreeLines(t, flag, string(out), stderr.String(), "secagent-inventory", "9.9.9-test")
 	}
 }
 
@@ -75,6 +73,31 @@ func TestVersionFlagExtraArg(t *testing.T) {
 		}
 		if !strings.Contains(stderr.String(), "unexpected argument") {
 			t.Errorf("%s extra: stderr = %q", flag, stderr.String())
+		}
+	}
+}
+
+// assertVersionThreeLines : exactement 3 lignes, ligne 1 = "<component> version <version>", rien après le dernier \n.
+func assertVersionThreeLines(t *testing.T, label, stdout, stderr, component, version string) {
+	t.Helper()
+	if stderr != "" {
+		t.Errorf("%s: stderr = %q, want empty", label, stderr)
+	}
+	if !strings.HasSuffix(stdout, "\n") || strings.HasSuffix(stdout, "\n\n") {
+		t.Errorf("%s: stdout must end with exactly one newline, got %q", label, stdout)
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	want := []string{
+		component + " version " + version,
+		"License: AGPL-3.0-or-later",
+		"Source: https://github.com/CCoupel/Ansible-SecAgent",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("%s: %d lines, want exactly %d: %q", label, len(lines), len(want), stdout)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Errorf("%s: line %d = %q, want %q", label, i+1, lines[i], want[i])
 		}
 	}
 }

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // secagent-inventory — Binaire d'inventaire dynamique Ansible pour Ansible-SecAgent.
 //
 // Usage (Ansible external inventory script protocol) :
