@@ -204,7 +204,7 @@ type EnrollConfig struct {
 	PrivateKey *rsa.PrivateKey
 	// JWTPath est le chemin de stockage du JWT persisté.
 	JWTPath string
-	// EnrollmentToken est le token d'enrollment (RELAY_ENROLLMENT_TOKEN) — requis Phase 10.
+	// EnrollmentToken est le jeton d'enrôlement (RELAY_ENROLLMENT_TOKEN) — requis.
 	// JAMAIS loggé en clair.
 	EnrollmentToken string
 	// CABundle est le chemin vers un CA bundle PEM custom (vide = store système).

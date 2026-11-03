@@ -1,4 +1,4 @@
-// Phase 12 — relays.go
+// relays.go — commandes `relays`
 // CLI subcommand "relays" — manage relay nodes registered on a proxy.
 //
 //	secagent-server relays list   [--format table|json|yaml]

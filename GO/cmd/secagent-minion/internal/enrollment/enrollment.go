@@ -1,6 +1,6 @@
 // Package enrollment gère l'enregistrement de l'agent auprès du relay server.
 //
-// Flow Phase 10 (challenge-response) :
+// Flow d'enrôlement (challenge-response) :
 //  1. POST /api/register { hostname, pubkey_pem, enrollment_token }
 //     → Server répond { challenge: OAEP(nonce, agent_pubkey), server_public_key_pem }
 //  2. Agent déchiffre nonce avec sa clef privée
@@ -48,8 +48,8 @@ type Config struct {
 	PublicKeyPEM string
 	// PrivateKey est la clef privée RSA pour déchiffrer le JWT retourné.
 	PrivateKey *rsa.PrivateKey
-	// EnrollmentToken est le token d'enrollment single-use (env RELAY_ENROLLMENT_TOKEN).
-	// Requis pour le challenge-response Phase 10.
+	// EnrollmentToken est le jeton d'enrôlement, à usage unique ou réutilisable
+	// (env RELAY_ENROLLMENT_TOKEN). Requis pour le challenge-response.
 	// JAMAIS loggé en clair.
 	EnrollmentToken string
 	// CABundle est le chemin vers un CA bundle PEM custom (vide = store système).

@@ -4,7 +4,7 @@
 //   - Handler rekey : le serveur envoie un nouveau token_encrypted via WS
 //   - Reconnexion sur 401 : le JWT est invalide, ré-enrôlement complet requis
 //
-// Le ré-enrôlement Phase 10 utilise le challenge-response OAEP à 2 étapes.
+// Le ré-enrôlement utilise le challenge-response OAEP à 2 étapes.
 // Le EnrollmentToken (RELAY_ENROLLMENT_TOKEN) est requis pour les deux cas.
 package enrollment
 

@@ -1,5 +1,4 @@
-// Phase 12 — relay_handler.go
-// WebSocket handler for /ws/relay — mode pull.
+// relay_handler.go — WebSocket handler for /ws/relay (relay chain, pull mode).
 //
 // Relays connect here with a link token (Ed25519, role relay-child / relay-parent, signed by the root)
 // and announce their agents.

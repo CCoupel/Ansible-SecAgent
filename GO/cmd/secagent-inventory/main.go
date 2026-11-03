@@ -10,7 +10,8 @@
 //
 //	RELAY_SERVER_URL      URL HTTPS du relay server, ou LISTE d'URL séparées par des virgules
 //	                      (relay actif/passif, #167) — défaut: https://localhost:7770
-//	RELAY_TOKEN           Bearer token : jeton plugin secagent_plg_… (optionnel)
+//	RELAY_TOKEN           jeton plugin secagent_plg_… (tokens create --role plugin), REQUIS :
+//	                      GET /api/inventory répond 401 sans lui (ce n'est pas ADMIN_TOKEN)
 //	RELAY_CA_BUNDLE       CA bundle PEM custom         (optionnel)
 //	RELAY_INSECURE_TLS    "true" pour désactiver la vérification TLS (TESTS UNIQUEMENT) :
 //	                      avertissement sur stderr à chaque exécution ; refusé si l'URL n'est pas

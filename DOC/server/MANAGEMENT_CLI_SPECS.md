@@ -2,10 +2,10 @@
 
 > **Document de conception historique (Phase 6, CLI Python `relay`).** La CLI réelle est `secagent-server` (GO, cobra,
 > `GO/cmd/secagent-server/internal/cli`) ; les exemples `relay …` ci-dessous sont des maquettes de conception.
-> Commandes réelles (v3.0.3) : `minions` (list, get, set-state, suspend, resume, revoke, authorize, vars get/set/delete),
-> `tokens` (create, list, revoke, delete, purge), `relays` (list, add, remove, status), `security` (keys status/rotate,
+> Commandes réelles (v3.0.5) : `minions` (list, get, set-state, suspend, resume, revoke, delete, authorize, vars get/set/delete),
+> `tokens` (create, list, revoke, delete, purge), `relays` (list, add, revoke, remove, status), `security` (keys status/rotate,
 > tokens list, blacklist list/purge), `hooks` (status, log), `inventory list`, `server` (status, stats), `status --local`,
-> `state` (init, verify, restore, link-trust reset, rekey). Il n'existe **pas** de `minions refresh`, de login/refresh de jeton ni de composant NATS :
+> `keys` (link-pubkey, rotate-link, retire-link-previous, link-status), `state` (init, verify, restore, link-trust reset, rekey). Il n'existe **pas** de `minions refresh`, de login/refresh de jeton ni de composant NATS :
 > l'authentification se fait par jeton admin (`ADMIN_TOKEN`), sans renouvellement automatique côté CLI.
 > Voir `DOC/server/SERVER_SPEC.md`.
 

@@ -1,4 +1,4 @@
-// Phase 12 — admin_relays.go
+// admin_relays.go — API admin des relays
 // Admin REST endpoints for managing relay nodes in proxy/gateway mode.
 //
 //	POST   /api/admin/relays           — register a relay (push or pull mode)

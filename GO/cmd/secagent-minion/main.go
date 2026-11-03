@@ -1,6 +1,6 @@
 // secagent-minion — Daemon client Ansible-SecAgent (Go).
 //
-// Flow de démarrage (§8, §18 ARCHITECTURE.md, Phase 10 challenge-response) :
+// Flow de démarrage (§8, §18 ARCHITECTURE.md, challenge-response) :
 //  1. Charge la configuration depuis les variables d'environnement
 //  2. Génère la keypair RSA-4096 si la clef privée n'existe pas encore
 //  3. Enrollment (2 étapes) :
@@ -191,7 +191,7 @@ func loadOrGenerateKey(cfg agentConfig) (*rsa.PrivateKey, error) {
 // ---------------------------------------------------------------------------
 
 // loadOrEnroll retourne le JWT existant si présent, sinon effectue l'enrollment.
-// L'enrollment Phase 10 appelle POST /api/register en 2 étapes (challenge-response OAEP).
+// L'enrôlement appelle POST /api/register en 2 étapes (challenge-response OAEP).
 // errNoEnrollmentToken is a permanent configuration error (exit status 78): no retry can fix it.
 var errNoEnrollmentToken = errors.New("RELAY_ENROLLMENT_TOKEN is not set: cannot enroll")
 
