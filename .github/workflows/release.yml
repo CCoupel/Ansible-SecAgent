@@ -423,8 +423,13 @@ jobs:
           if [ -f scripts/ci/assert_version.sh ] && [ -f GO/cmd/secagent-minion/args.go ]; then
             COMPONENT=secagent-minion bash scripts/ci/assert_version.sh "$VERSION" "dist/secagent-minion-${VERSION}-linux-amd64"
           fi
-          if [ -f scripts/ci/assert_version.sh ] && grep -q 'var Version' GO/cmd/secagent-inventory/main.go; then
+          # Inventory (#220) : inconditionnel des v3.0.5 (une variable renommee ou un ldflags perdu fait echouer la release,
+          # comme ci.yml) ; la garde porte sur la VERSION du tag, pas sur le contenu du code : un tag anterieur a v3.0.5
+          # republie par workflow_dispatch n'a ni `--version` ni assert_version.sh et ne peut pas etre verifie.
+          if [ "$(printf '%s\n' 3.0.5 "$VERSION" | sort -V | head -n1)" = 3.0.5 ]; then
             COMPONENT=secagent-inventory bash scripts/ci/assert_version.sh "$VERSION" "dist/secagent-inventory-${VERSION}-linux-amd64"
+          else
+            echo "::notice::tag anterieur a v3.0.5 : version de secagent-inventory non verifiee"
           fi
           cd dist
           sha256sum ./* > "SHA256SUMS-${VERSION}.txt"
