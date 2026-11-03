@@ -150,25 +150,28 @@ jobs:
           persist-credentials: false
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
       # La version du tag est injectee comme dans l'image publiee, puis VERIFIEE avant toute publication GHCR.
-      # Garde de compatibilite : republier (workflow_dispatch) un tag anterieur a v3.0.4, dont le Dockerfile n'a pas
-      # `ARG VERSION`, ne doit pas echouer sur ce controle.
+      # Seuil de version (B56) : v3.0.4, premier tag dont les Dockerfile ont `ARG VERSION` et dont les binaires ont
+      # `--version` (verifie avec `git show vX:...`). A partir de ce seuil le controle est inconditionnel (ARG VERSION perdu,
+      # symbole renomme ou script absent = echec) ; en dessous (tag plus ancien republie par workflow_dispatch), ::notice::
+      # qui nomme l'image.
       - name: Build de l'image du tag (local, sans push) et version affichee
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
+          version_ge() { [ "$(printf '%s\n' "$1" "$VERSION" | sort -V | head -n1)" = "$1" ]; }
           docker build --build-arg VERSION="$VERSION" -t secagent-server:ci -f GO/Dockerfile GO
-          if grep -q '^ARG VERSION=' GO/Dockerfile && [ -f scripts/ci/assert_version.sh ]; then
+          if version_ge 3.0.4; then
             bash scripts/ci/assert_version.sh "$VERSION" docker run --rm secagent-server:ci
           else
-            echo "::warning::Dockerfile du tag sans ARG VERSION : version non injectee (tag anterieur a v3.0.4)"
+            echo "::notice::image secagent-server : tag anterieur a v3.0.4, version non verifiee"
           fi
           # Image MINION du tag : meme controle avant toute publication (--version traverse l'entrypoint sans effet de bord).
           docker build --build-arg VERSION="$VERSION" -t secagent-minion:ci -f GO/Dockerfile.agent GO
-          if grep -q '^ARG VERSION=' GO/Dockerfile.agent && [ -f GO/cmd/secagent-minion/args.go ]; then
+          if version_ge 3.0.4; then
             COMPONENT=secagent-minion bash scripts/ci/assert_version.sh "$VERSION" docker run --rm secagent-minion:ci
           else
-            echo "::warning::Dockerfile.agent du tag sans ARG VERSION : version du minion non injectee (tag anterieur a v3.0.4)"
+            echo "::notice::image secagent-minion : tag anterieur a v3.0.4, version non verifiee"
           fi
       - name: Preparation
         run: bash DEPLOYMENT/qualif/failover-test.sh setup-ci
