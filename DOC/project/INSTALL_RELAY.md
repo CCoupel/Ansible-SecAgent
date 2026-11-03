@@ -141,7 +141,7 @@ que l'inventaire de la racine contient les hôtes de la zone et qu'un `exec` tra
 
 **Lien push** (le parent ouvre vers l'enfant) : sur la racine, minter un jeton `relay-parent`
 (`tokens create --role relay-parent --sub <parent> --aud <enfant>`) puis, sur le **parent** :
-`srv relays add --id <enfant> --mode push --url wss://<hôte-enfant>:7772 --token "<jeton relay-parent>"` ; le jeton est
+`srv relays add --id <enfant> --mode push --url wss://<hôte-enfant>:7772 --token-file <fichier 0600 contenant le jeton relay-parent>` (ou `--token-file -` pour l'entrée standard ; `--token "<jeton>"` fonctionne encore mais le jeton apparaîtrait dans la liste des processus) ; le jeton est
 stocké chiffré sous `RSA_MASTER_KEY` (le parent refuse sans elle : 503) et n'est plus jamais affiché. L'enfant doit être
 ancré comme ci-dessus. **Limite honnête** : la variante push n'a pas été couverte par la qualification de la v3.0.4 (ni le
 scénario de rotation, ni de révocation).

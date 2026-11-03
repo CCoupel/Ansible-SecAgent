@@ -409,6 +409,12 @@ Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écr
 - **Mot inconnu après un groupe** (`state frob`) : `Error: unknown command "frob" for "secagent-server state"` et l'aide du groupe sur **stderr**, code **1** (avant : aide et code 0, une faute de frappe dans un script passait pour un succès).
 - **Sauvegardes de `state rekey` et `state link-trust reset`** : `relay.state.rekey.<UTC à la nanoseconde>.bak` et `relay.state.linktrust-reset.<UTC à la nanoseconde>.bak`, avec un suffixe `.<n>` si le nom existe (création exclusive inchangée) : deux exécutions dans la même seconde réussissent toutes les deux, aucune sauvegarde n'est écrasée. Même règle pour `state restore` : `relay.state.bak-<UTC ns>[.n]` et `relay.state.prev.bak-<UTC ns>[.n]` (avant : à la seconde, la seconde restauration d'une même seconde échouait en code 5).
 
+#### `relays add --token-file` (v3.0.5, M14)
+
+Le jeton relay-parent d'un lien push ne doit pas passer par `argv` (visible dans la liste des processus et l'historique du shell). `relays add --mode push … --token-file <chemin>` le lit dans un fichier régulier (pas de lien symbolique, mode 0600 ou plus strict, 64 Kio au plus, espaces finaux retirés, non vide : mêmes règles que les `*_FILE`) ; `--token-file -` le lit sur l'entrée standard. `--token` et `--token-file` ensemble sont refusés. `--token` reste accepté (compatibilité) mais écrit un `WARNING` sur stderr. La valeur n'est jamais affichée ni placée dans une erreur.
+
+**Option globale `--token <jwt>` (section « Global Options » ci-dessous)** : c'est une maquette historique, elle n'existe pas dans le binaire réel (seule option globale : `--format`). Le jeton d'administration de la vraie CLI se donne par `ADMIN_TOKEN` ou `ADMIN_TOKEN_FILE` (jamais en argument) ; `RELAY_TOKEN` n'est pas lu.
+
 #### Commandes destructrices de v3.0.5 (#233) : `minions delete`, `relays revoke`, `relays remove`
 
 | Commande | Effet | Route |

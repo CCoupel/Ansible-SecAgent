@@ -2,7 +2,7 @@
 // CLI subcommand "relays" — manage relay nodes registered on a proxy.
 //
 //	secagent-server relays list   [--format table|json|yaml]
-//	secagent-server relays add    --id <relay_id> --url <url> --token <token> [--mode push|pull] [--description <desc>]
+//	secagent-server relays add    --id <relay_id> --url <url> --token-file <file|-> [--mode push|pull] [--description <desc>]
 //	secagent-server relays remove <relay_id_or_uuid>
 //	secagent-server relays status [--format table|json|yaml]
 package cli
@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"secagent-server/internal/secretenv"
 )
 
 // relaysCmd is the top-level "relays" subcommand.
@@ -88,6 +90,7 @@ var (
 	addRelayMode        string
 	addRelayURL         string
 	addRelayToken       string
+	addRelayTokenFile   string
 	addRelayDescription string
 )
 
@@ -107,12 +110,16 @@ minted on the ROOT relay for this node:
 It is stored sealed under RSA_MASTER_KEY (503 without it) and never shown again. The child must be
 anchored on the root key (REPEATER_ROOT_ID + REPEATER_ROOT_LINK_KEY_FILE).
 
+The token should not be given on the command line (--token: visible in the process list and in the
+history). Use --token-file <path> (a regular file, mode 0600) or --token-file - to read it from standard
+input; --token and --token-file together are refused.
+
 Examples:
   # Pull mode: declare the child (then mint its relay-child token on the root)
   secagent-server relays add --id dmz1 --description "Zone DMZ1"
 
   # Push mode: this node initiates the connection to the child
-  secagent-server relays add --id dmz2 --mode push --url wss://dmz2:7772 --token "<relay-parent link token>" --description "Zone DMZ2"`,
+  secagent-server relays add --id dmz2 --mode push --url wss://dmz2:7772 --token-file /etc/secagent/dmz2.token --description "Zone DMZ2"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(addRelayID) == "" {
 			return fmt.Errorf("--id is required")
@@ -136,8 +143,12 @@ Examples:
 			}
 			body["urls"] = urls
 		}
-		if addRelayToken != "" {
-			body["token"] = addRelayToken
+		token, terr := relayAddToken(cmd)
+		if terr != nil {
+			return terr
+		}
+		if token != "" {
+			body["token"] = token
 		}
 		if addRelayDescription != "" {
 			body["description"] = addRelayDescription
@@ -190,11 +201,38 @@ func init() {
 	relaysAddCmd.Flags().StringVar(&addRelayID, "id", "", "Relay unique ID (required)")
 	relaysAddCmd.Flags().StringVar(&addRelayMode, "mode", "pull", "Connection mode: pull (relay→proxy) or push (proxy→relay)")
 	relaysAddCmd.Flags().StringVar(&addRelayURL, "url", "", "wss:// URL of the child relay (push mode only; comma separated list accepted)")
-	relaysAddCmd.Flags().StringVar(&addRelayToken, "token", "", "relay-parent link token minted on the root for this node (push mode only; stored sealed)")
+	relaysAddCmd.Flags().StringVar(&addRelayToken, "token", "", "relay-parent link token (push mode only; stored sealed). DEPRECATED: it shows in the process list and the shell history, use --token-file")
+	relaysAddCmd.Flags().StringVar(&addRelayTokenFile, "token-file", "", "file holding the relay-parent link token (mode 0600), or - for standard input (push mode only)")
 	relaysAddCmd.Flags().StringVar(&addRelayDescription, "description", "", "Human-readable description")
 	relaysRevokeCmd.Flags().BoolVar(&relaysRevokeYes, "yes", false, "confirm without prompting (required in non-interactive use)")
 	relaysRemoveCmd.Flags().BoolVar(&relaysRemoveRevoke, "revoke", false, "revoke the relay first (needed for a relay whose link token the node does not track)")
 	relaysRemoveCmd.Flags().BoolVar(&relaysRemoveYes, "yes", false, "confirm without prompting (required in non-interactive use)")
+}
+
+// relayAddToken returns the push token from --token-file (file or "-" for stdin) or the deprecated --token.
+// Both together are an error. The value is never printed.
+func relayAddToken(cmd *cobra.Command) (string, error) {
+	if addRelayToken != "" && addRelayTokenFile != "" {
+		return "", fmt.Errorf("--token and --token-file are mutually exclusive")
+	}
+	switch {
+	case addRelayTokenFile == "-":
+		v, err := secretenv.ReadAll(cmd.InOrStdin())
+		if err != nil {
+			return "", fmt.Errorf("--token-file -: %w", err)
+		}
+		return v, nil
+	case addRelayTokenFile != "":
+		v, err := secretenv.ReadFile(addRelayTokenFile)
+		if err != nil {
+			return "", fmt.Errorf("--token-file %s: %w", addRelayTokenFile, err)
+		}
+		return v, nil
+	case addRelayToken != "":
+		_, _ = fmt.Fprintln(os.Stderr, "WARNING: --token puts the link token in the process list and the shell history; use --token-file <path> or --token-file - (standard input)")
+		return addRelayToken, nil
+	}
+	return "", nil
 }
 
 // ── relays remove ─────────────────────────────────────────────────────────────

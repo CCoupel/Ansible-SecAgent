@@ -73,6 +73,27 @@ func Get(name string) (string, error) {
 
 // readFile reads and validates a secret file. The check is done on the opened
 // descriptor (no TOCTOU), after an Lstat that rejects symbolic links.
+// ReadFile reads a secret from the file at path with the same rules as X_FILE (regular file, no symbolic
+// link, mode 0600 or stricter, bounded size, trailing whitespace trimmed, non-empty). The value is never
+// part of an error.
+func ReadFile(path string) (string, error) { return readFile(path) }
+
+// ReadAll reads a secret from r (standard input): bounded size, trailing whitespace trimmed, non-empty.
+func ReadAll(r io.Reader) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxSecretSize+1))
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", ErrFileUnreadable, errKind(err))
+	}
+	if len(data) > maxSecretSize {
+		return "", ErrTooLarge
+	}
+	v := strings.TrimRight(string(data), " \t\r\n")
+	if v == "" {
+		return "", ErrEmpty
+	}
+	return v, nil
+}
+
 func readFile(path string) (string, error) {
 	li, err := os.Lstat(path)
 	if err != nil {

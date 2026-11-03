@@ -634,7 +634,7 @@ DELETE /api/admin/relays/{relay_id}
 secagent-server relays list
 secagent-server relays status
 secagent-server relays add --id <relay_id> [--description …] [--mode pull]           # pull : DÉCLARE seulement l'enfant attendu, ne minte aucun jeton (v3.0.4) — le jeton se crée sur la racine : tokens create --role relay-child
-secagent-server relays add --id <relay_id> --mode push --url wss://enfant-a:7772[,wss://enfant-b:7772] --token <token>   # push : --url accepte une liste séparée par des virgules (`cli/relays.go:118-124`)
+secagent-server relays add --id <relay_id> --mode push --url wss://enfant-a:7772[,wss://enfant-b:7772] --token-file <fichier|->   # --token <token> déprécié : visible dans argv (M14)   # push : --url accepte une liste séparée par des virgules (`cli/relays.go:118-124`)
 secagent-server relays remove <relay_id|uuid> [--revoke] [--yes]   # v3.0.5 (#233) : --revoke révoque d'abord (relay jamais connecté), confirmation ou --yes
 secagent-server relays revoke <relay_id|uuid> [--yes]               # v3.0.5 (#233) : POST /api/admin/relays/{id}/revoke
 secagent-server minions delete <hostname> [--yes]                   # v3.0.5 (#233) : DELETE /api/admin/minions/{hostname}, lève une révocation ; ordre : liste noire des JTI, suppression, PUIS fermeture de la WS (M12)
