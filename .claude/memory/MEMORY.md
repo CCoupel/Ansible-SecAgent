@@ -2,6 +2,28 @@
 
 > Source de vérité au démarrage de session (lue par `/start-session`). Mise à jour par `/end-session`.
 
+## État de session (fin 2026-11-03) — v3.0.5 en cours
+- **Version** : v3.0.4 publiée, PROD jamais déployée. **v3.0.5 en cours** (milestone 19), branche `milestone/v3.0.5` @ `72bc19e`, poussée, CI verte (run 41622274100), 122 commits d'avance sur main.
+- **Travail en cours** :
+  - LOT-1 à LOT-5 terminés et poussés ; issues fermées « validé sans QUALIF » à partir de LOT-3.
+  - **#237** ouverte jusqu'au GATE 4 : reste gh-pages (`index.html:1192`, PR séparée hors milestone, confirmation dédiée) et `gh api .license` après merge sur main. L'image candidate porte `licenses=MIT`.
+  - **LOT-6 EN PAUSE** (décision utilisateur) : #197, #238, #229, #241, #240, #239, tous PRET.
+  - Commits test-writer de LOT-6 (`85d02a9`, `2280085` : règles check_compose `*_FILE`/cap_drop, `admission-503.sh`, selftests) **parqués sur la branche locale `lot6-wip`**, à reprendre par cherry-pick ; ne les pousser qu'avec #197 et #238 livrés, sinon CI rouge.
+  - Image candidate publiée et attestée (run 41623887845) : serveur `sha256:ceed1549…`, minion `sha256:e84a6283…`.
+- **Décisions** :
+  - #225 reportée en v3.0.6 (milestone 20) : `relay.failover` aussi au redémarrage (`reason: released`) et propagé au parent. Issues : #244 `host.rerouted`, #245 `relay.up/down`, #246 file amont/`relay.converged`, #247 doc de la perte de `host.down` direct.
+  - #239 : second hôte = **srv1 (192.168.1.211)**. Tous les hôtes du labo portent MooseFS et k8s : **ne jamais interférer**, projet isolé.
+  - Images GHCR privées : pull sur les hôtes avec un jeton `read:packages` à durée courte, supprimé après usage.
+  - Version : `main.Version` (minion, inventory), `internal/cli.Version` (serveur), format `<composant> version <v>`. Seuils `release.yml` : serveur et minion ≥ 3.0.4, inventory ≥ 3.0.5.
+  - `docker compose exec` impose `/app/secagent-server` (le PATH de l'image ne contient pas `/app`).
+  - Job CI `slow-qa`, en parallèle de `slow-tests`.
+- **Pour la prochaine session** :
+  - **Secrets et PKI de qualif PERDUS** (redémarrage WSL 2026-11-03) : à régénérer au début de LOT-6, en `*_FILE`. Sur `.218`, `secagent-qualif` tourne encore avec les images de LOT-1 et des secrets perdus.
+  - Fichier non suivi `GO/cmd/secagent-server/internal/integration/zz_old_i2_test.go`, à supprimer par l'utilisateur.
+  - Suivis : B63 (`pip install --require-hashes` dans 3 jobs CI) ; `~/.cache/go-build` de l'utilisateur a pris 14 Mo, origine inconnue ; 7 PR Dependabot (#199-#205) à fermer au GATE 4 ; Environments GitHub `release`/`candidate` et protection de `main` = réglages utilisateur.
+  - **Règle de commit** : `git commit -- <chemins>` après `git diff --cached --stat` (incident `166638e`). Les `.git/index.lock` orphelins se suppriment avec l'accord du CDP.
+- **Issues v3.0.5** : ouvertes #237, #197, #238, #229, #241, #240, #239. Fermées pendant la session : #234, #215, #218, #216, #222 (LOT-3) ; #233, #219, #220, #221 (LOT-4) ; #223, #236, #228, #231 (LOT-5).
+
 ## Version et environnements
 - **Version produit : v3.0.4 publiée le 2026-10-08** (release GitHub « Latest », site gh-pages à jour). v3.0.3 publiée le 2026-10-07 (`cbd4eca`). Tags : v1.0.0, v2.0.0, v3.0.3, v3.0.4.
 - **`main`** = `3571cfe` : PR #242 `milestone/v3.0.4` → `main` mergée en **squash** le 2026-11-01 (1 parent `ef553d4`, arbre identique à `e36243e`, checks 23 verts / 1 ignoré). Les commits `af901d3`, `d8fb7b7`, `099eb6e`, `e36243e` sont dans main via ce squash (plus aucun « non poussé »). Branche distante `milestone/v3.0.4` supprimée ; plus de branche de travail milestone, checkout sur `main`. Prochaine branche : `milestone/v3.0.5` à l'ouverture du dev (due date à poser à ce moment). **Le `schedule` de `failover.yml` est volontairement commenté** : à réactiver par une PR séparée.
