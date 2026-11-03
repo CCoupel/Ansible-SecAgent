@@ -161,9 +161,10 @@ Voir [DOC/security/SECURITY.md](./DOC/security/SECURITY.md) pour le modèle comp
 - ✅ **Phase 14** : Stabilité v3.0.2-3.0.3 (event propagation, group vars, topologie dynamique)
   - ✅ v3.0.2 : Événements origin-first, inventory hiérarchique, group vars validés
   - ✅ v3.0.3 : État fichier (retiré NATS), TLS natif, Compose multi-hôtes, verrou HA
-  - ⏳ v3.0.4 : jetons de lien signés par la racine, ancre épinglée, rotation/révocation, `state rekey` (fusionnée, tag non posé)
+  - ✅ v3.0.4 : jetons de lien signés par la racine, ancre épinglée, rotation/révocation, `state rekey` (publiée le 2026-10-08)
+  - ⏳ v3.0.5 : durcissement et dettes de la v3.0.4, renouvellement des JWT d'agent, licence AGPL-3.0-or-later (en cours de livraison, non publiée)
 
-**Dernière version publiée : v3.0.3** — GO rewrite 100%, state file HA. **v3.0.4** (jetons de lien EdDSA signés par la racine, `state rekey`, limites de concurrence) est fusionnée dans `main` mais pas encore publiée : voir `docs/releases/v3.0.4.md`.
+**Dernière version publiée : v3.0.4** (2026-10-08) — jetons de lien EdDSA signés par la racine, `state rekey`, limites de concurrence : voir `docs/releases/v3.0.4.md`. **v3.0.5** (renouvellement des JWT d'agent, durcissement, licence AGPL-3.0-or-later) est en cours de livraison et n'est pas encore publiée : voir `docs/releases/v3.0.5.md`.
 
 ## Licence
 

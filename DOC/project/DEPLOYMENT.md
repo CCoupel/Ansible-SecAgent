@@ -4,7 +4,7 @@
 
 ## Architecture
 
-Ansible-SecAgent v3.0.3 est composé de trois éléments :
+Ansible-SecAgent v3.0.5 est composé de trois éléments :
 
 ### 1. **Serveur Relay** (secagent-server GO)
 - **Transports** : HTTP REST + WebSocket persistante (TLS natif sur tous les ports)
