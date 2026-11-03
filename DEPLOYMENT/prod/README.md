@@ -57,6 +57,15 @@ Il vérifie, avec 500 fichiers : `O_CREAT|O_EXCL` (un seul gagnant par fichier),
 lu), `fsync` fichier et répertoire. À répéter (au moins 3 fois), horloges synchronisées (NTP). Complément manuel : `kill -9`
 d'un maître pendant l'écriture, puis `secagent-server state verify <STATE_DIR>/relay.state` (avec `RSA_MASTER_KEY`). Supprimer ensuite `.storage-test`.
 
+### Stockages partagés qualifiés
+
+| Stockage | Statut | Preuve |
+|---|---|---|
+| **MooseFS** (FUSE `mfs#<maître>:9421`, `rw,relatime,allow_other`, monté sur deux hôtes) | **validé** le 2026-11-03 (qualif 192.168.1.218 + 192.168.1.211, v3.0.5, #239) | `test_shared_storage.py` : 3 exécutions (écrivain h218, h211, h218), 500 fichiers `O_EXCL` à un seul gagnant chacune, 0 lecture partielle sur ≈ 50 000 lectures ; paire a/b répartie sur deux hôtes, `STATE_DIR` en bind mount du partage : arrêt propre du maître → reprise en 2,3 s ; gel (SIGSTOP) → maître `unhealthy` à 63 s, reprise par l'autre nœud à 219 s, le maître gelé s'auto-retire au dégel (`lock lost`, code 75, redémarré en secondaire par la politique de redémarrage) : jamais deux maîtres ; `kill` → reprise en 305 s, un seul `relay.lock`, `state verify` OK. |
+| NFS, CIFS/SMB, autres | non testé = **non supporté** | — |
+
+Non réalisé : la coupure du montage lui-même (nécessite d'agir sur le réseau ou le montage de l'hôte, hors périmètre d'une qualification qui ne touche pas au cluster MooseFS) ; le test manuel de coupure reste à faire avant toute mise en production sur un autre stockage.
+
 ## Variables d'environnement essentielles
 
 **Relay (secagent-server) :**
