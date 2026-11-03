@@ -1,0 +1,58 @@
+name: CLA
+
+# LOT-7 / #237 (D12, D13) : signature du Harmony CLA (CLA.md, entites : CLA-entity.md) par chaque contributeur d'une PR.
+# contributor-assistant/github-action (« CLA assistant lite ») : signature = commentaire exact sur la PR, enregistree dans
+# signatures/cla.json sur la branche dediee `cla-signatures` (aucun service tiers).
+#
+# SECURITE (pull_request_target) : ce workflow s'execute dans le contexte du depot de base, avec un jeton en ECRITURE,
+# meme pour une PR venant d'un fork. Il ne fait donc AUCUN checkout et n'execute AUCUN code de la PR : une seule etape,
+# l'action epinglee par SHA, qui ne lit que les metadonnees de la PR (auteurs des commits, commentaires) via l'API.
+# Ne jamais ajouter ici d'etape `actions/checkout`, de `run:` ni d'appel a un script du depot.
+#
+# Prerequis (action humaine, une fois) : branche `cla-signatures` creee et NON protegee (l'action y commite), `main`
+# protegee (le jeton a contents: write sur tout le depot).
+
+on:
+  pull_request_target:
+    types: [opened, closed, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+concurrency:
+  # une seule ecriture a la fois dans signatures/cla.json (deux signatures simultanees se marcheraient dessus)
+  group: cla-signatures
+  cancel-in-progress: false
+
+jobs:
+  cla:
+    name: CLA signe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Commentaire : seulement sur une PR (pas une issue), et seulement les deux textes reconnus par l'action.
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request &&
+       (github.event.comment.body == 'recheck' ||
+        github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA'))
+    # Permissions verifiees contre le code de l'action (src/ au SHA epingle) :
+    #   contents: write      -> createOrUpdateFileContents de signatures/cla.json (branche cla-signatures)
+    #   pull-requests: write -> commentaire de la PR (creation/mise a jour), verrouillage apres merge
+    #   actions: write       -> reRunWorkflow : relance le controle de la PR apres une signature par commentaire
+    # statuses: write n'est PAS accorde : l'action n'appelle aucune API de statut (le job echoue tant qu'il manque une signature).
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - name: CLA Assistant
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-signatures: signatures/cla.json
+          path-to-document: https://github.com/CCoupel/Ansible-SecAgent/blob/main/CLA.md
+          branch: cla-signatures
+          allowlist: CCoupel,dependabot[bot]
+          lock-pullrequest-aftermerge: true
