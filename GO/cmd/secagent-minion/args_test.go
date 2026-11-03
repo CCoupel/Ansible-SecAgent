@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package main
 
 import (
@@ -81,5 +84,44 @@ func TestInitBannerCarriesTheInjectedVersion(t *testing.T) {
 	}
 	if strings.Contains(initBanner(), "v1.0") {
 		t.Error("hard-coded v1.0 still in the banner")
+	}
+}
+
+// assertVersionThreeLines: exactly 3 lines, line 1 = "<component> version <version>", nothing after the last \n.
+func assertVersionThreeLines(t *testing.T, label, stdout, stderr, component, version string) {
+	t.Helper()
+	if stderr != "" {
+		t.Errorf("%s: stderr = %q, want empty", label, stderr)
+	}
+	if !strings.HasSuffix(stdout, "\n") || strings.HasSuffix(stdout, "\n\n") {
+		t.Errorf("%s: stdout must end with exactly one newline, got %q", label, stdout)
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	want := []string{
+		component + " version " + version,
+		"License: AGPL-3.0-or-later",
+		"Source: https://github.com/CCoupel/Ansible-SecAgent",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("%s: %d lines, want exactly %d: %q", label, len(lines), len(want), stdout)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Errorf("%s: line %d = %q, want %q", label, i+1, lines[i], want[i])
+		}
+	}
+}
+
+func TestVersionThreeExactLines(t *testing.T) {
+	old := Version
+	Version = "3.0.5"
+	defer func() { Version = old }()
+	for _, a := range []string{"--version", "-v"} {
+		var out, errb bytes.Buffer
+		proceed, code := handleArgs([]string{a}, &out, &errb)
+		if proceed || code != 0 {
+			t.Fatalf("%s: proceed=%v code=%d, want false/0", a, proceed, code)
+		}
+		assertVersionThreeLines(t, a, out.String(), errb.String(), "secagent-minion", "3.0.5")
 	}
 }

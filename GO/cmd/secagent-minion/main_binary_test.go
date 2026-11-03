@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package main
 
 import (
@@ -65,9 +68,10 @@ func TestBinary_VersionAnswersWithoutStartingAnything(t *testing.T) {
 	bin := buildMinion(t, "-X main.Version=9.8.7")
 	for _, flag := range []string{"--version", "-v"} {
 		out, errOut, code, files := runMinion(t, bin, nil, flag)
-		if out != "secagent-minion version 9.8.7\nLicense: AGPL-3.0-or-later\nSource: https://github.com/CCoupel/Ansible-SecAgent\n" || errOut != "" || code != 0 {
-			t.Errorf("%s: stdout=%q stderr=%q rc=%d", flag, out, errOut, code)
+		if code != 0 {
+			t.Errorf("%s: rc=%d", flag, code)
 		}
+		assertVersionThreeLines(t, flag, out, errOut, "secagent-minion", "9.8.7")
 		if len(files) != 0 {
 			t.Errorf("%s: files created in the data directory: %v (a key was generated?)", flag, files)
 		}
