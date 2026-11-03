@@ -116,7 +116,7 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: ghcr.io/ccoupel/${{ matrix.image }}:sha-${{ steps.commit.outputs.sha }}
-          labels: org.opencontainers.image.licenses=MIT
+          labels: org.opencontainers.image.licenses=AGPL-3.0-or-later
           provenance: true
           sbom: true
           cache-from: type=gha,scope=${{ matrix.image }}

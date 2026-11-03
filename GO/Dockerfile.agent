@@ -36,6 +36,9 @@ RUN addgroup -S relay && adduser -S relay -G relay
 
 # Copy binary from builder
 COPY --from=builder /build/secagent-minion /app/secagent-minion
+# AGPL-3.0-or-later license and third-party notices of the linked modules (#237): tracked copies in GO/ (build context),
+# kept identical to the root originals by scripts/ci/gen_third_party_notices.sh --check (lint job).
+COPY LICENSE THIRD_PARTY_NOTICES.md /app/
 
 # Entrypoint: runs as root to set up dirs + key, then drops to relay via su-exec
 # Workaround for Go os.IsNotExist() not handling wrapped errors (uses errors.Is instead)

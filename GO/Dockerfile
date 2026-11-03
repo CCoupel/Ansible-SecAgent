@@ -30,6 +30,9 @@ WORKDIR /app
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /build/secagent-server /app/secagent-server
+# Licence AGPL-3.0-or-later et mentions tierces des modules lies (#237) : copies suivies dans GO/ (contexte de build),
+# gardees identiques aux originaux de la racine par scripts/ci/gen_third_party_notices.sh --check (job lint).
+COPY LICENSE THIRD_PARTY_NOTICES.md /app/
 
 # Utilisateur non-root, UID/GID FIXES : le meme sur tous les hotes, car STATE_DIR est un partage
 # (NFS) dont les droits sont portes par l'UID numerique (voir DEPLOYMENT/prod/README.md).

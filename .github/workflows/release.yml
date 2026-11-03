@@ -247,7 +247,7 @@ jobs:
             type=raw,value=latest,enable=${{ needs.prepare.outputs.is_latest == 'true' }}
           labels: |
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
-            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
 
       # Date du commit du tag : horodatages reproductibles (rewrite-timestamp) pour un rebuild deterministe.
       - name: SOURCE_DATE_EPOCH
@@ -440,12 +440,14 @@ jobs:
           else
             echo "::notice::secagent-inventory : tag anterieur a v3.0.5, version non verifiee"
           fi
-          # LICENSE publiee a cote des binaires (et couverte par SHA256SUMS) des v3.0.5 (#237) ; le tag est checkout : le fichier
-          # y est, son absence fait echouer la release. Tag plus ancien republie par workflow_dispatch : ::notice::.
+          # LICENSE et mentions tierces (licences des modules Go lies statiquement : leurs licences permissives exigent leur reproduction)
+          # publiees a cote des binaires (et couvertes par SHA256SUMS) des v3.0.5 (#237) ; le tag est checkout : les fichiers
+          # y sont, leur absence fait echouer la release. Tag plus ancien republie par workflow_dispatch : ::notice::.
           if version_ge 3.0.5; then
             cp LICENSE dist/LICENSE
+            cp THIRD_PARTY_NOTICES.md dist/THIRD_PARTY_NOTICES.md
           else
-            echo "::notice::LICENSE : tag anterieur a v3.0.5, non jointe a la release"
+            echo "::notice::LICENSE, THIRD_PARTY_NOTICES.md : tag anterieur a v3.0.5, non joints a la release"
           fi
           cd dist
           sha256sum ./* > "SHA256SUMS-${VERSION}.txt"
