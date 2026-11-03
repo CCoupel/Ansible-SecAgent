@@ -123,15 +123,15 @@ Séquence correcte :
 
 | Nom | Rôle | Fichier | Spawn |
 |-----|------|---------|-------|
-| `planner` | Backlog GitHub Issues + structuration des phases (type `implementation-planner`) | `.claude/agents/implementation-planner.template.md` + compagnon `implementation-planner.md` | permanent |
-| `dev-agent` | Développeur secagent-minion (GO, `GO/cmd/secagent-minion/`) | `.claude/agents/dev-agent.template.md` + compagnon `dev-agent.md` | permanent |
-| `dev-relay` | Développeur secagent-server (GO, `GO/cmd/secagent-server/`) | `.claude/agents/dev-relay.template.md` + compagnon `dev-relay.md` | permanent |
-| `dev-inventory` | Développeur secagent-inventory (GO, `GO/cmd/secagent-inventory/`) | `.claude/agents/dev-inventory.template.md` + compagnon `dev-inventory.md` | permanent |
-| `dev-connexion` | Développeur plugin connexion Ansible (Python, `SECAGENT-PYTHON/`) | `.claude/agents/dev-connexion.template.md` (dev-plugin) + compagnon `dev-connexion.md` | permanent |
-| `test-writer` | Rédaction des tests (unitaires, intégration, E2E) | `.claude/agents/test-writer.template.md` | permanent |
-| `qa` | Exécution des tests, verdict GO/NOGO | `.claude/agents/qa.template.md` | permanent |
-| `security-reviewer` | Audit sécurité (TLS, JWT, become_pass, enrollment) | `.claude/agents/security-reviewer.md` | permanent |
-| `deployer` | BUILD / PUBLISH / DEPLOY QUALIF (Docker Compose 192.168.1.218) et PROD (Docker Compose, même hôte) | `.claude/agents/deploy.template.md` + compagnons `environments/deploy.{qualif,prod}.md` | permanent |
+| `planner` | Backlog GitHub Issues + structuration des phases (type `implementation-planner`) | `.claude/agents/implementation-planner.template.md` + compagnon `implementation-planner.md` | socle |
+| `dev-agent` | Développeur secagent-minion (GO, `GO/cmd/secagent-minion/`) | `.claude/agents/dev-agent.template.md` + compagnon `dev-agent.md` | milestone |
+| `dev-relay` | Développeur secagent-server (GO, `GO/cmd/secagent-server/`) | `.claude/agents/dev-relay.template.md` + compagnon `dev-relay.md` | milestone |
+| `dev-inventory` | Développeur secagent-inventory (GO, `GO/cmd/secagent-inventory/`) | `.claude/agents/dev-inventory.template.md` + compagnon `dev-inventory.md` | milestone |
+| `dev-connexion` | Développeur plugin connexion Ansible (Python, `SECAGENT-PYTHON/`) | `.claude/agents/dev-connexion.template.md` (dev-plugin) + compagnon `dev-connexion.md` | milestone |
+| `test-writer` | Rédaction des tests (unitaires, intégration, E2E) | `.claude/agents/test-writer.template.md` | milestone |
+| `qa` | Exécution des tests, verdict GO/NOGO | `.claude/agents/qa.template.md` | milestone |
+| `security-reviewer` | Audit sécurité (TLS, JWT, become_pass, enrollment) | `.claude/agents/security-reviewer.md` | socle |
+| `deployer` | BUILD / PUBLISH / DEPLOY QUALIF (Docker Compose 192.168.1.218) et PROD (Docker Compose, même hôte) | `.claude/agents/deploy.template.md` + compagnons `environments/deploy.{qualif,prod}.md` | socle |
 | `marketing` | Communication de release (release notes, posts, site `gh-pages`) | `.claude/agents/marketing-release.template.md` | ponctuel |
 
 > **Convention template/compagnon** : `xxx.template.md` = template synchronisé (gitignoré, jamais édité) ;
@@ -174,9 +174,15 @@ Tu **coordonnes et dispatches**. Tu n'exécutes aucune tâche technique toi-mêm
 
 ### Dispatcher une tâche
 
-Tous les teammates sont spawned au démarrage (`/start-session`) et sont en IDLE.
-**Pendant la session : uniquement `SendMessage` — jamais de spawn**, sauf les agents `ponctuel` de la table
-(`security`, `infra`, `marketing`…) : spawnés à la demande par leur commande ou leur phase, puis arrêtés (`TaskStop`).
+Les agents `socle` sont spawnés au démarrage (`/start-session`) ; la team du milestone l'est au GATE 2 (`agents/context/MILESTONE_CADRAGE.md`). Tous attendent en IDLE.
+**Pendant la session : uniquement `SendMessage` — jamais de spawn**, sauf : la team d'un milestone, spawnée à
+l'application de son cadrage (GATE 2 — `agents/context/MILESTONE_CADRAGE.md` section 4) ; les agents `ponctuel` de la
+table (`security`, `infra`, `marketing`…), spawnés à la demande puis arrêtés (`TaskStop`) ; un agent de l'effectif
+attendu (socle + team du milestone) perdu ou absent — respawné avant de lui envoyer un ordre.
+
+**Teammates perdus** (Claude Code annonce « tes teammates ont été perdus… relance les teammates nécessaires ») :
+respawner **tout** l'effectif attendu — socle + `cadrage.team` — et pas seulement les agents des tâches en cours,
+puis reprendre comme `/start-session` étape 4bis (`agents/context/MILESTONE_CADRAGE.md` 4.2).
 
 ```
 SendMessage({ to: "<nom-canonique>", content: "<tâche complète>" })
