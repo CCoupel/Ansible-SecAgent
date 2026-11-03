@@ -5,8 +5,8 @@ Usage : python3 -I ghcr_image_archive.py <depot> <digest_index> <tag_local> <sor
   ex. : ghcr_image_archive.py secagent-server sha256:<digest-de-l-index-attesté> secagent-server:cand-<sha12> server.tar
 
 Garde-fous :
-  * l'ATTESTATION de l'index est verifiee AVANT toute requete authentifiee et toute ecriture (`gh attestation verify`,
-    gh >= 2.49 ; variable GH_BIN pour un binaire autre que `gh`) : echec => arret ;
+  * l'ATTESTATION de l'index est verifiee AVANT toute requete authentifiee et toute ecriture (`gh attestation verify`
+    avec `--signer-workflow` = candidate-images.yml du depot, gh >= 2.49 ; variable GH_BIN pour un binaire autre que `gh`) : echec => arret ;
   * le jeton vient de `gh auth token` (jamais affiche ni ecrit) ; Basic uniquement vers https://ghcr.io/token ;
     Bearer uniquement vers https://ghcr.io/ ; AUCUNE redirection automatique : sur un 30x l'hote est controle (liste
     blanche, https seulement) et la requete est refaite SANS en-tete Authorization (les URL de blob sont deja signees) ;
@@ -20,8 +20,9 @@ OWNER = "ccoupel"
 ATTEST_REPO = "CCoupel/Ansible-SecAgent"
 REGISTRY = "https://ghcr.io/"
 # Hotes autorises pour une redirection (stockage des blobs de GHCR) ; https obligatoire.
-REDIRECT_HOSTS = ("ghcr.io", "pkg-containers.githubusercontent.com")
-REDIRECT_SUFFIXES = (".githubusercontent.com",)
+REDIRECT_HOSTS = ("pkg-containers.githubusercontent.com",)   # un seul hote, aucun suffixe : toute autre destination est refusee
+REDIRECT_SUFFIXES = ()
+SIGNER_WORKFLOW = ATTEST_REPO + "/.github/workflows/candidate-images.yml"   # seul workflow autorise a signer les images
 ACCEPT = "application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json"
 TIMEOUT = 60
 MAX_REDIRECTS = 3
@@ -64,7 +65,7 @@ def http_get(url, headers, limit, *, schemes=("https",), hosts=("ghcr.io",), red
             if e.code not in (301, 302, 303, 307, 308):
                 raise
             loc = urllib.parse.urljoin(url, e.headers.get("Location", ""))
-            if not _host_ok(loc, schemes, tuple(redirect_hosts) + tuple(hosts), redirect_suffixes):
+            if not _host_ok(loc, schemes, tuple(redirect_hosts), redirect_suffixes):
                 sys.exit(f"redirection refusee vers {urllib.parse.urlsplit(loc).scheme}://{urllib.parse.urlsplit(loc).hostname}")
             url = loc
             hdrs = {k: v for k, v in hdrs.items() if k.lower() not in ("authorization", "cookie")}   # jamais recopie
@@ -73,7 +74,8 @@ def http_get(url, headers, limit, *, schemes=("https",), hosts=("ghcr.io",), red
 
 def attest(repo, index_digest):
     gh = os.environ.get("GH_BIN", "gh")
-    r = subprocess.run([gh, "attestation", "verify", f"oci://ghcr.io/{OWNER}/{repo}@{index_digest}", "--repo", ATTEST_REPO],
+    r = subprocess.run([gh, "attestation", "verify", f"oci://ghcr.io/{OWNER}/{repo}@{index_digest}", "--repo", ATTEST_REPO,
+                        "--signer-workflow", SIGNER_WORKFLOW],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if r.returncode != 0:
         sys.exit("attestation NON verifiee (gh attestation verify, gh >= 2.49 requis) :\n" + r.stdout[-800:])

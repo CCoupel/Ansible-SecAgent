@@ -67,6 +67,35 @@ try:
     m.http_get(f"http://127.0.0.1:{pb}/big", {}, 100, **lenient); fails.append("plafond de lecture ignore")
 except SystemExit: pass
 
+# 4b. liste blanche des redirections REELLE : un seul hote de stockage ; ghcr.io lui-meme, un autre sous-domaine
+#     githubusercontent, http, un domaine voisin sont refuses ; l'hote attendu est accepte
+ok = lambda u: m._host_ok(u, ("https",), m.REDIRECT_HOSTS, m.REDIRECT_SUFFIXES)
+if m.REDIRECT_HOSTS != ("pkg-containers.githubusercontent.com",) or m.REDIRECT_SUFFIXES != (): fails.append("liste blanche elargie")
+if not ok("https://pkg-containers.githubusercontent.com/ghcr1/blobs/sha256:abc?x=1"): fails.append("hote de stockage refuse")
+for bad in ("https://ghcr.io/v2/x", "https://objects.githubusercontent.com/x", "https://evilgithubusercontent.com/x",
+            "https://pkg-containers.githubusercontent.com.evil.example/x", "http://pkg-containers.githubusercontent.com/x"):
+    if ok(bad): fails.append(f"redirection acceptee: {bad}")
+# redirection reelle (faux serveur) vers ghcr.io (hote d'origine autorise, mais PAS hote de redirection) : refusee AVANT toute requete
+seen.clear()
+sa4, pa4 = serve(make_a(pb, location="https://ghcr.io/v2/"))
+try:
+    m.http_get(f"http://127.0.0.1:{pa4}/x", {"Authorization": "Bearer S"}, 100, schemes=("http", "https"), hosts=("127.0.0.1", "ghcr.io"))
+    fails.append("redirection vers ghcr.io suivie")
+except SystemExit: pass
+except Exception as e: fails.append(f"redirection vers ghcr.io tentee ({type(e).__name__})")
+
+# 4c. attestation : le signataire est contraint au workflow candidate-images.yml du depot
+import stat, subprocess, tempfile
+with tempfile.TemporaryDirectory() as td:
+    fake = os.path.join(td, "gh"); log = os.path.join(td, "args")
+    open(fake, "w").write(f'#!/bin/sh\nprintf "%s\\n" "$@" > {log}\nexit 0\n'); os.chmod(fake, 0o700)
+    os.environ["GH_BIN"] = fake
+    m.attest("secagent-server", "sha256:" + "a" * 64)
+    args = open(log).read().split("\n")
+    if "--signer-workflow" not in args or args[args.index("--signer-workflow") + 1] != "CCoupel/Ansible-SecAgent/.github/workflows/candidate-images.yml":
+        fails.append(f"signer-workflow absent ou different: {args}")
+    if "--repo" not in args or args[args.index("--repo") + 1] != "CCoupel/Ansible-SecAgent": fails.append("--repo absent")
+
 # 5. filtre du depot et du digest
 for args in (("a/b", "sha256:" + "0" * 64), ("ok", "sha256:zz"), ("a:b", "sha256:" + "0" * 64), ("UP", "sha256:" + "0" * 64)):
     try: m.main(*args, "t:t", "/nonexistent/x.tar"); fails.append(f"arguments acceptes: {args}")
