@@ -28,8 +28,9 @@ sudo chown 10001:10001 tls/tls.key && sudo chmod 0400 tls/tls.key
 # (sans sudo, essai local UNIQUEMENT : `chmod 0644 tls/tls.key` rend la clé privée lisible par tous, ne jamais le reproduire ailleurs)
 
 # Secrets du serveur (hors dépôt)
-cp qualif.env.example qualif.env
-# Renseigner dans qualif.env : JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY
+# v3.0.5 : trois fichiers (0400) dans secrets/, déposés dans le volume secagent-qualif_secrets (lus via *_FILE)
+#   mkdir -p secrets && for n in jwt_secret_key admin_token rsa_master_key; do openssl rand -base64 48 | tr -d '\n' > secrets/$n; done
+#   bash chain-test.sh push-secrets
 #   (valeurs aléatoires fictives à générer, ex. `openssl rand -base64 48` pour les trois, comme dans INSTALL_SERVER.md ;
 #    RSA_MASTER_KEY : 32 octets minimum, sinon `state init` et le démarrage sont refusés ; c'est un secret
 #    dont dérivent l'HMAC de l'état et le chiffrement AES-GCM de ses secrets, pas une clef RSA)
@@ -44,7 +45,7 @@ export QUALIF_TLS_DIR="$PWD/tls"
 ## 2️⃣ Initialiser l'état (2 min)
 
 Le serveur **ne crée jamais son état implicitement** : sans `relay.state` il refuse de démarrer.
-`state init` exige `RSA_MASTER_KEY` (présent dans `qualif.env`, chargé par le Compose).
+`state init` exige `RSA_MASTER_KEY` (fichier `rsa_master_key` du volume de secrets, lu via `RSA_MASTER_KEY_FILE`).
 
 ```bash
 # Crée relay.state (clef RSA-4096 du serveur + secret JWT) dans le volume partagé
@@ -77,7 +78,7 @@ curl -s --cacert tls/tls.crt https://localhost:7770/health
 ## 4️⃣ Créer les jetons et enrôler un agent (4 min)
 
 La CLI parle à l'API d'administration (7771, TLS). Dans le conteneur : `RELAY_API_URL` pointe sur
-`https://localhost:7771`, `REPEATER_CA_FILE` sur le certificat monté, `ADMIN_TOKEN` vient de `qualif.env`.
+`https://localhost:7771`, `REPEATER_CA_FILE` sur le certificat monté, `ADMIN_TOKEN` vient du fichier `admin_token` (`ADMIN_TOKEN_FILE`).
 
 ```bash
 # Alias de commodité : exécute la CLI dans l'instance a
@@ -184,7 +185,7 @@ docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent
 | Problème | Cause | Solution |
 |----------|-------|----------|
 | Le conteneur redémarre en boucle, « relay.state » absent | État non initialisé | Exécuter `state init` (étape 2) |
-| `state init` échoue | `RSA_MASTER_KEY` absent de `qualif.env` | Renseigner `RSA_MASTER_KEY` |
+| `state init` échoue | fichier `rsa_master_key` absent du volume de secrets | `bash chain-test.sh push-secrets` |
 | Refus de démarrer : « admin API … plain HTTP on a non-loopback address » | `ADMIN_ADDR` non loopback sans `ADMIN_TLS=true` | Le Compose qualif fixe `ADMIN_TLS=true` ; ne pas le retirer |
 | `curl` : certificat inconnu / SAN absent | Certificat sans SAN | Regénérer avec `-addext subjectAltName=...` |
 | Rien n'écoute sur 7770 | Cette instance est secondaire (aucun port ouvert) | Interroger l'autre instance (`8770`) ; `status --local` indique le rôle |

@@ -24,7 +24,7 @@ inventaire, exécution) est dans **[DOC/project/QUICKSTART.md](./DOC/project/QUI
 ```bash
 cd DEPLOYMENT/qualif   # Compose réel : docker-compose.server.yml (SECAGENT_IMAGE et QUALIF_TLS_DIR requis)
 
-# 1. État initial (RSA_MASTER_KEY requis dans qualif.env ; le serveur refuse de démarrer sans relay.state)
+# 1. État initial (RSA_MASTER_KEY requis, fichier du volume de secrets (`chain-test.sh push-secrets`) ; le serveur refuse de démarrer sans relay.state)
 docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent-server-a state init
 
 # 2. Démarrer (deux instances actif/passif sur un volume partagé ; le secondaire n'ouvre aucun port)

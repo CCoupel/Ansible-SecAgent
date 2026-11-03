@@ -82,6 +82,7 @@ _work/
 DEPLOYMENT/prod/prod.env
 DEPLOYMENT/prod/.env
 DEPLOYMENT/qualif/qualif.env
+DEPLOYMENT/qualif/secrets/
 DEPLOYMENT/qualif/.ci-tls/
 
 # Binaires precompiles (jamais suivis ; releases par la CI)

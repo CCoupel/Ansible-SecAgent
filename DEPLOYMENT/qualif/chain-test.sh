@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Topologie de qualif EN CHAINE (#188) : amorcage, smoke et bascule de la racine.
 #
-#   chain-test.sh ci-prepare   # CI uniquement : PKI de test + qualif.env aleatoire et jetable
+#   chain-test.sh ci-prepare   # CI uniquement : PKI de test + secrets aleatoires et jetables (secrets/, fichiers 0400)
 #   chain-test.sh bootstrap    # state init (racine, enfant), relays add, jetons enrolement/plugin, demarrage
 #   chain-test.sh smoke        # relais connectes, minions connectes, inventaire hierarchique, ansible -m ping
 #   chain-test.sh failover     # arret propre du maitre de la racine (failover-test.sh) puis smoke
@@ -9,6 +9,7 @@
 #   chain-test.sh load-images <dir>  # docker load des images d'un artefact CI (sans registre), SECAGENT_PULL_POLICY=never
 #   chain-test.sh push-tls     # TLS_MODE=volume : copie les certificats dans le volume Docker (hote distant)
 #   chain-test.sh push-hooks    # hooks.json -> volume ${PROJECT}_hooks (fait par bootstrap)
+#   chain-test.sh push-secrets  # secrets/ -> volume ${PROJECT}_secrets, 10001 0400 (fait par bootstrap)
 #   chain-test.sh push-link-key  # cle publique racine (+ jeton de lien s'il existe) -> volume ${PROJECT}_link
 #   chain-test.sh link-rotation  # rotation de la cle de lien, confirmation, nouveau jeton, retire-link-previous (v3.0.4)
 #   chain-test.sh link-revoke    # revocation du lien d'un enfant : fermeture 4010, pas de reconnexion, puis remise en etat
@@ -67,7 +68,7 @@ need() { [ -n "${!1:-}" ] || fail "variable $1 obligatoire"; }
 
 # Diagnostic des conteneurs du projet qui ne sont pas sains (appele par fail() : la CI montre la vraie cause d'un
 # healthcheck qui ne passe jamais). UNIQUEMENT l'etat (jamais `docker inspect` complet : Config.Env contient
-# JWT_SECRET_KEY / ADMIN_TOKEN / RSA_MASTER_KEY de qualif.env) et la fin des logs (les valeurs de secrets n'y figurent pas).
+# JWT_SECRET_KEY / ADMIN_TOKEN / RSA_MASTER_KEY : plus en variable depuis v3.0.5, #197) et la fin des logs (les valeurs de secrets n'y figurent pas).
 diag_unhealthy() {
   local c st
   echo "== DIAGNOSTIC (projet $PROJECT) ==" >&2
@@ -154,9 +155,7 @@ load_images() {
 
 ci_prepare() {
   bash "$HERE/pki/gen.sh" "$QUALIF_TLS_DIR"
-  ( umask 077
-    { echo "JWT_SECRET_KEY=$(openssl rand -hex 32)"; echo "ADMIN_TOKEN=$(openssl rand -hex 24)"
-      echo "RSA_MASTER_KEY=$(openssl rand -hex 32)"; } > "$HERE/qualif.env" )
+  gen_secrets   # $SECRETS_DIR (defaut ./secrets) : jwt_secret_key, admin_token, rsa_master_key en fichiers 0400
 }
 
 bootstrap() {
@@ -164,6 +163,7 @@ bootstrap() {
   verify_images
   mkdir -p "$CHAIN_DIR"; chmod 700 "$CHAIN_DIR"
   push_hooks
+  push_secrets   # secrets serveur -> volume ${PROJECT}_secrets (10001, 0400) ; lus via *_FILE
   echo "== etat initial (racine)"
   "${DC[@]}" run --rm --no-deps secagent-server-a state init
   echo "== racine : demarrage et identification du maitre"
@@ -271,22 +271,30 @@ backup_restore() {
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'tar -xf - -C /backup && chmod 755 /backup && chmod 644 /backup/relay.state'
 
-  grep '^RSA_MASTER_KEY=' "$HERE/qualif.env" | write_secret "backup-key/rsa_master_key"
-  echo "== sinistre : arret de la racine, perte du volume d'etat, perte de la cle sur l'hote"
+  # La cle est sauvegardee a part (jamais dans le volume d'etat ni dans la sauvegarde de l'etat) : copie du fichier de secret.
+  [ -s "$SECRETS_DIR/rsa_master_key" ] || fail "$SECRETS_DIR/rsa_master_key absent (secrets du poste de controle)"
+  ( umask 077; cp "$SECRETS_DIR/rsa_master_key" "$key/rsa_master_key" ); chmod 400 "$key/rsa_master_key"
+  echo "== sinistre : arret de la racine, perte du volume d'etat, puis cle absente et cle erronee"
   "${DC[@]}" rm -sf secagent-server-a secagent-server-b >/dev/null
   docker volume rm "${PROJECT}_secagent_state" >/dev/null
-  cp "$HERE/qualif.env" "$CHAIN_DIR/qualif.env.lost"; chmod 600 "$CHAIN_DIR/qualif.env.lost"
-  sed -i '/^RSA_MASTER_KEY=/d' "$HERE/qualif.env"
+  # Les secrets sont des fichiers d'un volume : « sans la cle » = RSA_MASTER_KEY_FILE vide (cle non definie, code 6) ;
+  # « mauvaise cle » = volume portant une autre valeur (code 2). Les variables directes RSA_MASTER_KEY + *_FILE ensemble
+  # seraient refusees au demarrage (ambiguite), et un fichier inexistant donne un code 1 (lecture impossible), d'ou ce choix.
+  local badkey="${PROJECT}_badkey" bkd; bkd="$(mktemp -d -p "$CHAIN_DIR")"
+  ( umask 077; openssl rand -hex 32 | tr -d '\n' > "$bkd/rsa_master_key" ); chmod 400 "$bkd/rsa_master_key"
+  push_secrets "$bkd" "$badkey"
   local rc=0
-  "${DC[@]}" run --rm --no-deps -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
+  "${DC[@]}" run --rm --no-deps -e RSA_MASTER_KEY_FILE= -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
   [ "$rc" = 6 ] || fail "sans RSA_MASTER_KEY : code 6 attendu, obtenu $rc"
   echo "sans la cle : refus (code 6) comme attendu"
   rc=0
-  "${DC[@]}" run --rm --no-deps -e RSA_MASTER_KEY=mauvaise-cle -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
+  "${DC[@]}" run --rm --no-deps -v "$badkey:/run/secagent-secrets:ro" -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
   [ "$rc" = 2 ] || fail "avec une mauvaise cle : code 2 attendu, obtenu $rc"
   echo "mauvaise cle : refus (code 2) comme attendu"
+  docker volume rm "$badkey" >/dev/null || true
+  rm -f "$bkd/rsa_master_key"; rmdir "$bkd"
   echo "== restauration de la cle (depuis la sauvegarde distincte) puis de l'etat sur un volume vierge"
-  { cat "$key/rsa_master_key"; echo; } >> "$HERE/qualif.env"
+  push_secrets "$key"   # remet la cle sauvegardee a part dans le volume de secrets (jwt/admin conserves : push partiel)
   "${DC[@]}" run --rm --no-deps -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null || fail "etat sauvegarde refuse avec la cle restauree"
   "${DC[@]}" run --rm --no-deps -v "$bkvol:/backup:ro" secagent-server-a state restore --from /backup/relay.state
   "${DC[@]}" up -d secagent-server-a secagent-server-b
@@ -494,6 +502,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     load-images) load_images "${2:-}" ;;
     push-tls) push_tls ;;
     push-hooks) push_hooks ;;
+    push-secrets) push_secrets ;;
     push-link-key) push_link_key ;;
     link-rotation) link_rotation ;;
     link-revoke) link_revoke ;;
@@ -502,7 +511,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     admission-503) admission_503 ;;
     down) guard_project; "${DC[@]}" down -v
           # le volume du jeton de lien est EXTERNE (non supprime par down -v) et contient un secret : retrait explicite
-          docker volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" >/dev/null 2>&1 || true ;;
+          docker volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" >/dev/null 2>&1 || true ;;
     *) sed -n '2,27p' "$0"; exit 2 ;;
   esac
 fi

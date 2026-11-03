@@ -2,7 +2,7 @@
 # Test de basculement actif/passif EN CONTENEURS (#174 M6, partage avec #171 B).
 # Verifie que les images et Compose LIVRES se comportent comme prevu : 2 instances sur un meme volume d'etat.
 #
-#   failover-test.sh setup-ci            # CI uniquement : certificats auto-signes, qualif.env, `state init`
+#   failover-test.sh setup-ci            # CI uniquement : certificats auto-signes, secrets en fichiers (volume), `state init`
 #   failover-test.sh run stop            # arret propre du maitre : reprise rapide
 #   failover-test.sh run kill            # docker kill : reprise apres la peremption du verrou (~5-6 min)
 #   failover-test.sh run freeze          # SIGSTOP du maitre : doit passer `unhealthy`, puis SIGCONT : un seul maitre
@@ -37,6 +37,10 @@ fi
 COMPOSE_FILE="${COMPOSE_FILE:-$HERE/docker-compose.server.yml}"
 PROJECT="${PROJECT:-${COMPOSE_PROJECT_NAME:-secagent-qualif}}"   # un SEUL projet (qualif reelle) : memes noms de conteneurs que la chaine, scripts lances SEQUENTIELLEMENT
 C_A="${C_A:-secagent-qualif-a}"; C_B="${C_B:-secagent-qualif-b}"
+# Volume EXTERNE des secrets serveur (#197 item 6, v3.0.5) : trois fichiers (jwt_secret_key, admin_token, rsa_master_key)
+# lus via JWT_SECRET_KEY_FILE / ADMIN_TOKEN_FILE / RSA_MASTER_KEY_FILE ; plus aucun secret en variable d'environnement.
+export SECAGENT_SECRETS_VOLUME="${SECAGENT_SECRETS_VOLUME:-${PROJECT}_secrets}"
+SECRETS_DIR="${SECRETS_DIR:-$HERE/secrets}"   # cote client, ignore par git, fichiers 0400
 STOP_MAX_S="${STOP_MAX_S:-10}"; KILL_MAX_S="${KILL_MAX_S:-600}"
 DC=(docker compose -p "$PROJECT" -f "$COMPOSE_FILE")
 # Fichiers de surcharge optionnels (ex. docker-compose.remote-tls.yml pour un hote Docker distant) : liste separee par des espaces.
@@ -90,17 +94,46 @@ wait_for() { # $1 description, $2 delai max, $3... commande
   awk -v a="$t0" -v b="$(now)" 'BEGIN{printf "%.1f", b-a}'
 }
 
+# Genere des secrets ALEATOIRES et JETABLES (jamais ceux de prod) dans $SECRETS_DIR (0700, fichiers 0400), sans les afficher.
+# Un fichier DEJA present est conserve (RSA_MASTER_KEY ne doit pas changer apres `state init`) sauf FORCE=1.
+gen_secrets() {
+  ( umask 077; mkdir -p "$SECRETS_DIR"; chmod 700 "$SECRETS_DIR"
+    local n; for n in jwt_secret_key admin_token rsa_master_key; do
+      if [ "${FORCE:-0}" = 1 ] || [ ! -s "$SECRETS_DIR/$n" ]; then
+        rm -f "$SECRETS_DIR/$n"; openssl rand -hex 32 | tr -d '\n' > "$SECRETS_DIR/$n"; chmod 400 "$SECRETS_DIR/$n"
+      fi
+    done )
+}
+
+# Depose les fichiers de secret de $1 (repertoire, defaut $SECRETS_DIR) dans le volume $2 (defaut
+# $SECAGENT_SECRETS_VOLUME) de l'hote Docker (distant ou non) par un conteneur ephemere (flux tar sur stdin, image alpine
+# epinglee) : proprietaire 10001 (uid du conteneur), mode 0400, repertoire 0755. Aucun bind mount, aucune valeur affichee.
+# Meme modele que les volumes tls / hooks / link : fonctionne contre un demon distant.
+# shellcheck disable=SC2120   # arguments optionnels, passes par chain-test.sh (backup-restore)
+push_secrets() {
+  local d="${1:-$SECRETS_DIR}" vol="${2:-$SECAGENT_SECRETS_VOLUME}" n files=""
+  for n in jwt_secret_key admin_token rsa_master_key; do
+    [ -f "$d/$n" ] && files="$files $n"
+  done
+  [ -n "$files" ] || fail "$d : aucun secret (jwt_secret_key, admin_token, rsa_master_key) ; lancer ci-prepare"
+  docker volume create "$vol" >/dev/null
+  # shellcheck disable=SC2086
+  tar -C "$d" -cf - $files | docker run --rm -i -v "$vol:/secrets" \
+    alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
+    sh -c 'set -e; tar -xf - -C /secrets; chown 0:0 /secrets; chmod 755 /secrets; for f in /secrets/*; do chown 10001:10001 "$f"; chmod 0400 "$f"; done'
+  echo "secrets deposes dans le volume $vol (10001, 0400)"
+}
+
 setup_ci() {
   local d="${QUALIF_TLS_DIR:-$HERE/.ci-tls}"
   mkdir -p "$d"
   openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=localhost" \
     -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -keyout "$d/tls.key" -out "$d/tls.crt" 2>/dev/null
   chmod 644 "$d/tls.key"   # lisible par l'UID 10001 du conteneur ; certificat jetable de CI
-  # Secrets ALEATOIRES et JETABLES de CI (jamais ceux de qualif/prod). RSA_MASTER_KEY : toute chaine non vide
-  # convient (SHA-256 / HKDF du texte, internal/crypto) ; 32 octets aleatoires en hexadecimal en CI.
-  umask 077
-  { echo "JWT_SECRET_KEY=$(openssl rand -hex 32)"; echo "ADMIN_TOKEN=$(openssl rand -hex 24)"
-    echo "RSA_MASTER_KEY=$(openssl rand -hex 32)"; } > "$HERE/qualif.env"
+  # Secrets ALEATOIRES et JETABLES de CI (jamais ceux de qualif/prod), en FICHIERS : 32 octets en hexadecimal (64 car.,
+  # >= 32 octets exiges par #214), deposes dans le volume des secrets.
+  gen_secrets   # conserve des secrets deja presents (la cle de l'etat ne doit pas changer apres `state init`)
+  push_secrets
   QUALIF_TLS_DIR="$d" "${DC[@]}" run --rm --no-deps secagent-server-a state init
   echo "QUALIF_TLS_DIR=$d"
 }
@@ -163,7 +196,9 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
     setup-ci) setup_ci ;;
     run) run "${2:?mode stop|kill}" ;;
-    teardown) guard_project; "${DC[@]}" down -v ;;
+    teardown) guard_project; "${DC[@]}" down -v
+              # le volume des secrets est EXTERNE (non supprime par down -v) et contient des secrets : retrait explicite
+              docker volume rm "$SECAGENT_SECRETS_VOLUME" >/dev/null 2>&1 || true ;;
     *) sed -n '2,15p' "$0"; exit 2 ;;
   esac
 fi

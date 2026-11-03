@@ -47,7 +47,7 @@ Les anciens Compose `proxy`, `minion` et `ansible` ont été supprimés (#188). 
 ### Prérequis
 - Docker et Docker Compose installés
 - Certificat TLS auto-signé **avec SAN** : `tls/tls.crt` + `tls/tls.key` (répertoire désigné par `QUALIF_TLS_DIR`)
-- Secrets du serveur : `DEPLOYMENT/qualif/qualif.env` (copie de `qualif.env.example` : `JWT_SECRET_KEY`, `ADMIN_TOKEN`, `RSA_MASTER_KEY`)
+- Secrets du serveur (v3.0.5) : trois fichiers `DEPLOYMENT/qualif/secrets/{jwt_secret_key,admin_token,rsa_master_key}` (0400, hors dépôt), déposés dans le volume `secagent-qualif_secrets` par `bash chain-test.sh push-secrets` (propriétaire 10001, mode 0400) et lus via `JWT_SECRET_KEY_FILE`, `ADMIN_TOKEN_FILE`, `RSA_MASTER_KEY_FILE` ; plus de `qualif.env`, plus aucun secret en variable d'environnement
 - Image : `SECAGENT_IMAGE` (candidate `sha-<commit>@sha256:<digest>`)
 - **Pas de NATS, pas de FastAPI, pas de Caddy** — v3.0.3+ utilise GO server natif + TLS natif
 
@@ -56,7 +56,7 @@ Les anciens Compose `proxy`, `minion` et `ansible` ont été supprimés (#188). 
 ```bash
 cd DEPLOYMENT/qualif
 docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent-server-a state init
-# Crée relay.state dans le volume d'état. EXIGE RSA_MASTER_KEY (qualif.env) : ce secret n'est jamais
+# Crée relay.state dans le volume d'état. EXIGE RSA_MASTER_KEY (fichier `rsa_master_key` du volume de secrets) : ce secret n'est jamais
 # auto-généré ; il dérive l'HMAC de l'état et le chiffrement AES-GCM de ses secrets (pas une clef RSA).
 # La clef RSA-4096 du serveur et le secret JWT sont générés par `init`.
 ```
