@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package ws — pont vers le package enrollment.
 // Implémentations par défaut des fonctions d'enrollment utilisées par le dispatcher.
 // Séparé pour faciliter le mocking dans les tests.

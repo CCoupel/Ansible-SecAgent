@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package enrollment — ré-enrôlement après expiration/révocation JWT.
 //
 // ReEnroll est utilisé par le dispatcher WS dans deux cas (§22 ARCHITECTURE.md) :

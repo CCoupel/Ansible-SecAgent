@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package executor — stubs Windows.
 //
 // Le scope v1 est Linux uniquement (CLAUDE.md §Décisions techniques).

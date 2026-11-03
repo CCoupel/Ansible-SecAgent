@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package enrollment
 
 // Contract test (#182): the field names of POST /api/register are read from the SERVER's own

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package registry gère le registre persisté des tâches Ansible async.
 //
 // Contexte (§10 ARCHITECTURE.md) :
