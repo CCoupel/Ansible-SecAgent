@@ -235,6 +235,11 @@ func TestLot4_CommandGroups_UnknownWordExits1AndHelpGoesToStderr(t *testing.T) {
 
 // ── #220 ─────────────────────────────────────────────────────────────────────
 
+// versionOutput is the exact --version output (LOT-7, #237): three lines, one trailing newline.
+func versionOutput(name, v string) string {
+	return name + " version " + v + "\nLicense: AGPL-3.0-or-later\nSource: https://github.com/CCoupel/Ansible-SecAgent\n"
+}
+
 func TestLot4_Version_ThreeBinariesInjectedByLdflags(t *testing.T) {
 	const v = "9.9.9-lot4"
 	bins := []struct{ name, dir, ldflags string }{
@@ -244,10 +249,10 @@ func TestLot4_Version_ThreeBinariesInjectedByLdflags(t *testing.T) {
 	}
 	for _, b := range bins {
 		bin := buildBinary(t, b.dir, b.name, b.ldflags, true)
-		want := b.name + " version " + v
+		want := versionOutput(b.name, v)
 		for _, flag := range []string{"--version", "-v"} {
 			code, so, se := runBin(t, bin, nil, flag)
-			if code != 0 || strings.TrimSpace(so) != want {
+			if code != 0 || so != want || se != "" {
 				t.Errorf("%s %s: rc=%d stdout=%q stderr=%q, want rc 0 and %q", b.name, flag, code, so, se, want)
 			}
 		}
@@ -262,8 +267,8 @@ func TestLot4_Version_ThreeBinariesInjectedByLdflags(t *testing.T) {
 	// without injection the three binaries say "dev"
 	for _, b := range bins {
 		bin := buildBinary(t, b.dir, b.name, "", true)
-		if _, so, _ := runBin(t, bin, nil, "--version"); strings.TrimSpace(so) != b.name+" version dev" {
-			t.Errorf("%s without ldflags: %q, want '… version dev'", b.name, so)
+		if _, so, _ := runBin(t, bin, nil, "--version"); so != versionOutput(b.name, "dev") {
+			t.Errorf("%s without ldflags: %q, want %q", b.name, so, versionOutput(b.name, "dev"))
 		}
 	}
 }
