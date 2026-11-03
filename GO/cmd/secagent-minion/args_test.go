@@ -17,8 +17,8 @@ func TestHandleArgs(t *testing.T) {
 	}{
 		{"no argument starts the agent", nil, true, 0, "", ""},
 		{"empty slice starts the agent", []string{}, true, 0, "", ""},
-		{"--version", []string{"--version"}, false, 0, "secagent-minion version dev\n", ""},
-		{"-v", []string{"-v"}, false, 0, "secagent-minion version dev\n", ""},
+		{"--version", []string{"--version"}, false, 0, "secagent-minion version dev\nLicense: AGPL-3.0-or-later\nSource: https://github.com/CCoupel/Ansible-SecAgent\n", ""},
+		{"-v", []string{"-v"}, false, 0, "secagent-minion version dev\nLicense: AGPL-3.0-or-later\nSource: https://github.com/CCoupel/Ansible-SecAgent\n", ""},
 		{"--help", []string{"--help"}, false, 0, "Usage:", ""},
 		{"-h", []string{"-h"}, false, 0, "RELAY_ENROLLMENT_TOKEN", ""},
 		{"unknown word", []string{"kyes"}, false, 1, "", "unexpected argument"},
@@ -67,7 +67,7 @@ func TestVersionIsOverridable(t *testing.T) {
 	defer func() { Version = old }()
 	var out, errb bytes.Buffer
 	handleArgs([]string{"--version"}, &out, &errb)
-	if out.String() != "secagent-minion version 3.0.4\n" {
+	if out.String() != "secagent-minion version 3.0.4\nLicense: AGPL-3.0-or-later\nSource: https://github.com/CCoupel/Ansible-SecAgent\n" {
 		t.Fatalf("got %q", out.String())
 	}
 }
