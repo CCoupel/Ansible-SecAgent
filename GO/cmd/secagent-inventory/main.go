@@ -212,7 +212,10 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: unexpected argument %q after %s\nUsage: secagent-inventory --version\n", args[1], args[0])
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stdout, "secagent-inventory version %s\n", Version)
+		if _, err := fmt.Fprintf(os.Stdout, "secagent-inventory version %s\n", Version); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
