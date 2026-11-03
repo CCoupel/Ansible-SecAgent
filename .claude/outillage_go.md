@@ -14,12 +14,13 @@ Le nettoyage des caches existants de l'utilisateur ne regarde pas les agents.
   **Ne pas** fixer `GOTOOLCHAIN=local` sans pointer `GOROOT`/`PATH` vers un Go 1.27.3 (voir le bloc ci-dessous).
   Laisser `GOTOOLCHAIN=auto` avec le Go 1.24.2 provoque le téléchargement de `golang.org/toolchain` dans le cache de
   modules **de l'utilisateur** : c'est la cause de l'écriture hors scratchpad constatée en v3.0.4.
-- Le cache de l'utilisateur ne contient que le Go **1.25.5** (`~/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64`,
-  lecture seule). Le 1.27.3 se **télécharge une fois par agent dans son scratchpad** en amorçant avec ce 1.25.5
-  (`GOTOOLCHAIN=go1.27.3`, `GOMODCACHE` du scratchpad, base de sommes ACTIVE : le toolchain est vérifié par sum.golang.org),
-  jamais dans `~/go` — étape 1 du bloc ci-dessous.
+- Le Go **1.27.3** existe déjà dans le cache de l'utilisateur (`~/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.3.linux-amd64`,
+  daté du 2026-10-24) : on l'**utilise en lecture seule**. Le 2026-11-03, infra l'a trouvé identique fichier par fichier
+  (`diff -r`) à un 1.27.3 téléchargé avec la base de sommes active. S'il disparaît, le bloc ci-dessous le **télécharge
+  dans le scratchpad** en amorçant avec le 1.25.5 du même cache (`GOTOOLCHAIN=go1.27.3`, `GOMODCACHE` du scratchpad,
+  base de sommes ACTIVE : le toolchain est vérifié par sum.golang.org), jamais dans `~/go`.
 - Les modules du dépôt sont en partie dans le cache de l'utilisateur (`~/go/pkg/mod/cache/download`), exposé en premier
-  comme proxy fichier ; les versions absentes (v3.0.5 : `golang-jwt/jwt/v5` v5.3.1, `gorilla/websocket` v1.5.3) viennent de
+  comme proxy fichier ; les versions absentes (v3.0.5 : `golang-jwt/jwt/v5` v5.3.1 ; `gorilla/websocket` v1.5.3 y est) viennent de
   `proxy.golang.org` en repli. `go` ne copie que les modules nécessaires dans le scratchpad (quelques Mio) et `go.sum`
   vérifie chaque module. `GOFLAGS=-mod=mod` est refusé en mode workspace (`go.work`) : ne pas l'ajouter.
 
@@ -29,8 +30,9 @@ Le nettoyage des caches existants de l'utilisateur ne regarde pas les agents.
 S=<scratchpad de l'agent>            # chemin absolu fourni par l'environnement
 B=$HOME/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64   # amorce, lecture seule
 mkdir -p "$S/go"/{path,mod,cache,bin,lint}
-T="$S/go/mod/golang.org/toolchain@v0.0.1-go1.27.3.linux-amd64"
-# 1. une fois : Go 1.27.3 dans le scratchpad (verifie par la base de sommes)
+T=$HOME/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.3.linux-amd64     # lecture seule, s'il existe
+[ -x "$T/bin/go" ] || T="$S/go/mod/golang.org/toolchain@v0.0.1-go1.27.3.linux-amd64"
+# 1. seulement si absent du cache de l'utilisateur : Go 1.27.3 dans le scratchpad (verifie par la base de sommes)
 [ -x "$T/bin/go" ] || env GOROOT="$B" PATH="$B/bin:$PATH" GOTOOLCHAIN=go1.27.3 GOPATH="$S/go/path" \
   GOMODCACHE="$S/go/mod" GOCACHE="$S/go/cache" GOFLAGS=-modcacherw GOPROXY=https://proxy.golang.org \
   GOSUMDB=sum.golang.org go version
