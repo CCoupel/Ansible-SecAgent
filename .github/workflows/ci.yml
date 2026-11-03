@@ -95,6 +95,8 @@ jobs:
           go test -race -tags slow -run '^TestSpec217_I6_Renewal3000AgentsWithoutBurst$' ./cmd/secagent-server/internal/integration/ -timeout 600s
           # binaire reel secagent-server (compile par le test) : state rekey / state restore / keys, contre de vrais noeuds
           go test -race -tags slow -run '^(TestRekeyBinary_|TestKeysCLI_RealBinaryAgainstRealNodes$)' ./cmd/secagent-server/internal/integration/ -timeout 600s
+          # LOT-4 v3.0.5 (#233 #219 #220 #221) : binaires reels compiles par les tests (lot4_binary_slow_test.go, tous les TestLot4_*)
+          go test -race -tags slow -run '^TestLot4_' ./cmd/secagent-server/internal/integration/ -timeout 600s
 
   lint:
     name: Lint Go
