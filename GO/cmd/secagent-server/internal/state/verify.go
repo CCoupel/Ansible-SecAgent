@@ -172,21 +172,23 @@ func Restore(o RestoreOptions) (*RestoreResult, error) {
 
 	res := &RestoreResult{Report: rep, SeqAfter: rep.WriteSeq}
 	statePath, prevPath := filepath.Join(o.Dir, StateFile), filepath.Join(o.Dir, PrevFile)
-	stamp := now().UTC().Format("20060102T150405Z")
+	stampTime := now() // names to the nanosecond, .<n> on collision (#219): two restores in one second both succeed
 	if cur, rerr := o.FS.ReadFileMax(statePath, o.MaxBytes); rerr == nil {
 		res.SeqBefore = peekWriteSeq(cur)
-		res.BackupFile = StateFile + backupInfix + stamp
-		if err := writeBackup(o.FS, filepath.Join(o.Dir, res.BackupFile), cur); err != nil {
+		name, err := writeUniqueBackup(o.FS, o.Dir, StateFile+backupInfix, "", stampTime, cur)
+		if err != nil {
 			return nil, err
 		}
+		res.BackupFile = name
 	} else if !errors.Is(rerr, os.ErrNotExist) {
 		return nil, fmt.Errorf("state restore: cannot back up the current relay.state: %w", rerr)
 	}
 	if cur, rerr := o.FS.ReadFileMax(prevPath, o.MaxBytes); rerr == nil {
-		res.BackupPrev = PrevFile + backupInfix + stamp
-		if err := writeBackup(o.FS, filepath.Join(o.Dir, res.BackupPrev), cur); err != nil {
+		name, err := writeUniqueBackup(o.FS, o.Dir, PrevFile+backupInfix, "", stampTime, cur)
+		if err != nil {
 			return nil, err
 		}
+		res.BackupPrev = name
 	} else if !errors.Is(rerr, os.ErrNotExist) {
 		return nil, fmt.Errorf("state restore: cannot back up the current relay.state.prev: %w", rerr)
 	}

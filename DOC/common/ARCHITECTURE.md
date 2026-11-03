@@ -1366,7 +1366,7 @@ STATE_DIR/                       # Répertoire configuré via $STATE_DIR (défau
 ├── relay.lock                   # Verrou en fichier (exclusivité actif/passif, contient write_seq publié)
 ├── actions.log                  # Journal des actions de hooks (10 MiB × 5 fichiers : .1 … .4), hors état
 ├── state-restore.log            # Journal des `state restore` (sans secret)
-└── relay.state.bak-<UTC>        # Copies faites par `state restore` uniquement (+ relay.state.prev.bak-<UTC>)
+└── relay.state.bak-<UTC ns>        # Copies faites par `state restore` uniquement (+ relay.state.prev.bak-<UTC ns>)
 ```
 
 Aucune sauvegarde automatique quotidienne n'existe ; `write_seq` est un **champ** (dans `relay.state` et `relay.lock`), pas

@@ -210,7 +210,7 @@ par des tests mais n'a pas été exercé en qualification réelle (il faut ≥ 2
   toute montée de version ; sauvegardez `rsa_master_key` séparément (§5).
 - **Restauration** (tous les relays arrêtés) : `secagent-server state verify <fichier>` puis
   `secagent-server state restore --from <fichier>` (revérifie le fichier, refuse si une instance tient un verrou frais —
-  code 8 —, sauvegarde l'état courant en `relay.state.bak-<UTC>`, journalise dans `state-restore.log`). Redémarrez ensuite.
+  code 8 —, sauvegarde l'état courant en `relay.state.bak-<UTC ns>`, journalise dans `state-restore.log`). Redémarrez ensuite.
 - **Bascule** : arrêt propre du maître (`docker compose stop secagent-server`) → un secondaire devient maître en quelques
   secondes (de l'ordre de 5 à 6 s mesurées en qualification, pour une limite de 10 s). Perte brutale (`kill -9`, hôte perdu) : le verrou n'est pas libéré par le système de
   fichiers ; la reprise attend sa péremption (**≈ 5 minutes**). Un maître qui perd le verrou en étant vivant sort avec le
