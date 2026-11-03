@@ -95,11 +95,11 @@ ansible-secagent/
 
 ## Workflow équipe
 
-- `/start-session` : démarre la team complète Ansible-SecAgent (9 agents spécialisés permanents + team-lead)
+- `/start-session` : démarre les agents `socle` (+ la team du milestone en cours) ; la team d'un nouveau milestone est spawnée au GATE 2 selon son cadrage (`agents/context/MILESTONE_CADRAGE.md`)
 - Le rôle CDP est tenu par le **team-lead** (Claude principal) — aucun agent cdp séparé
 - Ordre d'implémentation MVP : `secagent-minion` → `relay server` → `plugins Ansible`
 - Chaque composant est validé par `qa` avant de passer au suivant
-- `security-reviewer` audite chaque PR avant merge
+- `security-reviewer` audite chaque PR avant merge (type `milestone` : le planner l'inclut dans la team du milestone)
 
 ### Règle de démarrage — OBLIGATOIRE
 
@@ -119,7 +119,7 @@ Séquence correcte :
 
 ## Agents Disponibles
 
-Équipe spécialisée du projet (9 agents permanents + 1 ponctuel + team-lead/CDP fusionné) :
+Équipe spécialisée du projet (2 agents socle + 9 milestone + 1 ponctuel + team-lead/CDP fusionné) :
 
 | Nom | Rôle | Fichier | Spawn |
 |-----|------|---------|-------|
@@ -130,21 +130,23 @@ Séquence correcte :
 | `dev-connexion` | Développeur plugin connexion Ansible (Python, `SECAGENT-PYTHON/`) | `.claude/agents/dev-connexion.template.md` (dev-plugin) + compagnon `dev-connexion.md` | milestone |
 | `test-writer` | Rédaction des tests (unitaires, intégration, E2E) | `.claude/agents/test-writer.template.md` | milestone |
 | `qa` | Exécution des tests, verdict GO/NOGO | `.claude/agents/qa.template.md` | milestone |
-| `security-reviewer` | Audit sécurité (TLS, JWT, become_pass, enrollment) | `.claude/agents/security-reviewer.md` | socle |
+| `code-reviewer` | Revue de code (si `cadrage.review`) | `.claude/agents/code-reviewer.template.md` | milestone |
+| `doc-updater` | Documentation, CHANGELOG (si `cadrage.doc` = agent) | `.claude/agents/doc-updater.template.md` | milestone |
+| `security-reviewer` | Audit sécurité (TLS, JWT, become_pass, enrollment) | `.claude/agents/security-reviewer.md` | milestone |
 | `deployer` | BUILD / PUBLISH / DEPLOY QUALIF (Docker Compose 192.168.1.218) et PROD (Docker Compose, même hôte) | `.claude/agents/deploy.template.md` + compagnons `environments/deploy.{qualif,prod}.md` | socle |
 | `marketing` | Communication de release (release notes, posts, site `gh-pages`) | `.claude/agents/marketing-release.template.md` | ponctuel |
 
 > **Convention template/compagnon** : `xxx.template.md` = template synchronisé (gitignoré, jamais édité) ;
 > `xxx.md` = compagnon projet tracké (périmètre, specs, règles propres à Ansible-SecAgent), à lire après le
-> template. Sans compagnon (`test-writer`, `qa`), le template fait foi tel quel. `security-reviewer.md` reste
+> template. Sans compagnon (`test-writer`, `qa`, `code-reviewer`, `doc-updater`), le template fait foi tel quel. `security-reviewer.md` reste
 > une définition projet autonome (pas de template équivalent).
 
-> **permanent** = spawné au `/start-session`, reste en IDLE toute la session.
-> **ponctuel** = spawné à la demande par sa commande ou sa phase (`marketing` : GATE 4d / `/marketing`), puis arrêté (`TaskStop`).
+> Types de spawn : `agents/context/MILESTONE_CADRAGE.md` section 4.1 (`socle` = au `/start-session` ; `milestone` = au
+> GATE 2 si dans la team du milestone ; `ponctuel` = à la demande, puis `TaskStop` — `marketing` : GATE 4d / `/marketing`).
 
 Agents génériques additionnels livrés par le template (disponibles, **pas encore intégrés** au
 workflow `/start-session` ni au cycle CDP décrit ci-dessus — à activer manuellement si besoin) :
-`code-reviewer`, `doc-updater`, `infra`, `security`, `pr-reviewer`.
+`infra`, `security`, `pr-reviewer`.
 
 <!-- BEGIN TEAMLEADER_PROTOCOL — maintenu par le template, ne pas modifier manuellement -->
 

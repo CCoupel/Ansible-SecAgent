@@ -20,7 +20,8 @@ repo secrets), jamais dans ces fichiers `.env` locaux.
 ```bash
 # 1. Verification
 # Prerequis confirmes par le teamleader avant cet ordre. Une publication validee sur l'environnement
-# precedent de la chaine doit exister — sauf hotfix, ou ce candidat vient directement de BUILD.
+# precedent de la chaine doit exister — sauf hotfix ou ordre portant `Cadrage : sans QUALIF`
+# (agents/context/MILESTONE_CADRAGE.md section 5), ou ce candidat vient directement de BUILD.
 
 # 1bis. Determination de la version cible
 # X.Y.Z est fixe integralement par le milestone (regle complete : commands/context/COMMON.md
@@ -31,10 +32,12 @@ VERSION=$(echo "$DEV_VERSION" | cut -d. -f1-3)   # X.Y.Z, ex: 1.4.0
 # Ecrire $VERSION dans  avant le merge
 
 # 1ter. Verification documentation (avant merge)
-# En orchestration teamleader : le doc-updater a deja fait le DOC FINALIZE — verifier juste la reception du DONE.
-# En usage standalone (hors teamleader) : verifier manuellement que la doc est a jour, sinon STOP.
-grep -q "$DEV_VERSION" CHANGELOG.md || {
-  echo "CHANGELOG.md non mis a jour pour cette version — STOP, retour doc-updater avant de continuer."
+# En orchestration teamleader : DOC FINALIZE fait par doc-updater, ou CHANGELOG tenu par les agents DEV
+# (cadrage `doc: dev`) — verifier juste la reception du DONE. Standalone : verifier manuellement, sinon STOP.
+# Recherche sur X.Y.Z (section de release du CHANGELOG), jamais sur X.Y.Z.a : `a` est incremente au BUILD,
+# apres l'ecriture du CHANGELOG.
+grep -q "$VERSION" CHANGELOG.md || {
+  echo "CHANGELOG.md sans section $VERSION — STOP, retour doc-updater (ou agent DEV si cadrage doc: dev)."
   exit 1
 }
 # README/docs concernes : verifier manuellement qu'ils refletent les changements de ce release.
