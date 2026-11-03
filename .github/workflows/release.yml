@@ -247,6 +247,7 @@ jobs:
             type=raw,value=latest,enable=${{ needs.prepare.outputs.is_latest == 'true' }}
           labels: |
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.licenses=MIT
 
       # Date du commit du tag : horodatages reproductibles (rewrite-timestamp) pour un rebuild deterministe.
       - name: SOURCE_DATE_EPOCH
@@ -438,6 +439,13 @@ jobs:
             COMPONENT=secagent-inventory bash scripts/ci/assert_version.sh "$VERSION" "dist/secagent-inventory-${VERSION}-linux-amd64"
           else
             echo "::notice::secagent-inventory : tag anterieur a v3.0.5, version non verifiee"
+          fi
+          # LICENSE publiee a cote des binaires (et couverte par SHA256SUMS) des v3.0.5 (#237) ; le tag est checkout : le fichier
+          # y est, son absence fait echouer la release. Tag plus ancien republie par workflow_dispatch : ::notice::.
+          if version_ge 3.0.5; then
+            cp LICENSE dist/LICENSE
+          else
+            echo "::notice::LICENSE : tag anterieur a v3.0.5, non jointe a la release"
           fi
           cd dist
           sha256sum ./* > "SHA256SUMS-${VERSION}.txt"

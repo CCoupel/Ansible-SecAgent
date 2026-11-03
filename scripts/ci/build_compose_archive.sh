@@ -14,6 +14,9 @@ case "$SRV" in sha256:??????????????????????????????????????????????????????????
 D="$STAGE_DIR/secagent-compose-${VERSION}"
 rm -rf "$D"; mkdir -p "$D" "$OUT"
 cp -r "$SRC_DIR/." "$D/"
+# LICENSE du depot dans l'archive (#237) : l'archive est distribuee seule, sans le depot
+[ -f "$REPO/LICENSE" ] || { echo "::error::LICENSE absente de $REPO : l'archive Compose doit la contenir"; exit 1; }
+cp "$REPO/LICENSE" "$D/LICENSE"
 rm -f "$D"/prod.env "$D"/.env
 mkdir -p "$D/tools"; cp "$REPO/scripts/ci/check_compose.py" "$D/tools/check_compose.py"
 for f in "$D"/docker-compose*.yml; do

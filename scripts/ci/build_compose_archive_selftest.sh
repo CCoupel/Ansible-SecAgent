@@ -24,5 +24,12 @@ BADSH="$(printf '%s\n' "$LIST" | awk '$NF ~ /\.sh$/ && $1 != "-rwxr-xr-x" {print
 chk "tous les *.sh de l'archive sont executables" $([ -z "$BADSH" ] && echo 1 || echo 0)
 tar -xzf "$A" -C "$T" && grep -q "image: ghcr.io/ccoupel/secagent-server:v0.0.0@$FAKE" "$T/secagent-compose-0.0.0/docker-compose.server.yml"
 chk "image serveur epinglee en tag@digest" $([ $? -eq 0 ] && echo 1 || echo 0)
+chk "LICENSE dans l'archive (644)" $([ "$(mode_of LICENSE)" = "-rw-r--r--" ] && echo 1 || echo 0)
+chk "LICENSE de l'archive identique a celle du depot" $(cmp -s "$REPO/LICENSE" "$T/secagent-compose-0.0.0/LICENSE" && echo 1 || echo 0)
+# sans LICENSE dans le depot, la fabrication de l'archive doit echouer (copie minimale : scripts/ci seulement, pas de LICENSE)
+mkdir -p "$T/nolic/scripts/ci" && cp "$REPO/scripts/ci/check_compose.py" "$T/nolic/scripts/ci/"
+REAL="$REPO"   # (dans un prefixe d'affectation, $REPO designerait deja la copie minimale)
+( cd "$T/nolic" && REPO="$T/nolic" SRC_DIR="$REAL/DEPLOYMENT/prod" STAGE_DIR="$T/stagenl" bash "$REAL/scripts/ci/build_compose_archive.sh" v0.0.0 0.0.0 "$FAKE" "$T/outnl" ) >"$T/nl.log" 2>&1
+chk "sans LICENSE dans le depot, l'archive est refusee" $([ $? -ne 0 ] && grep -q "LICENSE absente" "$T/nl.log" && echo 1 || echo 0)
 chk "archive reproductible (2 builds, meme sha256)" $([ "$(sha256sum < "$A")" = "$(sha256sum < "$T/out2/secagent-compose-0.0.0.tar.gz")" ] && echo 1 || echo 0)
 exit $FAIL
