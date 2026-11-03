@@ -161,9 +161,15 @@ func AdminGetMinion(w http.ResponseWriter, r *http.Request) {
 		vars = make(map[string]interface{})
 	}
 
+	// The live WebSocket registry decides, like the list does: the store only has the last persisted status.
+	status := agent.Status
+	if _, cerr := ws.GetConnection(agent.Hostname); cerr == nil {
+		status = "connected"
+	}
+
 	detail := MinionDetail{
 		Hostname:       agent.Hostname,
-		Status:         agent.Status,
+		Status:         status,
 		LastSeen:       agent.LastSeen.UTC().Format(time.RFC3339),
 		Suspended:      agent.Suspended,
 		EnrolledAt:     agent.EnrolledAt.UTC().Format(time.RFC3339),

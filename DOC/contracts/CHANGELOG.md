@@ -8,6 +8,7 @@
 - **[CHANGED]** `WSS /ws/relay` rate limit `event_forward` (#216, LOT-3) — compté par `relay_id` et non plus par lien ; seuil 200/s inchangé.
 - **[CHANGED]** `/ws/agent` (#217, M1/M2) — un JWT dont le JTI a été remplacé n'est plus accepté pendant la grâce d'une rotation (même signé avec l'ancien secret) ; seul le JTI immédiatement précédent reste valable jusqu'au premier handshake avec le courant. `POST /api/admin/keys/rotate` : `grace` > `AGENT_JWT_TTL` refusé (`400 grace_exceeds_agent_jwt_ttl`), défaut min(24h, TTL). État : champ optionnel `prev_token_jti` par agent (retour arrière vers v3.0.4 : voir `STATE_SPEC.md`).
 - **[CHANGED]** `/ws/agent` (#217, N1) — ping WebSocket du relais toutes les `AGENT_WS_PING_INTERVAL` (30s) et fermeture après 2× sans signe de vie (le minion répond au ping sans changement) ; sonde de la connexion vivante (`AGENT_WS_PROBE_TIMEOUT`, 5s) quand le JWT précédent est présenté : sans réponse il est accepté, avec réponse 401.
+- **[CHANGED]** `GET /api/admin/minions/{hostname}` (#233) — `status` superpose la connexion WebSocket vivante (`connected`), comme la liste ; champs inchangés.
 - Hors contrat d'interface (#214, D2) : `RSA_MASTER_KEY` de moins de 32 octets refusée à `state init` et au démarrage (message avec remède) ; dérivation et fichier d'état **inchangés** (pas de HKDF, pas de `schema_version` 3) : un déploiement à clé courte exécute `state rekey` avant la montée.
 - Aucun changement BREAKING.
 

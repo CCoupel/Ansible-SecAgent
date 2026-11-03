@@ -10,6 +10,7 @@ import (
 
 	"secagent-server/cmd/secagent-server/internal/storage"
 	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
+	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
 // newTestStore creates an in-memory SQLite store for testing.
@@ -467,5 +468,34 @@ func TestAdminRevokeMinion_NotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+// #233: GET /api/admin/minions/{hostname} overlays the live WebSocket state, as the list does (minions delete
+// relies on it to say that the agent is connected).
+func TestAdminGetMinion_StatusFollowsTheLiveConnection(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+	ctx := context.Background()
+	if _, err := s.RegisterAgent(ctx, "live-detail", "pem", "jti-live"); err != nil {
+		t.Fatal(err)
+	}
+	get := func() string {
+		req := adminReq("GET", "/api/admin/minions/live-detail", nil)
+		req.SetPathValue("hostname", "live-detail")
+		w := httptest.NewRecorder()
+		AdminGetMinion(w, req)
+		var d map[string]interface{}
+		_ = json.Unmarshal(w.Body.Bytes(), &d)
+		st, _ := d["status"].(string)
+		return st
+	}
+	if st := get(); st == "connected" {
+		t.Fatalf("no connection yet, status = %q", st)
+	}
+	ws.RegisterConnection("live-detail", &ws.AgentConnection{Hostname: "live-detail"})
+	t.Cleanup(func() { ws.UnregisterConnection("live-detail") })
+	if st := get(); st != "connected" {
+		t.Fatalf("a live connection must show connected, got %q", st)
 	}
 }
