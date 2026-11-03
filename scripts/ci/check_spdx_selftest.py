@@ -287,4 +287,37 @@ try:
 finally:
     r.close()
 
+# --- 8. Confinement (revue securite LOT-7, BAS) : lien symbolique et chemin hors depot refuses, cible intacte ---------
+outside = tempfile.TemporaryDirectory(prefix="spdx-outside-")
+try:
+    target = os.path.join(outside.name, "cible.sh")
+    with open(target, "w", encoding="utf-8", newline="") as f:
+        f.write("#!/bin/sh\n" + SH_BODY)
+    before = open(target, encoding="utf-8").read()
+
+    # 8a. lien symbolique suivi par git (mode 120000) vers un fichier hors depot
+    r = Repo()
+    try:
+        os.symlink(target, os.path.join(r.root, "lien.sh"))
+        r.git("add", "--", "lien.sh")
+        rc, out = r.run("--fix")
+        after = open(target, encoding="utf-8").read()
+        report(rc == 1 and any("lien symbolique" in e for e in errors_for(out, "lien.sh")) and after == before,
+               "confinement : lien symbolique refuse (--fix), cible hors depot intacte", f"rc={rc} {out[:300]}")
+    finally:
+        r.close()
+
+    # 8b. argument explicite hors de la racine du depot (chemin absolu)
+    r = Repo()
+    try:
+        r.write("ok.go", GO_HDR + "\n" + GO_BODY)
+        rc, out = r.run("--fix", target)
+        after = open(target, encoding="utf-8").read()
+        report(rc == 1 and any("hors de la racine" in e for e in errors_for(out, "cible.sh")) and after == before,
+               "confinement : chemin hors depot refuse (--fix), fichier intact", f"rc={rc} {out[:300]}")
+    finally:
+        r.close()
+finally:
+    outside.cleanup()
+
 sys.exit(1 if bad else 0)

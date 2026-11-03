@@ -29,12 +29,19 @@ et tout fichier genere (ligne `// Code generated ... DO NOT EDIT.` ou `# Code ge
   Seules les lignes de commentaire (`//` ou `#` en tete de ligne) portant une balise SPDX sont prises en compte.
   Jamais corrige (erreur restante, a traiter a la main) : identifiant ou copyright different, en-tete mal place
   (apres `package` ou du code), doublon, fichier CRLF / non UTF-8. Un identifiant different peut etre une licence
-  tierce legitime : la garde ne la reecrit pas. Fins de ligne : LF uniquement ; le mode du fichier est conserve.
+  tierce legitime : la garde ne la reecrit pas. Fins de ligne : LF uniquement.
+  Ecriture atomique : fichier temporaire dans le meme repertoire puis os.replace, mode conserve (shutil.copymode).
+
+Confinement (revue securite LOT-7) : un lien symbolique est refuse (erreur, jamais lu ni ecrit), et tout chemin dont
+la resolution (realpath) sort de la racine du depot est refuse ; vaut pour les fichiers suivis comme pour les
+arguments explicites (`/abs/x.sh`, `../x.sh`).
 """
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 COPYRIGHT = "SPDX-FileCopyrightText: 2025-2026 Cyril Coupel"
 LICENSE = "SPDX-License-Identifier: AGPL-3.0-or-later"
@@ -140,6 +147,25 @@ def collect(root: str, args: list) -> list:
     return files
 
 
+def write_atomic(path: str, data: bytes) -> None:
+    """Remplace `path` par `data` sans jamais laisser de fichier tronque : temporaire dans le meme repertoire (meme
+    systeme de fichiers), mode recopie, puis os.replace (atomique). Le temporaire est supprime en cas d'echec."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".spdx-fix-")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        shutil.copymode(path, tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def main(argv) -> int:
     fix, root, args = False, None, []
     it = iter(argv)
@@ -169,12 +195,20 @@ def main(argv) -> int:
         print(f"::error::git ls-files a echoue : {exc}")
         return 2
 
+    root_real = os.path.realpath(root)
     errors, checked, fixed_count = [], 0, 0
     for rel in sorted(set(candidates)):
         prefix = EXTENSIONS.get(os.path.splitext(rel)[1])
         if prefix is None or is_excluded(rel):
             continue
         path = os.path.join(root, rel)
+        if os.path.islink(path):
+            errors.append(f"{rel}:1: lien symbolique refuse (ni lu ni corrige)")
+            continue
+        real = os.path.realpath(path)
+        if os.path.commonpath([real, root_real]) != root_real:
+            errors.append(f"{rel}:1: chemin hors de la racine du depot ({root_real}) refuse")
+            continue
         if not os.path.isfile(path):  # suivi mais supprime de l'arbre de travail
             continue
         checked += 1
@@ -188,13 +222,12 @@ def main(argv) -> int:
         except UnicodeDecodeError:
             errors.append(f"{rel}:1: fichier non UTF-8")
             continue
-        if text.startswith("﻿"):
+        if text.startswith("\ufeff"):
             errors.append(f"{rel}:1: BOM UTF-8 present ; non corrige automatiquement")
             continue
         errs, fixed = analyse(text, prefix)
         if fix and fixed is not None:
-            with open(path, "wb") as fh:  # reouverture en ecriture : mode et proprietaire conserves
-                fh.write(fixed.encode("utf-8"))
+            write_atomic(real, fixed.encode("utf-8"))
             fixed_count += 1
             errs, _ = analyse(fixed, prefix)
         errors += [f"{rel}:{n}: {msg}" for n, msg in errs]
