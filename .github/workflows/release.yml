@@ -416,20 +416,16 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w -X main.Version=${VERSION}" -o "../dist/secagent-minion-${VERSION}-linux-amd64" ./cmd/secagent-minion
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w -X main.Version=${VERSION}" -o "../dist/secagent-inventory-${VERSION}-linux-amd64" ./cmd/secagent-inventory
           cd ..
-          # Le binaire publie annonce la version du tag (le runner est linux/amd64) ; tag anterieur a v3.0.4 : ignore.
-          if [ -f scripts/ci/assert_version.sh ] && grep -q 'var Version' GO/cmd/secagent-server/internal/cli/root.go; then
-            bash scripts/ci/assert_version.sh "$VERSION" "dist/secagent-server-${VERSION}-linux-amd64"
-          fi
-          if [ -f scripts/ci/assert_version.sh ] && [ -f GO/cmd/secagent-minion/args.go ]; then
-            COMPONENT=secagent-minion bash scripts/ci/assert_version.sh "$VERSION" "dist/secagent-minion-${VERSION}-linux-amd64"
-          fi
-          # Inventory (#220) : inconditionnel des v3.0.5 (une variable renommee ou un ldflags perdu fait echouer la release,
-          # comme ci.yml) ; la garde porte sur la VERSION du tag, pas sur le contenu du code : un tag anterieur a v3.0.5
-          # republie par workflow_dispatch n'a ni `--version` ni assert_version.sh et ne peut pas etre verifie.
+          # Le binaire publie annonce la version du tag (le runner est linux/amd64). Inconditionnel des v3.0.5 pour les
+          # trois binaires (#220, B52) : une variable renommee, un ldflags perdu ou un script absent fait echouer la release,
+          # comme ci.yml. La garde porte sur la VERSION du tag, pas sur le contenu du code : un tag anterieur a v3.0.5
+          # republie par workflow_dispatch n'a pas tous les `--version` ni assert_version.sh et ne peut pas etre verifie.
           if [ "$(printf '%s\n' 3.0.5 "$VERSION" | sort -V | head -n1)" = 3.0.5 ]; then
+            bash scripts/ci/assert_version.sh "$VERSION" "dist/secagent-server-${VERSION}-linux-amd64"
+            COMPONENT=secagent-minion bash scripts/ci/assert_version.sh "$VERSION" "dist/secagent-minion-${VERSION}-linux-amd64"
             COMPONENT=secagent-inventory bash scripts/ci/assert_version.sh "$VERSION" "dist/secagent-inventory-${VERSION}-linux-amd64"
           else
-            echo "::notice::tag anterieur a v3.0.5 : version de secagent-inventory non verifiee"
+            echo "::notice::tag anterieur a v3.0.5 : version de secagent-server, secagent-minion et secagent-inventory non verifiee"
           fi
           cd dist
           sha256sum ./* > "SHA256SUMS-${VERSION}.txt"
