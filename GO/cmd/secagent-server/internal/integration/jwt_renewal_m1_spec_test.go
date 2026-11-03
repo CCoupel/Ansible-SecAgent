@@ -22,10 +22,18 @@ const (
 	m1Interval = "4s"
 )
 
-func m1Node(t *testing.T) *node {
+func m1Node(t *testing.T) *node { return m1NodeTTL(t, m1TTL) }
+
+func m1NodeTTL(t *testing.T, ttl string) *node {
 	t.Helper()
-	return startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: renewalEnv(m1TTL, m1Interval)})
+	return startNode(t, nodeSpec{ID: "root", NodeBinary: testHelpersNodeBinary(t), Env: renewalEnv(ttl, m1Interval)})
 }
+
+// m1ReplayTTL: the replay scenario needs JWTs issued at the start (enrollment, first frames) to be still valid
+// when they are replayed, i.e. after ~4 frames (3 x the 4 s interval) plus a loaded machine. 16 s left no
+// margin (the test used to skip itself when the enrollment JWT had expired); 40 s keeps > 20 s of margin. The
+// rotation grace (10 s) stays below the TTL (M5).
+const m1ReplayTTL = "40s"
 
 func rekeyCount(m *minion) int {
 	c := 0
@@ -52,7 +60,7 @@ func rotateRightAfterAFrame(t *testing.T, n *node, m *minion, grace string) {
 // replaced — signed with the previous secret — is refused, and the live connection is untouched.
 func TestSecM1_ReplayOfReplacedJWTsSignedWithThePreviousSecretIsRefusedDuringTheGrace(t *testing.T) {
 	parallel(t)
-	n := m1Node(t)
+	n := m1NodeTTL(t, m1ReplayTTL)
 	host := "m1-replay"
 	original := n.enrollAgent(host)
 	m := connectMinionWithToken(t, n, host, original)
@@ -63,14 +71,16 @@ func TestSecM1_ReplayOfReplacedJWTsSignedWithThePreviousSecretIsRefusedDuringThe
 	jwts := rekeyJWTs(t, m)
 	current := jwts[len(jwts)-1]
 	if exp := expOf(claimsOf(t, original)); time.Now().Unix() > exp-1 {
-		t.Skipf("the enrollment JWT expired before the replay (exp %d): machine too slow for this scenario", exp)
+		t.Fatalf("the enrollment JWT expired before the replay (exp %d) although the TTL is %s: the scenario lost its margin", exp, m1ReplayTTL)
 	}
 	replacedSignedByOldSecret := append([]string{original}, jwts[:len(jwts)-2]...) // all older than the predecessor
 	base := replacedRefusals(n, host)
+	replayed := 0
 	for i, tok := range replacedSignedByOldSecret {
 		if time.Now().Unix() > expOf(claimsOf(t, tok))-1 {
 			continue // expired by now: refused for another reason, not the case under test
 		}
+		replayed++
 		conn, code, _ := dialAgent(t, n, tok)
 		if conn != nil {
 			_ = conn.Close()
@@ -79,6 +89,9 @@ func TestSecM1_ReplayOfReplacedJWTsSignedWithThePreviousSecretIsRefusedDuringThe
 		if code != http.StatusUnauthorized {
 			t.Errorf("replayed JWT #%d: %d, want 401", i, code)
 		}
+	}
+	if replayed < 2 {
+		t.Fatalf("only %d replaced JWT(s) were still valid to replay: the scenario needs the enrollment JWT and a rekey JWT", replayed)
 	}
 	waitFor(t, "the replays are journalized as token_replaced", func() bool { return replacedRefusals(n, host) > base })
 	// the live connection was not replaced
