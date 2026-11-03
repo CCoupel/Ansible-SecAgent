@@ -171,6 +171,34 @@ func queueUpstream(ch chan<- repeater.Event, ev repeater.Event) {
 	}
 }
 
+// agentRevokedCheck is the replay of B55 (ws.SetAgentRevokedCheckFunc): after the connection is registered,
+// is the host revoked, its JTI blacklisted, or the agent gone? It reads the in-memory state only and takes no
+// write, so it costs two map lookups per connection.
+func agentRevokedCheck(store *storage.Store) func(hostname, jti string) error {
+	return func(hostname, jti string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		bl, err := store.IsJTIBlacklisted(ctx, jti)
+		if err != nil {
+			return fmt.Errorf("blacklist_check_failed: %w", err)
+		}
+		if bl {
+			return fmt.Errorf("token_revoked")
+		}
+		agent, err := store.GetAgent(ctx, hostname)
+		if err != nil {
+			return fmt.Errorf("agent_lookup_failed: %w", err)
+		}
+		if agent == nil {
+			return fmt.Errorf("unknown_agent")
+		}
+		if agent.Revoked {
+			return fmt.Errorf("token_revoked")
+		}
+		return nil
+	}
+}
+
 // agentProbeTimeout is how long a handshake waits for a live connection to answer the N1 probe.
 var agentProbeTimeout = func() *atomic.Int64 { v := new(atomic.Int64); v.Store(int64(DefaultAgentWSProbeTimeout)); return v }()
 

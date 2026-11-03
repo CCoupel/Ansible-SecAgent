@@ -391,6 +391,33 @@ func checkAgentJTI(hostname, jti string, usedPrevious bool) error {
 	return fn(hostname, jti, usedPrevious)
 }
 
+// agentRevokedCheckFn replays the revocation part of the handshake check once the connection is registered.
+var (
+	agentRevokedCheckMu sync.RWMutex
+	agentRevokedCheckFn func(hostname, jti string) error
+)
+
+// SetAgentRevokedCheckFunc injects the check replayed right AFTER the connection is registered (B55): it
+// refuses a revoked host, a blacklisted JTI or an unknown agent, and nothing else (the JTI match and the
+// replaced-JTI rules were decided at the handshake, and replaying them would see the connection itself).
+// A revocation that lands between the handshake check and the registration finds no connection to close
+// (CloseAgent), so without this replay the link would survive it. Nil = no replay.
+func SetAgentRevokedCheckFunc(fn func(hostname, jti string) error) {
+	agentRevokedCheckMu.Lock()
+	agentRevokedCheckFn = fn
+	agentRevokedCheckMu.Unlock()
+}
+
+func replayRevokedCheck(hostname, jti string) error {
+	agentRevokedCheckMu.RLock()
+	fn := agentRevokedCheckFn
+	agentRevokedCheckMu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(hostname, jti)
+}
+
 // truncateJTI keeps the log readable without reproducing a full identifier.
 func truncateJTI(jti string) string {
 	if len(jti) > 8 {
@@ -497,6 +524,17 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 		Conn:     conn,
 	}
 	RegisterConnection(hostname, agentConn)
+
+	// B55: replay the revocation check now that a revocation would find this connection to close.
+	if rerr := replayRevokedCheck(hostname, id.JTI); rerr != nil {
+		log.Printf("[SECURITY WARNING] agent connection closed right after registration: hostname=%q jti=%q: %v", hostname, truncateJTI(id.JTI), rerr)
+		agentConn.mu.Lock()
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(WSCloseRevoked, "token_revoked"), time.Now().Add(time.Second))
+		agentConn.mu.Unlock()
+		unregisterIfCurrent(hostname, agentConn)
+		_ = conn.Close()
+		return
+	}
 
 	// If agent authenticated with the previous JWT secret, send rekey message
 	// so it gets a fresh token signed with the current secret.

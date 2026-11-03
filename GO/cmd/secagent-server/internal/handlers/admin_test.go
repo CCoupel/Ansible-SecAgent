@@ -544,3 +544,41 @@ func TestAdminDeleteMinion_RefusesTheJWTBeforeClosingTheSocket(t *testing.T) {
 		t.Errorf("closeAgent called %d times, want 2 (a second close for the connection that slipped in)", calls)
 	}
 }
+
+// B54: once the host is revoked, a failing step of the deletion closes the link with 4001 (the revoked host must
+// not keep a live connection), like `minions revoke`.
+func TestAdminDeleteMinion_AFailureAfterTheRevocationClosesTheLinkWith4001(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+	ctx := context.Background()
+	if _, err := s.RegisterAgent(ctx, "del-fail", "pem", "jti-f1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateTokenJTIUnlessRevoked(ctx, "del-fail", "jti-f2"); err != nil { // a previous JTI to blacklist
+		t.Fatal(err)
+	}
+	s.SetWriteGuard(func() error { // the revocation passes; every write after it is refused
+		if a, _ := s.GetAgent(ctx, "del-fail"); a != nil && a.Revoked {
+			return storage.ErrReadOnly
+		}
+		return nil
+	})
+	t.Cleanup(func() { s.SetWriteGuard(func() error { return nil }) })
+	prev := closeAgentFn
+	t.Cleanup(func() { closeAgentFn = prev })
+	var code int
+	closeAgentFn = func(host string, c int, reason string) bool { code = c; return true }
+	req := adminReq("DELETE", "/api/admin/minions/del-fail", nil)
+	req.SetPathValue("hostname", "del-fail")
+	w := httptest.NewRecorder()
+	AdminDeleteMinion(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("a refused write after the revocation must be an error: %d %s", w.Code, w.Body.String())
+	}
+	if code != ws.WSCloseRevoked {
+		t.Fatalf("the link must be closed with 4001, close code = %d", code)
+	}
+	if a, _ := s.GetAgent(ctx, "del-fail"); a == nil || !a.Revoked {
+		t.Errorf("the host stays revoked until the deletion is retried: %+v", a)
+	}
+}

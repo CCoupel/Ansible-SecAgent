@@ -194,3 +194,55 @@ func TestProbeConnection_GlobalCapKeepsTheConnection(t *testing.T) {
 	case <-time.After(150 * time.Millisecond):
 	}
 }
+
+// B55: a revocation that lands between the handshake check and the registration is caught by the check
+// replayed after RegisterConnection: the link is closed with 4001 and unregistered.
+func TestAgentHandler_ReplaysTheRevocationCheckAfterRegistering(t *testing.T) {
+	SetAgentRevokedCheckFunc(func(host, jti string) error { return errTest("token_revoked") })
+	t.Cleanup(func() { SetAgentRevokedCheckFunc(nil) })
+	closeCodeSeen := make(chan int, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		ac := &AgentConnection{Hostname: "b55", Conn: conn}
+		RegisterConnection("b55", ac)
+		if rerr := replayRevokedCheck("b55", "jti"); rerr != nil {
+			ac.mu.Lock()
+			_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(WSCloseRevoked, "token_revoked"), time.Now().Add(time.Second))
+			ac.mu.Unlock()
+			unregisterIfCurrent("b55", ac)
+			_ = conn.Close()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	go func() {
+		_, _, rerr := c.ReadMessage()
+		if ce, ok := rerr.(*websocket.CloseError); ok {
+			closeCodeSeen <- ce.Code
+		} else {
+			closeCodeSeen <- -1
+		}
+	}()
+	select {
+	case code := <-closeCodeSeen:
+		if code != WSCloseRevoked {
+			t.Fatalf("close code = %d, want 4001", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no close frame")
+	}
+	if _, err := GetConnection("b55"); err == nil {
+		t.Error("the revoked connection must be unregistered")
+	}
+}
+
+type errTest string
+
+func (e errTest) Error() string { return string(e) }

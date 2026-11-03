@@ -227,6 +227,7 @@ func Build(cfg Config) (node *Node, err error) {
 
 	// Revocation / token-replacement check of /ws/agent (#169, fail closed without it).
 	ws.SetAgentJTICheckFunc(agentJTICheck(store))
+	ws.SetAgentRevokedCheckFunc(agentRevokedCheck(store))
 
 	// Inject rekey function into WS handler (used when agent connects with previous key)
 	ws.SetRekeyFunc(handlers.RekeyAgent)

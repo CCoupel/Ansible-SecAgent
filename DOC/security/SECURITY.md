@@ -200,6 +200,8 @@ Agent                         Server
   │<══ ping/pong (30s) ════════>│  keepalive
 ```
 
+**Revérification après l'enregistrement (v3.0.5, B55)** : une révocation qui tombe entre le contrôle de la poignée de main et l'enregistrement de la connexion ne trouve aucune connexion à fermer. Le relais rejoue donc, juste après `RegisterConnection`, le volet « révocation » du contrôle (JTI en liste noire, hôte révoqué, agent inconnu ; deux lectures en mémoire, aucune écriture) et ferme la liaison en `4001` si elle est refusée. Vaut pour `minions revoke` comme pour `minions delete`. `minions delete` ferme aussi la liaison en `4001` si une étape échoue après la révocation (B54).
+
 ### Codes de fermeture WebSocket
 
 | Code | Signification | Comportement agent |

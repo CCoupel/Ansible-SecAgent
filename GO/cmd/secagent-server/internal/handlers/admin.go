@@ -672,11 +672,17 @@ func AdminDeleteMinion(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 		return
 	}
+	// From here the host IS revoked: whatever fails next, its link must not survive (4001, like
+	// AdminRevokeMinion) — the caller retries the deletion.
+	failRevoked := func() {
+		closeAgentFn(hostname, ws.WSCloseRevoked, "token_revoked")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+	}
 	if prev := agent.PrevTokenJTI; prev != "" {
 		reason := "admin_delete"
 		if berr := adminStore.AddToBlacklist(ctx, prev, hostname, until.UTC().Format(time.RFC3339), &reason); berr != nil {
 			log.Printf("AdminDeleteMinion blacklist previous JTI: %v", berr)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+			failRevoked()
 			return
 		}
 	}
@@ -685,11 +691,12 @@ func AdminDeleteMinion(w http.ResponseWriter, r *http.Request) {
 	deleted, err := adminStore.DeleteAgent(ctx, hostname)
 	if err != nil {
 		log.Printf("AdminDeleteMinion DeleteAgent: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		failRevoked()
 		return
 	}
 	if !deleted {
 		// Race: another request deleted it between GetAgent and DeleteAgent
+		closeAgentFn(hostname, ws.WSCloseRevoked, "token_revoked")
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent_not_found"})
 		return
 	}

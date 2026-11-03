@@ -363,3 +363,38 @@ func TestWiring_DeletedAgentCannotComeBackWithItsJWT(t *testing.T) {
 		t.Error("the deleted agent's JTI must be blacklisted")
 	}
 }
+
+// B55 through the real handler: a host revoked between the handshake check and the registration is closed by the
+// replayed check. The replay is simulated by revoking in the store from inside the handshake check.
+func TestWiring_ARevocationBetweenTheCheckAndTheRegistrationClosesTheLink(t *testing.T) {
+	n, _, _, wsAddr := startNode(t, nil)
+	ctx := context.Background()
+	secret := serverJWTSecret()
+	if _, err := n.store.RegisterAgent(ctx, "race-b55", "pem", "jti-r1"); err != nil {
+		t.Fatal(err)
+	}
+	inner := agentJTICheck(n.store)
+	ws.SetAgentJTICheckFunc(func(host, jti string, prev bool) error {
+		err := inner(host, jti, prev) // accepted...
+		if err == nil && host == "race-b55" {
+			// ...and the host is revoked right after the check, before the connection is registered
+			_, _ = n.store.RevokeAgent(ctx, host, jti, "race", time.Now().Add(time.Hour))
+		}
+		return err
+	})
+	t.Cleanup(func() { ws.SetAgentJTICheckFunc(agentJTICheck(n.store)) })
+	c, status, err := dialAgentWS(wsAddr, signAgentToken(t, secret, "race-b55", "jti-r1"))
+	if err != nil {
+		t.Fatalf("the handshake itself is accepted: %v (%d)", err, status)
+	}
+	defer c.Close()
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, _, rerr := c.ReadMessage()
+	ce, ok := rerr.(*websocket.CloseError)
+	if !ok || ce.Code != 4001 {
+		t.Fatalf("the link must be closed with 4001 right after registration, got %v", rerr)
+	}
+	if _, gerr := ws.GetConnection("race-b55"); gerr == nil {
+		t.Error("the revoked connection must not stay registered")
+	}
+}
