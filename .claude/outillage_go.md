@@ -8,41 +8,46 @@ Le nettoyage des caches existants de l'utilisateur ne regarde pas les agents.
 ## Faits à connaître
 
 - Le binaire est `/usr/local/go/bin/go`, **absent du PATH**. Il est en Go 1.24.2.
-- `GO/go.work` exige `go 1.25.5` (`GO/go.mod` : `go 1.24.0`). Avec `GOTOOLCHAIN=local` et le Go 1.24.2 installé,
-  toute commande échoue : `go: go.work requires go >= 1.25.5 (running go 1.24.2; GOTOOLCHAIN=local)`.
-  **Ne pas** fixer `GOTOOLCHAIN=local` sans pointer `GOROOT`/`PATH` vers un Go 1.25.5 (voir le bloc ci-dessous).
+- `GO/go.work` exige **`go 1.27.3`** depuis v3.0.5 (aligné sur l'image de build `golang:1.27-alpine` épinglée, qui est en
+  1.27.3 ; `GO/go.mod` : `go 1.24.0`, version minimale du langage). Avec `GOTOOLCHAIN=local` et le Go 1.24.2
+  installé, toute commande échoue : `go: go.work requires go >= 1.27.3 (running go 1.24.2; GOTOOLCHAIN=local)`.
+  **Ne pas** fixer `GOTOOLCHAIN=local` sans pointer `GOROOT`/`PATH` vers un Go 1.27.3 (voir le bloc ci-dessous).
   Laisser `GOTOOLCHAIN=auto` avec le Go 1.24.2 provoque le téléchargement de `golang.org/toolchain` dans le cache de
-  modules : c'est la cause de l'écriture hors scratchpad constatée en v3.0.4.
-- Le Go 1.25.5 existe déjà dans le cache de modules de l'utilisateur
-  (`~/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64`) : on l'**utilise en lecture seule**, on ne
-  le re-télécharge pas et on n'y écrit pas.
-- Les modules du dépôt sont dans ce même cache (`~/go/pkg/mod/cache/download`) : exposé comme proxy fichier
-  (`GOPROXY=file://…`), `go` copie dans le scratchpad uniquement les modules nécessaires (quelques Mio, 2,6 Mio mesurés par qa pour
-  `go build ./...`) sans rien écrire côté utilisateur et **sans réseau**. `GOFLAGS=-mod=mod` est refusé en mode
-  workspace (`go.work`) : ne pas l'ajouter.
-- Si ce toolchain n'est plus dans le cache : le télécharger (`GOTOOLCHAIN=go1.25.5`) avec `GOMODCACHE` **dans le
-  scratchpad**, jamais dans `~/go`.
+  modules **de l'utilisateur** : c'est la cause de l'écriture hors scratchpad constatée en v3.0.4.
+- Le cache de l'utilisateur ne contient que le Go **1.25.5** (`~/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64`,
+  lecture seule). Le 1.27.3 se **télécharge une fois par agent dans son scratchpad** en amorçant avec ce 1.25.5
+  (`GOTOOLCHAIN=go1.27.3`, `GOMODCACHE` du scratchpad, base de sommes ACTIVE : le toolchain est vérifié par sum.golang.org),
+  jamais dans `~/go` — étape 1 du bloc ci-dessous.
+- Les modules du dépôt sont en partie dans le cache de l'utilisateur (`~/go/pkg/mod/cache/download`), exposé en premier
+  comme proxy fichier ; les versions absentes (v3.0.5 : `golang-jwt/jwt/v5` v5.3.1, `gorilla/websocket` v1.5.3) viennent de
+  `proxy.golang.org` en repli. `go` ne copie que les modules nécessaires dans le scratchpad (quelques Mio) et `go.sum`
+  vérifie chaque module. `GOFLAGS=-mod=mod` est refusé en mode workspace (`go.work`) : ne pas l'ajouter.
 
 ## Bloc d'environnement (à copier tel quel avant toute commande `go`)
 
 ```bash
 S=<scratchpad de l'agent>            # chemin absolu fourni par l'environnement
-T=$HOME/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64   # lecture seule
+B=$HOME/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64   # amorce, lecture seule
 mkdir -p "$S/go"/{path,mod,cache,bin,lint}
+T="$S/go/mod/golang.org/toolchain@v0.0.1-go1.27.3.linux-amd64"
+# 1. une fois : Go 1.27.3 dans le scratchpad (verifie par la base de sommes)
+[ -x "$T/bin/go" ] || env GOROOT="$B" PATH="$B/bin:$PATH" GOTOOLCHAIN=go1.27.3 GOPATH="$S/go/path" \
+  GOMODCACHE="$S/go/mod" GOCACHE="$S/go/cache" GOFLAGS=-modcacherw GOPROXY=https://proxy.golang.org \
+  GOSUMDB=sum.golang.org go version
+# 2. environnement de travail
 export GOROOT="$T" GOTOOLCHAIN=local
 export PATH="$S/go/bin:$T/bin:$PATH"
 export GOPATH="$S/go/path" GOMODCACHE="$S/go/mod" GOCACHE="$S/go/cache" GOBIN="$S/go/bin"
 export GOLANGCI_LINT_CACHE="$S/go/lint"
-export GOPROXY="file://$HOME/go/pkg/mod/cache/download" GOSUMDB=off GOFLAGS=-modcacherw
+export GOPROXY="file://$HOME/go/pkg/mod/cache/download,https://proxy.golang.org" GOSUMDB=sum.golang.org GOFLAGS=-modcacherw
 ```
 
-> **Avertissement** : `GOSUMDB=off` et le proxy fichier sont réservés à la compilation et aux tests. Cet
-> environnement **interdit d'ajouter ou de mettre à jour une dépendance** (`go get`, `go mod tidy`) : sans base de
-> sommes, une dépendance altérée ne serait pas détectée. Tout changement de `go.mod` ou `go.sum` est relu à la main
-> en revue.
+> **Avertissement** : cet environnement sert à compiler et tester. **Ajouter ou monter une dépendance** (`go get`,
+> `go mod tidy`) reste réservé à un ordre explicite (infra ou dev), base de sommes active (jamais `GOSUMDB=off` pour
+> cela), et tout changement de `go.mod` / `go.sum` est relu à la main en revue.
 
-`GOFLAGS=-modcacherw` rend le cache du scratchpad supprimable sans `chmod`. `GOSUMDB=off` est sans risque ici :
-`go.sum` reste vérifié, seule la base de sommes publique est désactivée (le proxy est local).
+`GOFLAGS=-modcacherw` rend le cache du scratchpad supprimable sans `chmod`. La base de sommes n'est interrogée que pour un
+module absent de `go.sum` ; pour les modules du dépôt, `go.sum` suffit (aucune requête).
 
 ## Commandes
 
