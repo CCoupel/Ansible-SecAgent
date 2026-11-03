@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package state is the single-file state engine of a relay (v3.0.3, #159): the permanent data
 // (agents, keys, token hashes, blacklist, relay nodes, encrypted server secrets) lives in memory,
 // is read through indexes, and is persisted by ONE writer as an atomic replacement of

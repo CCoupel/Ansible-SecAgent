@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package testsupport prepares the temporary state directories of the tests. It does not import
 // storage (so storage's own tests can use it) and is imported by test code only: nothing of it is in a
 // release binary (#221).

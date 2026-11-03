@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package server
 
 // #214 (v3.0.5, D2) — the server REFUSES TO START with an RSA_MASTER_KEY shorter than 32 bytes

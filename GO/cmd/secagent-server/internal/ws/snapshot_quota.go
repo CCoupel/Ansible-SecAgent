@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package ws
 
 // Rate limit of the topology snapshots by IDENTITY (#156, L4): the quota belongs to the relay_id (the

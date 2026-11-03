@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package server
 
 // #217 cycle 2 — M1 / M2 of the security review of the delivered code (PrevTokenJTI):

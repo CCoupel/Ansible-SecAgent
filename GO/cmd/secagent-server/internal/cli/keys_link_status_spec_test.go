@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package cli
 
 // LOT-3 (#234, #215) — what the operator READS: `keys link-status` tells the three states apart (never_seen is

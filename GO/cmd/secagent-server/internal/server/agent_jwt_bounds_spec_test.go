@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package server
 
 // #217 M2 (security review, requirement 3): AGENT_JWT_TTL and AGENT_JWT_RENEW_INTERVAL are validated at

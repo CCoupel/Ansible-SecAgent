@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package state
 
 // QA v3.0.4 survivors of `state link-trust reset`: (1) PeekLinkTrust — the path of the CLI — must refuse a

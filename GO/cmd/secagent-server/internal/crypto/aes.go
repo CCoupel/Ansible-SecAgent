@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package crypto provides AES-256-GCM encryption helpers for protecting
 // sensitive values stored in the database (e.g. RSA private keys).
 package crypto

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package integration
 
 // #179 (L2) on REAL nodes: limits of concurrency and global stdout budget on the exec path.

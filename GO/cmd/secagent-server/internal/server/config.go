@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package server holds the wiring of secagent-server: configuration, construction of every
 // component (store, hooks, handlers, repeater client, dialers, routers) and the lifecycle
 // (listen, serve, graceful shutdown). main() only reads the environment and calls it, so the

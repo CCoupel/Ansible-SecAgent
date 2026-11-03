@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package cli
 
 // #233: minions delete, relays revoke and relays remove [--revoke]: confirmation, refusal without a

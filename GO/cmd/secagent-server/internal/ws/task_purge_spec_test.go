@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package ws
 
 // #179 (L2) — every path that ends a task releases its slot: result, timeout, disconnection,

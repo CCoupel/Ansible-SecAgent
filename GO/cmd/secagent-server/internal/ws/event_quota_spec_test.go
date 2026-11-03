@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package ws
 
 // #216 (LOT-3) — the rate limit of `event_forward` (200 per second, maxEventsPerSecond) is carried by the

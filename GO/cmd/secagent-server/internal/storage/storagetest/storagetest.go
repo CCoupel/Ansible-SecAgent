@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package storagetest opens stores on temporary test states. It is imported by tests only, so none of
 // it is compiled into a release binary (#221; it used to live in storage/testing.go).
 package storagetest

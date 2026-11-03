@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package storage is the relay's data store: the permanent data lives in the single-file state
 // engine (internal/state, #159/#160), read from memory through indexes and written by atomic
 // mutations; the volatile data (agent status and last_seen, plugin token last_used, relay status,

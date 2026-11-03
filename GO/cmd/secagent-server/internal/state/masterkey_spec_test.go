@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package state
 
 // #214 (v3.0.5, D2) — spec tests of the RSA_MASTER_KEY minimum length at `state init`.

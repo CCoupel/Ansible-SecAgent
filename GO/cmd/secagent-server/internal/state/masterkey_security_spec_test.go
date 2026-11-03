@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package state
 
 // #214 (D2) — requirements of the security review (_work/reports/security-reviewer-lot1-amont-v305.md):

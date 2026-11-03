@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package repeater
 
 // Link trust of a NON-ROOT relay (#141 hybrid, L1e): the root public key pinned at deployment

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package storage
 
 // Link tokens and link keys (v3.0.4, #141/#146): the registry of the link tokens minted by the root,

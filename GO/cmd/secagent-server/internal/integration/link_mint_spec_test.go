@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package integration
 
 // #141 / #146 (L1d, plan rev2 §1.3, §1.8, §3 tests 7, 8, 10) — minting of the link tokens on the ROOT:

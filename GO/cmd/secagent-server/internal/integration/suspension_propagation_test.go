@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package integration
 
 // #180 (L6): the suspension of an agent held by a descendant relay is shown in the inventory of its

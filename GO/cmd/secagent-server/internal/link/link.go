@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package link is the link-token authority of a relay (v3.0.4, #141/#146): on the ROOT it holds the
 // Ed25519 signing key (generated lazily, stored sealed enc: in server_config), mints and revokes the
 // link tokens, rotates the key and builds the frames sent down the tree; on any node it builds the

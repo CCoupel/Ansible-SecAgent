@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package ws
 
 // #156 (L4) — the rate limit of the topology snapshots is carried by the IDENTITY (relay_id = jwt.sub),

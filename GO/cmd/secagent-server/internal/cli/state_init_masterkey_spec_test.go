@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package cli
 
 // #214 (v3.0.5, D2) — `secagent-server state init` refuses a master key shorter than 32 bytes, with the

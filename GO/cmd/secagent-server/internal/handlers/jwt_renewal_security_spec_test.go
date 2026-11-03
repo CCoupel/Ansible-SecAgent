@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package handlers
 
 // #217 — exigences de la revue sécurité en amont (_work/reports/security-reviewer-lot1-amont-v305.md).

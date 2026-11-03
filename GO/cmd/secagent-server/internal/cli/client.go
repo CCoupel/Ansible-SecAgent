@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package cli implements the secagent-server command-line interface (ARCHITECTURE.md §21).
 // All commands talk to the admin API (port 7771) using RELAY_API_URL + ADMIN_TOKEN env vars.
 package cli

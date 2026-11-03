@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package actionlog is the append-only journal of the hook actions (#161): one JSON line per
 // executed action, in a file separate from the state file. It replaces the action_log table, which
 // would have forced a full rewrite of the state file at every hook.

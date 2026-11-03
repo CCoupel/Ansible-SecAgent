@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package handlers
 
 // #217 (v3.0.5, D1) — invariants of the agent JWT renewal (maquette agent_jwt/renouvellement_217),

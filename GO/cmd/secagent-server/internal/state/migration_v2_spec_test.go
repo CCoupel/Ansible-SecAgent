@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package state
 
 // #141 / #146 (L1b) — SPECIFICATION of the v1 → v2 state migration (plan rev2 §2 option A, tests 8, 9

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // relay_handler.go — WebSocket handler for /ws/relay (relay chain, pull mode).
 //
 // Relays connect here with a link token (Ed25519, role relay-child / relay-parent, signed by the root)

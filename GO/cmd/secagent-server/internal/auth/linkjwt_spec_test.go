@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package auth
 
 // #141 / #146 (L1c) — conformance of the REAL link verifier to the specification (plan rev2 §3,

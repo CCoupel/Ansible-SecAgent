@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // store_routing.go — hostname routing of the relay tree. The routes are VOLATILE: rebuilt by the
 // topology snapshots when the children (re)connect, never written to the state file.
 package storage

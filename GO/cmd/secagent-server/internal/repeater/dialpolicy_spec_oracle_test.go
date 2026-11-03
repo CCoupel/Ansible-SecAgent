@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package repeater
 
 // #151 (L7) — oracle of the dial policy, its mutants, and the table of cases (see the adapter).

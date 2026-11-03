@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package integration
 
 // #193 on a REAL node: the revocation is a persistent flag, set with the blacklist in one write. A revoked

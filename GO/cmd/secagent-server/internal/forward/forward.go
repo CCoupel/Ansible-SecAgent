@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package forward executes the tasks a PARENT relay sends down the tree (#127): it resolves the
 // next hop of the target hostname and either runs the task on a directly connected agent or
 // relays it to the child that routes the host, then sends the task_result back upstream.

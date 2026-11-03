@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package state
 
 // Offline rotation of RSA_MASTER_KEY (`state rekey`, v3.0.4). The master key encrypts every secret at

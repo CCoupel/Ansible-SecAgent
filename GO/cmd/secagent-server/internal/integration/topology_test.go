@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package integration
 
 // Dynamic topology (#126 follow-up): a relay that joins or leaves below an already-linked relay is

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package server
 
 // #217 (v3.0.5, D1) — AGENT_JWT_TTL (default 24 h, was 1 h hard-coded) and AGENT_JWT_RENEW_INTERVAL

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Command secagent-server is both the Ansible-SecAgent server and its admin CLI.
 // main() only reads the environment and runs the server; the wiring lives in
 // internal/server so that the real start-up sequence is testable (#155).

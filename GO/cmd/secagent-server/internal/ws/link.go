@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package ws
 
 // Inter-relay link tokens and messages on /ws/relay (v3.0.4, #141/#146): the verification of the

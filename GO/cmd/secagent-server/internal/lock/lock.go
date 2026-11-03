@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package lock is the master lease of a relay instance (v3.0.3, #162, variant A).
 //
 // Several instances of the same relay share STATE_DIR (NFS-like storage); exactly one may be the

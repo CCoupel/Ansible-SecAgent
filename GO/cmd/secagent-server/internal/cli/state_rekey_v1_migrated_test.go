@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package cli
 
 // `state rekey` on a REAL schema 1 state (as v3.0.3 wrote it): the command migrates it to schema 2 under the

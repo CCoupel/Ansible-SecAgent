@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package integration
 
 // QA v3.0.4 R2 (d) — #180 over THREE levels. After the restart of the root (routes and flags are in

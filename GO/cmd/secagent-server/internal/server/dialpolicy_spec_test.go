@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package server
 
 // #151 (L7, plan rev2 §5 "démarrage avec une ligne push stockée devenue interdite") — a stored push

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package cli
 
 // M14: the push token of `relays add` can come from a file or stdin, never needs argv; --token still works but warns.

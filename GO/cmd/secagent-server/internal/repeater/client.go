@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package repeater implements the child-relay side of the relay tree (#125):
 // a single goroutine keeps one persistent WSS link to the unique parent,
 // performs the relay_hello / relay_ack / topology_snapshot handshake, then

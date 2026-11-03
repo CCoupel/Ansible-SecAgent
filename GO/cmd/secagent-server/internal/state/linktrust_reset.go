@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package state
 
 // Offline reset of the trust anchor of a NON-ROOT relay (`state link-trust reset`, v3.0.4): the
