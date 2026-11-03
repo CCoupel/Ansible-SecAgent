@@ -9,6 +9,11 @@ All notable changes to this project will be documented in this file.
 ### Added
 - (future features for next milestone)
 
+### Licence
+- **Passage sous AGPL-3.0-or-later (#237)** : le dépôt est distribué sous la GNU Affero General Public License v3.0 ou ultérieure (texte intégral FSF dans `LICENSE`), à la place de la licence MIT qui n'a jamais figuré sur `main` ni dans une version publiée (elle n'existait que sur la branche `milestone/v3.0.5`). La mention figure dans le README.
+- **Accord de contribution (CLA)** : `CONTRIBUTING.md` décrit le flux de contribution et exige la signature d'un Harmony Contributor License Agreement 1.0 (`CLA.md` pour un individu, `CLA-entity.md` pour une entité). Toute contribution doit porter l'en-tête SPDX `AGPL-3.0-or-later`.
+- **`--version` affiche la licence et le code source** : `secagent-server`, `secagent-minion` et `secagent-inventory --version` affichent trois lignes (`<composant> version <version>`, `License: AGPL-3.0-or-later`, `Source: https://github.com/CCoupel/Ansible-SecAgent`). La première ligne est inchangée ; un script qui lit la sortie entière (et non la première ligne) doit être adapté.
+
 ### Documentation
 - **Guides d'installation et de configuration v3.0.4** : `DOC/project/INSTALL_AGENT.md` (agent `secagent-minion` : binaire de la release, `SHA256SUMS`, enrôlement, unité systemd, `*_FILE`, JWT d'1 h, codes de sortie 77/78), `DOC/project/INSTALL_SERVER.md` (serveur racine : archive Compose, secrets, PKI, `state init`, CLI, limites d'admission, sauvegarde, montée depuis la v3.0.3) et `DOC/project/INSTALL_RELAY.md` (relays enfants : ancre épinglée, jetons de lien, politique de dial, rotation, révocation, `state link-trust reset`). `QUICKSTART.md`, `DEPLOYMENT.md` et le README y renvoient ; les listes de rôles de jetons y incluent `relay-child`.
 

@@ -31,7 +31,10 @@ curl -fLO "https://github.com/CCoupel/Ansible-SecAgent/releases/download/v${V}/s
 curl -fLO "https://github.com/CCoupel/Ansible-SecAgent/releases/download/v${V}/SHA256SUMS-${V}.txt"
 sha256sum --ignore-missing -c "SHA256SUMS-${V}.txt"   # attendu : « ./secagent-minion-3.0.4-linux-amd64: OK »
 install -m 0755 "secagent-minion-${V}-linux-amd64" /usr/local/bin/secagent-minion
-secagent-minion --version                              # « secagent-minion version 3.0.4 »
+secagent-minion --version
+# secagent-minion version 3.0.4
+# License: AGPL-3.0-or-later
+# Source: https://github.com/CCoupel/Ansible-SecAgent
 ```
 
 Le fichier de sommes liste aussi les autres pièces de la release : `--ignore-missing` évite une erreur pour celles que
@@ -44,7 +47,7 @@ Le minion se configure **uniquement par l'environnement** (§5). Il n'accepte pr
 | Invocation | Effet | Code |
 |---|---|---|
 | `secagent-minion` (sans argument) | démarre l'agent | selon §9 |
-| `secagent-minion --version` ou `-v` | affiche `secagent-minion version <version>`, rien n'est démarré | 0 |
+| `secagent-minion --version` ou `-v` | affiche `secagent-minion version <version>`, puis `License: AGPL-3.0-or-later` et `Source: https://github.com/CCoupel/Ansible-SecAgent` (3 lignes), rien n'est démarré | 0 |
 | `secagent-minion --help` ou `-h` | affiche l'aide et les variables d'environnement | 0 |
 | tout autre argument (`-d`, `--config x`, un mot, plusieurs arguments) | erreur + aide sur stderr, **avant** toute initialisation (ni clé générée, ni fichier lu) | 1 |
 

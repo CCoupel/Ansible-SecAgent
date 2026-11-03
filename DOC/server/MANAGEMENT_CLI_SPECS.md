@@ -399,7 +399,7 @@ Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écr
 
 #### `--version` (v3.0.5, #220, D5)
 
-`secagent-server --version` (ou `-v`) affiche `secagent-server version <version>` et sort en **0** ; la version est injectée à la compilation (`-ldflags -X secagent-server/cmd/secagent-server/internal/cli.Version=…`, `dev` sinon) et figure aussi dans la ligne `[INIT] Ansible-SecAgent GO Server <version>` du démarrage (elle disait `v1.0` en dur). `--version` suivi d'un argument supplémentaire (`--version extra`) sort en **1** avec un message, comme `secagent-minion` (avant : 0).
+`secagent-server --version` (ou `-v`) affiche trois lignes (`secagent-server version <version>`, puis `License: AGPL-3.0-or-later` et `Source: https://github.com/CCoupel/Ansible-SecAgent`) et sort en **0** (la ligne 1 est inchangée : `assert_version.sh` ne lit que `head -1`) ; la version est injectée à la compilation (`-ldflags -X secagent-server/cmd/secagent-server/internal/cli.Version=…`, `dev` sinon) et figure aussi dans la ligne `[INIT] Ansible-SecAgent GO Server <version>` du démarrage (elle disait `v1.0` en dur). `--version` suivi d'un argument supplémentaire (`--version extra`) sort en **1** avec un message, comme `secagent-minion` (avant : 0).
 
 #### Codes de sortie des groupes et sauvegardes (v3.0.5, #219)
 

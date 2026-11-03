@@ -339,7 +339,7 @@ Le minion est configuré **uniquement par l'environnement** (§11) ; il n'accept
 | Invocation | Effet | Code de sortie |
 |---|---|---|
 | `secagent-minion` (sans argument) | démarre l'agent | selon §7 |
-| `secagent-minion --version` ou `-v` | affiche `secagent-minion version <version>` (stdout) sans rien démarrer | 0 |
+| `secagent-minion --version` ou `-v` | affiche 3 lignes (stdout) : `secagent-minion version <version>`, `License: AGPL-3.0-or-later`, `Source: https://github.com/CCoupel/Ansible-SecAgent`, sans rien démarrer | 0 |
 | `secagent-minion --help` ou `-h` | affiche l'aide et les variables d'environnement (stdout) sans rien démarrer | 0 |
 | tout autre argument (mot inconnu, `-d`, `--config x`, `7770`, `--version extra`…) | message d'erreur et aide sur stderr, **avant** toute initialisation (ni bannière, ni lecture de configuration ou de secret, ni génération de clé) | 1 |
 

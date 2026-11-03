@@ -25,7 +25,7 @@ Ansible-SecAgent v3.0.3 est composé de trois éléments :
 - **Enrollment** : POST /api/register (RSA-4096 + JWT) une seule fois
 - **Exécution** : Subprocess par tâche, isolation complète, max 10 concurrentes (configurable)
 - **Codes de sortie** : 1 = échec (redémarrage par la politique), 77 (revoked - no restart), 78 (enrollment absent/refused - no restart)
-- **Ligne de commande** : le minion démarre **sans argument** (toute sa configuration vient de l'environnement). `--version` (ou `-v`) et `--help` (ou `-h`) répondent sans rien démarrer (code 0) ; **tout autre argument est refusé** (erreur sur stderr, code 1, avant toute initialisation : ni clé générée, ni lecture de secret). Ne pas ajouter d'`command:`/`args:` à un service minion.
+- **Ligne de commande** : le minion démarre **sans argument** (toute sa configuration vient de l'environnement). `--version` (ou `-v` ; 3 lignes : `secagent-minion version <version>`, `License: AGPL-3.0-or-later`, `Source: https://github.com/CCoupel/Ansible-SecAgent`) et `--help` (ou `-h`) répondent sans rien démarrer (code 0) ; **tout autre argument est refusé** (erreur sur stderr, code 1, avant toute initialisation : ni clé générée, ni lecture de secret). Ne pas ajouter d'`command:`/`args:` à un service minion.
 
 **Network** : Host network (agents sur 192.0.2.100-102, relay sur 192.0.2.10 (adresses de documentation, RFC 5737))
 
@@ -183,7 +183,7 @@ Les attestations **BuildKit** attachées à l'image (`provenance: true`, `sbom: 
 
 ## Arguments du binaire `secagent-server` (v3.0.4)
 
-Le serveur démarre **sans argument** : toute sa configuration vient de l'environnement (`ENTRYPOINT ["/app/secagent-server"]`, aucun `command:` Compose). Tout argument est traité par la CLI d'administration : une commande ou un drapeau inconnu (`kyes`, `-d`, `--config …`) est **refusé** avec une erreur et le code de sortie 1, jamais interprété comme un démarrage de serveur. `--help`, `-h` et `--version` répondent sans rien démarrer. Ne pas ajouter d'`command:`/`args:` à un service serveur.
+Le serveur démarre **sans argument** : toute sa configuration vient de l'environnement (`ENTRYPOINT ["/app/secagent-server"]`, aucun `command:` Compose). Tout argument est traité par la CLI d'administration : une commande ou un drapeau inconnu (`kyes`, `-d`, `--config …`) est **refusé** avec une erreur et le code de sortie 1, jamais interprété comme un démarrage de serveur. `--help`, `-h` et `--version` répondent sans rien démarrer (`--version` affiche 3 lignes : `secagent-server version <version>`, `License: AGPL-3.0-or-later`, `Source: https://github.com/CCoupel/Ansible-SecAgent`). Ne pas ajouter d'`command:`/`args:` à un service serveur.
 
 ## Codes de Sortie et Redémarrage
 

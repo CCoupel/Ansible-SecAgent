@@ -167,7 +167,29 @@ Voir [DOC/security/SECURITY.md](./DOC/security/SECURITY.md) pour le modèle comp
 
 ## Licence
 
-Ansible-SecAgent est distribué sous **licence MIT** : voir le fichier [`LICENSE`](LICENSE) (Copyright (c) 2025-2026 Cyril Coupel).
+Ansible-SecAgent est distribué sous **licence GNU Affero General Public License v3.0 ou ultérieure (AGPL-3.0-or-later)** : voir le fichier [`LICENSE`](LICENSE).
+
+Code source : <https://github.com/CCoupel/Ansible-SecAgent>. Les binaires `secagent-server`, `secagent-minion` et `secagent-inventory` affichent la licence et cette adresse avec `--version`.
+
+Pour contribuer, voir [`CONTRIBUTING.md`](CONTRIBUTING.md) (un accord de contribution, le CLA, est requis).
+
+```
+Ansible-SecAgent
+Copyright (C) 2025-2026 Cyril Coupel
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+```
 
 ## Contacts & Support
 
