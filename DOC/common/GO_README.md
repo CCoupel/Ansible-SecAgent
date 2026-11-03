@@ -191,7 +191,7 @@ export TLS_KEY="./certs/server.key"
 
 **Start the stack** : Compose files live in `DEPLOYMENT/qualif/` (`docker-compose.server.yml`, `docker-compose.chain.yml`) — see `DEPLOYMENT/qualif/README.md`. There is no Compose file under `GO/`. The CLI must be run in the container of the instance that currently holds the lock (the secondary opens no port):
 ```bash
-SECAGENT="docker exec secagent-qualif-a secagent-server"   # or secagent-qualif-b
+SECAGENT="docker exec secagent-qualif-a /app/secagent-server"   # or secagent-qualif-b
 ```
 
 **Access CLI commands via container** (Phase 6 — admin commands) :
