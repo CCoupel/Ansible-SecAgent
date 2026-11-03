@@ -39,7 +39,9 @@ Pour que le projet puisse être distribué, y compris sous d'autres licences que
 
 Vous **conservez la propriété** de votre contribution : le CLA accorde au projet une licence large, non exclusive et irrévocable, et ne transfère pas vos droits.
 
-Le CLA se signe une seule fois, sur votre première pull request, en suivant les instructions que le robot de signature y publie. Une contribution qui n'est pas de vous, ou dont vous ne détenez pas tous les droits, ne doit pas être soumise sans l'accord de son auteur et la mention de sa licence dans la pull request.
+Le CLA se signe une seule fois, sur votre première pull request, en suivant les instructions que le robot de signature y publie. Si le contrôle CLA reste en échec après votre signature, commentez `recheck` sur la pull request pour le relancer.
+
+Une contribution qui n'est pas de vous, ou dont vous ne détenez pas tous les droits, ne doit pas être soumise sans l'accord de son auteur et la mention de sa licence dans la pull request.
 
 Il n'y a pas de DCO (`Signed-off-by`) : le CLA le remplace.
 
