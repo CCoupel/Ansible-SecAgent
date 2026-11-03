@@ -14,6 +14,14 @@ echo "==> En-tetes SPDX"
 python3 -I "$ROOT/scripts/ci/check_spdx_selftest.py"
 python3 -I "$ROOT/scripts/ci/check_spdx.py" --root "$ROOT"
 
+echo "==> govulncheck (vulnerabilites atteintes)"
+if command -v govulncheck >/dev/null 2>&1; then
+  bash "$ROOT/scripts/ci/run_govulncheck.sh"
+else
+  echo "govulncheck absent du PATH (CI : go install golang.org/x/vuln/cmd/govulncheck@v1.9.0) — etape non jouee localement" >&2
+  exit 1
+fi
+
 echo "==> Mentions tierces (go-licenses)"
 if command -v go-licenses >/dev/null 2>&1; then
   bash "$ROOT/scripts/ci/gen_third_party_notices.sh" --check

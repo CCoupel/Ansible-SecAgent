@@ -242,6 +242,18 @@ jobs:
             *) bash scripts/ci/check_version_file.sh ;;
           esac
 
+      # LOT-8 / #248 : audit des vulnerabilites (commands.audit) AVANT le milestone, plus seulement a la NR. govulncheck
+      # epingle (version + somme h1 du module, verifiee apres installation) ; echec (rc 3) des qu'une vulnerabilite est
+      # ATTEINTE par le code (traces d'appel), comme la regle QA « vulnerabilite connue = NOT VALIDATED ».
+      - name: govulncheck (vulnerabilites atteintes)
+        env:
+          GOVULNCHECK_VERSION: v1.9.0
+          GOVULNCHECK_H1: h1:12VaqnI9kJfqwRoPptxoqsUhQtdfrSbdksT7X/KY/sc=
+        run: |
+          set -euo pipefail
+          GOBIN="$RUNNER_TEMP/bin" go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          PATH="$RUNNER_TEMP/bin:$PATH" bash scripts/ci/run_govulncheck.sh
+
       # LOT-7 / #237 (D15) : THIRD_PARTY_NOTICES.md regenere par go-licenses (version epinglee, module verifie par la base
       # de sommes publique) doit etre identique au fichier commite ; GO/LICENSE et GO/THIRD_PARTY_NOTICES.md (contexte de
       # build des images) identiques aux originaux de la racine.
