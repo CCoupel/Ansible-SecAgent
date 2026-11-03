@@ -237,7 +237,7 @@ racine :
    `relay.state.v1.bak`** (ou celle que vous avez prise à l'étape 1) avec les binaires **v3.0.3 et les anciens jetons HS256**,
    en perdant toutes les écritures faites sous v3.0.4 (enrôlements, révocations).
 6. **Avant la montée**, prévoyez un jeton d'enrôlement **réutilisable** pour les agents : le redémarrage des relays force la
-   reconnexion, donc le ré-enrôlement de ceux dont le JWT (1 h) a expiré (voir [`INSTALL_AGENT.md`](INSTALL_AGENT.md) §7).
+   reconnexion, donc le ré-enrôlement de ceux dont le JWT a expiré (24 h par défaut et renouvelé en marche depuis la v3.0.5 ; 1 h avant) (voir [`INSTALL_AGENT.md`](INSTALL_AGENT.md) §7).
 
 ## 12. Dépannage
 

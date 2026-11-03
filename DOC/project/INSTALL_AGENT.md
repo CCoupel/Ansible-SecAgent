@@ -84,7 +84,7 @@ srv tokens create --role enrollment --hostname-pattern 'web-[0-9]+' --reusable -
   l'agent : c'est la limitation principale d'un jeton réutilisable. Sans motif, le jeton accepte n'importe quel nom.
 - Sans `--reusable`, le jeton est **à usage unique** ; sans `--expires`, il n'expire jamais (`never`).
 - **Choisissez un jeton réutilisable, restreint par `--hostname-pattern`, à durée suffisante** pour tout le parc : voir
-  « JWT d'une heure » en §7. Un jeton à usage unique ou court fait sortir le minion en **code 78** à la première
+  « JWT d'agent » en §7. Un jeton à usage unique ou court fait sortir le minion en **code 78** à la première
   reconnexion après expiration de son JWT.
 - Les options complètes : `secagent-server tokens create --help`. `tokens list` (sans jamais montrer le jeton),
   `tokens delete <id>` (supprime un jeton d'enrôlement ou plugin), `tokens purge` ; `tokens revoke <id>` ne vaut que pour les jetons `plugin` et de lien (`relay-child`/`relay-parent`), pas pour un jeton d'enrôlement.
@@ -179,15 +179,18 @@ journalctl -u secagent-minion -f        # attendu : [INIT] …, enrôlement, pui
 Au premier démarrage le minion génère sa clé RSA-4096 puis **s'enrôle** (§8). Son JWT est ensuite réutilisé depuis
 `RELAY_JWT_PATH` tant qu'il est accepté.
 
-### JWT d'une heure et ré-enrôlement (limite connue, #217)
+### JWT d'agent : durée, renouvellement et ré-enrôlement (v3.0.5, #217)
 
-Le JWT d'un agent dure **1 heure** et il **n'existe aucun renouvellement**. Une connexion ouverte n'est pas coupée à
-l'expiration, mais **toute reconnexion après expiration** (redémarrage de l'agent, du relay, montée de version,
-coupure réseau) reçoit un `401` ; le minion **se ré-enrôle alors automatiquement** avec `RELAY_ENROLLMENT_TOKEN[_FILE]`.
-Si ce jeton est à usage unique (déjà consommé) ou expiré, le serveur répond `403` et le minion **sort en code 78** sans
-réessayer. Conséquence : le jeton d'enrôlement doit **rester disponible et valide** pour toute la vie de l'agent
-(§4 : réutilisable, restreint par motif, durée longue). Le correctif est suivi dans le milestone « v3.0.5 »
-(issue #217).
+Le JWT d'un agent dure `AGENT_JWT_TTL` (**24 h** par défaut sur le serveur ; 1 h avant la v3.0.5). Le serveur le **renouvelle**
+sur la WebSocket ouverte, toutes les `AGENT_JWT_RENEW_INTERVAL` (défaut TTL/3, soit 8 h), et le minion écrit le nouveau JWT dans
+`RELAY_JWT_PATH` (réessai chaque minute si l'écriture échoue). Un redémarrage de l'agent ou du relay, une montée de version ou une
+coupure réseau plus courts que `TTL − intervalle` (≈ 16 h par défaut) n'ont donc aucun effet : le minion se reconnecte avec son JWT
+renouvelé, sans jeton d'enrôlement. Un `401` à la poignée de main est réessayé avec le même JWT avant qu'il soit effacé.
+
+Au-delà (agent ou relay arrêté plus longtemps que la durée de vie restante du JWT), la reconnexion reçoit un `401` et le minion
+**se ré-enrôle** avec `RELAY_ENROLLMENT_TOKEN[_FILE]`. Si ce jeton est à usage unique (déjà consommé) ou expiré, le serveur répond
+`403` et le minion **sort en code 78** sans réessayer. Le jeton d'enrôlement doit donc **rester disponible et valide** pour toute
+la vie de l'agent (§4 : réutilisable, restreint par motif, durée longue). Détail côté serveur : `DEPLOYMENT.md`.
 
 ## 8. Enrôlement : ce qui se passe
 
@@ -223,7 +226,7 @@ Diagnostics fréquents :
 | agent sans WebSocket, requête `GET /` | `RELAY_WS_URL` sans `/ws/agent` | ajouter le chemin |
 | `secret file permissions are too open` | `*_FILE` en 0640/0644 | `chmod 0600` (§6) |
 | `403 hostname_not_allowed` | `RELAY_AGENT_HOSTNAME` hors du motif du jeton | corriger le nom ou le motif |
-| agent `disconnected` côté serveur après redémarrage d'un relay, journal minion `token_expired` | JWT expiré + jeton à usage unique | voir « JWT d'une heure » (§7) |
+| agent `disconnected` côté serveur après redémarrage d'un relay, journal minion `token_expired` | JWT expiré + jeton à usage unique | voir « JWT d'agent » (§7) |
 
 Côté serveur : `secagent-server minions list` / `get <hostname>`.
 
@@ -231,7 +234,7 @@ Côté serveur : `secagent-server minions list` / `get <hostname>`.
 
 **Mise à jour** : télécharger et vérifier la nouvelle version (§2), puis
 `install -m 0755 … /usr/local/bin/secagent-minion && systemctl restart secagent-minion`. La clé et le JWT sont conservés ;
-si le JWT a plus d'une heure, le redémarrage provoque un ré-enrôlement (§7) : le jeton d'enrôlement doit être valide.
+si l'agent est resté arrêté plus longtemps que la durée de vie restante de son JWT (24 h par défaut, renouvelé en marche), le redémarrage provoque un ré-enrôlement (§7) : le jeton d'enrôlement doit être valide.
 Les anciens agents (jusqu'à v3.0.3) doivent rester compatibles avec un serveur v3.0.4 : la montée v3.0.3 → v3.0.4 **ne coupe
 pas les agents** (elle coupe les liens relay ↔ relay). *Non exécuté ici* : un agent v3.0.3 réellement connecté à un serveur v3.0.4 (affirmation tirée de `DEPLOYMENT.md`).
 

@@ -11,13 +11,15 @@ All notable changes to this project will be documented in this file.
 **Pas de rupture de lien ni d'agent depuis la v3.0.4.** Deux points demandent une action avant la montée : `RSA_MASTER_KEY` d'au moins 32 octets non prévisible (#214) et sauvegarde de `STATE_DIR` ; retour arrière vers v3.0.4 possible seulement par `state restore` (voir `DOC/project/DEPLOYMENT.md`, « Montée de version v3.0.4 → v3.0.5 »). **Changement de licence : AGPL-3.0-or-later à la place de MIT** (voir « Licence »).
 
 ### Security
-- **`RSA_MASTER_KEY` durcie (#214)** : refus au démarrage et à `state init` d'une clé de moins de 32 octets ou prévisible (caractère ou motif répété, moins de 12 caractères distincts) ; dérivation de la clé AES par KDF.
+- **Dépendances vulnérables (#248, LOT-8)** : `gorilla/websocket` v1.5.3 et `golang-jwt/jwt/v5` v5.3.1 (résultats de `govulncheck`) ; binaires compilés avec Go 1.27.3 (toolchain de `go.work`, aligné sur le builder `golang:1.27-alpine`).
+- **`RSA_MASTER_KEY` durcie (#214)** : refus au démarrage et à `state init` d'une clé de moins de 32 octets ou prévisible (caractère ou motif répété, moins de 12 caractères distincts).
 - **Révocation et liens relay** : le quota d'`event_forward` est compté par `relay_id` et non par lien (#216) ; la confirmation d'une rotation de clé de lien distingue les relais jamais vus (`never_seen`) et non directement connectés (`not_direct`), et `link-status` / `retire-link-previous` affichent la liste et le remède (#215, #234) ; un relais pull déclaré mais jamais connecté n'est plus affiché « confirmé » (#234) ; refus explicite d'une ancre de lien épinglée périmée (#218).
 - **Attestations signées des images (#213)** : provenance SLSA (`actions/attest-build-provenance`) pour les images de release et candidates, jobs dans les Environments `release` / `candidate`, vérification toujours épinglée sur `--source-ref` ; la ligne de promotion indique ATTESTEE / NON ATTESTEE. La protection de la règle de tags `v*` et de `main` reste à configurer côté GitHub.
 - **Secrets en fichier** : ouverture avec `O_NOFOLLOW|O_NONBLOCK` (fichier régulier uniquement) ; les secrets du serveur de la qualif passent en `*_FILE` (#197).
 - **Outillage CI** : toutes les actions épinglées par SHA avec garde (`check_actions_pinned.py`, analyse YAML, aucune expression `${{ }}` dans les scripts shell), `persist-credentials: false` sur les checkouts (#200, #224).
 
 ### Added
+- **Préparation PROD (#248, LOT-8)** : fichier `VERSION` (3.0.5) contrôlé dans le job `lint` et face au tag dans `release.yml` ; ports hôte PROD paramétrables (`API_PUBLISH_PORT`, `WS_PUBLISH_PORT`, `ADMIN_PUBLISH_PORT`, défauts 7770 / 7772 / 7771, propositions 17770 / 17772 / 17771 pour l'hôte partagé avec la qualif) avec refus par `check_compose.py` de deux publications du même port hôte ; `govulncheck` v1.9.0 dans le job `lint` et `scripts/ci.sh`.
 - **Renouvellement du JWT d'agent sans coupure (#217)** : le serveur renouvelle le JWT sur la WebSocket ouverte (`rekey`), le minion le persiste de façon atomique (tmp 0600, fsync, rename) et réessaie chaque minute en cas d'échec d'écriture ; un 401 à la poignée de main est réessayé avec le même JWT avant de l'effacer ; ping applicatif des connexions agent (`AGENT_WS_PING_INTERVAL`, plafonné à 60 s) et sonde avant de refuser un JTI remplacé. Plus d'arrêt en masse des minions à l'expiration d'un JWT. Variables `AGENT_JWT_TTL` (défaut 24 h) et `AGENT_JWT_RENEW_INTERVAL` (défaut TTL/3).
 - **CLI** : `minions delete`, `relays revoke` et `relays remove --revoke` (confirmation `--yes`, noms acceptés) ; `relays add --token-file` (fichier ou stdin), `--token` avertit (#233).
 - **`secagent-inventory --version`** (#220) : même contrat que le serveur et le minion ; la version injectée figure dans la ligne `[INIT]` des trois binaires.
@@ -28,7 +30,7 @@ All notable changes to this project will be documented in this file.
 - **`--version` sur 3 lignes** (`secagent-server`, `secagent-minion`, `secagent-inventory`) : voir « Licence ». `--version extra` sort en 1 sur les trois binaires.
 - **CLI `state`** : une sous-commande inconnue d'un groupe sort en 1 (et non 0) ; les sauvegardes `restore` et `rekey` ont un nom unique à la nanoseconde (#219).
 - **Code mort retiré** du binaire serveur, helpers de test sortis de la production (#221).
-- **Dépendances** (#199 à #205, #227) : Go 1.27 (image), Alpine 3.24, `actions/checkout` 7.0.1, `setup-go` 7.0.0, `upload-artifact` 7.0.2, `metadata-action` 6.2.0, `build-push-action` 7.4.0.
+- **Dépendances** (#199 à #205, #227) : Go 1.27 (image du builder), Alpine 3.24, `actions/checkout` 7.0.1, `setup-go` 7.0.0, `upload-artifact` 7.0.2, `metadata-action` 6.2.0, `build-push-action` 7.4.0.
 - **`GET` d'un minion** affiche l'état réel de la connexion ; `minions delete` refuse le JWT avant de fermer la socket (#233).
 
 ### Fixed
