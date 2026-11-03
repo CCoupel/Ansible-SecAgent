@@ -208,6 +208,10 @@ func main() {
 
 	// --version : avant loadConfig et la garde TLS — aucun accès réseau ni variable d'environnement requise.
 	if isVersionFlag(args[0]) {
+		if len(args) > 1 {
+			fmt.Fprintf(os.Stderr, "Error: unexpected argument %q after %s\nUsage: secagent-inventory --version\n", args[1], args[0])
+			os.Exit(1)
+		}
 		fmt.Fprintf(os.Stdout, "secagent-inventory version %s\n", Version)
 		return
 	}

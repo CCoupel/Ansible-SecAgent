@@ -50,3 +50,31 @@ func TestVersionFlagBinary(t *testing.T) {
 		}
 	}
 }
+
+// TestVersionFlagExtraArg : un argument en trop avec --version/-v ⇒ rc 1 et message sur stderr (aligné serveur/minion).
+func TestVersionFlagExtraArg(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compilation du binaire")
+	}
+	bin := t.TempDir() + "/inv"
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	for _, flag := range []string{"--version", "-v"} {
+		cmd := exec.Command(bin, flag, "extra")
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+		ee, ok := err.(*exec.ExitError)
+		if !ok || ee.ExitCode() != 1 {
+			t.Fatalf("%s extra: err = %v, want exit code 1", flag, err)
+		}
+		if stdout.Len() != 0 {
+			t.Errorf("%s extra: stdout non vide: %q", flag, stdout.String())
+		}
+		if !strings.Contains(stderr.String(), "unexpected argument") {
+			t.Errorf("%s extra: stderr = %q", flag, stderr.String())
+		}
+	}
+}
