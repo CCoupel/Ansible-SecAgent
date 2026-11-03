@@ -5,6 +5,7 @@
   "project": "Ansible-SecAgent",
   "description": "Système d'exécution de playbooks Ansible sur hôtes distants sans connexion SSH entrante (modèle connexions inversées, agents clients)",
   "version": "3.0.4",
+  "version_file": "VERSION",
   "initialized_at": "2026-05-22T00:00:00Z",
   "initialized_from": "analysis",
   "stack": {
@@ -54,13 +55,17 @@
           "credentials_env": [],
           "verified": {
             "status": "ok",
-            "at": "2026-10-31T15:32:34Z",
+            "at": "2026-11-03T18:04:40Z",
             "checks": [
               "docker-api",
-              "compose-cli",
-              "registry-pull"
+              "compose-ls",
+              "containers-health",
+              "secrets-file-only",
+              "compose-config",
+              "registry-anon-pull",
+              "gh-attestation-verify"
             ],
-            "note": "API Docker tcp:2375 sans TLS ni authentification"
+            "note": "API Docker tcp:2375 sans TLS ni authentification ; docker 29.2.1 ; projet secagent-qualif running(5), maitre = instance b ; paquets GHCR PUBLICS (pull anonyme 200) ; gh local 2.45 < 2.49 : attestation verifiee avec gh 2.103.3 du scratchpad (GH_BIN)"
           }
         }
       },
