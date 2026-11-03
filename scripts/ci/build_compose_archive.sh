@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Fabrique secagent-compose-<version>.tar.gz : Compose de production avec l'image du serveur reecrite en
 # tag@digest, controles bloquants (aucun `latest`/`build:`/NATS, image epinglee). Utilise a l'identique par
 # release.yml (digest reel) et par la repetition a vide de ci.yml (digest factice, rien n'est publie).

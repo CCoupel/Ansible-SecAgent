@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Auto-test de check_actions_pinned.py (garde d'epinglage des actions, #227 / M6 de la revue securite) sur des
 workflows SYNTHETIQUES (aucun fichier du depot, aucun reseau). Exit 0 = conforme.
 

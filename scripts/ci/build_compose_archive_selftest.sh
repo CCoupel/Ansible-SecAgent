@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Autotest de build_compose_archive.sh : construit l'archive avec un digest FACTICE (rien n'est publie), puis verifie les
 # modes dans l'archive (scripts executables, reste en 644), l'image epinglee et la reproductibilite (2 builds identiques).
 set -u

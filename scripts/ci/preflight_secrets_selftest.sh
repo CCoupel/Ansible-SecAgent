@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Autotest de DEPLOYMENT/prod/preflight-secrets.sh : SECRET_OWNER_UID = uid courant (aucun droit root requis).
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

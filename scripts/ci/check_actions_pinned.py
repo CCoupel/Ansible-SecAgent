@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Garde des workflows et actions GitHub (#227 / LOT-2.2, point ouvert de #224, M6 de la revue securite).
 
 Usage : check_actions_pinned.py [fichier ...]   (code 0 = OK, 1 = au moins une erreur, toutes listees)

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Autotest de check_no_binds.py : chaque cas doit etre accepte ou refuse comme attendu (mutation : un cas refuse qui
 passe ou un cas valide qui echoue fait echouer le script)."""
 import json

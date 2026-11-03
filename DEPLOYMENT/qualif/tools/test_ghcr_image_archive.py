@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Autotest de ghcr_image_archive.py : un faux serveur prouve que l'en-tete Authorization n'est JAMAIS recopie apres une
 redirection, que les redirections vers http / hote hors liste blanche sont refusees, et que le plafond de lecture tient.
 Usage : python3 -I DEPLOYMENT/qualif/tools/test_ghcr_image_archive.py"""

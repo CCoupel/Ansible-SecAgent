@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Test (negatif et positif) de check_no_publish.py."""
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Controle des scripts lances par les workflows (WSL/NTFS : bits d'execution et CRLF ne sont pas fiables).
 
 Pour chaque chemin `*.sh` / `*.py` du depot cite dans un workflow, echec si :

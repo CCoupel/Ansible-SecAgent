@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Verifie que `<commande> --version` affiche EXACTEMENT « <composant> version <attendue> », sans demarrer de service :
 # `--version` est gere par le binaire (tout argument inconnu est refuse, rien n'est lance).
 #   [COMPONENT=secagent-server|secagent-minion|secagent-inventory] assert_version.sh <version attendue sans le v> <commande...>

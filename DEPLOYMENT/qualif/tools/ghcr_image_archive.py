@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Archive `docker load` d'une image GHCR privee, assemblee SUR LE POSTE (aucun jeton ne va sur l'hote Docker).
 
 Usage : python3 -I ghcr_image_archive.py <depot> <digest_index> <tag_local> <sortie.tar>

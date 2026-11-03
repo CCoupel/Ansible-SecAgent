@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Autotest de GO/Makefile (#224) sans compiler ni lancer les tests Go : `make -n` (affiche les commandes sans les
 # executer). Prouve que les cibles existent, visent des paquets REELS du depot et que `test` porte les variables
 # d'environnement des tests. Le Makefile etait perime (./cmd/server, relay-server : des chemins qui n'existent plus).

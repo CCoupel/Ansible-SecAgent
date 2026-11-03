@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Script CI unique (commands.ci, contrat C11) — miroir local des jobs « Build + tests Go » et « Lint Go »
 # de .github/workflows/ci.yml. Les jobs Docker/Compose/Ansible/chaine restent dans ci.yml.
 # Toute etape ajoutee ici doit l'etre aussi dans ci.yml (et inversement) tant que ci.yml ne l'appelle pas.

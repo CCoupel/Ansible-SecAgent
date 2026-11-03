@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Test de l'assainissement de --host/--hosts de test_shared_storage.py (liste blanche, pas de separateur)."""
 import importlib.util, os, subprocess, sys
 here = os.path.dirname(os.path.abspath(__file__))

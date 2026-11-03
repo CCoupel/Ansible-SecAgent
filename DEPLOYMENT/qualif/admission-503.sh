@@ -1,4 +1,7 @@
 # shellcheck shell=bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Etape `chain-test.sh admission-503` (#241) : exerce EN REEL le refus 503 memory_budget_exhausted de #179.
 # Fichier SOURCE par chain-test.sh (jamais execute seul) : il reutilise ses fonctions et variables (DC, adm, master,
 # connected, wait_for, fail, control_env, need, write_secret, CHAIN_DIR, ENDPOINT_HOST, QUALIF_TLS_DIR, C_CHILD...).

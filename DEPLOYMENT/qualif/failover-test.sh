@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Test de basculement actif/passif EN CONTENEURS (#174 M6, partage avec #171 B).
 # Verifie que les images et Compose LIVRES se comportent comme prevu : 2 instances sur un meme volume d'etat.
 #

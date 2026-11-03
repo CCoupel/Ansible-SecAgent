@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Auto-test des fonctions HTTP de DEPLOYMENT/qualif/admission-503.sh (#241) avec un faux `curl` : sans docker ni reseau.
 # Verifie les exec de fond (codes, PID), la lecture 503 + Retry-After, la detection d'un lot refuse et l'absence de fuite
 # du jeton (l'en-tete d'autorisation n'est passe que par fichier). L'etape reelle est jouee par deployer sur la qualif.

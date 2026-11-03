@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Autotest de l'entrypoint de l'image minion (extrait de GO/Dockerfile.agent) : avec au moins un argument il passe la main
 # au binaire IMMEDIATEMENT (aucune cle RSA, aucun mkdir, aucun chown, meme pour un argument inconnu) ; sans argument il
 # initialise puis demarre. Les commandes sensibles sont des FAUX qui journalisent leur appel (PATH reduit au dossier des

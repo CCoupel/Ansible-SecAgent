@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Qualification d'un STOCKAGE PARTAGE pour STATE_DIR : « stockage non teste = non supporte ».
 
 A lancer sur AU MOINS DEUX HOTES qui montent le MEME partage, avec le meme --dir, --hosts et --start-at

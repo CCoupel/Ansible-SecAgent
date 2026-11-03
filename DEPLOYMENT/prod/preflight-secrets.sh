@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Preflight des fichiers de secrets de PRODUCTION (#196, v3.0.4) : a lancer AVANT `docker compose up`, sur CHAQUE hote.
 #
 #   ./preflight-secrets.sh [--child]            verifie (code 0 = OK, 1 = au moins une erreur, tout est liste)

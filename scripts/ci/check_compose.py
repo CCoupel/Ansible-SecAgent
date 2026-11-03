@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Controles de securite sur le RENDU d'un Compose (`docker compose config --format json`).
 
 Usage : check_compose.py [--allow-build] [--require-memory-limit] [--require-digest] [--require-secret-files] rendu.json [rendu2.json ...]

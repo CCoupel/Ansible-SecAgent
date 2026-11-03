@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # PKI de TEST de la topologie en chaine (#188) : une CA privee et un certificat serveur (chaine complete) dont
 # les SAN couvrent toutes les instances de la chaine. Aucune cle privee n'est versionnee : tout est ecrit dans
 # $PKI_OUT (defaut : ce repertoire/out, ignore par git). NE JAMAIS reutiliser en production.
