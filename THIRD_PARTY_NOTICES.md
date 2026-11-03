@@ -10,10 +10,10 @@ The Go standard library and runtime (BSD-3-Clause) are linked into the binaries 
 
 ---
 
-## github.com/golang-jwt/jwt/v5 v5.0.0
+## github.com/golang-jwt/jwt/v5 v5.3.1
 
 - License: MIT
-- Source: https://github.com/golang-jwt/jwt/blob/v5.0.0/LICENSE
+- Source: https://github.com/golang-jwt/jwt/blob/v5.3.1/LICENSE
 
 ```
 Copyright (c) 2012 Dave Grijalva
@@ -68,10 +68,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
-## github.com/gorilla/websocket v1.5.0
+## github.com/gorilla/websocket v1.5.3
 
 - License: BSD-2-Clause
-- Source: https://github.com/gorilla/websocket/blob/v1.5.0/LICENSE
+- Source: https://github.com/gorilla/websocket/blob/v1.5.3/LICENSE
 
 ```
 Copyright (c) 2013 The Gorilla WebSocket Authors. All rights reserved.
