@@ -82,17 +82,18 @@ La CLI parle à l'API d'administration (7771, TLS). Dans le conteneur : `RELAY_A
 ```bash
 # Alias de commodité : exécute la CLI dans l'instance a
 srv() {
-  docker compose -p secagent-qualif -f docker-compose.server.yml exec \
+  docker compose -p secagent-qualif -f docker-compose.server.yml exec -T \
     -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
     secagent-server-a secagent-server "$@"
 }
 
 # Jeton d'enrôlement (1 h). Jeton opaque `secagent_enr_` + 64 hex (77 car.), pas un JWT.
-ENR=$(srv tokens create --role enrollment --hostname-pattern 'qualif-host-.*' --expires 1h \
-      | grep -oE 'secagent_enr_[0-9a-f]{64}' | tail -1)
+# Le jeton va directement dans un fichier 0600 (umask 077) : jamais affiché, jamais en variable d'environnement
+(umask 077; srv tokens create --role enrollment --hostname-pattern 'qualif-host-.*' --expires 1h \
+      | grep -oE 'secagent_enr_[0-9a-f]{64}' | tail -1 > enrollment.token)
 ```
 
-> Ne pas afficher `$ENR` (terminal, historique) : l'utiliser directement (`RELAY_ENROLLMENT_TOKEN="$ENR"` ci-dessous) ou l'écrire dans un fichier 0600.
+> Ne pas afficher le jeton (terminal, historique) : le minion le lit dans `enrollment.token` (`RELAY_ENROLLMENT_TOKEN_FILE`, fichier 0600).
 
 > Un jeton n'est affiché qu'**une seule fois**. Rôles possibles : `enrollment`, `plugin`, `relay-child`, `relay-parent` (les deux derniers sont des jetons de lien, créés sur la racine seulement)
 > (il n'existe pas de rôle `agent` ou `admin`). Le jeton d'enrôlement est à usage unique sauf `--reusable`.
@@ -109,7 +110,7 @@ RELAY_AGENT_HOSTNAME=qualif-host-01 \
 RELAY_PRIVATE_KEY="$PWD/minion-data/id_rsa" \
 RELAY_JWT_PATH="$PWD/minion-data/token.jwt" \
 RELAY_ASYNC_DIR="$PWD/minion-data/async" \
-RELAY_ENROLLMENT_TOKEN="$ENR" \
+RELAY_ENROLLMENT_TOKEN_FILE="$PWD/enrollment.token" \
 secagent-minion
 ```
 
@@ -128,7 +129,8 @@ secagent-minion
 PLG=$(srv tokens create --role plugin --description quickstart --expires 1h \
       | grep -oE 'secagent_plg_[0-9a-f]{64}' | tail -1)
 
-curl -s --cacert tls/tls.crt -H "Authorization: Bearer $PLG" \
+# L'en-tête passe par l'entrée standard (-H @-) : le jeton n'apparaît pas dans la liste des processus
+printf 'Authorization: Bearer %s\n' "$PLG" | curl -s --cacert tls/tls.crt -H @- \
   https://localhost:7770/api/inventory | jq .
 # {
 #   "_meta": {"hostvars": {"qualif-host-01": {"ansible_connection": "relay", ...}}},
@@ -142,8 +144,8 @@ curl -s --cacert tls/tls.crt -H "Authorization: Bearer $PLG" \
 
 ```bash
 # Exécuter une commande sur l'agent (REST bloquant, jeton plugin)
-curl -s --cacert tls/tls.crt -X POST \
-  -H "Authorization: Bearer $PLG" \
+printf 'Authorization: Bearer %s\n' "$PLG" | curl -s --cacert tls/tls.crt -X POST \
+  -H @- \
   -H "Content-Type: application/json" \
   -d '{"cmd":"echo Hello from qualif-host-01","timeout":10}' \
   https://localhost:7770/api/exec/qualif-host-01 | jq .

@@ -145,7 +145,7 @@ production l'admin est en TLS ; l'alias suivant fournit l'URL et la CA :
 
 ```bash
 srv() {
-  docker compose exec -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
+  docker compose exec -T -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
     secagent-server secagent-server "$@"
 }
 ```

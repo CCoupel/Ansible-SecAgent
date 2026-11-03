@@ -117,13 +117,14 @@ Les jetons se créent avec la CLI du serveur, via l'API admin (7771, TLS ; `ADMI
 
 ```bash
 srv() {
-  docker compose -p secagent-qualif -f docker-compose.server.yml exec \
+  docker compose -p secagent-qualif -f docker-compose.server.yml exec -T \
     -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
     secagent-server-a secagent-server "$@"
 }
 
 # Jeton d'enrôlement opaque : secagent_enr_ + 64 hex (77 caractères), affiché UNE seule fois
-TOKEN=$(srv tokens create --role enrollment --expires 1h | grep -oE 'secagent_enr_[0-9a-f]{64}' | tail -1)
+# --hostname-pattern est OBLIGATOIRE (regexp ancrée) : ici les hôtes qualif-host-01, qualif-host-02…
+TOKEN=$(srv tokens create --role enrollment --hostname-pattern 'qualif-host-.*' --expires 1h | grep -oE 'secagent_enr_[0-9a-f]{64}' | tail -1)
 
 # Révoquer un jeton plugin ou relay-parent
 srv tokens list
@@ -148,7 +149,7 @@ curl -s --cacert tls/tls.crt https://localhost:7770/health
 
 # Inventaire : exige un jeton PLUGIN (ADMIN_TOKEN -> 403)
 PLG=$(srv tokens create --role plugin --description verif --expires 1h | grep -oE 'secagent_plg_[0-9a-f]{64}' | tail -1)
-curl -s --cacert tls/tls.crt -H "Authorization: Bearer $PLG" https://localhost:7770/api/inventory | jq .
+printf 'Authorization: Bearer %s\n' "$PLG" | curl -s --cacert tls/tls.crt -H @- https://localhost:7770/api/inventory | jq .
 
 # Ports : seul le maître écoute (le secondaire n'ouvre aucun port)
 ss -ltn | grep -E ':(7770|7771|7772|8770|8771|8772)'
@@ -431,7 +432,7 @@ echo $RELAY_SERVER_URL
 echo $RELAY_WS_URL
 
 # Test de connectivité
-curl -v --cacert tls.crt https://relay:7770/health   # -k réservé aux essais avec certificat auto-signé
+curl -v --cacert tls.crt https://relay:7770/health   # --cacert suffit, même avec le certificat auto-signé de qualification : jamais -k
 ```
 
 ### Failover vers passif ne se fait pas

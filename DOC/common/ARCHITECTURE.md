@@ -13,7 +13,7 @@
 3. [Architecture réseau et flux de données](#3-architecture-réseau-et-flux-de-données)
 4. [Protocole WebSocket](#4-protocole-websocket)
 5. [Routage WebSocket Direct](#5-routage-websocket-direct)
-6. [API REST du relay server](#6-api-rest-du-secagent-server)
+6. [API REST du relay server](#6-api-rest-du-relay-server)
 7. [Sécurité et authentification](#7-sécurité-et-authentification)
 8. [Flow complet d'un playbook](#8-flow-complet-dun-playbook)
 9. [Gestion de la concurrence](#9-gestion-de-la-concurrence)
@@ -22,15 +22,15 @@
 12. [become (élévation de privilèges)](#12-become-élévation-de-privilèges)
 13. [Gestion des erreurs](#13-gestion-des-erreurs)
 14. [Inventaire dynamique](#14-inventaire-dynamique)
-15. [Haute disponibilité et scalabilité](#15-haute-disponibilité-et-scalabilité)
+15. [Relay Actif/Passif v3.0.3](#15-relay-actifpassif-v303)
 16. [Configuration](#16-configuration)
 17. [Roadmap MVP vs V2](#17-roadmap-mvp-vs-v2)
 18. [Déploiement — secagent-minion (systemd)](#18-déploiement--secagent-minion-systemd)
-19. [Déploiement — relay server (Docker Compose)](#19-déploiement--secagent-server-docker-compose)
-20. [Persistance des données](#20-persistance-des-données)
+19. [Déploiement — relay server Docker Compose Multi-Hôtes](#19-déploiement--relay-server-docker-compose-multi-hôtes)
+20. [État Persistant Fichier (STATE_DIR)](#20-état-persistant-fichier-state_dir)
 21. [CLI de Management — secagent-server en mode CLI](#21-cli-de-management--secagent-server-en-mode-cli)
 22. [Rotation des clefs — Période de recouvrement](#22-rotation-des-clefs--période-de-recouvrement)
-23. [Mode Proxy/Gateway multi-zone](#23-mode-proxygateaway-multi-zone)
+23. [Mode Repeater — Arbre Hiérarchique (v3.0.1)](#23-mode-repeater--arbre-hiérarchique-v301)
 
 ---
 

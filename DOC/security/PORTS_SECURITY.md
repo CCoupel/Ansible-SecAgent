@@ -304,7 +304,7 @@ curl --cacert ca.pem https://relay:7770/health
 printf "Authorization: Bearer %s" "$ADMIN_TOKEN" | curl --cacert ca.pem -H @- https://127.0.0.1:7771/api/admin/status
 
 # Tester l'inventaire (jeton plugin, port 7770)
-curl --cacert ca.pem -H "Authorization: Bearer $PLUGIN_TOKEN" https://relay:7770/api/inventory
+printf 'Authorization: Bearer %s\n' "$PLUGIN_TOKEN" | curl --cacert ca.pem -H @- https://relay:7770/api/inventory
 ```
 
 ---

@@ -73,7 +73,7 @@ kill -HUP $(pidof secagent-server)
 | `host.resumed` | Suspension levée (`POST /api/admin/minions/{hostname}/resume`) ; remonte aux ancêtres (#180) |
 | `host.revoked` | Agent révoqué (`/api/admin/revoke/{hostname}`) |
 | `host.deleted` | Agent supprimé (`DELETE /api/admin/minions/{hostname}`) |
-| `host.conflict` | Hôte revendiqué par un second relay alors qu'il est déjà routé vers un autre : émis une fois par changement de propriétaire, statut `ancien->nouveau` (`server/server.go:494-495` ; accepté en `event_forward` par `ws/relay_handler.go:1790` ; SERVER_SPEC §9.5a) |
+| `host.conflict` | Hôte revendiqué par un second relay alors qu'il est déjà routé vers un autre : émis une fois par changement de propriétaire, statut `ancien->nouveau` (`server/server.go:496` ; accepté en `event_forward` par `ws/relay_handler.go:1789` ; SERVER_SPEC §9.5a) |
 
 ---
 

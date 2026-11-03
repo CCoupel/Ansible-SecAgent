@@ -523,7 +523,7 @@ Référence de conception : `DECISION_141.md`. Contrat : `SERVER_SPEC.md` §9.2 
 
 **TLS** : Ports 7770 et 7772 utilisent TLS applicatif direct (via variables `TLS_CERT` et `TLS_KEY`).  
 Le port 7771 ne doit **jamais** figurer dans la section `ports:` du docker-compose.
-L'accès admin se fait exclusivement via `docker exec relay-api secagent-server <cmd>`.
+L'accès admin se fait exclusivement via `docker compose exec secagent-server secagent-server <cmd>` (service Compose, voir `DEPLOYMENT.md`, « CLI du serveur dans un conteneur »).
 
 ---
 

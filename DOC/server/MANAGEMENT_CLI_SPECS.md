@@ -113,9 +113,7 @@ relay minions detail <hostname> [OPTIONS]
   #   [20:05] fetch_file: /tmp/test.txt → rc=0
 
 # Revoke minion token (force re-enrollment)
-relay minions revoke <hostname> [OPTIONS]
-  # Options:
-  #   --force (skip confirmation)
+secagent-server minions revoke <hostname>      # réel : pas d'option --force (cli/minions.go:162), effet immédiat
 
   # Output:
   # ⚠️  Revoking token for qualif-01
@@ -125,9 +123,9 @@ relay minions revoke <hostname> [OPTIONS]
   # ⚠️  Minion will be disconnected immediately
 
 # Delete minion (unregister completely)
-relay minions delete <hostname> [OPTIONS]
+secagent-server minions delete <hostname> [OPTIONS]      # réel (v3.0.5, #233) ; la sortie ci-dessous est une maquette
   # Options:
-  #   --force (skip confirmation)
+  #   --yes (confirmer sans invite ; obligatoire hors terminal, sinon code 9 — cli/minions.go:224)
 
   # Output:
   # ⚠️  DELETING minion: qualif-01
@@ -570,7 +568,7 @@ Continue? [y/N]: y
 ✅ Token revoked for qualif-03
 
 # Delete minion (permanent)
-$ relay minions delete qualif-03 --force
+$ secagent-server minions delete qualif-03 --yes
 ⚠️  DELETING minion: qualif-03
 ✅ Minion qualif-03 deleted from database
 📝 Audit log entry created
