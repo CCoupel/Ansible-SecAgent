@@ -53,6 +53,16 @@ expect ko "3 lignes : la version en ligne 2 ne compte pas (ligne 1 = licence)" b
 expect ok "3 lignes minion : COMPONENT=secagent-minion" env COMPONENT=secagent-minion bash "$A" 3.0.4 "$T/three_minion"
 expect ok "3 lignes inventory : COMPONENT=secagent-inventory" env COMPONENT=secagent-inventory bash "$A" 3.0.4 "$T/three_inv"
 expect ko "3 lignes : un binaire minion n'est pas accepte comme serveur" bash "$A" 3.0.4 "$T/three_minion"
+# sortie tres longue apres la ligne 1 : plus de SIGPIPE (rc 141) sous pipefail
+printf '#!/bin/sh\necho "secagent-server version 3.0.4"\nyes "%s" | head -n 20000\n' "$LIC" > "$T/long"; chmod +x "$T/long"
+expect ok "sortie longue apres la ligne 1 : pas d'echec par SIGPIPE" bash "$A" 3.0.4 "$T/long"
+# bruit sur stderr ignore : seule la ligne de stdout compte
+printf '#!/bin/sh\necho "warning: bruit" >&2\necho "secagent-server version 3.0.4"\necho "%s"\n' "$LIC" > "$T/noisy"; chmod +x "$T/noisy"
+expect ok "bruit sur stderr ignore (stdout seul)" bash "$A" 3.0.4 "$T/noisy"
+# binaire en echec : le meme code de retour est propage, meme si la ligne 1 est correcte
+printf '#!/bin/sh\necho "secagent-server version 3.0.4"\nexit 7\n' > "$T/fails"; chmod +x "$T/fails"
+bash "$A" 3.0.4 "$T/fails" >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 7 ]; then echo "ok   binaire rc 7 : code propage"; else echo "KO   binaire rc 7 : rc=$rc"; FAIL=1; fi
 out="$(bash "$A" 3.0.4 "$T/three" 2>&1)"
 if [ "$out" = "version OK : secagent-server version 3.0.4" ]; then echo "ok   message de succes : ligne 1 seule, sans licence ni source"; else echo "KO   message de succes inattendu : $out"; FAIL=1; fi
 exit $FAIL
