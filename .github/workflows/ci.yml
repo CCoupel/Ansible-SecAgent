@@ -229,6 +229,19 @@ jobs:
           python3 -I scripts/ci/check_spdx_selftest.py
           python3 -I scripts/ci/check_spdx.py
 
+      # v3.0.5 (D-P3) : VERSION (version_file de project-config.json) = une ligne X.Y.Z ; sur une branche milestone/vX.Y.Z,
+      # egal a X.Y.Z. Verification seule (contrat C2) : la CI n'ecrit jamais la version. Egalite au tag : release.yml.
+      - name: Fichier VERSION
+        env:
+          REF_NAME: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/check_version_file_selftest.sh
+          case "$REF_NAME" in
+            milestone/v*) bash scripts/ci/check_version_file.sh --expect "${REF_NAME#milestone/v}" ;;
+            *) bash scripts/ci/check_version_file.sh ;;
+          esac
+
       # LOT-7 / #237 (D15) : THIRD_PARTY_NOTICES.md regenere par go-licenses (version epinglee, module verifie par la base
       # de sommes publique) doit etre identique au fichier commite ; GO/LICENSE et GO/THIRD_PARTY_NOTICES.md (contexte de
       # build des images) identiques aux originaux de la racine.
@@ -380,6 +393,21 @@ jobs:
           # Prod : un fichier par role (racine, racine + enfant)
           docker compose -f DEPLOYMENT/prod/docker-compose.server.yml config --format json > render/prod-root.json
           docker compose -f DEPLOYMENT/prod/docker-compose.server.yml -f DEPLOYMENT/prod/docker-compose.child.yml config --format json > render/prod-child.json
+          # v3.0.5 : ports d'hote PROD parametrables (hote partage avec la QUALIF : 17770/17772/17771) ; ports conteneur inchanges
+          API_PUBLISH_PORT=17770 WS_PUBLISH_PORT=17772 ADMIN_PUBLISH_PORT=17771 \
+            docker compose -f DEPLOYMENT/prod/docker-compose.server.yml config --format json > render/prod-root-ports.json
+          python3 - <<'PY'
+          import json, sys
+          def ports(f):
+              svc = json.load(open(f))["services"]["secagent-server"]
+              return sorted((int(p["target"]), str(p.get("published")), p.get("host_ip") or "") for p in svc.get("ports") or [])
+          want = {"render/prod-root.json": [(7770, "7770", ""), (7771, "7771", "127.0.0.1"), (7772, "7772", "")],
+                  "render/prod-root-ports.json": [(7770, "17770", ""), (7771, "17771", "127.0.0.1"), (7772, "17772", "")]}
+          for f, w in want.items():
+              if ports(f) != w:
+                  sys.exit(f"::error::{f} : ports publies {ports(f)} != {w}")
+          print("ports PROD : defauts 7770/7771/7772 et parametrage 17770/17771/17772 rendus comme attendu")
+          PY
           docker compose -f DEPLOYMENT/qualif/docker-compose.server.yml config --format json > render/qualif-server.json
           # chain-test.sh ajoute TOUJOURS docker-compose.hooks.yml (hooks.json par volume nomme)
           docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml config --format json > render/qualif-chain.json
@@ -391,7 +419,7 @@ jobs:
           if "minion-negca" not in json.load(open("render/qualif-chain-negative.json"))["services"]:
               sys.exit("::error::minion-negca absent du rendu --profile negative : le controle de durcissement ne le verrait pas")
           PY
-          python3 scripts/ci/check_compose.py --require-memory-limit --require-secret-files render/prod-root.json render/prod-child.json render/qualif-server.json render/qualif-chain.json render/qualif-chain-remote.json render/qualif-chain-negative.json
+          python3 scripts/ci/check_compose.py --require-memory-limit --require-secret-files render/prod-root.json render/prod-root-ports.json render/prod-child.json render/qualif-server.json render/qualif-chain.json render/qualif-chain-remote.json render/qualif-chain-negative.json
           # Rendu destine a un demon Docker DISTANT (qualif reelle) : aucun chemin du client (bind, secret/config file:, build).
           # Le CI a un demon local et ne peut pas voir ce defaut a l'execution : ce controle statique est la seule garde.
           python3 scripts/ci/check_no_binds.py < render/qualif-chain-remote.json

@@ -83,6 +83,23 @@ jobs:
             echo "::warning::Tests desactives (skip_tests) pour $TAG"
           fi
 
+      # v3.0.5 (D-P3, contrat C2) : le fichier VERSION du commit du TAG doit valoir exactement la version du tag, avant tout
+      # build ; verifie, jamais ecrit. Tags anterieurs a v3.0.5 (republication par workflow_dispatch) : pas de VERSION.
+      - name: VERSION du tag = version du tag
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          version_ge() { [ "$(printf '%s\n' "$1" "$VERSION" | sort -V | head -n1)" = "$1" ]; }
+          if version_ge 3.0.5; then
+            git show "refs/tags/$TAG:VERSION" > "$RUNNER_TEMP/VERSION.tag" \
+              || { echo "::error::VERSION absent du commit du tag $TAG"; exit 1; }
+            bash scripts/ci/check_version_file.sh --expect "$VERSION" "$RUNNER_TEMP/VERSION.tag"
+          else
+            echo "::notice::$TAG anterieur a v3.0.5 : pas de fichier VERSION a verifier"
+          fi
+
       # Les notes de release sont validees ICI, avant toute publication GHCR : sans section `## [vX.Y.Z]` non vide dans le
       # CHANGELOG du tag, le job `release` echouerait APRES la publication des images. Le contenu valide est transmis tel
       # quel au job `release` (une seule extraction, aucune divergence). Le CHANGELOG est lu au commit du TAG.
