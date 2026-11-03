@@ -306,7 +306,7 @@ func TestWiring_DeletedAgentCannotComeBackWithItsJWT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v (%d)", err, status)
 	}
-	defer live.Close()
+	defer func() { _ = live.Close() }()
 	closed := make(chan struct{})
 	go func() {
 		for {
@@ -387,7 +387,7 @@ func TestWiring_ARevocationBetweenTheCheckAndTheRegistrationClosesTheLink(t *tes
 	if err != nil {
 		t.Fatalf("the handshake itself is accepted: %v (%d)", err, status)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
 	_, _, rerr := c.ReadMessage()
 	ce, ok := rerr.(*websocket.CloseError)

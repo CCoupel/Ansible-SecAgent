@@ -221,7 +221,7 @@ func TestAgentHandler_ReplaysTheRevocationCheckAfterRegistering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	go func() {
 		_, _, rerr := c.ReadMessage()
 		if ce, ok := rerr.(*websocket.CloseError); ok {

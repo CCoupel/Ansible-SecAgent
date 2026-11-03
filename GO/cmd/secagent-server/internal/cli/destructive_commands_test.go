@@ -118,7 +118,7 @@ func TestRelaysRemove_RevokeThenRemove(t *testing.T) {
 		t.Fatalf("exit %d out=%q err=%q", code, out, errOut)
 	}
 	calls := c.all()
-	if strings.Index(calls, "POST /api/admin/relays/uuid-2222/revoke") < 0 || strings.Index(calls, "DELETE /api/admin/relays/uuid-2222") < strings.Index(calls, "POST /api/admin/relays/uuid-2222/revoke") {
+	if !strings.Contains(calls, "POST /api/admin/relays/uuid-2222/revoke") || strings.Index(calls, "DELETE /api/admin/relays/uuid-2222") < strings.Index(calls, "POST /api/admin/relays/uuid-2222/revoke") {
 		t.Fatalf("revoke must come before remove:\n%s", calls)
 	}
 }
