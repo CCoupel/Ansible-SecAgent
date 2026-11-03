@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"log"
 	"math/big"
@@ -19,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +36,8 @@ type tlsPair struct {
 	certPath, keyPath string
 	leaf              *x509.Certificate
 	keyPEM            []byte
+	base              string // directory holding the generations (vN) and the "current" link; "" = bare files
+	gen               int
 }
 
 func (p *tlsPair) pool() *x509.CertPool {
@@ -75,22 +79,43 @@ func genPEM(t *testing.T, name string, notBefore, notAfter time.Time) (certPEM, 
 func writePair(t *testing.T, dir, name string, notBefore, notAfter time.Time) *tlsPair {
 	t.Helper()
 	certPEM, keyPEM, leaf := genPEM(t, name, notBefore, notAfter)
-	p := &tlsPair{certPath: filepath.Join(dir, "tls.crt"), keyPath: filepath.Join(dir, "tls.key"), leaf: leaf, keyPEM: keyPEM}
+	// the pair lives behind a symlinked directory ("current" -> vN): a rotation switches the link with ONE rename,
+	// so a poll sees the old pair or the new pair, never a mix (#236)
+	p := &tlsPair{base: dir, certPath: filepath.Join(dir, "current", "tls.crt"), keyPath: filepath.Join(dir, "current", "tls.key"), leaf: leaf, keyPEM: keyPEM}
 	replaceFiles(t, p, certPEM, keyPEM)
 	return p
 }
 
+// rotationGap is the pause between the two writes of a rotation; TEST_TLS_ROTATION_GAP_MS injects it (the acceptance
+// run of #236 uses 250 ms). Whatever it is, the pair becomes visible to the poller in one atomic step.
+func rotationGap() time.Duration {
+	ms, _ := strconv.Atoi(os.Getenv("TEST_TLS_ROTATION_GAP_MS"))
+	return time.Duration(ms) * time.Millisecond
+}
+
+// replaceFiles rotates the pair like a careful operator: the new certificate and key are written into a fresh
+// directory, then the "current" symlink is switched with a single os.Rename (atomic on POSIX).
 func replaceFiles(t *testing.T, p *tlsPair, certPEM, keyPEM []byte) {
 	t.Helper()
-	// write-then-rename like a real rotation, so a poll never sees a half-written file
-	for path, data := range map[string][]byte{p.certPath: certPEM, p.keyPath: keyPEM} {
-		tmp := path + ".new"
-		if err := os.WriteFile(tmp, data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Rename(tmp, path); err != nil {
-			t.Fatal(err)
-		}
+	p.gen++
+	vdir := filepath.Join(p.base, fmt.Sprintf("v%d", p.gen))
+	if err := os.MkdirAll(vdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vdir, "tls.crt"), certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(rotationGap())
+	if err := os.WriteFile(filepath.Join(vdir, "tls.key"), keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(p.base, "current.new")
+	_ = os.Remove(tmp)
+	if err := os.Symlink(vdir, tmp); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, filepath.Join(p.base, "current")); err != nil {
+		t.Fatal(err)
 	}
 }
 
