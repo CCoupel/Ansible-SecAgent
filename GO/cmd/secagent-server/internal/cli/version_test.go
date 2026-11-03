@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -9,8 +8,9 @@ import (
 func TestRootVersion(t *testing.T) {
 	for _, a := range []string{"--version", "-v"} {
 		out, _, code := runCLI(t, a)
-		if code != 0 || !strings.Contains(out, "secagent-server version ") {
-			t.Errorf("%s: exit %d out %q", a, code, out)
+		want := "secagent-server version " + Version + "\nLicense: AGPL-3.0-or-later\nSource: https://github.com/CCoupel/Ansible-SecAgent\n"
+		if code != 0 || out != want {
+			t.Errorf("%s: exit %d out %q, want %q", a, code, out, want)
 		}
 	}
 	if _, errOut, code := runCLI(t, "--version", "extra"); code != 1 || errOut == "" {

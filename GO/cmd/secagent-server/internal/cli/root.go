@@ -30,7 +30,7 @@ Environment variables:
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if rootShowVersion {
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s version %s\n", cmd.Name(), Version)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s version %s\nLicense: AGPL-3.0-or-later\nSource: https://github.com/CCoupel/Ansible-SecAgent\n", cmd.Name(), Version)
 			return nil
 		}
 		return cmd.Help()
