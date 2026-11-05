@@ -20,7 +20,7 @@
 #   chain-test.sh negative-ca  # essai CA negatif (profil Compose `negative`) : un minion sans la CA est refuse (#197)
 #   chain-test.sh admission-503  # refus 503 memory_budget_exhausted en reel (#241) : plafond abaisse, voir admission-503.sh
 #   chain-test.sh paths        # chemins prives resolus (sans docker) ; echec si la racine PRIVATE/ manque
-#   chain-test.sh logs | down
+#   chain-test.sh logs | down  # down : conteneurs, volumes externes ET $CHAIN_DIR (jetons volatils, apres la garde)
 #
 # Variables : SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (obligatoires, references promues ou locales),
 #   SECAGENT_PRIVATE_DIR (racine des donnees privees, defaut <depot>/PRIVATE, jamais creee : chemin ABSOLU du
@@ -89,6 +89,15 @@ chain_dir_check() {
   [ "$uid" = "$(id -u)" ] || fail "CHAIN_DIR=$d appartient a l'uid $uid (utilisateur courant : $(id -u)) : refus"
   mode="$(stat -c %a -- "$d")"
   [ $(( 8#$mode & 8#077 )) -eq 0 ] || fail "CHAIN_DIR=$d a les droits $mode, plus larges que 0700 : refus (supprimer le repertoire puis relancer)"
+}
+# Suppression des jetons volatils (down) : UNIQUEMENT apres chain_dir_check (jamais de rm -rf sur un chemin relatif, `/`,
+# un lien, un non repertoire, un repertoire d'un autre uid ou trop ouvert : refus fail-closed, rien n'est supprime).
+chain_dir_clean() {
+  case "$CHAIN_DIR" in /?*) ;; *) chain_dir_check ;; esac   # vide, `/` ou relatif : refus explicite (jamais un no-op muet)
+  [ -e "$CHAIN_DIR" ] || [ -L "$CHAIN_DIR" ] || return 0
+  chain_dir_check
+  rm -rf -- "$CHAIN_DIR"
+  echo "jetons de la chaine supprimes ($CHAIN_DIR)"
 }
 chain_dir() { # cree $CHAIN_DIR en 0700 (sans course : mkdir echoue si un tiers l'a cree entre-temps) puis le reverifie
   chain_dir_check
@@ -562,7 +571,8 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     admission-503) admission_503 ;;
     down) guard_project; "${DC[@]}" down -v
           # le volume du jeton de lien est EXTERNE (non supprime par down -v) et contient un secret : retrait explicite
-          docker volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" >/dev/null 2>&1 || true ;;
+          docker volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" >/dev/null 2>&1 || true
+          chain_dir_clean ;;   # jetons volatils du poste (garde chain_dir_check avant tout rm)
     *) sed -n '2,36p' "$0"; exit 2 ;;
   esac
 fi
