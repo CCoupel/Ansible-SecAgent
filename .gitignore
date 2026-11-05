@@ -107,3 +107,4 @@ DEPLOYMENT/prod/secrets/
 MARKETING/
 .claude/workflow/
 .claude/worktrees/
+PRIVATE/

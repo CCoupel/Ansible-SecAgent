@@ -249,3 +249,27 @@ SendMessage({
 <!-- END TEAMLEADER_PROTOCOL -->
 
 > **Noms canoniques de ce projet** : ceux de la table « Agents Disponibles » ci-dessus (`dev-agent`, `dev-relay`, `dev-inventory`, `dev-connexion`, `deployer`…) ; les noms génériques du bloc (`dev-backend`, `dev-plugin`…) ne s'appliquent pas.
+
+## Éléments privés — dossier `PRIVATE/`
+
+**Tout élément privé qui ne doit jamais être commité se range dans `PRIVATE/`** (racine du projet, gitignoré) :
+accès aux environnements (kubeconfig, tokens Kubernetes et de comptes de service, clés SSH, JSON de compte
+cloud, certificats `*.pem`/`*.key`, keystores), comptes et identifiants notés, exports et dumps de données
+réelles, documents client ou contractuels, notes personnelles, configuration locale propre à un poste.
+
+| Élément | Emplacement |
+|---------|-------------|
+| Élément privé durable (voir ci-dessus) | `PRIVATE/` (ex. `PRIVATE/k8s/kubeconfig-prod`, `PRIVATE/ssh/deploy_key`) |
+| Variables lues par `/deploy` (globales, par environnement) | `.env`, `.claude/agents/environments/<env>.env` — emplacements fixes sourcés par les scripts, **pas** dans `PRIVATE/` ; une variable qui désigne un fichier d'accès pointe dans `PRIVATE/` (ex. `KUBECONFIG=PRIVATE/k8s/kubeconfig-prod`) |
+| Fichier temporaire de travail | `_work/tmp/` (purgé, pas un stockage durable) |
+
+- Avant de créer un fichier contenant une donnée privée : le placer dans `PRIVATE/` ; le code et la config trackés
+  ne référencent `PRIVATE/` que par chemin relatif, jamais par copie de son contenu.
+- Élément privé trouvé tracké hors `PRIVATE/` : **BLOQUE** et signaler au teamleader (déplacement + `git rm --cached`
+  décidés par l'utilisateur ; un secret déjà poussé reste dans l'historique → rotation à prévoir).
+- Ne jamais retirer `PRIVATE/` du `.gitignore` ni forcer son ajout (`git add -f`).
+- Le contenu attendu de `PRIVATE/` est établi par `/init-project` (Étape 10b) ; un worktree n'en hérite pas —
+  copier depuis le checkout principal ce qui est nécessaire, comme pour `.env`.
+
+---
+
