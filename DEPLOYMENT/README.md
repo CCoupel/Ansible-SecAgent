@@ -73,7 +73,6 @@ PRIVATE/
 ├── qualif/
 │   ├── secrets/   # SECRETS_DIR : jwt_secret_key, admin_token, rsa_master_key (0400)
 │   ├── pki/       # QUALIF_TLS_DIR / PKI_OUT : ca.crt, ca.key, tls.crt, tls.key (CA de test)
-│   ├── chain/     # CHAIN_DIR : jetons d'enrôlement et plugin (0600), child.env, image-ids
 │   └── ci-tls/    # certificat jetable de `failover-test.sh setup-ci`
 └── prod/          # copie de RÉFÉRENCE du poste, jamais lue par les scripts
     ├── secrets/   # jwt_secret_key, admin_token, rsa_master_key (+ repeater_upstream_token)
@@ -81,7 +80,8 @@ PRIVATE/
     └── pki/       # réservé (PKI de PROD, D-P2 : pas encore générée)
 ```
 
-- **Racine** : variable `SECAGENT_PRIVATE_DIR` (défaut `<dépôt>/PRIVATE`). Les défauts `SECRETS_DIR`, `QUALIF_TLS_DIR`, `CHAIN_DIR` et `PKI_OUT` en dérivent ; une variable explicite prime.
+- **Racine** : variable `SECAGENT_PRIVATE_DIR` (défaut `<dépôt>/PRIVATE`). Les défauts `SECRETS_DIR`, `QUALIF_TLS_DIR` et `PKI_OUT` en dérivent ; une variable explicite prime.
+- **Exception `CHAIN_DIR`** : les jetons de chaîne (enrôlement, plugin, `child.env`, `image-ids`) sont volatils et ne sont **pas** sous `PRIVATE/` : défaut `${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>` (0700, fichiers 0600), car un répertoire NTFS en 0777 est refusé par le plugin. `chain-test.sh` refuse un `CHAIN_DIR` non absolu, lien symbolique, non répertoire, d'un autre uid ou plus large que 0700.
 - **Chemin absolu obligatoire** : `SECAGENT_PRIVATE_DIR` doit être un chemin absolu ; un chemin relatif est refusé par les scripts.
 - **Risque NTFS** : un `PRIVATE/` situé sur `/mnt/c` (NTFS) est lisible par tout processus du poste (`chmod`/`chown` sans effet, modes 0400/0600 non appliqués). Risque accepté pour la qualif (secrets jetables, de test) ; **jamais de secret PROD réel dans `PRIVATE/prod/` sur NTFS** (le placer sur un système de fichiers qui honore les permissions).
 - **Fail-closed** : si la racine n'existe pas, les scripts de qualif refusent de générer des secrets (message nommant `SECAGENT_PRIVATE_DIR`) ; ils ne créent que les sous-répertoires.
