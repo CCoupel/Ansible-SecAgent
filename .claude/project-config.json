@@ -427,12 +427,49 @@
   },
   "private": {
     "reviewed": "2026-11-05",
+    "root_env": "SECAGENT_PRIVATE_DIR",
     "items": [
       {
-        "path": "PRIVATE/.env.qualif",
-        "kind": "secrets de qualif phase 2 (JWT_SECRET_KEY, ADMIN_TOKEN)",
+        "path": "PRIVATE/qualif/pki/",
+        "kind": "PKI de test de la qualif (ca.key, ca.crt, tls.key, tls.crt ; SAN qualif) - QUALIF_TLS_DIR",
         "origin": "moved",
-        "from": ".env.qualif"
+        "from": "DEPLOYMENT/qualif/pki/out/"
+      },
+      {
+        "path": "PRIVATE/qualif/secrets/",
+        "kind": "secrets serveur de la qualif (jwt_secret_key, admin_token, rsa_master_key ; fichiers lus via *_FILE) - SECRETS_DIR",
+        "origin": "moved",
+        "from": "DEPLOYMENT/qualif/secrets/ (copie scratchpad de la derniere session, source d'origine perdue le 2026-11-03)"
+      },
+      {
+        "path": "PRIVATE/qualif/chain/",
+        "kind": "jetons de la chaine de qualif (minion-*.env, plugin.token/plugin.header, inventory.sh, upstream-token transitoire ; child.env, root-link.pub, root-id, image-ids non secrets) - CHAIN_DIR",
+        "origin": "generated",
+        "from": "DEPLOYMENT/qualif/chain/ (regenere par chain-test.sh bootstrap)"
+      },
+      {
+        "path": "PRIVATE/qualif/ci-tls/",
+        "kind": "certificat TLS jetable de failover-test.sh setup-ci (en CI : $RUNNER_TEMP/private/qualif/ci-tls)",
+        "origin": "generated",
+        "from": "DEPLOYMENT/qualif/.ci-tls/"
+      },
+      {
+        "path": "PRIVATE/prod/secrets/",
+        "kind": "copie de reference sur le poste des secrets serveur PROD (sur l'hote : ./secrets a cote du compose)",
+        "origin": "reserved",
+        "from": "DEPLOYMENT/prod/secrets/"
+      },
+      {
+        "path": "PRIVATE/prod/.env",
+        "kind": "copie de reference sur le poste des variables d'hote PROD (sur l'hote : .env a cote du compose)",
+        "origin": "reserved",
+        "from": "DEPLOYMENT/prod/.env, DEPLOYMENT/prod/prod.env"
+      },
+      {
+        "path": "PRIVATE/prod/pki/",
+        "kind": "PKI PROD (D-P2, non generee)",
+        "origin": "reserved",
+        "from": ""
       }
     ]
   }

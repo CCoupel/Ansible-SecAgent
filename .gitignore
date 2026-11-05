@@ -57,6 +57,8 @@ GO/inventory.exe
 GO/test_results.txt
 
 # Secrets / env files
+# Defense en profondeur (#250) : emplacement nominal = PRIVATE/ (racine SECAGENT_PRIVATE_DIR) ; ces anciennes
+# entrees restent ignorees (ancien script, worktree, ecriture manuelle). Ne pas les retirer.
 qualif/*.env
 DEPLOYMENT/qualif/.env.bootstrap
 
@@ -79,6 +81,8 @@ TEMPLATE_claude/
 _work/
 
 # Secrets et variables d'hote de production
+# Defense en profondeur (#250) : emplacement nominal = PRIVATE/ (racine SECAGENT_PRIVATE_DIR) ; ces anciennes
+# entrees restent ignorees (ancien script, worktree, ecriture manuelle). Ne pas les retirer.
 DEPLOYMENT/prod/prod.env
 DEPLOYMENT/prod/.env
 DEPLOYMENT/qualif/qualif.env
@@ -92,10 +96,14 @@ DEPLOYMENT/qualif/.ci-tls/
 /GO/secagent-inventory
 /GO/relay-server
 /GO/relay-server-linux
+# Defense en profondeur (#250) : emplacement nominal = PRIVATE/ (racine SECAGENT_PRIVATE_DIR) ; ces anciennes
+# entrees restent ignorees (ancien script, worktree, ecriture manuelle). Ne pas les retirer.
 DEPLOYMENT/qualif/pki/out/
 DEPLOYMENT/qualif/chain/
 
 # Secrets de production (fichiers, un par secret)
+# Defense en profondeur (#250) : emplacement nominal = PRIVATE/ (racine SECAGENT_PRIVATE_DIR) ; ces anciennes
+# entrees restent ignorees (ancien script, worktree, ecriture manuelle). Ne pas les retirer.
 DEPLOYMENT/prod/secrets/
 .claude/commands/context/*.template.md
 .claude/agents/context/*.template.md
@@ -107,4 +115,5 @@ DEPLOYMENT/prod/secrets/
 MARKETING/
 .claude/workflow/
 .claude/worktrees/
+# Donnees privees du poste (CLAUDE.md « Elements prives », #250) : ne jamais retirer cette ligne.
 PRIVATE/
