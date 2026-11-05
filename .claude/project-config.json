@@ -428,6 +428,7 @@
   "private": {
     "reviewed": "2026-11-05",
     "root_env": "SECAGENT_PRIVATE_DIR",
+    "outside_repo": "reference des secrets et de la PKI PROD : ~/secagent-private/prod/ (ext4 du poste, 0700, hors depot ; ca.key n'en sort jamais ; sauvegarde chiffree hors poste par l'utilisateur) - jamais sous PRIVATE/ (NTFS)",
     "volatile_outside": "jetons de la chaine de qualif (CHAIN_DIR) : volatils, hors PRIVATE/, defaut ${TMPDIR:-/tmp}/secagent-qualif-chain-<uid> (0700), regeneres par chain-test.sh bootstrap",
     "items": [
       {
@@ -449,21 +450,21 @@
         "from": "DEPLOYMENT/qualif/.ci-tls/"
       },
       {
-        "path": "PRIVATE/prod/secrets/",
-        "kind": "copie de reference sur le poste des secrets serveur PROD (sur l'hote : ./secrets a cote du compose)",
-        "origin": "reserved",
-        "from": "DEPLOYMENT/prod/secrets/"
+        "path": "PRIVATE/prod/pki/ca.crt",
+        "kind": "certificat PUBLIC de la CA PROD (bundle de confiance des clients) - aucune cle ici",
+        "origin": "generated",
+        "from": "~/secagent-private/prod/pki/ca.crt"
       },
       {
         "path": "PRIVATE/prod/.env",
-        "kind": "copie de reference sur le poste des variables d'hote PROD (sur l'hote : .env a cote du compose)",
-        "origin": "reserved",
-        "from": "DEPLOYMENT/prod/.env, DEPLOYMENT/prod/prod.env"
+        "kind": "copie PUBLIQUE des variables non secretes de l'hote PROD (sur l'hote : .env a cote du compose)",
+        "origin": "generated",
+        "from": "DEPLOYMENT/prod/.env.example"
       },
       {
-        "path": "PRIVATE/prod/pki/",
-        "kind": "PKI PROD (D-P2, non generee)",
-        "origin": "reserved",
+        "path": "PRIVATE/prod/README.txt",
+        "kind": "renvoi vers la reference des secrets PROD (PRIVATE/prod = public uniquement)",
+        "origin": "generated",
         "from": ""
       }
     ]

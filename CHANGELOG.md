@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [v3.0.5] — (date posée au tag) — Durcissement, renouvellement des JWT d'agent, licence AGPL
+## [v3.0.5] — 2026-11-05 — Durcissement, renouvellement des JWT d'agent, licence AGPL
 
 **Pas de rupture de lien ni d'agent depuis la v3.0.4.** Deux points demandent une action avant la montée : `RSA_MASTER_KEY` d'au moins 32 octets non prévisible (#214) et sauvegarde de `STATE_DIR` ; retour arrière vers v3.0.4 possible seulement par `state restore` (voir `DOC/project/DEPLOYMENT.md`, « Montée de version v3.0.4 → v3.0.5 »). **Changement de licence : AGPL-3.0-or-later à la place de MIT** (voir « Licence »).
 
@@ -45,7 +45,7 @@ All notable changes to this project will be documented in this file.
 - **`--version` affiche la licence et le code source** : `secagent-server`, `secagent-minion` et `secagent-inventory --version` affichent trois lignes (`<composant> version <version>`, `License: AGPL-3.0-or-later`, `Source: https://github.com/CCoupel/Ansible-SecAgent`). La première ligne est inchangée ; un script qui lit la sortie entière (et non la première ligne) doit être adapté.
 
 ### Documentation
-- **Données privées du poste sous `PRIVATE/` (#250)** : secrets, PKI de test et jetons de la qualif sous `PRIVATE/qualif/{secrets,pki,ci-tls}` (jetons de chaîne volatils dans `CHAIN_DIR`, par défaut `${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>`) (racine `SECAGENT_PRIVATE_DIR`, refus de générer des secrets si elle manque) ; copie de référence PROD sous `PRIVATE/prod/` ; docs et compagnons `deploy.*` alignés.
+- **Données privées du poste sous `PRIVATE/` (#250)** : secrets, PKI de test et jetons de la qualif sous `PRIVATE/qualif/{secrets,pki,ci-tls}` (jetons de chaîne volatils dans `CHAIN_DIR`, par défaut `${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>`) (racine `SECAGENT_PRIVATE_DIR`, refus de générer des secrets si elle manque) ; `PRIVATE/prod/` ne porte que du public (`pki/ca.crt`, `.env`), les secrets et la PKI PROD ont pour référence `~/secagent-private/prod/` (ext4, hors dépôt) ; docs et compagnons `deploy.*` alignés.
 - **Guides d'installation et de configuration v3.0.4** : `DOC/project/INSTALL_AGENT.md` (agent `secagent-minion` : binaire de la release, `SHA256SUMS`, enrôlement, unité systemd, `*_FILE`, JWT d'1 h, codes de sortie 77/78), `DOC/project/INSTALL_SERVER.md` (serveur racine : archive Compose, secrets, PKI, `state init`, CLI, limites d'admission, sauvegarde, montée depuis la v3.0.3) et `DOC/project/INSTALL_RELAY.md` (relays enfants : ancre épinglée, jetons de lien, politique de dial, rotation, révocation, `state link-trust reset`). `QUICKSTART.md`, `DEPLOYMENT.md` et le README y renvoient ; les listes de rôles de jetons y incluent `relay-child`.
 
 ---

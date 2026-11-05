@@ -133,6 +133,7 @@ Limites de tâches (#179) : chaque tâche admise réserve 5 Mio de budget stdout
 2. **Initialiser l'état une seule fois**, depuis un seul hôte, avant de démarrer les autres :
    `docker compose run --rm --no-deps secagent-server state init` (nécessite `RSA_MASTER_KEY`).
 3. `docker compose -p secagent-prod-<relay_id> up -d` sur chaque hôte.
+   **Hôte distant sans SSH (API Docker seule)** : `secrets: file:` et les binds se résolvent sur l'hôte. Exécuter Compose **sur l'hôte**, dans un conteneur `docker:cli` (image épinglée par digest) : `docker -H tcp://<hôte>:2375 run --rm -v /var/run/docker.sock:/var/run/docker.sock -v <répertoire-du-compose>:/wd -w /wd docker:<version>-cli@sha256:<digest> compose -p secagent-prod-<relay_id> -f docker-compose.server.yml <commande>` ; `preflight-secrets.sh` s'exécute de même dans un conteneur `bash` avec ce répertoire monté.
 4. **Vérification de déploiement (obligatoire, avant et après `up`)**, sur l'hôte, dans le répertoire du Compose :
 
        docker compose config --format json | python3 tools/check_compose.py --require-memory-limit -

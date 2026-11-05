@@ -74,18 +74,23 @@ PRIVATE/
 │   ├── secrets/   # SECRETS_DIR : jwt_secret_key, admin_token, rsa_master_key (0400)
 │   ├── pki/       # QUALIF_TLS_DIR / PKI_OUT : ca.crt, ca.key, tls.crt, tls.key (CA de test)
 │   └── ci-tls/    # certificat jetable de `failover-test.sh setup-ci`
-└── prod/          # copie de RÉFÉRENCE du poste, jamais lue par les scripts
-    ├── secrets/   # jwt_secret_key, admin_token, rsa_master_key (+ repeater_upstream_token)
-    ├── .env       # variables non secrètes de l'hôte
-    └── pki/       # réservé (PKI de PROD, D-P2 : pas encore générée)
+└── prod/          # PUBLIC UNIQUEMENT, jamais lue par les scripts
+    ├── pki/ca.crt # certificat de la CA PROD (bundle de confiance des clients)
+    ├── .env       # variables non secrètes de l'hôte (copie)
+    └── README.txt # renvoie vers la référence des secrets (ci-dessous)
+
+~/secagent-private/prod/   # RÉFÉRENCE des secrets et de la PKI PROD : ext4 du poste, 0700, hors dépôt
+├── pki/           # ca.key (ne sort JAMAIS de ce répertoire), ca.crt, tls.key, tls.crt
+├── secrets/       # jwt_secret_key, admin_token, rsa_master_key (+ repeater_upstream_token)
+└── .env
 ```
 
 - **Racine** : variable `SECAGENT_PRIVATE_DIR` (défaut `<dépôt>/PRIVATE`). Les défauts `SECRETS_DIR`, `QUALIF_TLS_DIR` et `PKI_OUT` en dérivent ; une variable explicite prime.
 - **Exception `CHAIN_DIR`** : les jetons de chaîne (enrôlement, plugin, `child.env`, `image-ids`) sont volatils et ne sont **pas** sous `PRIVATE/` : défaut `${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>` (0700, fichiers 0600), car un répertoire NTFS en 0777 est refusé par le plugin. `chain-test.sh` refuse un `CHAIN_DIR` non absolu, lien symbolique, non répertoire, d'un autre uid ou plus large que 0700.
 - **Chemin absolu obligatoire** : `SECAGENT_PRIVATE_DIR` doit être un chemin absolu ; un chemin relatif est refusé par les scripts.
-- **Risque NTFS** : un `PRIVATE/` situé sur `/mnt/c` (NTFS) est lisible par tout processus du poste (`chmod`/`chown` sans effet, modes 0400/0600 non appliqués). Risque accepté pour la qualif (secrets jetables, de test) ; **jamais de secret PROD réel dans `PRIVATE/prod/` sur NTFS** (le placer sur un système de fichiers qui honore les permissions).
+- **Risque NTFS** : un `PRIVATE/` situé sur `/mnt/c` (NTFS) est lisible par tout processus du poste (`chmod`/`chown` sans effet, modes 0400/0600 non appliqués). Risque accepté pour la qualif (secrets jetables, de test) ; **`PRIVATE/prod/` ne contient donc que du public** (`pki/ca.crt`, `.env`, `README.txt`) : aucun secret ni clé PROD sur NTFS. La référence des secrets et de la PKI PROD est `~/secagent-private/prod/` (système de fichiers qui honore les permissions), avec sauvegarde chiffrée hors poste par l'utilisateur.
 - **Fail-closed** : si la racine n'existe pas, les scripts de qualif refusent de générer des secrets (message nommant `SECAGENT_PRIVATE_DIR`) ; ils ne créent que les sous-répertoires.
-- **Jamais sur l'hôte, jamais dans l'archive** : `PRIVATE/` ne voyage ni vers un hôte, ni dans l'archive de release `secagent-compose-<version>.tar.gz`. Sur un hôte PROD la disposition reste `./secrets` + `.env` à côté du Compose ; `PRIVATE/prod/` n'est que la copie de référence du poste. Les secrets de qualif arrivent sur l'hôte distant uniquement via les volumes (`push-secrets`, `push-tls`).
+- **Jamais sur l'hôte, jamais dans l'archive** : `PRIVATE/` ne voyage ni vers un hôte, ni dans l'archive de release `secagent-compose-<version>.tar.gz`. Sur un hôte PROD la disposition reste `./secrets` + `.env` à côté du Compose ; `PRIVATE/prod/` (public) et `~/secagent-private/prod/` (référence) restent sur le poste. Les secrets de qualif arrivent sur l'hôte distant uniquement via les volumes (`push-secrets`, `push-tls`).
 - **Pourquoi** : le 2026-11-03, les secrets de la qualif n'avaient pour seule source qu'une copie de travail éphémère (scratchpad), perdue ensuite : aucune source durable. `PRIVATE/` est cette source durable, hors des copies de travail.
 - **Lancer depuis une copie hors `/mnt/c`** (NTFS ignore `chmod`/`chown`, nécessaire pour les modes 0400/0600) : l'exécution depuis la copie ne doit jamais écrire de secret dans la copie. Passer la racine du checkout en chemin **absolu** :
 
