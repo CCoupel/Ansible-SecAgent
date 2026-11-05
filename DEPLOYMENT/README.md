@@ -82,6 +82,8 @@ PRIVATE/
 ```
 
 - **Racine** : variable `SECAGENT_PRIVATE_DIR` (défaut `<dépôt>/PRIVATE`). Les défauts `SECRETS_DIR`, `QUALIF_TLS_DIR`, `CHAIN_DIR` et `PKI_OUT` en dérivent ; une variable explicite prime.
+- **Chemin absolu obligatoire** : `SECAGENT_PRIVATE_DIR` doit être un chemin absolu ; un chemin relatif est refusé par les scripts.
+- **Risque NTFS** : un `PRIVATE/` situé sur `/mnt/c` (NTFS) est lisible par tout processus du poste (`chmod`/`chown` sans effet, modes 0400/0600 non appliqués). Risque accepté pour la qualif (secrets jetables, de test) ; **jamais de secret PROD réel dans `PRIVATE/prod/` sur NTFS** (le placer sur un système de fichiers qui honore les permissions).
 - **Fail-closed** : si la racine n'existe pas, les scripts de qualif refusent de générer des secrets (message nommant `SECAGENT_PRIVATE_DIR`) ; ils ne créent que les sous-répertoires.
 - **Jamais sur l'hôte, jamais dans l'archive** : `PRIVATE/` ne voyage ni vers un hôte, ni dans l'archive de release `secagent-compose-<version>.tar.gz`. Sur un hôte PROD la disposition reste `./secrets` + `.env` à côté du Compose ; `PRIVATE/prod/` n'est que la copie de référence du poste. Les secrets de qualif arrivent sur l'hôte distant uniquement via les volumes (`push-secrets`, `push-tls`).
 - **Pourquoi** : le 2026-11-03, les secrets de la qualif n'avaient pour seule source qu'une copie de travail éphémère (scratchpad), perdue ensuite : aucune source durable. `PRIVATE/` est cette source durable, hors des copies de travail.
