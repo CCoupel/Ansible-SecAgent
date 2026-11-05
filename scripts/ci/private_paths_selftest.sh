@@ -9,6 +9,7 @@
 #  (d) pki/gen.sh refuse d'ecrire des cles dans un depot git ou le chemin n'est pas ignore ;
 #  (f) SECAGENT_PRIVATE_DIR relatif => refus ("n'est pas un chemin absolu"), meme avec SECRETS_DIR absolu, y compris pki/gen.sh ;
 #  (g) CHAIN_DIR (jetons volatils, defaut ${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>) : refus relatif, '/', lien, non-repertoire, autre uid, droits > 0700 ;
+#  (h) chain_dir_clean (down) : supprime un repertoire 0700 a soi, refuse sans rien supprimer vide, '/', relatif, lien (meme casse), fichier, 0755, autre uid ;
 #  (e) plus aucun ancien defaut ($HERE/secrets, $HERE/pki/out, $HERE/.ci-tls, $HERE/chain) dans DEPLOYMENT/qualif.
 # Contrat : sous-commande `paths` de failover-test.sh et chain-test.sh, imprimant PRIVATE_DIR=, SECRETS_DIR=, QUALIF_TLS_DIR= (+ CHAIN_DIR= pour chain-test.sh seul).
 set -uo pipefail
@@ -119,6 +120,39 @@ chk_chain "droits 0755" "plus larges que 0700" "$TMP/chain-755"
 mkdir "$TMP/chain-700"; chmod 700 "$TMP/chain-700"
 out="$(clean_env SECAGENT_PRIVATE_DIR="$Pg" CHAIN_DIR="$TMP/chain-700" bash "$Q/chain-test.sh" paths 2>&1)"; rc=$?
 [ $rc -eq 0 ] && ok "(g) repertoire 0700 de l'utilisateur accepte" || ko "(g) 0700 refuse (rc=$rc)"
+
+# (h) chain_dir_clean (down) : ne supprime QUE un repertoire 0700 a soi ; tout le reste est refuse sans rien supprimer
+clean_run() { # $1 valeur de CHAIN_DIR (affectee apres `source`, donc meme vide) ; sortie 2>&1 ; rc dans $?
+  clean_env bash -c 'source "$1"; CHAIN_DIR="$2"; chain_dir_clean' _ "$Q/chain-test.sh" "$1" 2>&1
+}
+chk_clean_refus() { # $1 nom, $2 sous-chaine, $3 valeur CHAIN_DIR, $4 chemin qui doit rester present (optionnel)
+  local out rc
+  out="$(clean_run "$3")"; rc=$?
+  [ $rc -ne 0 ] && ok "(h) $1 : code != 0" || ko "(h) $1 : accepte (rc=0)"
+  printf '%s' "$out" | grep -qF -- "$2" && ok "(h) $1 : message '$2'" || ko "(h) $1 : message sans '$2'"
+  if [ -n "${4:-}" ]; then { [ -e "$4" ] || [ -L "$4" ]; } && ok "(h) $1 : rien supprime" || ko "(h) $1 : SUPPRIME ($4)"; fi
+}
+out="$(clean_run "$TMP/h-absent")"; rc=$?
+{ [ $rc -eq 0 ] && [ ! -e "$TMP/h-absent" ]; } && ok "(h) CHAIN_DIR absent => rc 0, rien cree" || ko "(h) CHAIN_DIR absent (rc=$rc)"
+mkdir "$TMP/h-ok"; chmod 700 "$TMP/h-ok"; : > "$TMP/h-ok/child.env"
+out="$(clean_run "$TMP/h-ok")"; rc=$?
+[ $rc -eq 0 ] && ok "(h) repertoire 0700 a soi : rc 0" || ko "(h) 0700 refuse (rc=$rc)"
+[ ! -e "$TMP/h-ok" ] && ok "(h) repertoire 0700 supprime" || ko "(h) repertoire 0700 toujours present"
+printf '%s' "$out" | grep -qF "jetons de la chaine supprimes ($TMP/h-ok)" && ok "(h) message de suppression" || ko "(h) message de suppression absent"
+chk_clean_refus "CHAIN_DIR vide" "n'est pas un chemin absolu" ""
+out="$(clean_run "/")"
+printf '%s' "$out" | grep -qF "CHAIN_DIR='/'" && ok "(h) message de CHAIN_DIR=/ affiche la valeur fournie" || ko "(h) message de CHAIN_DIR=/ sans la valeur fournie"
+chk_clean_refus "CHAIN_DIR=/" "n'est pas un chemin absolu" "/" "/"
+mkdir "$TMP/h-rel"; chk_clean_refus "CHAIN_DIR relatif" "n'est pas un chemin absolu" "h-rel" "$TMP/h-rel"
+mkdir "$TMP/h-cible"; : > "$TMP/h-cible/garde"; ln -s "$TMP/h-cible" "$TMP/h-lien"
+chk_clean_refus "lien symbolique" "est un lien symbolique" "$TMP/h-lien" "$TMP/h-lien"
+[ -e "$TMP/h-cible/garde" ] && ok "(h) lien symbolique : cible intacte" || ko "(h) lien symbolique : cible supprimee"
+ln -s "$TMP/h-inexistant" "$TMP/h-lien-casse"
+chk_clean_refus "lien symbolique casse" "est un lien symbolique" "$TMP/h-lien-casse" "$TMP/h-lien-casse"
+: > "$TMP/h-fichier"; chk_clean_refus "fichier ordinaire" "n'est pas un repertoire" "$TMP/h-fichier" "$TMP/h-fichier"
+mkdir "$TMP/h-755"; chmod 755 "$TMP/h-755"; chk_clean_refus "droits 0755" "plus larges que 0700" "$TMP/h-755" "$TMP/h-755"
+if [ "$(stat -c %u /etc)" != "$(id -u)" ]; then chk_clean_refus "autre proprietaire (/etc)" "appartient a l'uid" "/etc" "/etc"
+else echo "skip (h) autre proprietaire : /etc appartient a l'utilisateur courant"; fi
 
 # (e) anciens defauts supprimes (hors README : la doc peut les citer pour la migration)
 OLD='\$\{?HERE\}?/(secrets|pki/out|\.ci-tls|chain($|[^-A-Za-z0-9_.]))'
