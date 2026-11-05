@@ -383,6 +383,7 @@ jobs:
           bash scripts/ci/build_compose_archive_selftest.sh
           bash scripts/ci/minion_entrypoint_selftest.sh
           bash scripts/ci/preflight_secrets_selftest.sh
+          bash scripts/ci/private_paths_selftest.sh
           python3 scripts/ci/check_scripts.py .github/workflows/*.yml
 
       # Variables d'exemple NON secretes : uniquement pour que `docker compose config` puisse interpoler.
@@ -471,6 +472,10 @@ jobs:
           persist-credentials: false
       - name: Build de l'image du commit
         run: docker build -t secagent-server:ci -f GO/Dockerfile GO
+      - name: Racine PRIVATE jetable hors workspace (#250)
+        run: |
+          mkdir -p "$RUNNER_TEMP/private"
+          echo "SECAGENT_PRIVATE_DIR=$RUNNER_TEMP/private" >> "$GITHUB_ENV"
       - name: Preparation (certificats et secrets JETABLES, etat initial)
         env:
           SECAGENT_IMAGE: secagent-server:ci
@@ -478,13 +483,13 @@ jobs:
       - name: Arret propre du maitre
         env:
           SECAGENT_IMAGE: secagent-server:ci
-          QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
+          QUALIF_TLS_DIR: ${{ runner.temp }}/private/qualif/ci-tls
         run: bash DEPLOYMENT/qualif/failover-test.sh run stop
       - name: Journaux et nettoyage
         if: always()
         env:
           SECAGENT_IMAGE: secagent-server:ci
-          QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
+          QUALIF_TLS_DIR: ${{ runner.temp }}/private/qualif/ci-tls
         run: |
           docker compose -p secagent-qualif -f DEPLOYMENT/qualif/docker-compose.server.yml logs --tail=80 || true
           bash DEPLOYMENT/qualif/failover-test.sh teardown || true
@@ -524,6 +529,10 @@ jobs:
         run: |
           docker build -t secagent-server:ci -f GO/Dockerfile GO
           docker build -t secagent-minion:ci -f GO/Dockerfile.agent GO
+      - name: Racine PRIVATE jetable hors workspace (#250)
+        run: |
+          mkdir -p "$RUNNER_TEMP/private"
+          echo "SECAGENT_PRIVATE_DIR=$RUNNER_TEMP/private" >> "$GITHUB_ENV"
       - name: PKI de test et secrets jetables
         run: bash DEPLOYMENT/qualif/chain-test.sh ci-prepare
       - name: Amorcage de la chaine
@@ -644,6 +653,10 @@ jobs:
         run: |
           docker build -t secagent-server:ci -f GO/Dockerfile GO
           docker build -t secagent-minion:ci -f GO/Dockerfile.agent GO
+      - name: Racine PRIVATE jetable hors workspace (#250)
+        run: |
+          mkdir -p "$RUNNER_TEMP/private"
+          echo "SECAGENT_PRIVATE_DIR=$RUNNER_TEMP/private" >> "$GITHUB_ENV"
       - name: PKI de test, secrets jetables, amorcage
         run: |
           bash DEPLOYMENT/qualif/chain-test.sh ci-prepare

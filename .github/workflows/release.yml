@@ -160,12 +160,18 @@ jobs:
     timeout-minutes: 30
     env:
       SECAGENT_IMAGE: secagent-server:ci
-      QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
+      # Racine PRIVATE jetable hors workspace (#250) : secrets et certificat de test de failover-test.sh (fail-closed sans
+      # racine). Le contexte `runner` n'est pas disponible dans `jobs.<id>.env` : variables posees par GITHUB_ENV.
+      - name: Racine PRIVATE jetable hors workspace (#250)
+        run: |
+          mkdir -p "$RUNNER_TEMP/private"
+          echo "SECAGENT_PRIVATE_DIR=$RUNNER_TEMP/private" >> "$GITHUB_ENV"
+          echo "QUALIF_TLS_DIR=$RUNNER_TEMP/private/qualif/ci-tls" >> "$GITHUB_ENV"
       # La version du tag est injectee comme dans l'image publiee, puis VERIFIEE avant toute publication GHCR.
       # Seuil de version (B56) : v3.0.4, premier tag dont les Dockerfile ont `ARG VERSION` et dont les binaires ont
       # `--version` (verifie avec `git show vX:...`). A partir de ce seuil le controle est inconditionnel (ARG VERSION perdu,
