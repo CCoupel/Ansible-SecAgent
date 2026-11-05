@@ -87,19 +87,22 @@
           "port": 2375,
           "docker_host": "tcp://192.168.1.218:2375",
           "runtime": "docker",
-          "compose_cli": "docker.exe compose (Windows ; pas de docker CLI dans WSL)",
+          "compose_cli": "Compose execute sur l'hote dans un conteneur docker:cli epingle par digest (voie 1, DEPLOYMENT/prod/README.md) ; poste : docker.exe sans DOCKER_HOST",
           "registry": "ghcr.io/ccoupel",
           "credentials_env": [],
           "verified": {
             "status": "ok",
-            "at": "2026-10-31T15:32:34Z",
+            "at": "2026-11-05T15:21:39Z",
             "checks": [
               "docker-api",
-              "compose-cli",
-              "registry-pull",
-              "tag-push"
+              "ports-free-17770-17772",
+              "host-scaffold",
+              "secrets-file-only",
+              "preflight-secrets",
+              "compose-config-on-host",
+              "check-compose"
             ],
-            "note": "meme hote que QUALIF ; PROD jamais deployee, sondes lecture seule"
+            "note": "D-P2 v3.0.5 : PKI PROD generee sur ext4 (~/secagent-private/prod, ca.key jamais transferee) ; scaffold /etc/secagent/prod + /var/lib/secagent/prod/state (vide) sur .218, sans up ni state init ; Compose execute sur l'hote dans docker:29-cli@sha256:4d742ab9 (voie 1) ; API Docker tcp:2375 sans TLS ni auth : risque accepte (Q6), durcissement v3.0.6 ; compose de branche (sans digest) a remplacer par l'archive de release au DEPLOY"
           }
         }
       }
