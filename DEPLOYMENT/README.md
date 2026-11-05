@@ -64,6 +64,35 @@ qui lance `chain-test.sh` (plugin `SECAGENT-PYTHON`, binaire `secagent-inventory
 
 ---
 
+## Données privées du poste (`PRIVATE/`)
+
+Tout ce qui est privé (secrets, clés, CA de test, jetons) vit sous **`PRIVATE/`** à la racine du dépôt (gitignoré), jamais à côté des scripts ni des Compose. Les scripts, Compose et `.env.example` restent en place et ne désignent `PRIVATE/` que par chemin relatif.
+
+```
+PRIVATE/
+├── qualif/
+│   ├── secrets/   # SECRETS_DIR : jwt_secret_key, admin_token, rsa_master_key (0400)
+│   ├── pki/       # QUALIF_TLS_DIR / PKI_OUT : ca.crt, ca.key, tls.crt, tls.key (CA de test)
+│   ├── chain/     # CHAIN_DIR : jetons d'enrôlement et plugin (0600), child.env, image-ids
+│   └── ci-tls/    # certificat jetable de `failover-test.sh setup-ci`
+└── prod/          # copie de RÉFÉRENCE du poste, jamais lue par les scripts
+    ├── secrets/   # jwt_secret_key, admin_token, rsa_master_key (+ repeater_upstream_token)
+    ├── .env       # variables non secrètes de l'hôte
+    └── pki/       # réservé (PKI de PROD, D-P2 : pas encore générée)
+```
+
+- **Racine** : variable `SECAGENT_PRIVATE_DIR` (défaut `<dépôt>/PRIVATE`). Les défauts `SECRETS_DIR`, `QUALIF_TLS_DIR`, `CHAIN_DIR` et `PKI_OUT` en dérivent ; une variable explicite prime.
+- **Fail-closed** : si la racine n'existe pas, les scripts de qualif refusent de générer des secrets (message nommant `SECAGENT_PRIVATE_DIR`) ; ils ne créent que les sous-répertoires.
+- **Jamais sur l'hôte, jamais dans l'archive** : `PRIVATE/` ne voyage ni vers un hôte, ni dans l'archive de release `secagent-compose-<version>.tar.gz`. Sur un hôte PROD la disposition reste `./secrets` + `.env` à côté du Compose ; `PRIVATE/prod/` n'est que la copie de référence du poste. Les secrets de qualif arrivent sur l'hôte distant uniquement via les volumes (`push-secrets`, `push-tls`).
+- **Pourquoi** : le 2026-11-03, les secrets de la qualif n'avaient pour seule source qu'une copie de travail éphémère (scratchpad), perdue ensuite : aucune source durable. `PRIVATE/` est cette source durable, hors des copies de travail.
+- **Lancer depuis une copie hors `/mnt/c`** (NTFS ignore `chmod`/`chown`, nécessaire pour les modes 0400/0600) : l'exécution depuis la copie ne doit jamais écrire de secret dans la copie. Passer la racine du checkout en chemin **absolu** :
+
+```bash
+export SECAGENT_PRIVATE_DIR=/mnt/c/<chemin>/Ansible_SecAgent/PRIVATE   # absolu, jamais relatif
+cd <copie-hors-/mnt/c>/DEPLOYMENT/qualif
+bash chain-test.sh ci-prepare
+```
+
 ## Déploiement Qualif (Single-host Compose)
 
 Version pas à pas : [DOC/project/QUICKSTART.md](../DOC/project/QUICKSTART.md). Résumé :
@@ -80,9 +109,9 @@ openssl req -x509 -newkey rsa:2048 -keyout tls/tls.key -out tls/tls.crt \
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
 chmod 0644 tls/tls.key      # lisible par l'UID 10001 du conteneur (essai local UNIQUEMENT)
 
-# Secrets du serveur (hors dépôt) : trois FICHIERS dans secrets/ (0400), déposés dans le volume secagent-qualif_secrets (v3.0.5, #197)
-( umask 077; mkdir -p secrets; for n in jwt_secret_key admin_token rsa_master_key; do openssl rand -base64 48 | tr -d '\n' > secrets/$n; done )
-bash chain-test.sh push-secrets     # [vars requises : DOCKER_HOST, SECRETS_DIR (def. ./secrets), PROJECT ; hote distant : + TLS_MODE=volume SECAGENT_ENDPOINT_HOST] volume externe, propriétaire 10001, mode 0400 ; lus via JWT_SECRET_KEY_FILE etc.
+# Secrets du serveur (hors dépôt) : trois FICHIERS dans PRIVATE/qualif/secrets/ (0400, SECRETS_DIR), déposés dans le volume secagent-qualif_secrets (v3.0.5, #197)
+( umask 077; d="${SECAGENT_PRIVATE_DIR:-$PWD/../../PRIVATE}/qualif/secrets"; mkdir -p "$d"; for n in jwt_secret_key admin_token rsa_master_key; do openssl rand -base64 48 | tr -d '\n' > "$d/$n"; done )
+bash chain-test.sh push-secrets     # [vars requises : DOCKER_HOST, SECRETS_DIR (def. PRIVATE/qualif/secrets), PROJECT ; hote distant : + TLS_MODE=volume SECAGENT_ENDPOINT_HOST] volume externe, propriétaire 10001, mode 0400 ; lus via JWT_SECRET_KEY_FILE etc.
 
 export SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-<commit>@sha256:<digest>
 export QUALIF_TLS_DIR="$PWD/tls"
