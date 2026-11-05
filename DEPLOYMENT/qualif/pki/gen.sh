@@ -21,7 +21,9 @@ PRIVATE_DIR="${SECAGENT_PRIVATE_DIR:-$REPO/PRIVATE}"
 PRIVATE_DIR="${PRIVATE_DIR%/}"
 OUT="${1:-${PKI_OUT:-$PRIVATE_DIR/qualif/pki}}"
 DAYS="${PKI_DAYS:-30}"
-# Garde FAIL-CLOSED (#250) : la racine PRIVATE/ n'est jamais creee ici (copie ephemere du depot = refus).
+# Garde FAIL-CLOSED (#250) : la racine PRIVATE/ n'est jamais creee ici (copie ephemere du depot = refus) ; une racine
+# RELATIVE est refusee (elle dependrait du repertoire courant et contournerait la comparaison des chemins).
+case "$PRIVATE_DIR" in /*) ;; *) echo "ERREUR : SECAGENT_PRIVATE_DIR=$PRIVATE_DIR n'est pas un chemin absolu : refus (exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE en chemin absolu)." >&2; exit 1 ;; esac
 case "$OUT" in
   "$PRIVATE_DIR"|"$PRIVATE_DIR"/*)
     [ -d "$PRIVATE_DIR" ] || { echo "ERREUR : racine des donnees privees introuvable (SECAGENT_PRIVATE_DIR=$PRIVATE_DIR) : refus de generer des cles dans un emplacement ephemere. Creer la racine ou exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE (chemin absolu)." >&2; exit 1; } ;;

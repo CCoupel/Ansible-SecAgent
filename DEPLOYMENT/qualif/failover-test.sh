@@ -29,9 +29,11 @@ PRIVATE_DIR="${SECAGENT_PRIVATE_DIR:-$REPO/PRIVATE}"
 PRIVATE_DIR="${PRIVATE_DIR%/}"
 # Garde FAIL-CLOSED (incident du 2026-11-03 : secrets generes dans une copie ephemere puis perdus) : un chemin situe
 # sous $PRIVATE_DIR n'est jamais ecrit si la racine n'existe pas ; la racine n'est JAMAIS creee par les scripts.
-# Un chemin explicite hors de $PRIVATE_DIR (ex. SECRETS_DIR=/autre) n'est pas concerne.
+# Un chemin explicite hors de $PRIVATE_DIR (ex. SECRETS_DIR=/autre) n'est pas concerne ; une racine relative est refusee.
 require_private_dir() { # $@ chemins qui vont etre ecrits
   local p
+  # Racine RELATIVE refusee : elle dependrait du repertoire courant et contournerait la comparaison des chemins.
+  case "$PRIVATE_DIR" in /*) ;; *) fail "SECAGENT_PRIVATE_DIR=$PRIVATE_DIR n'est pas un chemin absolu : refus (exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE en chemin absolu)" ;; esac
   for p in "$@"; do
     case "$p" in
       "$PRIVATE_DIR"|"$PRIVATE_DIR"/*)
