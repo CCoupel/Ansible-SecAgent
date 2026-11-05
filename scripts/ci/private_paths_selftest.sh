@@ -8,6 +8,7 @@
 #  (c) une variable explicite (SECRETS_DIR=/x) prime sur le defaut ;
 #  (d) pki/gen.sh refuse d'ecrire des cles dans un depot git ou le chemin n'est pas ignore ;
 #  (f) SECAGENT_PRIVATE_DIR relatif => refus ("n'est pas un chemin absolu"), meme avec SECRETS_DIR absolu, y compris pki/gen.sh ;
+#  (g) CHAIN_DIR (jetons volatils, defaut ${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>) : refus relatif, '/', lien, non-repertoire, autre uid, droits > 0700 ;
 #  (e) plus aucun ancien defaut ($HERE/secrets, $HERE/pki/out, $HERE/.ci-tls, $HERE/chain) dans DEPLOYMENT/qualif.
 # Contrat : sous-commande `paths` de failover-test.sh et chain-test.sh, imprimant PRIVATE_DIR=, SECRETS_DIR=, QUALIF_TLS_DIR= (+ CHAIN_DIR= pour chain-test.sh seul).
 set -uo pipefail
@@ -39,7 +40,18 @@ for s in failover-test.sh chain-test.sh; do
   [ "$(val "$out" SECRETS_DIR)" = "$P/qualif/secrets" ] && ok "(b) $s : SECRETS_DIR" || ko "(b) $s : SECRETS_DIR=$(val "$out" SECRETS_DIR)"
   [ "$(val "$out" QUALIF_TLS_DIR)" = "$P/qualif/$TLS_SUB" ] && ok "(b) $s : QUALIF_TLS_DIR=qualif/$TLS_SUB" || ko "(b) $s : QUALIF_TLS_DIR=$(val "$out" QUALIF_TLS_DIR)"
   if [ $HAS_CHAIN = 1 ]; then
-    [ "$(val "$out" CHAIN_DIR)" = "$P/qualif/chain" ] && ok "(b) $s : CHAIN_DIR" || ko "(b) $s : CHAIN_DIR=$(val "$out" CHAIN_DIR)"
+    # CHAIN_DIR volatil : ${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>, hors PRIVATE/, non cree par `paths`
+    TD="$TMP/tmpd"; mkdir -p "$TD"; UID_N="$(id -u)"
+    out="$(clean_env SECAGENT_PRIVATE_DIR="$P" TMPDIR="$TD" bash "$Q/$s" paths 2>&1)"
+    [ "$(val "$out" CHAIN_DIR)" = "$TD/secagent-qualif-chain-$UID_N" ] && ok "(b) $s : CHAIN_DIR=\$TMPDIR/secagent-qualif-chain-<uid>" || ko "(b) $s : CHAIN_DIR=$(val "$out" CHAIN_DIR)"
+    [ ! -e "$TD/secagent-qualif-chain-$UID_N" ] && ok "(b) $s : CHAIN_DIR non cree par paths" || ko "(b) $s : paths a cree CHAIN_DIR"
+    out="$(clean_env SECAGENT_PRIVATE_DIR="$P" TMPDIR="$TD/" bash "$Q/$s" paths 2>&1)"
+    [ "$(val "$out" CHAIN_DIR)" = "$TD/secagent-qualif-chain-$UID_N" ] && ok "(b) $s : slash final de TMPDIR retire" || ko "(b) $s : TMPDIR avec slash : CHAIN_DIR=$(val "$out" CHAIN_DIR)"
+    out="$(clean_env SECAGENT_PRIVATE_DIR="$P" bash "$Q/$s" paths 2>&1)"
+    EXP_T="${TMPDIR:-/tmp}"; EXP_T="${EXP_T%/}"
+    [ "$(val "$out" CHAIN_DIR)" = "$EXP_T/secagent-qualif-chain-$UID_N" ] && ok "(b) $s : defaut TMPDIR ou /tmp" || ko "(b) $s : defaut CHAIN_DIR=$(val "$out" CHAIN_DIR)"
+    out="$(clean_env SECAGENT_PRIVATE_DIR="$P/absent" TMPDIR="$TD" bash "$Q/$s" paths 2>&1)"; rc=$?
+    [ $rc -ne 0 ] && ok "(b) $s : racine PRIVATE absente refusee meme avec CHAIN_DIR sur /tmp" || ko "(b) $s : racine absente acceptee"
   else
     printf '%s\n' "$out" | grep -q '^CHAIN_DIR=' && ko "(b) $s : CHAIN_DIR imprime (hors contrat)" || ok "(b) $s : pas de CHAIN_DIR"
   fi
@@ -81,6 +93,32 @@ for s in failover-test.sh chain-test.sh; do
   chk_rel "$s + SECRETS_DIR absolu" env -u QUALIF_TLS_DIR -u CHAIN_DIR -u PKI_OUT SECAGENT_PRIVATE_DIR=relp SECRETS_DIR=/abs/secrets bash "$Q/$s" paths
 done
 chk_rel "pki/gen.sh" env -u PKI_OUT SECAGENT_PRIVATE_DIR=relp bash "$Q/pki/gen.sh"
+
+# (g) garde de CHAIN_DIR (chain-test.sh paths) : refus fail-closed (rc != 0, ECHEC:, message stable), rien n'est corrige
+Pg="$TMP/private-g"; mkdir -p "$Pg"
+chk_chain() { # $1 nom, $2 sous-chaine attendue, $3 CHAIN_DIR
+  local out rc
+  out="$(clean_env SECAGENT_PRIVATE_DIR="$Pg" CHAIN_DIR="$3" bash "$Q/chain-test.sh" paths 2>&1)"; rc=$?
+  [ $rc -ne 0 ] && ok "(g) $1 : code != 0" || ko "(g) $1 : accepte (rc=0)"
+  printf '%s' "$out" | grep -qF -- "$2" && ok "(g) $1 : message '$2'" || ko "(g) $1 : message sans '$2'"
+}
+chk_chain "CHAIN_DIR relatif" "n'est pas un chemin absolu" "rel/chain"
+chk_chain "CHAIN_DIR=/" "n'est pas un chemin absolu" "/"
+ln -s "$TMP" "$TMP/lien-chain"
+chk_chain "lien symbolique" "est un lien symbolique : refus" "$TMP/lien-chain"
+: > "$TMP/fichier-chain"
+chk_chain "fichier ordinaire" "existe et n'est pas un repertoire" "$TMP/fichier-chain"
+if [ "$(stat -c %u /etc)" != "$(id -u)" ]; then
+  chk_chain "autre proprietaire (/etc)" "appartient a l'uid" "/etc"
+else
+  echo "skip (g) autre proprietaire : /etc appartient a l'utilisateur courant"
+fi
+mkdir "$TMP/chain-755"; chmod 755 "$TMP/chain-755"
+chk_chain "droits 0755" "plus larges que 0700" "$TMP/chain-755"
+[ "$(stat -c %a "$TMP/chain-755")" = 755 ] && ok "(g) droits 0755 : pas de chmod correctif" || ko "(g) droits modifies par le script"
+mkdir "$TMP/chain-700"; chmod 700 "$TMP/chain-700"
+out="$(clean_env SECAGENT_PRIVATE_DIR="$Pg" CHAIN_DIR="$TMP/chain-700" bash "$Q/chain-test.sh" paths 2>&1)"; rc=$?
+[ $rc -eq 0 ] && ok "(g) repertoire 0700 de l'utilisateur accepte" || ko "(g) 0700 refuse (rc=$rc)"
 
 # (e) anciens defauts supprimes (hors README : la doc peut les citer pour la migration)
 OLD='\$\{?HERE\}?/(secrets|pki/out|\.ci-tls|chain($|[^-A-Za-z0-9_.]))'
