@@ -87,7 +87,7 @@
           "port": 2375,
           "docker_host": "tcp://192.168.1.218:2375",
           "runtime": "docker",
-          "compose_cli": "Compose execute sur l'hote dans un conteneur docker:cli epingle par digest (voie 1, DEPLOYMENT/prod/README.md) ; poste : docker.exe sans DOCKER_HOST",
+          "compose_cli": "Compose execute sur l'hote dans un conteneur docker:29-cli (Compose v5.7.0) epingle par digest docker@sha256:4d742ab934c2149b628bf26369ac3ec51cb91e2e28fe6722a0e86a6d6efc4bd5 (voie 1, DEPLOYMENT/prod/README.md) ; poste : docker.exe sans DOCKER_HOST",
           "registry": "ghcr.io/ccoupel",
           "credentials_env": [],
           "verified": {
