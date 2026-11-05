@@ -13,13 +13,13 @@ Le poste de contrôle Ansible (plugin `SECAGENT-PYTHON`, `secagent-inventory`, `
 export SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-<commit>@sha256:<digest>
 export SECAGENT_MINION_IMAGE=ghcr.io/ccoupel/secagent-minion:sha-<commit>@sha256:<digest>
 export INVENTORY_BIN=/chemin/secagent-inventory     # binaire du poste de controle
-bash chain-test.sh ci-prepare   # CI/essai : PKI de test (pki/out) + qualif.env jetable ; en qualif : vos propres secrets
-bash chain-test.sh bootstrap    # state init, relays add, jetons d'enrolement et plugin (./chain/, 0600), demarrage
+bash chain-test.sh ci-prepare   # CI/essai : PKI de test (`PRIVATE/qualif/pki/`) + secrets jetables (`PRIVATE/qualif/secrets/`, 3 fichiers 0400) ; en qualif : vos propres secrets
+bash chain-test.sh bootstrap    # state init, relays add, jetons d'enrolement et plugin (`CHAIN_DIR`, hors `PRIVATE/` : `${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>`, 0700, fichiers 0600), demarrage
 bash chain-test.sh smoke        # relais, minions, inventaire hierarchique, ansible -m ping
 bash chain-test.sh failover     # arret propre du maitre de la racine puis smoke ; kill : failover-test.sh run kill
 bash chain-test.sh down
 ```
-Les secrets (`qualif.env`, `chain/`, `pki/out/`) sont ignorés par git. En CI, le job « Chaîne en conteneurs » rejoue ce scénario à chaque push.
+Les données privées de la qualif (`secrets/`, `pki/`, `ci-tls/`) vivent sous `PRIVATE/qualif/` (dossier gitignoré ; racine = `SECAGENT_PRIVATE_DIR`, défaut `<dépôt>/PRIVATE`), jamais à côté des scripts : voir « Données privées du poste » dans `DEPLOYMENT/README.md`. Les scripts refusent de générer des secrets si cette racine n'existe pas. Chemins par défaut : `SECRETS_DIR`, `QUALIF_TLS_DIR` (PKI) ; une valeur explicite prime. **`CHAIN_DIR` fait exception** : les jetons de chaîne sont volatils et vont par défaut dans `${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>` (système de fichiers qui honore les permissions : un répertoire NTFS en 0777 est refusé par le plugin). `chain-test.sh` refuse (fail-closed) un `CHAIN_DIR` non absolu, lien symbolique, non répertoire, appartenant à un autre uid ou plus large que 0700 ; il le crée en 0700. Les trois secrets du serveur (`jwt_secret_key`, `admin_token`, `rsa_master_key`) sont des **fichiers** déposés dans le volume `${PROJECT}_secrets` (propriétaire 10001, mode 0400) et lus via `JWT_SECRET_KEY_FILE`, `ADMIN_TOKEN_FILE`, `RSA_MASTER_KEY_FILE` : `docker inspect` n'en montre aucun (#197 item 6, v3.0.5 ; `qualif.env` et `qualif.env.example` sont supprimés). En CI, le job « Chaîne en conteneurs » rejoue ce scénario à chaque push.
 
 ### Hôte Docker distant (qualif réelle 192.168.1.218), sans tunnel ni copie de certificats par scp
 
@@ -39,11 +39,11 @@ export TLS_MODE=volume                            # certificats dans un volume n
 export SECAGENT_ENDPOINT_HOST=192.168.1.218       # adresse que le poste de contrôle utilise pour 7770 / 8770
 export PKI_EXTRA_SAN="IP:192.168.1.218"           # SAN supplémentaire dans le certificat de test
 export SECAGENT_IMAGE=… SECAGENT_MINION_IMAGE=… INVENTORY_BIN=…
-bash chain-test.sh ci-prepare                     # PKI + qualif.env jetables, en LOCAL (jamais ceux de prod)
+bash chain-test.sh ci-prepare                     # PKI + secrets jetables sous PRIVATE/qualif/, en LOCAL (jamais ceux de prod) ; `bootstrap` les depose dans le volume de l'hote
 bash chain-test.sh push-tls                       # copie tls.crt/tls.key/ca.crt dans le volume secagent-qualif_tls de l'hôte
 bash chain-test.sh bootstrap && bash chain-test.sh smoke
 ```
-`qualif.env` et `chain/*.env` sont lus côté client (`env_file`) ; seul `/certs` est un montage résolu sur l'hôte, d'où le volume. La clé de test (0644) est jetable et ne quitte jamais le poste que par ce flux.
+`$CHAIN_DIR/*.env` (`CHAIN_DIR`, volatil sous `/tmp`, hors `qualif.env` supprimé) est lu côté client (`env_file`) ; `/certs` et `/run/secagent-secrets` sont des montages résolus sur l'hôte, d'où des **volumes** alimentés par un conteneur éphémère (`push-tls`, `push_secrets` appelé par `bootstrap`). La clé de test (0644) est jetable et ne quitte jamais le poste que par ce flux.
 
 ### Images sans registre : artefact de run CI + `docker load`
 
@@ -56,8 +56,8 @@ bash chain-test.sh load-images images           # sha256sum -c, puis docker load
 set -a; . images/images.env; set +a              # SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (tags locaux ci-<sha12>), SECAGENT_PULL_POLICY=never
 export INVENTORY_BIN="$PWD/images/secagent-inventory"
 ```
-`load-images` enregistre l'empreinte stable des images (sha256 des couches `RootFS.Layers`, `chain/image-ids`, non secrets ; l'ID `.Id` varie selon le magasin containerd) et `bootstrap`/`failover`/`backup-restore` **refusent** de démarrer si l'empreinte réelle d'une image du démon diffère (tag local préexistant) ou si `load-images` n'a pas été lancé.
-**Exception à « sans registre »** : « sans registre » vaut pour les **images secagent**. Deux commandes (`chain-test.sh push-tls` et `backup-restore`) utilisent aussi `alpine:3.20@sha256:d9e853e8…` (épinglée par digest, identique à celle du `GO/Dockerfile`), **tirée de Docker Hub** par l'hôte au premier usage ; sur un hôte sans accès au Hub, charger cette image au préalable (`docker pull` ailleurs puis `docker save | docker load`).
+`load-images` enregistre l'empreinte stable des images (sha256 des couches `RootFS.Layers`, `$CHAIN_DIR/image-ids`, non secrets ; l'ID `.Id` varie selon le magasin containerd) et `bootstrap`/`failover`/`backup-restore` **refusent** de démarrer si l'empreinte réelle d'une image du démon diffère (tag local préexistant) ou si `load-images` n'a pas été lancé.
+**Exception à « sans registre »** : « sans registre » vaut pour les **images secagent**. Deux commandes (`chain-test.sh push-tls` et `backup-restore`) utilisent aussi `alpine:3.24@sha256:be265606…` (épinglée par digest, identique à celle du `GO/Dockerfile`), **tirée de Docker Hub** par l'hôte au premier usage ; sur un hôte sans accès au Hub, charger cette image au préalable (`docker pull` ailleurs puis `docker save | docker load`).
 `SECAGENT_PULL_POLICY=never` empêche Compose de chercher ces tags locaux dans un registre. La production, elle, exige `tag@sha256` (archive de release, `check_compose.py --require-digest`).
 
 **Procédure « qualification sans registre »** (le job `images-artifact` ne tourne que sur un **push**, après `docker-compose-checks`) :
@@ -81,43 +81,78 @@ Les opérations destructives (`down`, `teardown`, `backup-restore`) sont refusé
 - **Hooks en réel** : `hooks.json` (même répertoire) est livré par un **volume nommé** `${PROJECT}_hooks` (`chain-test.sh push-hooks`, appelé par `bootstrap` ; surcharge `docker-compose.hooks.yml`, `RELAY_HOOKS_CONFIG=/etc/secagent-hooks/hooks.json`) sur `secagent-server-a/-b` et `secagent-child`. **Jamais `configs: file:` ni `secrets: file:`** : hors Swarm Compose les monte en bind mount du chemin du client, introuvable sur un démon distant (échec constaté sur 192.168.1.218 le 2026-10-08) ; `scripts/ci/check_no_binds.py` (rendu distant, en CI) refuse tout chemin du client. Il écrit chaque `host.up` / `host.down` dans `/run/secagent/events.log` (tmpfs) du conteneur. `bash chain-test.sh hooks` vérifie `host.up` de `minion-root` (maître de la racine) et `minion-child` (enfant) ; `bash chain-test.sh failover` vérifie ensuite que le **nouveau maître** journalise `host.up` de `minion-root` après la bascule.
 - **Essai CA négatif** : service `minion-negca` (profil Compose `negative`, jamais démarré par un `up` ordinaire), minion **sans** `RELAY_CA_BUNDLE` (store système seul) face à la CA privée. `bash chain-test.sh negative-ca` exige une erreur de certificat dans ses logs et son absence de `minions list`, puis le supprime. Le jeton d'enrôlement du service est factice (forme valide, 64 zéros) : le refus doit précéder toute authentification.
 - **Jeton plugin frais** : `chain-test.sh` crée un jeton plugin neuf (fichier 0600) à chaque `smoke`, `failover` et `hooks` ; plus de dépendance au jeton du bootstrap qui expire (`TOKEN_TTL`).
-- **Jetons de lien v3.0.4** (comportement par défaut du bootstrap) : `relays add` ne mint plus de jeton ; `chain-test.sh bootstrap` exporte la clé publique racine (`keys link-pubkey`, PEM sur stdout, `root_id=` sur stderr), la pousse dans le volume `${PROJECT}_link` (`push-link-key`, aucun bind mount), mint sur la racine le jeton `relay-child` de `dmz1` (`tokens create --role relay-child --sub dmz1 --aud <root_id>`, TTL `LINK_TTL`) et le dépose, par un conteneur éphémère, dans le même volume `${PROJECT}_link` (fichier `upstream-token`, propriétaire UID 10001, mode 0400, `REPEATER_UPSTREAM_TOKEN_FILE=/run/secagent-link/upstream-token`) ; la copie locale `chain/upstream-token` est supprimée après le dépôt. **Pas de `secrets:` Compose** : hors Swarm il monte le fichier de l'hôte (uid/gid/mode ignorés, illisible par l'UID 10001 — échec CI « permission denied ») et serait résolu sur l'hôte distant. `down` supprime ce volume. `REPEATER_ROOT_ID` (non secret) est écrit dans `chain/child.env`. L'enfant n'a plus aucun secret de lien en variable d'environnement.
+- **Jetons de lien v3.0.4** (comportement par défaut du bootstrap) : `relays add` ne mint plus de jeton ; `chain-test.sh bootstrap` exporte la clé publique racine (`keys link-pubkey`, PEM sur stdout, `root_id=` sur stderr), la pousse dans le volume `${PROJECT}_link` (`push-link-key`, aucun bind mount), mint sur la racine le jeton `relay-child` de `dmz1` (`tokens create --role relay-child --sub dmz1 --aud <root_id>`, TTL `LINK_TTL`) et le dépose, par un conteneur éphémère, dans le même volume `${PROJECT}_link` (fichier `upstream-token`, propriétaire UID 10001, mode 0400, `REPEATER_UPSTREAM_TOKEN_FILE=/run/secagent-link/upstream-token`) ; la copie locale `$CHAIN_DIR/upstream-token` est supprimée après le dépôt. **Pas de `secrets:` Compose** : hors Swarm il monte le fichier de l'hôte (uid/gid/mode ignorés, illisible par l'UID 10001 — échec CI « permission denied ») et serait résolu sur l'hôte distant. `down` supprime ce volume. `REPEATER_ROOT_ID` (non secret) est écrit dans `$CHAIN_DIR/child.env`. L'enfant n'a plus aucun secret de lien en variable d'environnement.
 - **Scénario `link-rotation`** : `keys rotate-link`, attente de la confirmation de `dmz1` (`keys link-status`), **mise à jour du fichier épinglé de l'enfant avec la nouvelle clé publique AVANT le retrait** (sinon le redémarrage suivant de l'enfant est refusé : `pinned root link key disagrees with the persisted link_trust`), nouveau jeton signé par la nouvelle clé et remplacement du conteneur de l'enfant, `keys retire-link-previous` (sans `--force`), **redémarrage** de l'enfant puis `smoke`. **Scénario `link-revoke`** : `tokens revoke <id>` du jeton de lien, `dmz1` déconnecté (fermeture 4010, refus permanent) et **non reconnecté** pendant 40 s, puis remise en état avec un nouveau jeton et `smoke`.
 - **Montée v3.0.3 → v3.0.4** : plan de répétition dans `REHEARSAL_v3.0.4.md`.
 
-### CLI Docker statique épinglé
+### CLI Docker : paquet signé `docker-ce-cli`, extrait sans installation (#240)
 
-Pour un poste sans Docker (WSL sans intégration Docker Desktop, runner), le CLI statique officiel est épinglé :
+Pour un poste sans Docker (WSL sans intégration Docker Desktop, runner), le CLI Linux et le plugin Compose v2 viennent des **paquets signés du dépôt APT Docker**, extraits dans un répertoire de travail : **aucune installation système** (ni `apt install`, ni `sudo`). La chaîne de confiance est celle d'APT : clé GPG Docker → `InRelease` signé → `Packages` (empreinte listée dans `InRelease`) → `.deb` (empreinte listée dans `Packages`).
 
-| Élément | Valeur |
+| Élément | Valeur épinglée (Ubuntu `noble`, amd64, relevé le 2026-11-03) |
 |---|---|
-| Version | `docker-29.8.2.tgz` |
-| URL | `https://download.docker.com/linux/static/stable/x86_64/docker-29.8.2.tgz` |
-| sha256 | `995d1ef289677f74fd58d8d2c35727b6a4ee389c69db8638a3e42d0487aa5b0f` |
-
-Origine du sha256 : calculé le 2026-10-07 sur le fichier téléchargé en HTTPS depuis `download.docker.com` ; Docker ne publie pas de fichier de sommes pour ces archives (le `.sha256` voisin répond 404), l'empreinte n'est donc pas recoupée par une source indépendante. Vérification avant extraction, **dans un répertoire dédié, vide** (jamais dans le dépôt) :
+| Clé de signature Docker (`https://download.docker.com/linux/ubuntu/gpg`) | empreinte `9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88` |
+| `docker-ce-cli` | `5:29.8.2-1~ubuntu.24.04~noble`, sha256 du `.deb` `008b3b49b474136063fe0fbe8999b0e77c3e8556d7f7de21f98f05715e2f76ba` |
+| `docker-compose-plugin` | `5.7.0-1~ubuntu.24.04~noble`, sha256 du `.deb` `61dd23ec4d0f6e4a99ef841f2ea2c0dc9cbada2c6ad99ffbd4f980ae957cc691` |
 
 ```bash
-d=$(mktemp -d) && cd "$d" && curl -fsSLO https://download.docker.com/linux/static/stable/x86_64/docker-29.8.2.tgz \
-  && echo "995d1ef289677f74fd58d8d2c35727b6a4ee389c69db8638a3e42d0487aa5b0f  docker-29.8.2.tgz" | sha256sum -c - \
-  && tar -xzf docker-29.8.2.tgz docker/docker && ./docker/docker --version
+set -euo pipefail
+FPR=9DC858229FC7DD38854AE2D88D81803C0EBFCD88                       # empreinte epinglee de la cle de signature Docker
+B=https://download.docker.com/linux/ubuntu
+cu() { curl --proto '=https' --tlsv1.2 -fsSLO "$@"; }              # HTTPS impose, jamais de repli vers http
+d=$(mktemp -d) && cd "$d" && export GNUPGHOME="$d/gnupg" && mkdir -m700 "$GNUPGHOME"      # trousseau jetable : ni ~/.gnupg ni installation
+cu "$B/gpg"
+# 1. Fail-closed sur la cle : la cle telechargee doit avoir EXACTEMENT l'empreinte epinglee AVANT tout import
+[ "$(gpg --with-colons --show-keys gpg | awk -F: '$1=="fpr"{print $10; exit}')" = "$FPR" ] || { echo "ECHEC : empreinte de la cle Docker inattendue" >&2; exit 1; }
+gpg --import gpg
+cu "$B/dists/noble/InRelease"
+# 2. Fail-closed sur la signature : VALIDSIG obligatoire, et la cle PRIMAIRE (dernier champ) doit etre l'empreinte epinglee
+gpg --status-fd 1 --verify InRelease 2>/dev/null | awk -v f="$FPR" '$2=="VALIDSIG" && $NF==f {ok=1} END{exit !ok}' \
+  || { echo "ECHEC : InRelease n'est pas signe par la cle epinglee" >&2; exit 1; }
+gpg --decrypt InRelease 2>/dev/null > Release
+cu "$B/dists/noble/stable/binary-amd64/Packages"
+want=$(awk '$3=="stable/binary-amd64/Packages" && length($1)==64 {print $1}' Release | head -1)
+echo "$want  Packages" | sha256sum -c -                                                        # Packages conforme a InRelease signe
+for f in docker-ce-cli_29.8.2-1~ubuntu.24.04~noble_amd64.deb docker-compose-plugin_5.7.0-1~ubuntu.24.04~noble_amd64.deb; do
+  cu "$B/dists/noble/pool/stable/amd64/$f"
+done
+echo "008b3b49b474136063fe0fbe8999b0e77c3e8556d7f7de21f98f05715e2f76ba  docker-ce-cli_29.8.2-1~ubuntu.24.04~noble_amd64.deb" | sha256sum -c -
+echo "61dd23ec4d0f6e4a99ef841f2ea2c0dc9cbada2c6ad99ffbd4f980ae957cc691  docker-compose-plugin_5.7.0-1~ubuntu.24.04~noble_amd64.deb" | sha256sum -c -
+grep -c "008b3b49b474136063fe0fbe8999b0e77c3e8556d7f7de21f98f05715e2f76ba" Packages           # empreinte du .deb aussi dans Packages signe (>= 1)
+# Extraction sans installation (dpkg-deb -x, ou `ar x` puis `tar -xJf data.tar.xz`) :
+dpkg-deb -x docker-ce-cli_*.deb x && dpkg-deb -x docker-compose-plugin_*.deb x
+mkdir -p "$HOME/qualif-cli/cfg" && cp x/usr/bin/docker "$HOME/qualif-cli/docker" && cp -r x/usr/libexec/docker/cli-plugins "$HOME/qualif-cli/plugins"
+printf '{"cliPluginsExtraDirs":["%s"]}\n' "$HOME/qualif-cli/plugins" > "$HOME/qualif-cli/cfg/config.json"
+export DOCKER_CONFIG="$HOME/qualif-cli/cfg" PATH="$HOME/qualif-cli:$PATH"      # dans le shell qui lance chain-test.sh
+docker --version && docker compose version
 ```
 
-Le CLI statique n'inclut pas `docker compose` (plugin séparé) : les scripts de qualif l'exigent. Rien n'est installé par les agents hors scratchpad ; l'installation sur le poste reste une décision de l'utilisateur.
+Recoupement (2026-11-03) : le binaire `docker` du paquet signé et celui de l'ancienne archive statique diffèrent (builds distincts), mais annoncent la **même version et le même commit de build** (`29.8.2, build 7fc2dff`), qui est le commit du tag `v29.8.2` de `docker/cli`. **L'archive statique `docker-29.8.2.tgz` n'est plus utilisée** : Docker ne publie ni somme de contrôle, ni release GitHub, ni attestation pour elle (le `.sha256` voisin répond 404). Son empreinte `995d1ef289677f74fd58d8d2c35727b6a4ee389c69db8638a3e42d0487aa5b0f` (relevée en HTTPS le 2026-10-07, retrouvée identique le 2026-11-03) n'est **pas** une empreinte « officielle » : elle ne protège que contre une altération postérieure du téléchargement, jamais contre un fichier déjà compromis. **Risque accepté, daté du 2026-11-03**, pour qui l'emploierait quand même ; préférer le paquet signé ci-dessus.
+
+### CLI Docker supporté par les scripts de qualif (#224)
+
+`chain-test.sh` et `failover-test.sh` appellent `docker` (premier trouvé dans le `PATH`) et **`docker compose`** (plugin Compose v2 ; l'ancien binaire `docker-compose` v1 n'est pas utilisé). Le démon visé est **toujours** celui de `DOCKER_HOST`.
+
+| Client | Supporté | Remarque |
+|---|---|---|
+| CLI **Linux** (paquet signé extrait ci-dessus, ou paquet de la distribution) + plugin Compose v2 | **oui** (seul cas utilisé en qualif v3.0.4) | `docker version` et `docker compose version` doivent répondre ; `DOCKER_HOST=tcp://192.168.1.218:2375` exporté dans le shell qui lance le script |
+| `docker.exe` (Docker Desktop Windows) appelé depuis WSL | **non** pour les scripts | voir ci-dessous |
+
+**`docker.exe` ignore `DOCKER_HOST` exporté dans WSL** : un processus Windows ne reçoit pas les variables du shell WSL (sauf déclaration dans `WSLENV`). Sans option, `docker.exe` vise donc le démon **local** de Docker Desktop — arrêté sur ce poste, et qu'aucun agent ne démarre — et échoue, ou pire agit sur un autre démon s'il tourne. Pour une commande ponctuelle depuis WSL, passer l'hôte explicitement à **chaque** appel : `docker.exe -H tcp://192.168.1.218:2375 ps`. Les scripts, eux, s'appuient sur `DOCKER_HOST` et sur des chemins Linux (fichiers temporaires, volumes alimentés par conteneur éphémère) : ne pas les faire tourner avec `docker.exe` (ni par alias `docker=docker.exe`). Contrôle avant tout lancement : `command -v docker` doit désigner un binaire Linux (pas `/mnt/c/...`) et `docker info --format '{{.Name}}'` doit renvoyer le nom de l'hôte de qualif.
 
 ## Prérequis
 
 - Docker remote access actif sur `192.168.1.218:2375`
-- Un répertoire de certificats TLS (`tls.crt`, `tls.key`) : `QUALIF_TLS_DIR`
+- Un répertoire de certificats TLS (`tls.crt`, `tls.key`) : `QUALIF_TLS_DIR` (défaut `PRIVATE/qualif/pki/`)
 - Une image candidate publiée par la CI (voir « Promotion » plus bas) : `SECAGENT_IMAGE`
-- `qualif.env` créé depuis `qualif.env.example` (`JWT_SECRET_KEY`, `ADMIN_TOKEN`, `RSA_MASTER_KEY` : secrets de qualification, jamais ceux de PROD ; ignoré par git)
+- Un répertoire `PRIVATE/qualif/secrets/` (`SECRETS_DIR`, gitignoré) avec `jwt_secret_key`, `admin_token`, `rsa_master_key` (secrets de qualification, jamais ceux de PROD ; `rsa_master_key` ≥ 32 octets) ; `bash failover-test.sh setup-ci` / `chain-test.sh ci-prepare` les génèrent aléatoirement, puis `push_secrets` les dépose dans le volume `${PROJECT}_secrets`
 
 ## Lancer
 
 ```bash
 export SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-<commit>@sha256:<digest>
-export QUALIF_TLS_DIR=/chemin/vers/certs
-cp qualif.env.example qualif.env     # puis renseigner les secrets
+export QUALIF_TLS_DIR=/chemin/vers/certs        # facultatif : défaut PRIVATE/qualif/pki
+bash chain-test.sh ci-prepare        # ou deposer PRIVATE/qualif/secrets/{jwt_secret_key,admin_token,rsa_master_key} (0400), puis : bash failover-test.sh setup-ci
 
 # L'état n'est jamais créé implicitement : `secagent-server state init` une fois (voir DOC/project/DEPLOYMENT.md, étape 1)
 DOCKER_HOST=tcp://192.168.1.218:2375 docker compose -p secagent-qualif -f docker-compose.server.yml up -d
@@ -149,3 +184,10 @@ de `docker-compose.server.yml`.
 ## Note de confiance : `ansible_secagent_server`
 
 Le plugin de connexion lit l'adresse du serveur (`ansible_secagent_server`) et le fichier de jeton dans l'environnement **et** dans les variables d'hôte de l'inventaire ; une variable d'hôte **prime** sur l'environnement. L'inventaire est donc un élément **de confiance** : ne jamais utiliser un inventaire non maîtrisé avec un jeton plugin valide (il pourrait rediriger le jeton vers un autre serveur).
+
+## Compléments de qualif v3.0.5 (#197 item 6, #238, #229, #241)
+
+- **Secrets du serveur en fichiers (#197 item 6)** : `docker-compose.server.yml` et `docker-compose.chain.yml` ne lisent plus `qualif.env` ; les trois secrets sont des fichiers du volume **externe** `${PROJECT}_secrets` (modèle des volumes `tls`/`hooks`/`link` : un `secrets: file:` serait un bind mount du poste, irréalisable contre un démon distant), montés en lecture seule sur `/run/secagent-secrets` et lus via `*_FILE`. `push_secrets` (appelé par `bootstrap` et `failover-test.sh setup-ci`) les dépose par un conteneur éphémère : propriétaire 10001, mode 0400. `scripts/ci/check_compose.py --require-secret-files` refuse tout service serveur avec un secret en variable d'environnement ou un `env_file` autre que `child.env` (`$CHAIN_DIR`) (qui ne porte que `REPEATER_ROOT_ID`). Contrôle : `docker inspect` d'un conteneur serveur ne montre aucune des trois valeurs. `down` / `teardown` retirent le volume. `backup-restore` simule la perte de la clé avec `RSA_MASTER_KEY_FILE` vide (clé non définie : code 6 attendu) puis un volume de secrets portant une autre clé (code 2), au lieu de retirer la variable ; un fichier de secret inexistant donne le code 1 (lecture impossible).
+- **Durcissement des minions (#238)** : `minion-root`, `minion-child` et `minion-negca` tournent avec `cap_drop: [ALL]`, `cap_add: [CHOWN, SETUID, SETGID]` et `no-new-privileges:true`. L'entrypoint de l'image démarre en root (création des répertoires, clé RSA, `chown`) puis passe à `relay` par `su-exec` : **mesuré sur 192.168.1.218** (image minion, volume neuf puis redémarrage sur volume existant) : ces trois capacités suffisent, le minion tourne en `relay` ; `DAC_OVERRIDE` n'est pas nécessaire. `check_compose.py` refuse un minion de qualif sans `cap_drop: ALL` ou sans `no-new-privileges`.
+- **`minion-negca` avec les deux adresses (#229)** : `RELAY_SERVER_URL` / `RELAY_WS_URL` listent `secagent-server-a` **et** `-b`. Le refus TLS est donc constaté quel que soit le maître, y compris après `failover` (où `a` est secondaire et n'écoute pas). Séquence rejouée : `failover` puis `negative-ca`. **Dépendance au maître par scénario** : `smoke`, `hooks`, `negative-ca`, `link-rotation`, `link-revoke` et `admission-503` interrogent le **maître courant** (`master()`), quel qu'il soit ; `failover` change de maître ; `backup-restore` redémarre a et b sur un état restauré (le maître peut changer).
+- **`admission-503` (#241)** : `bash chain-test.sh admission-503` abaisse `MAX_STDOUT_BUFFER_TOTAL` des deux nœuds de la racine à `52428800` (surcharge Compose écrite dans `$CHAIN_DIR`, rien dans le dépôt) : 10 tâches simultanées admises (5 Mio réservés par tâche), la 11ᵉ reçoit `503 memory_budget_exhausted` avec `Retry-After`, rien n'atteint le minion, `[SECURITY WARNING] task refused at admission` est journalisé par le maître ; libération, puis le plugin réel (12 forks) remonte un `UNREACHABLE` explicite sans rejeu ; retour au plafond par défaut. Variables : `ADM503_BUDGET` (défaut `52428800`), `ADM503_HOLD` (durée des `sleep`, défaut 45 s). Durée ≈ 4-5 minutes.

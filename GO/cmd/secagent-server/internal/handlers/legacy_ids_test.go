@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package handlers
 
 import (
@@ -14,6 +17,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/proxy"
 	"secagent-server/cmd/secagent-server/internal/state"
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 )
 
 const hostileID = "bad one\n[SECURITY WARNING] forged"
@@ -64,7 +68,7 @@ func TestInventory_LegacyHostileRoutesAreNeverServed(t *testing.T) {
 func legacyStore(t *testing.T) *storage.Store {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := storage.OpenTestDir(dir)
+	s, err := storagetest.OpenTestDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +78,7 @@ func legacyStore(t *testing.T) *storage.Store {
 		t.Fatal(err)
 	}
 	_ = s.Close()
-	s, err = storage.OpenTestDir(dir)
+	s, err = storagetest.OpenTestDir(dir)
 	if err != nil {
 		t.Fatalf("a malformed row must not break the startup: %v", err)
 	}

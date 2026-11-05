@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package main
 
 import (
@@ -12,11 +15,16 @@ import (
 // (the symbol is main.Version: this is the main package of cmd/secagent-minion).
 var Version = "dev"
 
+const (
+	licenseName = "AGPL-3.0-or-later"
+	sourceURL   = "https://github.com/CCoupel/Ansible-SecAgent"
+)
+
 const usageText = `secagent-minion — Ansible-SecAgent agent daemon.
 
 Usage:
   secagent-minion              start the agent (everything is driven by the environment)
-  secagent-minion --version    print the version and exit
+  secagent-minion --version    print the version, license and source, then exit
   secagent-minion --help       print this help and exit
 
 The agent takes no other argument.
@@ -37,7 +45,7 @@ Environment variables:
 // handleArgs applies the command line contract BEFORE anything is initialised (no log line, no
 // configuration, no secret read, no key generated):
 //   - no argument: proceed (the agent starts, the environment drives everything);
-//   - exactly --version / -v: print "secagent-minion version <Version>" and stop (exit 0);
+//   - exactly --version / -v: print the 3-line banner (version, license, source) and stop (exit 0);
 //   - exactly --help / -h: print the help and stop (exit 0);
 //   - anything else (unknown word, flag, number, or several arguments): error on stderr + help, stop
 //     with exit code 1. The offending argument is never echoed (it could be a secret).
@@ -50,7 +58,7 @@ func handleArgs(args []string, stdout, stderr io.Writer) (proceed bool, code int
 	if len(args) == 1 {
 		switch args[0] {
 		case "--version", "-v":
-			_, _ = fmt.Fprintf(stdout, "secagent-minion version %s\n", Version)
+			_, _ = fmt.Fprintf(stdout, "secagent-minion version %s\nLicense: %s\nSource: %s\n", Version, licenseName, sourceURL)
 			return false, 0
 		case "--help", "-h":
 			_, _ = fmt.Fprint(stdout, usageText)

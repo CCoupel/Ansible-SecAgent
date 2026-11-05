@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package handlers
 
 import (
@@ -6,12 +9,13 @@ import (
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 )
 
 // initStore creates a fresh in-memory store for server_config tests.
 func initStore(t *testing.T) *storage.Store {
 	t.Helper()
-	s, err := storage.OpenTemp()
+	s, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatalf("initStore: %v", err)
 	}

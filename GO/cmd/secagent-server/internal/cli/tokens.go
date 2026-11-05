@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package cli
 
 import (
@@ -5,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -288,7 +292,7 @@ var tokensRevokeCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
-		data, status, err := apiRequest("POST", "/api/admin/tokens/"+id+"/revoke", map[string]string{})
+		data, status, err := apiRequest("POST", "/api/admin/tokens/"+url.PathEscape(id)+"/revoke", map[string]string{})
 		if err != nil {
 			return err
 		}
@@ -308,7 +312,7 @@ var tokensDeleteCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
-		data, status, err := apiRequest("DELETE", "/api/admin/tokens/"+id, nil)
+		data, status, err := apiRequest("DELETE", "/api/admin/tokens/"+url.PathEscape(id), nil)
 		if err != nil {
 			return err
 		}

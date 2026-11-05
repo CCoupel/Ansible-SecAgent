@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package ws
 
 // Inter-relay link tokens and messages on /ws/relay (v3.0.4, #141/#146): the verification of the
@@ -191,11 +194,42 @@ func ReportLinkState(seq uint64, kid string) {
 	}
 }
 
-// RecordLinkState stores the confirmation of a relay (root side, or while relaying upward).
+// RecordLinkState stores the confirmation of a relay (root side, or while relaying upward). It does not
+// say how the confirmation arrived: the direct stamp is left as it is.
 func RecordLinkState(relayID string, seq uint64, kid string) {
+	recordLinkState(relayID, seq, kid, provUnknown)
+}
+
+// Provenance of a link_state (M10, B43).
+const (
+	provUnknown = iota // not told (root-side callers, tests): the direct stamp is untouched
+	provDirect         // sent by the relay itself on its own link
+	provRelayed        // relayed for a descendant by an intermediary
+)
+
+// recordLinkState stores the confirmation AND its provenance under ONE lock: a reader (the status) can
+// never see the new confirmation with the stamp of the previous one, and two concurrent link_state of the
+// same relay cannot leave a stamp that disagrees with the last stored confirmation.
+func recordLinkState(relayID string, seq uint64, kid string, prov int) {
 	linkMu.Lock()
+	defer linkMu.Unlock()
 	linkStates[relayID] = LinkStateInfo{Seq: seq, KID: kid, At: time.Now()}
-	linkMu.Unlock()
+	switch prov {
+	case provDirect:
+		if _, ok := directSeen[relayID]; !ok && len(directSeen) >= maxDirectSeen {
+			var oldest string
+			var ot time.Time
+			for id, t := range directSeen {
+				if oldest == "" || t.Before(ot) {
+					oldest, ot = id, t
+				}
+			}
+			delete(directSeen, oldest)
+		}
+		directSeen[relayID] = time.Now()
+	case provRelayed:
+		delete(directSeen, relayID)
+	}
 }
 
 // LinkStates returns the confirmations received, by relay_id.
@@ -246,7 +280,13 @@ func handleLinkState(conn *RelayConnection, msg RelayMessage) {
 		log.Printf("[SECURITY WARNING] link_state ignored: malformed current_kid from %q", conn.RelayID)
 		return
 	}
-	RecordLinkState(id, msg.Seq, msg.CurrentKID)
+	// The provenance decides the direct stamp (M10): the relay itself on its own link, or an intermediary
+	// speaking for a descendant. Stored with the confirmation under one lock (B43).
+	prov := provRelayed
+	if id == conn.RelayID {
+		prov = provDirect
+	}
+	recordLinkState(id, msg.Seq, msg.CurrentKID, prov)
 	frame, err := json.Marshal(RelayMessage{Type: MsgLinkState, RelayID: id, Seq: msg.Seq, CurrentKID: msg.CurrentKID})
 	if err != nil {
 		return
@@ -363,4 +403,27 @@ func readRelayMessage(conn *websocket.Conn, msg *RelayMessage) error {
 		return errLinkFrameTooLarge
 	}
 	return json.Unmarshal(raw, msg)
+}
+
+// ── Direct confirmations of the relays (#215, option C) ────────────────────────
+
+// maxDirectSeen bounds the table of the last direct connection time per relay_id (a relay_id is only
+// accepted from an authenticated link, so the table follows the number of relays; the bound is a ceiling).
+const maxDirectSeen = 8192
+
+// directSeen (guarded by linkMu, like linkStates) is the time each relay last confirmed its link_state
+// itself on its own link.
+var directSeen = map[string]time.Time{}
+
+// DirectLinkTimes returns, per relay_id, the last time the relay confirmed its link_state itself, on its
+// own link. In memory only: after a restart of this node it starts empty and every relay is stamped when
+// it reports again.
+func DirectLinkTimes() map[string]time.Time {
+	linkMu.RLock()
+	defer linkMu.RUnlock()
+	out := make(map[string]time.Time, len(directSeen))
+	for id, t := range directSeen {
+		out[id] = t
+	}
+	return out
 }

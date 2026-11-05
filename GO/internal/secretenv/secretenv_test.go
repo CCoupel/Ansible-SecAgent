@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package secretenv
 
 import (
@@ -143,5 +146,17 @@ func TestLogsNeverContainTheValue(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), secretValue) {
 		t.Fatalf("log leaks the secret: %s", buf.String())
+	}
+}
+
+func TestReadAll(t *testing.T) {
+	if v, err := ReadAll(strings.NewReader("  tok \n\n")); err != nil || v != "  tok" {
+		t.Fatalf("ReadAll = %q %v", v, err)
+	}
+	if _, err := ReadAll(strings.NewReader(" \n")); !errors.Is(err, ErrEmpty) {
+		t.Errorf("empty: %v", err)
+	}
+	if _, err := ReadAll(strings.NewReader(strings.Repeat("a", maxSecretSize+1))); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("too large: %v", err)
 	}
 }

@@ -1,7 +1,8 @@
 name: Release
 
 # Declenche par le tag officiel vX.Y.Z (rebuild deterministe depuis le commit fige du tag),
-# ou a la demande sur un TAG EXISTANT (publication a posteriori des images).
+# ou a la demande sur un TAG EXISTANT (publication a posteriori des images). Lancement manuel SUR le tag (#213 M7) :
+#   gh workflow run release.yml --ref vX.Y.Z -f tag=vX.Y.Z   (lance depuis une branche, le job images refuse de publier)
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
@@ -39,8 +40,9 @@ jobs:
       is_latest: ${{ steps.resolve.outputs.is_latest }}
       run_tests: ${{ steps.resolve.outputs.run_tests }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
           fetch-tags: true
 
@@ -81,6 +83,23 @@ jobs:
             echo "::warning::Tests desactives (skip_tests) pour $TAG"
           fi
 
+      # v3.0.5 (D-P3, contrat C2) : le fichier VERSION du commit du TAG doit valoir exactement la version du tag, avant tout
+      # build ; verifie, jamais ecrit. Tags anterieurs a v3.0.5 (republication par workflow_dispatch) : pas de VERSION.
+      - name: VERSION du tag = version du tag
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          version_ge() { [ "$(printf '%s\n' "$1" "$VERSION" | sort -V | head -n1)" = "$1" ]; }
+          if version_ge 3.0.5; then
+            git show "refs/tags/$TAG:VERSION" > "$RUNNER_TEMP/VERSION.tag" \
+              || { echo "::error::VERSION absent du commit du tag $TAG"; exit 1; }
+            bash scripts/ci/check_version_file.sh --expect "$VERSION" "$RUNNER_TEMP/VERSION.tag"
+          else
+            echo "::notice::$TAG anterieur a v3.0.5 : pas de fichier VERSION a verifier"
+          fi
+
       # Les notes de release sont validees ICI, avant toute publication GHCR : sans section `## [vX.Y.Z]` non vide dans le
       # CHANGELOG du tag, le job `release` echouerait APRES la publication des images. Le contenu valide est transmis tel
       # quel au job `release` (une seule extraction, aucune divergence). Le CHANGELOG est lu au commit du TAG.
@@ -94,7 +113,7 @@ jobs:
           bash scripts/ci/release_notes.sh "$TAG" notes/CHANGELOG.tag.md > notes/release-notes.md
           echo "notes de $TAG : $(wc -l < notes/release-notes.md) lignes"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-notes
           path: notes/release-notes.md
@@ -108,11 +127,12 @@ jobs:
     # Meme commande que ci.yml (mesure sur main : 3 min 35 s pour ce job). 15 min = marge x4.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
 
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: GO/go.work
           cache-dependency-path: GO/go.sum
@@ -140,31 +160,41 @@ jobs:
     timeout-minutes: 30
     env:
       SECAGENT_IMAGE: secagent-server:ci
-      QUALIF_TLS_DIR: ${{ github.workspace }}/DEPLOYMENT/qualif/.ci-tls
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
+      # Racine PRIVATE jetable hors workspace (#250) : secrets et certificat de test de failover-test.sh (fail-closed sans
+      # racine). Le contexte `runner` n'est pas disponible dans `jobs.<id>.env` : variables posees par GITHUB_ENV.
+      - name: Racine PRIVATE jetable hors workspace (#250)
+        run: |
+          mkdir -p "$RUNNER_TEMP/private"
+          echo "SECAGENT_PRIVATE_DIR=$RUNNER_TEMP/private" >> "$GITHUB_ENV"
+          echo "QUALIF_TLS_DIR=$RUNNER_TEMP/private/qualif/ci-tls" >> "$GITHUB_ENV"
       # La version du tag est injectee comme dans l'image publiee, puis VERIFIEE avant toute publication GHCR.
-      # Garde de compatibilite : republier (workflow_dispatch) un tag anterieur a v3.0.4, dont le Dockerfile n'a pas
-      # `ARG VERSION`, ne doit pas echouer sur ce controle.
+      # Seuil de version (B56) : v3.0.4, premier tag dont les Dockerfile ont `ARG VERSION` et dont les binaires ont
+      # `--version` (verifie avec `git show vX:...`). A partir de ce seuil le controle est inconditionnel (ARG VERSION perdu,
+      # symbole renomme ou script absent = echec) ; en dessous (tag plus ancien republie par workflow_dispatch), ::notice::
+      # qui nomme l'image.
       - name: Build de l'image du tag (local, sans push) et version affichee
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
+          version_ge() { [ "$(printf '%s\n' "$1" "$VERSION" | sort -V | head -n1)" = "$1" ]; }
           docker build --build-arg VERSION="$VERSION" -t secagent-server:ci -f GO/Dockerfile GO
-          if grep -q '^ARG VERSION=' GO/Dockerfile && [ -f scripts/ci/assert_version.sh ]; then
+          if version_ge 3.0.4; then
             bash scripts/ci/assert_version.sh "$VERSION" docker run --rm secagent-server:ci
           else
-            echo "::warning::Dockerfile du tag sans ARG VERSION : version non injectee (tag anterieur a v3.0.4)"
+            echo "::notice::image secagent-server : tag anterieur a v3.0.4, version non verifiee"
           fi
           # Image MINION du tag : meme controle avant toute publication (--version traverse l'entrypoint sans effet de bord).
           docker build --build-arg VERSION="$VERSION" -t secagent-minion:ci -f GO/Dockerfile.agent GO
-          if grep -q '^ARG VERSION=' GO/Dockerfile.agent && [ -f GO/cmd/secagent-minion/args.go ]; then
+          if version_ge 3.0.4; then
             COMPONENT=secagent-minion bash scripts/ci/assert_version.sh "$VERSION" docker run --rm secagent-minion:ci
           else
-            echo "::warning::Dockerfile.agent du tag sans ARG VERSION : version du minion non injectee (tag anterieur a v3.0.4)"
+            echo "::notice::image secagent-minion : tag anterieur a v3.0.4, version non verifiee"
           fi
       - name: Preparation
         run: bash DEPLOYMENT/qualif/failover-test.sh setup-ci
@@ -183,9 +213,14 @@ jobs:
     if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') && needs.failover.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # #213 : Environment protege (regle par le mainteneur dans GitHub : tags v*.*.* seulement, approbation requise).
+    # Complement pour les executions legitimes ; la preuve repose sur --source-ref (DOC/project/DEPLOYMENT.md).
+    environment: release
     permissions:
       contents: read
       packages: write
+      id-token: write       # #213 : jeton OIDC pour signer l'attestation de provenance (Sigstore)
+      attestations: write   # #213 : enregistrement de l'attestation par GitHub
     strategy:
       fail-fast: false
       matrix:
@@ -195,9 +230,25 @@ jobs:
           - image: secagent-minion
             dockerfile: Dockerfile.agent
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
+
+      # #213 M7 : la provenance signee inscrit le ref et le commit DU WORKFLOW (GITHUB_REF / GITHUB_SHA), pas ceux du
+      # checkout. On refuse, AVANT toute publication, un build dont le code n'est pas celui-la : un lancement manuel doit
+      # se faire SUR le tag (`gh workflow run release.yml --ref vX.Y.Z -f tag=vX.Y.Z`), sinon l'attestation mentirait.
+      - name: Le commit construit est celui qui sera atteste
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [ "$GITHUB_REF" != "refs/tags/$TAG" ] || [ "$HEAD_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::Workflow lance sur ${GITHUB_REF}@${GITHUB_SHA}, code construit refs/tags/${TAG}@${HEAD_SHA} : la provenance ne decrirait pas l'image. Relancer avec --ref ${TAG}."
+            exit 1
+          fi
+          echo "provenance = code construit : ${GITHUB_REF}@${GITHUB_SHA}"
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
@@ -209,7 +260,7 @@ jobs:
 
       - name: Metadonnees image
         id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}
           flavor: latest=false
@@ -219,6 +270,7 @@ jobs:
             type=raw,value=latest,enable=${{ needs.prepare.outputs.is_latest == 'true' }}
           labels: |
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
 
       # Date du commit du tag : horodatages reproductibles (rewrite-timestamp) pour un rebuild deterministe.
       - name: SOURCE_DATE_EPOCH
@@ -226,7 +278,7 @@ jobs:
 
       - name: Build et push
         id: build
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         with:
@@ -239,22 +291,35 @@ jobs:
           build-args: |
             VERSION=${{ needs.prepare.outputs.version }}
           outputs: type=image,push=true,rewrite-timestamp=true
-          # M10 : SBOM et attestation de provenance attaches aux images (signature cosign : a proposer)
+          # M10 : SBOM et attestation de provenance BuildKit attaches aux images (non signes ; la provenance signee est
+          # produite par l'etape suivante, #213 ; pas de cosign, D7)
           provenance: true
           sbom: true
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
+      # #213 : provenance SLSA SIGNEE (Sigstore, jeton OIDC du job) et rangee par GitHub ; les attestations BuildKit ci-dessus
+      # (provenance + SBOM) restent attachees a l'image mais ne sont PAS signees. Verification : DOC/project/DEPLOYMENT.md.
+      # create-storage-record: false : le storage record exige `artifact-metadata: write` (API d'organisation, non accordee).
+      - name: Attestation de provenance signee
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/ccoupel/${{ matrix.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
       # M2 : le digest est transmis au job release (les sorties de matrice s'ecrasent : artefact par image).
       - name: Exporter le digest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ matrix.image }}
         run: |
           set -euo pipefail
           case "$DIGEST" in sha256:????????????????????????????????????????????????????????????????) ;; *) echo "::error::Digest invalide '$DIGEST'"; exit 1;; esac
-          mkdir -p digests && printf '%s' "$DIGEST" > "digests/${{ matrix.image }}"
+          mkdir -p digests && printf '%s' "$DIGEST" > "digests/${IMAGE}"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: digest-${{ matrix.image }}
           path: digests/${{ matrix.image }}
@@ -276,26 +341,33 @@ jobs:
           - {image: secagent-server, dockerfile: Dockerfile}
           - {image: secagent-minion, dockerfile: Dockerfile.agent}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - name: Deux builds, comparaison des digests
+        # Aucune expression ${{ }} dans le script (#224) : valeurs passees par env:.
+        env:
+          IMAGE: ${{ matrix.image }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
           for n in 1 2; do
             docker buildx build --provenance=false --sbom=false --no-cache \
               --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
-              --build-arg VERSION="${{ needs.prepare.outputs.version }}" \
-              -f GO/${{ matrix.dockerfile }} \
+              --build-arg VERSION="$VERSION" \
+              -f "GO/${DOCKERFILE}" \
               --output "type=oci,dest=build$n.tar,rewrite-timestamp=true" GO
             mkdir "o$n" && tar -xf "build$n.tar" -C "o$n"
             python3 -c "import json;print(json.load(open('o$n/index.json'))['manifests'][0]['digest'])" > "d$n"
           done
           echo "build1=$(cat d1) build2=$(cat d2)"
           if ! cmp -s d1 d2; then
-            echo "::warning::${{ matrix.image }} : builds non reproductibles ($(cat d1) != $(cat d2)). Cause probable : couche runtime (apk) ou metadonnees ; a documenter puis passer en erreur."
+            echo "::warning::${IMAGE} : builds non reproductibles ($(cat d1) != $(cat d2)). Cause probable : couche runtime (apk) ou metadonnees ; a documenter puis passer en erreur."
           fi
 
   release:
@@ -307,8 +379,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
 
       # Ne jamais recreer ni ecraser une release existante.
@@ -326,7 +399,7 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: steps.exists.outputs.exists == 'false'
         with:
           go-version-file: GO/go.work
@@ -365,18 +438,39 @@ jobs:
           mkdir -p dist
           cd GO
           # server : pur Go, sans CGO (l'état du relay est un fichier, plus de SQLite : #160), comme GO/Dockerfile
-          # Serveur (cli.Version) et minion (main.Version) portent leur version ; l'inventory n'a pas de --version :
-          # sa version est le nom du fichier et SHA256SUMS.
+          # Serveur (cli.Version), minion et inventory (main.Version) portent leur version (--version).
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w -X secagent-server/cmd/secagent-server/internal/cli.Version=${VERSION}" -o "../dist/secagent-server-${VERSION}-linux-amd64" ./cmd/secagent-server
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w -X main.Version=${VERSION}" -o "../dist/secagent-minion-${VERSION}-linux-amd64" ./cmd/secagent-minion
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w" -o "../dist/secagent-inventory-${VERSION}-linux-amd64" ./cmd/secagent-inventory
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w -X main.Version=${VERSION}" -o "../dist/secagent-inventory-${VERSION}-linux-amd64" ./cmd/secagent-inventory
           cd ..
-          # Le binaire publie annonce la version du tag (le runner est linux/amd64) ; tag anterieur a v3.0.4 : ignore.
-          if [ -f scripts/ci/assert_version.sh ] && grep -q 'var Version' GO/cmd/secagent-server/internal/cli/root.go; then
+          # Le binaire publie annonce la version du tag (le runner est linux/amd64). Un seuil de version PAR COMPOSANT (#220, B52),
+          # la premiere version qui a `--version` (verifie avec `git show vX:...` : serveur et minion v3.0.4, inventory v3.0.5) :
+          # a partir de son seuil l'assertion est inconditionnelle (variable renommee, ldflags perdu ou script absent = echec,
+          # comme ci.yml) ; en dessous (tag plus ancien republie par workflow_dispatch) : ::notice:: qui nomme le composant.
+          version_ge() { [ "$(printf '%s\n' "$1" "$VERSION" | sort -V | head -n1)" = "$1" ]; }
+          if version_ge 3.0.4; then
             bash scripts/ci/assert_version.sh "$VERSION" "dist/secagent-server-${VERSION}-linux-amd64"
+          else
+            echo "::notice::secagent-server : tag anterieur a v3.0.4, version non verifiee"
           fi
-          if [ -f scripts/ci/assert_version.sh ] && [ -f GO/cmd/secagent-minion/args.go ]; then
+          if version_ge 3.0.4; then
             COMPONENT=secagent-minion bash scripts/ci/assert_version.sh "$VERSION" "dist/secagent-minion-${VERSION}-linux-amd64"
+          else
+            echo "::notice::secagent-minion : tag anterieur a v3.0.4, version non verifiee"
+          fi
+          if version_ge 3.0.5; then
+            COMPONENT=secagent-inventory bash scripts/ci/assert_version.sh "$VERSION" "dist/secagent-inventory-${VERSION}-linux-amd64"
+          else
+            echo "::notice::secagent-inventory : tag anterieur a v3.0.5, version non verifiee"
+          fi
+          # LICENSE et mentions tierces (licences des modules Go lies statiquement : leurs licences permissives exigent leur reproduction)
+          # publiees a cote des binaires (et couvertes par SHA256SUMS) des v3.0.5 (#237) ; le tag est checkout : les fichiers
+          # y sont, leur absence fait echouer la release. Tag plus ancien republie par workflow_dispatch : ::notice::.
+          if version_ge 3.0.5; then
+            cp LICENSE dist/LICENSE
+            cp THIRD_PARTY_NOTICES.md dist/THIRD_PARTY_NOTICES.md
+          else
+            echo "::notice::LICENSE, THIRD_PARTY_NOTICES.md : tag anterieur a v3.0.5, non joints a la release"
           fi
           cd dist
           sha256sum ./* > "SHA256SUMS-${VERSION}.txt"

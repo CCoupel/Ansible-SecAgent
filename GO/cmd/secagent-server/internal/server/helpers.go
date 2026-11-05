@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package server
 
 import (
@@ -9,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/handlers"
@@ -170,12 +174,45 @@ func queueUpstream(ch chan<- repeater.Event, ev repeater.Event) {
 	}
 }
 
+// agentRevokedCheck is the replay of B55 (ws.SetAgentRevokedCheckFunc): after the connection is registered,
+// is the host revoked, its JTI blacklisted, or the agent gone? It reads the in-memory state only and takes no
+// write, so it costs two map lookups per connection.
+func agentRevokedCheck(store *storage.Store) func(hostname, jti string) error {
+	return func(hostname, jti string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		bl, err := store.IsJTIBlacklisted(ctx, jti)
+		if err != nil {
+			return fmt.Errorf("blacklist_check_failed: %w", err)
+		}
+		if bl {
+			return fmt.Errorf("token_revoked")
+		}
+		agent, err := store.GetAgent(ctx, hostname)
+		if err != nil {
+			return fmt.Errorf("agent_lookup_failed: %w", err)
+		}
+		if agent == nil {
+			return fmt.Errorf("unknown_agent")
+		}
+		if agent.Revoked {
+			return fmt.Errorf("token_revoked")
+		}
+		return nil
+	}
+}
+
+// agentProbeTimeout is how long a handshake waits for a live connection to answer the N1 probe.
+var agentProbeTimeout = func() *atomic.Int64 { v := new(atomic.Int64); v.Store(int64(DefaultAgentWSProbeTimeout)); return v }()
+
 // agentJTICheck builds the /ws/agent handshake check (#169, SECURITY.md §4/§5) on top of the
 // store. A token is refused when its JTI is blacklisted (revoked agent), when the agent is
 // unknown, or when its JTI is no longer the agent's current one (replaced by a re-enrollment, a
-// refresh or a rekey). A token validated with the PREVIOUS JWT secret (rotation grace period)
-// legitimately carries an older JTI: it only has to be non-blacklisted. Any store error refuses
-// the connection (fail closed).
+// refresh or a rekey). The JTI the current one replaced (PrevTokenJTI) is accepted until the current
+// one has served a handshake (the agent never received its new JWT): the first handshake with the
+// current JTI forgets it. Any OTHER older JTI is refused, whichever secret signed it (#217, M1): a
+// token signed with the previous secret during a rotation grace period is no exception. Any store
+// error refuses the connection (fail closed).
 func agentJTICheck(store *storage.Store) func(hostname, jti string, usedPrevious bool) error {
 	return func(hostname, jti string, usedPrevious bool) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -197,7 +234,26 @@ func agentJTICheck(store *storage.Store) func(hostname, jti string, usedPrevious
 		if agent.Revoked { // the persistent revocation does not depend on the blacklist retention (#193)
 			return fmt.Errorf("token_revoked")
 		}
-		if !usedPrevious && agent.TokenJTI != jti {
+		switch {
+		case agent.TokenJTI == jti:
+			if agent.PrevTokenJTI != "" { // the current JWT reached the agent: the replaced one is dead
+				if err := store.ConfirmTokenJTI(ctx, hostname, jti); err != nil {
+					log.Printf("[WARN] replaced JTI not cleared for hostname=%q: %v", hostname, err)
+				}
+			}
+		case agent.PrevTokenJTI != "" && agent.PrevTokenJTI == jti:
+			// The agent still holds the JWT that was replaced and has not used the new one. That is only
+			// plausible when its connection is gone: while a live connection exists, the holder of the
+			// replaced JWT is not the agent that received the new one, and accepting it would replace the
+			// live connection (N1). The reason is logged, never sent. A connection that looks alive is
+			// probed first (ping, short delay): one that does not answer is a cut the relay has not
+			// noticed yet, it is dropped and the legitimate agent comes back in.
+			if _, err := ws.GetConnection(hostname); err == nil {
+				if ws.ProbeConnection(hostname, time.Duration(agentProbeTimeout.Load())) {
+					return fmt.Errorf("token_replaced: replaced JTI refused while a live connection exists")
+				}
+			}
+		default:
 			return fmt.Errorf("token_replaced")
 		}
 		return nil

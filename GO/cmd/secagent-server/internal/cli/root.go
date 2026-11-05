@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package cli
 
 import (
@@ -25,11 +28,23 @@ Environment variables:
   ADMIN_TOKEN    Admin bearer token (required)`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
-	Version:       Version,
+	// --version is handled here, not by cobra's built-in flag (which answered before looking at the
+	// arguments: `--version extra` exited 0). D5 (#220): same as the minion, an extra argument is an error.
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if rootShowVersion {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s version %s\nLicense: AGPL-3.0-or-later\nSource: https://github.com/CCoupel/Ansible-SecAgent\n", cmd.Name(), Version)
+			return nil
+		}
+		return cmd.Help()
+	},
 }
+
+var rootShowVersion bool
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&globalFormat, "format", "table", "Output format: table, json, yaml")
+	rootCmd.Flags().BoolVarP(&rootShowVersion, "version", "v", false, "print the version and exit")
 
 	rootCmd.AddCommand(
 		minionsCmd,
@@ -44,6 +59,7 @@ func init() {
 
 // Execute runs the CLI and exits with the appropriate code.
 func Execute() {
+	hardenGroups(rootCmd)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		var ee *ExitError
@@ -52,21 +68,6 @@ func Execute() {
 		}
 		os.Exit(1)
 	}
-}
-
-// IsCommand reports whether name is a top-level command of the CLI (registered on the cobra root,
-// plus the built-in help and completion). main uses it to choose between the CLI and the server, so
-// a newly registered command can never fall through to starting a server.
-func IsCommand(name string) bool {
-	if name == "help" || name == "completion" {
-		return true
-	}
-	for _, c := range rootCmd.Commands() {
-		if c.Name() == name || c.HasAlias(name) {
-			return true
-		}
-	}
-	return false
 }
 
 // CommandNames lists the registered top-level commands (tests).

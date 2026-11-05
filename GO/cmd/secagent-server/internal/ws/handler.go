@@ -1,6 +1,10 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package ws
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -30,6 +34,11 @@ type AgentConnection struct {
 	Hostname string
 	Conn     *websocket.Conn
 	mu       sync.RWMutex
+
+	lastAlive atomic.Int64 // UnixNano of the last pong / frame received (keepalive, probe)
+	sigOnce   sync.Once
+	aliveSig  chan struct{} // see sig()
+	probe     probeState
 }
 
 // Message represents a message sent over the WebSocket
@@ -145,6 +154,26 @@ func UnregisterConnection(hostname string) {
 	}
 
 	// Resolve all pending futures with error
+	ResolveFuturesForHostname(hostname, "agent_disconnected")
+}
+
+// unregisterIfCurrent is UnregisterConnection for the handler of conn: it does nothing when conn has
+// been REPLACED by a newer connection of the same host (the newer one must stay registered, and its
+// pending tasks must not be failed because an old socket finally closed).
+func unregisterIfCurrent(hostname string, conn *AgentConnection) {
+	connectionsMu.Lock()
+	if cur, ok := wsConnections[hostname]; ok && cur != conn {
+		connectionsMu.Unlock()
+		log.Printf("Replaced WS closed for hostname: %q", hostname)
+		return
+	}
+	delete(wsConnections, hostname)
+	connectionsMu.Unlock()
+	log.Printf("Agent disconnected: hostname=%q", hostname)
+
+	if fn := dispatchFn.Load(); fn != nil {
+		go (*fn)("host.down", hostname, "disconnected", "")
+	}
 	ResolveFuturesForHostname(hostname, "agent_disconnected")
 }
 
@@ -365,6 +394,33 @@ func checkAgentJTI(hostname, jti string, usedPrevious bool) error {
 	return fn(hostname, jti, usedPrevious)
 }
 
+// agentRevokedCheckFn replays the revocation part of the handshake check once the connection is registered.
+var (
+	agentRevokedCheckMu sync.RWMutex
+	agentRevokedCheckFn func(hostname, jti string) error
+)
+
+// SetAgentRevokedCheckFunc injects the check replayed right AFTER the connection is registered (B55): it
+// refuses a revoked host, a blacklisted JTI or an unknown agent, and nothing else (the JTI match and the
+// replaced-JTI rules were decided at the handshake, and replaying them would see the connection itself).
+// A revocation that lands between the handshake check and the registration finds no connection to close
+// (CloseAgent), so without this replay the link would survive it. Nil = no replay.
+func SetAgentRevokedCheckFunc(fn func(hostname, jti string) error) {
+	agentRevokedCheckMu.Lock()
+	agentRevokedCheckFn = fn
+	agentRevokedCheckMu.Unlock()
+}
+
+func replayRevokedCheck(hostname, jti string) error {
+	agentRevokedCheckMu.RLock()
+	fn := agentRevokedCheckFn
+	agentRevokedCheckMu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(hostname, jti)
+}
+
 // truncateJTI keeps the log readable without reproducing a full identifier.
 func truncateJTI(jti string) string {
 	if len(jti) > 8 {
@@ -393,6 +449,7 @@ type agentIdentity struct {
 	Hostname     string
 	JTI          string
 	UsedPrevious bool
+	Exp          time.Time // expiry of the JWT presented at the handshake (zero if absent)
 }
 
 // authenticateAgentRequest validates the Bearer token (dual-key) and returns the identity.
@@ -424,7 +481,11 @@ func authenticateAgentRequest(r *http.Request) (agentIdentity, error) {
 		return agentIdentity{}, fmt.Errorf("jwt_missing_sub")
 	}
 	jti, _ := claims["jti"].(string)
-	return agentIdentity{Hostname: sub, JTI: jti, UsedPrevious: prev}, nil
+	var exp time.Time
+	if e, ok := claims["exp"].(float64); ok && e > 0 {
+		exp = time.Unix(int64(e), 0)
+	}
+	return agentIdentity{Hostname: sub, JTI: jti, UsedPrevious: prev, Exp: exp}, nil
 }
 
 // AgentHandler manages WebSocket connections from secagent-minions.
@@ -467,8 +528,20 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	RegisterConnection(hostname, agentConn)
 
+	// B55: replay the revocation check now that a revocation would find this connection to close.
+	if rerr := replayRevokedCheck(hostname, id.JTI); rerr != nil {
+		log.Printf("[SECURITY WARNING] agent connection closed right after registration: hostname=%q jti=%q: %v", hostname, truncateJTI(id.JTI), rerr)
+		agentConn.mu.Lock()
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(WSCloseRevoked, "token_revoked"), time.Now().Add(time.Second))
+		agentConn.mu.Unlock()
+		unregisterIfCurrent(hostname, agentConn)
+		_ = conn.Close()
+		return
+	}
+
 	// If agent authenticated with the previous JWT secret, send rekey message
 	// so it gets a fresh token signed with the current secret.
+	rekeyed := false
 	if usedPrevious {
 		sent := false
 		if RekeyFunc != nil {
@@ -483,11 +556,27 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			agentConn.mu.Unlock()
 		}
+		rekeyed = sent
 		log.Printf("Rekey sent to agent: hostname=%q encrypted=%v", hostname, sent)
 	}
 
+	// Periodic renewal of the JWT of this connection (#217), ended with the connection. After an
+	// encrypted rekey caused by the previous secret the agent holds a fresh token: count from now.
+	renewCtx, stopRenewal := context.WithCancel(context.Background())
+	if p := renewal.Load(); p != nil {
+		exp := id.Exp
+		if rekeyed || exp.IsZero() {
+			exp = time.Now().Add(p.ttl)
+		}
+		go runRenewal(renewCtx, hostname, exp)
+	}
+
+	stopKeepalive := startKeepalive(agentConn)
+
 	defer func() {
-		UnregisterConnection(hostname)
+		stopKeepalive()
+		stopRenewal()
+		unregisterIfCurrent(hostname, agentConn)
 		_ = conn.Close()
 	}()
 
@@ -500,6 +589,7 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			break
 		}
+		agentConn.extendReadDeadline()
 		HandleMessage(msg, hostname)
 	}
 }

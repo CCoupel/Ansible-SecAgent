@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package ws
 
 // Tests pour le handler WS "rekey" et le ré-enrôlement sur 401 (§22 ARCHITECTURE.md).
@@ -17,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,6 +30,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"secagent-server/cmd/secagent-minion/internal/enrollment"
 )
 
 // generateTestKey2048 génère une clef RSA 2048-bit pour les tests (plus rapide que 4096).
@@ -578,4 +584,305 @@ type mockReEnroller struct {
 
 func (m *mockReEnroller) ReEnroll(ctx context.Context) (string, error) {
 	return m.jwt, m.err
+}
+
+// ============================================================================
+// handleRekey — robustesse (#217)
+// ============================================================================
+
+func newRekeyDispatcher(t *testing.T, jwtPath string) (*Dispatcher, *rsa.PrivateKey) {
+	t.Helper()
+	key := generateTestKey2048(t)
+	d := NewDispatcher(ConnConfig{JWT: "old-jwt", Insecure: true}, nil).
+		WithEnrollConfig(EnrollConfig{PrivateKey: key, JWTPath: jwtPath})
+	return d, key
+}
+
+func rekeyFrame(t *testing.T, key *rsa.PrivateKey, jwt string) []byte {
+	t.Helper()
+	b, err := json.Marshal(map[string]string{"type": "rekey", "token_encrypted": encryptJWT(t, &key.PublicKey, jwt)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// Le JWT est déjà sur disque (0600) au moment où updateJWT est appelé.
+func TestHandleRekeyPersistsBeforeUse(t *testing.T) {
+	path := t.TempDir() + "/token.jwt"
+	d, key := newRekeyDispatcher(t, path)
+
+	var onDiskAtUse string
+	orig := decryptAndSaveToken
+	defer func() { decryptAndSaveToken = orig }()
+	decryptAndSaveToken = func(enc string, k *rsa.PrivateKey, p string) (string, error) {
+		jwt, err := defaultDecryptAndSaveToken(enc, k, p)
+		// Au retour, le dispatcher n'a pas encore adopté le JWT : il est déjà persisté.
+		if b, rerr := os.ReadFile(p); rerr == nil {
+			onDiskAtUse = string(b)
+		}
+		if d.currentJWT() != "old-jwt" {
+			t.Errorf("JWT adopted before persistence returned")
+		}
+		return jwt, err
+	}
+
+	d.handleRekey(context.Background(), rekeyFrame(t, key, "renewed-1"))
+
+	if onDiskAtUse != "renewed-1" {
+		t.Errorf("on-disk JWT before use: got %q", onDiskAtUse)
+	}
+	if d.currentJWT() != "renewed-1" {
+		t.Errorf("current JWT: got %q", d.currentJWT())
+	}
+	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("token.jwt mode: %v %v", fi, err)
+	}
+}
+
+// Trames malformées : aucune panique, JWT inchangé, compteur inchangé.
+func TestHandleRekeyMalformedKeepsJWT(t *testing.T) {
+	path := t.TempDir() + "/token.jwt"
+	d, key := newRekeyDispatcher(t, path)
+	otherKey := generateTestKey2048(t)
+
+	cases := map[string][]byte{
+		"not json":        []byte("{not json"),
+		"token is number": []byte(`{"type":"rekey","token_encrypted":42}`),
+		"missing token":   []byte(`{"type":"rekey"}`),
+		"empty token":     []byte(`{"type":"rekey","token_encrypted":""}`),
+		"bad base64":      []byte(`{"type":"rekey","token_encrypted":"!!!"}`),
+		"wrong key":       rekeyFrame(t, otherKey, "x"),
+		"empty plaintext": rekeyFrame(t, key, ""),
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			d.handleRekey(context.Background(), raw)
+			if d.currentJWT() != "old-jwt" {
+				t.Errorf("JWT changed: %q", d.currentJWT())
+			}
+			if n := d.rekeyCount.Load(); n != 0 {
+				t.Errorf("rekeyCount: %d", n)
+			}
+			if _, err := os.Stat(path); err == nil {
+				t.Errorf("token.jwt written on invalid frame")
+			}
+		})
+	}
+}
+
+// Deux rekey successifs : le dernier gagne, le compteur vaut 2, le disque suit.
+func TestHandleRekeyTwoSuccessive(t *testing.T) {
+	path := t.TempDir() + "/token.jwt"
+	d, key := newRekeyDispatcher(t, path)
+
+	d.handleRekey(context.Background(), rekeyFrame(t, key, "renewed-1"))
+	d.handleRekey(context.Background(), []byte("{garbage")) // entre deux : sans effet
+	d.handleRekey(context.Background(), rekeyFrame(t, key, "renewed-2"))
+
+	if d.currentJWT() != "renewed-2" {
+		t.Errorf("current JWT: %q", d.currentJWT())
+	}
+	if b, _ := os.ReadFile(path); string(b) != "renewed-2" {
+		t.Errorf("on-disk JWT: %q", b)
+	}
+	if n := d.rekeyCount.Load(); n != 2 {
+		t.Errorf("rekeyCount: %d", n)
+	}
+}
+
+// Échec d'écriture : le JWT est adopté en mémoire (l'ancien JTI est remplacé côté serveur).
+func TestHandleRekeyPersistFailureKeptInMemory(t *testing.T) {
+	dir := t.TempDir()
+	blocker := dir + "/file"
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, key := newRekeyDispatcher(t, blocker+"/sub/token.jwt") // parent = fichier : MkdirAll échoue
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.handleRekey(ctx, rekeyFrame(t, key, "renewed-mem"))
+
+	if d.currentJWT() != "renewed-mem" {
+		t.Errorf("current JWT: %q", d.currentJWT())
+	}
+}
+
+// Le journal ne contient jamais le JWT.
+func TestHandleRekeyNeverLogsToken(t *testing.T) {
+	var buf strings.Builder
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	d, key := newRekeyDispatcher(t, t.TempDir()+"/token.jwt")
+
+	d.handleRekey(context.Background(), rekeyFrame(t, key, "SECRET-JWT-VALUE"))
+	d.handleRekey(context.Background(), []byte(`{"type":"rekey","token_encrypted":"SECRET-JWT-VALUE"}`))
+
+	if strings.Contains(buf.String(), "SECRET-JWT-VALUE") {
+		t.Errorf("JWT leaked in logs: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "renewal #1") {
+		t.Errorf("renewal counter missing from logs: %s", buf.String())
+	}
+}
+
+// M4 : échec d'écriture puis succès à la relance ; le JWT COURANT est écrit ; la relance s'arrête.
+func TestHandleRekeyPersistRetryFailThenSuccess(t *testing.T) {
+	path := t.TempDir() + "/token.jwt"
+	d, key := newRekeyDispatcher(t, path)
+	d.persistRetryInterval = 10 * time.Millisecond
+
+	origDec, origPersist := decryptAndSaveToken, persistToken
+	defer func() { decryptAndSaveToken, persistToken = origDec, origPersist }()
+	decryptAndSaveToken = func(enc string, k *rsa.PrivateKey, p string) (string, error) {
+		return "renewed-retry", &enrollment.PersistError{Err: errors.New("disk full")}
+	}
+	var calls atomic.Int32
+	var last atomic.Value
+	persistToken = func(p, jwt string) error {
+		last.Store(jwt)
+		if calls.Add(1) < 3 {
+			return errors.New("still failing")
+		}
+		return origPersist(p, jwt)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.handleRekey(ctx, rekeyFrame(t, key, "ignored"))
+
+	if d.currentJWT() != "renewed-retry" {
+		t.Fatalf("current JWT %q", d.currentJWT())
+	}
+	waitFor(t, "condition", func() bool { b, _ := os.ReadFile(path); return string(b) == "renewed-retry" })
+	if last.Load() != "renewed-retry" {
+		t.Errorf("retry wrote %v", last.Load())
+	}
+	time.Sleep(60 * time.Millisecond) // plus de relance après le succès
+	if n := calls.Load(); n != 3 {
+		t.Errorf("persist calls: %d, want 3", n)
+	}
+}
+
+// M4 : l'annulation du contexte (fermeture de connexion / arrêt) stoppe la relance.
+func TestHandleRekeyPersistRetryStopsOnCancel(t *testing.T) {
+	d, key := newRekeyDispatcher(t, t.TempDir()+"/token.jwt")
+	d.persistRetryInterval = 10 * time.Millisecond
+
+	origDec, origPersist := decryptAndSaveToken, persistToken
+	defer func() { decryptAndSaveToken, persistToken = origDec, origPersist }()
+	decryptAndSaveToken = func(string, *rsa.PrivateKey, string) (string, error) {
+		return "j", &enrollment.PersistError{Err: errors.New("ro")}
+	}
+	var calls atomic.Int32
+	persistToken = func(string, string) error { calls.Add(1); return errors.New("ro") }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d.handleRekey(ctx, rekeyFrame(t, key, "x"))
+	waitFor(t, "condition", func() bool { return calls.Load() >= 2 })
+	cancel()
+	time.Sleep(30 * time.Millisecond)
+	n := calls.Load()
+	time.Sleep(80 * time.Millisecond)
+	if calls.Load() != n {
+		t.Errorf("retry continued after cancel: %d -> %d", n, calls.Load())
+	}
+}
+
+// M4 : un rekey persisté avec succès remplace la relance en attente.
+func TestHandleRekeyNewRekeyStopsPendingRetry(t *testing.T) {
+	path := t.TempDir() + "/token.jwt"
+	d, key := newRekeyDispatcher(t, path)
+	d.persistRetryInterval = 10 * time.Millisecond
+
+	origDec, origPersist := decryptAndSaveToken, persistToken
+	defer func() { decryptAndSaveToken, persistToken = origDec, origPersist }()
+	fail := true
+	decryptAndSaveToken = func(enc string, k *rsa.PrivateKey, p string) (string, error) {
+		if fail {
+			return "first", &enrollment.PersistError{Err: errors.New("ro")}
+		}
+		return defaultDecryptAndSaveToken(enc, k, p)
+	}
+	var calls atomic.Int32
+	persistToken = func(string, string) error { calls.Add(1); return errors.New("ro") }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.handleRekey(ctx, rekeyFrame(t, key, "x"))
+	waitFor(t, "condition", func() bool { return calls.Load() >= 1 })
+	fail = false
+	d.handleRekey(ctx, rekeyFrame(t, key, "second"))
+	time.Sleep(30 * time.Millisecond)
+	n := calls.Load()
+	time.Sleep(80 * time.Millisecond)
+	if calls.Load() != n {
+		t.Errorf("stale retry still running")
+	}
+	if b, _ := os.ReadFile(path); string(b) != "second" {
+		t.Errorf("file %q", b)
+	}
+}
+
+// B9 : connexion coupée pendant une relance → la relance reprend à la reconnexion (serve).
+func TestPersistRetryResumesAfterReconnect(t *testing.T) {
+	path := t.TempDir() + "/token.jwt"
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.Close() }()
+		time.Sleep(500 * time.Millisecond)
+	}))
+	defer srv.Close()
+	key := generateTestKey2048(t)
+	d := NewDispatcher(ConnConfig{ServerURL: "ws" + strings.TrimPrefix(srv.URL, "http"), JWT: "old-jwt", Insecure: true}, nil).
+		WithEnrollConfig(EnrollConfig{PrivateKey: key, JWTPath: path})
+	d.persistRetryInterval = 10 * time.Millisecond
+
+	origDec := decryptAndSaveToken
+	defer func() { decryptAndSaveToken = origDec }()
+	decryptAndSaveToken = func(string, *rsa.PrivateKey, string) (string, error) {
+		return "renewed-b9", &enrollment.PersistError{Err: errors.New("ro")}
+	}
+	origPersist := persistToken
+	defer func() { persistToken = origPersist }()
+	var fail atomic.Bool
+	fail.Store(true)
+	var calls atomic.Int32
+	persistToken = func(p, jwt string) error {
+		calls.Add(1)
+		if fail.Load() {
+			return errors.New("ro")
+		}
+		return origPersist(p, jwt)
+	}
+
+	// 1re connexion : rekey en échec d'écriture, puis fermeture de la connexion.
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	d.handleRekey(ctx1, rekeyFrame(t, key, "x"))
+	waitFor(t, "first retries", func() bool { return calls.Load() >= 2 })
+	cancel1()
+	time.Sleep(40 * time.Millisecond)
+	n := calls.Load()
+	time.Sleep(60 * time.Millisecond)
+	if calls.Load() != n {
+		t.Fatalf("retry continued after connection close")
+	}
+	if !d.persistPending.Load() {
+		t.Fatal("pending flag lost on connection close")
+	}
+
+	// Reconnexion : serveur qui ferme aussitôt ; le disque redevient inscriptible.
+	fail.Store(false)
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	go func() { _ = d.Run(ctx2) }()
+
+	waitFor(t, "write after reconnect", func() bool { b, _ := os.ReadFile(path); return string(b) == "renewed-b9" })
+	waitFor(t, "pending flag cleared after the write", func() bool { return !d.persistPending.Load() })
 }

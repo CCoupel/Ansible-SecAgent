@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Topologie de qualif EN CHAINE (#188) : amorcage, smoke et bascule de la racine.
 #
-#   chain-test.sh ci-prepare   # CI uniquement : PKI de test + qualif.env aleatoire et jetable
+#   chain-test.sh ci-prepare   # PKI de test + secrets aleatoires et jetables (SECRETS_DIR, fichiers 0400) ; ne regenere que l'absent
 #   chain-test.sh bootstrap    # state init (racine, enfant), relays add, jetons enrolement/plugin, demarrage
 #   chain-test.sh smoke        # relais connectes, minions connectes, inventaire hierarchique, ansible -m ping
 #   chain-test.sh failover     # arret propre du maitre de la racine (failover-test.sh) puis smoke
@@ -9,23 +12,34 @@
 #   chain-test.sh load-images <dir>  # docker load des images d'un artefact CI (sans registre), SECAGENT_PULL_POLICY=never
 #   chain-test.sh push-tls     # TLS_MODE=volume : copie les certificats dans le volume Docker (hote distant)
 #   chain-test.sh push-hooks    # hooks.json -> volume ${PROJECT}_hooks (fait par bootstrap)
+#   chain-test.sh push-secrets  # SECRETS_DIR -> volume ${PROJECT}_secrets, 10001 0400 (fait par bootstrap)
 #   chain-test.sh push-link-key  # cle publique racine (+ jeton de lien s'il existe) -> volume ${PROJECT}_link
 #   chain-test.sh link-rotation  # rotation de la cle de lien, confirmation, nouveau jeton, retire-link-previous (v3.0.4)
 #   chain-test.sh link-revoke    # revocation du lien d'un enfant : fermeture 4010, pas de reconnexion, puis remise en etat
 #   chain-test.sh hooks        # journal des hooks (host.up/host.down) de la racine et de l'enfant (#197, hooks.json)
 #   chain-test.sh negative-ca  # essai CA negatif (profil Compose `negative`) : un minion sans la CA est refuse (#197)
-#   chain-test.sh logs | down
+#   chain-test.sh admission-503  # refus 503 memory_budget_exhausted en reel (#241) : plafond abaisse, voir admission-503.sh
+#   chain-test.sh paths        # chemins prives resolus (sans docker) ; echec si la racine PRIVATE/ manque
+#   chain-test.sh logs | down  # down : conteneurs, volumes externes ET $CHAIN_DIR (jetons volatils, apres la garde)
 #
 # Variables : SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (obligatoires, references promues ou locales),
-#   QUALIF_TLS_DIR (defaut ./pki/out), INVENTORY_BIN (binaire secagent-inventory du poste de controle),
+#   SECAGENT_PRIVATE_DIR (racine des donnees privees, defaut <depot>/PRIVATE, jamais creee : chemin ABSOLU du
+#   checkout depuis une copie), SECRETS_DIR (defaut $SECAGENT_PRIVATE_DIR/qualif/secrets),
+#   QUALIF_TLS_DIR (defaut $SECAGENT_PRIVATE_DIR/qualif/pki),
+#   CHAIN_DIR (jetons VOLATILS, defaut ${TMPDIR:-/tmp}/secagent-qualif-chain-<uid> : hors PRIVATE/, sur un systeme de fichiers
+#   qui honore chmod ; repertoire 0700 de l'utilisateur, refuse s'il est un lien, d'un autre proprietaire ou plus ouvert),
+#   INVENTORY_BIN (binaire secagent-inventory du poste de controle),
 #   ANSIBLE_BIN (defaut `ansible`), PROJECT (defaut secagent-chain), TOKEN_TTL (defaut 2h).
 #   LINK_TTL (defaut = TOKEN_TTL) : duree du jeton de lien relay-child de l'enfant.
-# Les jetons sont ecrits UNIQUEMENT dans ./chain/ (0700, fichiers 0600, ignore par git) : jamais affiches.
+# Les jetons sont ecrits UNIQUEMENT dans $CHAIN_DIR (0700, fichiers 0600, hors du depot) : jamais affiches.
 # Le poste de controle Ansible (plugin SECAGENT-PYTHON + secagent-inventory) est ici le poste qui lance ce script,
 # il joint la racine par les ports d'hote 7770 (a) et 8770 (b) avec la CA de test.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
+# Racine des donnees privees (#250) : meme resolution que failover-test.sh (source plus bas, garde require_private_dir).
+PRIVATE_DIR="${SECAGENT_PRIVATE_DIR:-$REPO/PRIVATE}"
+PRIVATE_DIR="${PRIVATE_DIR%/}"
 # Projet dedie `secagent-qualif` (conteneurs secagent-qualif-a/-b/-child, ports d'hote 7770/7772 + 8770/8772 pour b,
 # admin 127.0.0.1:7771/8771/9771). Deployer sur un hote qui heberge deja une ancienne qualif : liberer ces ports avant.
 export COMPOSE_FILE="$HERE/docker-compose.chain.yml" PROJECT="${PROJECT:-${COMPOSE_PROJECT_NAME:-secagent-qualif}}"
@@ -40,21 +54,60 @@ fi
 # Hote sur lequel le poste de controle joint la racine (ports d'hote 7770 et 8770) ; defaut : poste local / runner.
 # Hote distant : SECAGENT_ENDPOINT_HOST=192.168.1.218 (doit figurer dans les SAN : PKI_EXTRA_SAN=IP:192.168.1.218).
 ENDPOINT_HOST="${CONTROL_HOST:-${SECAGENT_ENDPOINT_HOST:-127.0.0.1}}"   # CONTROL_HOST = alias
-export QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$HERE/pki/out}"
+export QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$PRIVATE_DIR/qualif/pki}"
 export SECAGENT_LINK_VOLUME="${SECAGENT_LINK_VOLUME:-${PROJECT}_link}"   # volume de l'ancre (cle publique racine)
 C_A="secagent-qualif-a"; C_B="secagent-qualif-b"; C_CHILD="secagent-qualif-child"
 export C_A C_B
 TOKEN_TTL="${TOKEN_TTL:-2h}"
 LINK_TTL="${LINK_TTL:-$TOKEN_TTL}"
-CHAIN_DIR="$HERE/chain"
+# Jetons de la chaine : VOLATILS (regeneres par bootstrap), donc hors PRIVATE/ ; defaut sur /tmp (ext4 sous WSL : les modes
+# 0700/0600 exiges par le plugin y sont honores, contrairement a NTFS). Exporte : docker-compose.chain.yml lit les env_file
+# des minions et de l'enfant dans ${CHAIN_DIR:-./chain}.
+_tmp="${TMPDIR:-/tmp}"; CHAIN_DIR="${CHAIN_DIR:-${_tmp%/}/secagent-qualif-chain-$(id -u)}"; unset _tmp
+case "$CHAIN_DIR" in ?*/) CHAIN_DIR="${CHAIN_DIR%/}" ;; esac   # slash final retire, sauf `/` (refuse tel quel par la garde)
+export CHAIN_DIR
 # shellcheck source=failover-test.sh
 source "$HERE/failover-test.sh"   # fonctions : listening, is_master, wait_for, health, fail, DC...
+# shellcheck source=admission-503.sh
+source "$HERE/admission-503.sh"   # etape admission-503 (#241)
 
 adm() { # $1 conteneur, puis la commande secagent-server : CLI admin en TLS (CA de test), ADMIN_TOKEN du conteneur
   local c="$1"; shift
   docker exec -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/ca.crt "$c" /app/secagent-server "$@"
 }
 master() { is_master "$C_A" && echo "$C_A" || { is_master "$C_B" && echo "$C_B"; }; }
+# Garde de $CHAIN_DIR (repertoire potentiellement partage comme /tmp) : refus FAIL-CLOSED d'un lien symbolique, d'un non
+# repertoire, d'un autre proprietaire que l'utilisateur courant ou de droits plus larges que 0700. Jamais de chmod correctif
+# sur un repertoire existant (il a pu etre lu entre-temps) : le supprimer et relancer.
+chain_dir_check() {
+  local d="$CHAIN_DIR" uid mode
+  # chemin ABSOLU exige : un chemin relatif serait resolu par Compose depuis le repertoire du fichier compose, pas d'ici
+  case "$d" in /?*) ;; *) fail "CHAIN_DIR='$d' n'est pas un chemin absolu (ni la racine) : refus" ;; esac
+  [ ! -L "$d" ] || fail "CHAIN_DIR=$d est un lien symbolique : refus (jetons de la chaine)"
+  [ -e "$d" ] || return 0
+  [ -d "$d" ] || fail "CHAIN_DIR=$d existe et n'est pas un repertoire : refus"
+  uid="$(stat -c %u -- "$d")"
+  [ "$uid" = "$(id -u)" ] || fail "CHAIN_DIR=$d appartient a l'uid $uid (utilisateur courant : $(id -u)) : refus"
+  mode="$(stat -c %a -- "$d")"
+  [ $(( 8#$mode & 8#077 )) -eq 0 ] || fail "CHAIN_DIR=$d a les droits $mode, plus larges que 0700 : refus (supprimer le repertoire puis relancer)"
+}
+# Suppression des jetons volatils (down) : UNIQUEMENT apres chain_dir_check (jamais de rm -rf sur un chemin relatif, `/`,
+# un lien, un non repertoire, un repertoire d'un autre uid ou trop ouvert : refus fail-closed, rien n'est supprime).
+chain_dir_clean() {
+  case "$CHAIN_DIR" in /?*) ;; *) chain_dir_check ;; esac   # vide, `/` ou relatif : refus explicite (jamais un no-op muet)
+  [ -e "$CHAIN_DIR" ] || [ -L "$CHAIN_DIR" ] || return 0
+  chain_dir_check
+  rm -rf -- "$CHAIN_DIR"
+  echo "jetons de la chaine supprimes ($CHAIN_DIR)"
+}
+chain_dir() { # cree $CHAIN_DIR en 0700 (sans course : mkdir echoue si un tiers l'a cree entre-temps) puis le reverifie
+  chain_dir_check
+  if [ ! -e "$CHAIN_DIR" ]; then
+    mkdir -p -- "$(dirname -- "$CHAIN_DIR")"
+    mkdir -m 700 -- "$CHAIN_DIR" || fail "CHAIN_DIR=$CHAIN_DIR : creation impossible"
+  fi
+  chain_dir_check
+}
 write_secret() { # $1 fichier relatif a chain/, valeur lue sur stdin : jamais affichee
   ( umask 077; cat > "$CHAIN_DIR/$1" )
   chmod 600 "$CHAIN_DIR/$1"
@@ -64,7 +117,7 @@ need() { [ -n "${!1:-}" ] || fail "variable $1 obligatoire"; }
 
 # Diagnostic des conteneurs du projet qui ne sont pas sains (appele par fail() : la CI montre la vraie cause d'un
 # healthcheck qui ne passe jamais). UNIQUEMENT l'etat (jamais `docker inspect` complet : Config.Env contient
-# JWT_SECRET_KEY / ADMIN_TOKEN / RSA_MASTER_KEY de qualif.env) et la fin des logs (les valeurs de secrets n'y figurent pas).
+# JWT_SECRET_KEY / ADMIN_TOKEN / RSA_MASTER_KEY : plus en variable depuis v3.0.5, #197) et la fin des logs (les valeurs de secrets n'y figurent pas).
 diag_unhealthy() {
   local c st
   echo "== DIAGNOSTIC (projet $PROJECT) ==" >&2
@@ -84,7 +137,7 @@ push_tls() {
   local f; for f in tls.crt tls.key ca.crt; do [ -f "$QUALIF_TLS_DIR/$f" ] || fail "$QUALIF_TLS_DIR/$f absent (lancer ci-prepare)"; done
   docker volume create "$SECAGENT_TLS_VOLUME" >/dev/null
   tar -C "$QUALIF_TLS_DIR" -cf - tls.crt tls.key ca.crt | docker run --rm -i -v "$SECAGENT_TLS_VOLUME:/certs" \
-    alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
+    alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'tar -xf - -C /certs && chmod 755 /certs && chmod 644 /certs/tls.crt /certs/tls.key /certs/ca.crt'
   echo "certificats de test pousses dans le volume $SECAGENT_TLS_VOLUME"
 }
@@ -95,7 +148,7 @@ push_hooks() {
   [ -f "$HERE/hooks.json" ] || fail "$HERE/hooks.json absent"
   docker volume create "$SECAGENT_HOOKS_VOLUME" >/dev/null
   tar -C "$HERE" -cf - hooks.json | docker run --rm -i -v "$SECAGENT_HOOKS_VOLUME:/hooks" \
-    alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
+    alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'set -e; tar -xf - -C /hooks; chown 0:0 /hooks /hooks/hooks.json; chmod 755 /hooks; chmod 644 /hooks/hooks.json'
   echo "hooks.json depose dans le volume $SECAGENT_HOOKS_VOLUME"
 }
@@ -137,7 +190,7 @@ load_images() {
     gunzip -c "$a" | docker load
   done
   # Empreintes reelles apres chargement == celles de l'artefact ; ils sont enregistres dans l'etat local (verify_images).
-  local ref want id; mkdir -p "$CHAIN_DIR"; chmod 700 "$CHAIN_DIR"
+  local ref want id; chain_dir
   while read -r ref want; do
     [ -n "$ref" ] || continue
     docker image inspect "$ref" >/dev/null 2>&1 || fail "image $ref absente apres docker load"
@@ -150,17 +203,24 @@ load_images() {
 }
 
 ci_prepare() {
+  require_private_dir "$QUALIF_TLS_DIR" "$SECRETS_DIR"   # fail-closed (#250) avant toute generation
   bash "$HERE/pki/gen.sh" "$QUALIF_TLS_DIR"
-  ( umask 077
-    { echo "JWT_SECRET_KEY=$(openssl rand -hex 32)"; echo "ADMIN_TOKEN=$(openssl rand -hex 24)"
-      echo "RSA_MASTER_KEY=$(openssl rand -hex 32)"; } > "$HERE/qualif.env" )
+  gen_secrets   # $SECRETS_DIR (defaut PRIVATE/qualif/secrets) : jwt_secret_key, admin_token, rsa_master_key en fichiers 0400
+}
+
+# Chemins prives resolus (support de scripts/ci/private_paths_selftest.sh) : aucun appel docker, rien n'est cree.
+chain_paths() {
+  require_private_dir "$SECRETS_DIR" "$QUALIF_TLS_DIR"
+  chain_dir_check   # CHAIN_DIR verifie s'il existe (lien, proprietaire, droits), jamais cree ici
+  printf 'PRIVATE_DIR=%s\nSECRETS_DIR=%s\nQUALIF_TLS_DIR=%s\nCHAIN_DIR=%s\n' "$PRIVATE_DIR" "$SECRETS_DIR" "$QUALIF_TLS_DIR" "$CHAIN_DIR"
 }
 
 bootstrap() {
   need SECAGENT_IMAGE; need SECAGENT_MINION_IMAGE
   verify_images
-  mkdir -p "$CHAIN_DIR"; chmod 700 "$CHAIN_DIR"
+  chain_dir
   push_hooks
+  push_secrets   # secrets serveur -> volume ${PROJECT}_secrets (10001, 0400) ; lus via *_FILE
   echo "== etat initial (racine)"
   "${DC[@]}" run --rm --no-deps secagent-server-a state init
   echo "== racine : demarrage et identification du maitre"
@@ -217,7 +277,7 @@ wait_inventory() {
 # non revoque expire de lui-meme (TTL) ; description horodatee pour les reperer dans `tokens list`.
 plugin_token() {
   local m; m="$(master)" || fail "pas de maitre sur la racine (jeton plugin)"
-  mkdir -p "$CHAIN_DIR"; chmod 700 "$CHAIN_DIR"
+  chain_dir
   adm "$m" tokens create --role plugin --description "chain-smoke-$(date +%s)" --expires "$TOKEN_TTL" 2>&1 \
     | extract 'secagent_plg_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton plugin non extrait"; printf '%s' "$t" | write_secret plugin.token; }
 }
@@ -265,25 +325,36 @@ backup_restore() {
   docker cp "$m:/data/relay.state" "$bk/relay.state"; chmod 755 "$bk"; chmod 644 "$bk/relay.state"
   docker volume create "$bkvol" >/dev/null
   tar -C "$bk" -cf - relay.state | docker run --rm -i -v "$bkvol:/backup" \
-    alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
+    alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'tar -xf - -C /backup && chmod 755 /backup && chmod 644 /backup/relay.state'
 
-  grep '^RSA_MASTER_KEY=' "$HERE/qualif.env" | write_secret "backup-key/rsa_master_key"
-  echo "== sinistre : arret de la racine, perte du volume d'etat, perte de la cle sur l'hote"
+  # La cle est sauvegardee a part (jamais dans le volume d'etat ni dans la sauvegarde de l'etat) : copie du fichier de secret.
+  [ -s "$SECRETS_DIR/rsa_master_key" ] || fail "$SECRETS_DIR/rsa_master_key absent (secrets du poste de controle)"
+  ( umask 077; cp "$SECRETS_DIR/rsa_master_key" "$key/rsa_master_key" ); chmod 400 "$key/rsa_master_key"
+  echo "== sinistre : arret de la racine, perte du volume d'etat, puis cle absente et cle erronee"
   "${DC[@]}" rm -sf secagent-server-a secagent-server-b >/dev/null
   docker volume rm "${PROJECT}_secagent_state" >/dev/null
-  cp "$HERE/qualif.env" "$CHAIN_DIR/qualif.env.lost"; chmod 600 "$CHAIN_DIR/qualif.env.lost"
-  sed -i '/^RSA_MASTER_KEY=/d' "$HERE/qualif.env"
+  # Les secrets sont des fichiers d'un volume : « sans la cle » = RSA_MASTER_KEY_FILE vide (cle non definie, code 6) ;
+  # « mauvaise cle » = volume portant une autre valeur (code 2). Les variables directes RSA_MASTER_KEY + *_FILE ensemble
+  # seraient refusees au demarrage (ambiguite), et un fichier inexistant donne un code 1 (lecture impossible), d'ou ce choix.
+  local badkey="${PROJECT}_badkey" bkd; bkd="$(mktemp -d -p "$CHAIN_DIR")"
+  ( umask 077; openssl rand -hex 32 | tr -d '\n' > "$bkd/rsa_master_key" ); chmod 400 "$bkd/rsa_master_key"
+  # Nettoyage garanti meme en cas d'echec (fail() quitte le script) : volume de la mauvaise cle et repertoire temporaire.
+  # shellcheck disable=SC2064
+  trap "docker volume rm '$badkey' >/dev/null 2>&1 || true; rm -rf '$bkd'" EXIT
+  push_secrets "$bkd" "$badkey"
   local rc=0
-  "${DC[@]}" run --rm --no-deps -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
+  "${DC[@]}" run --rm --no-deps -e RSA_MASTER_KEY_FILE= -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
   [ "$rc" = 6 ] || fail "sans RSA_MASTER_KEY : code 6 attendu, obtenu $rc"
   echo "sans la cle : refus (code 6) comme attendu"
   rc=0
-  "${DC[@]}" run --rm --no-deps -e RSA_MASTER_KEY=mauvaise-cle -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
+  "${DC[@]}" run --rm --no-deps -v "$badkey:/run/secagent-secrets:ro" -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
   [ "$rc" = 2 ] || fail "avec une mauvaise cle : code 2 attendu, obtenu $rc"
   echo "mauvaise cle : refus (code 2) comme attendu"
+  docker volume rm "$badkey" >/dev/null || true
+  rm -rf "$bkd"; trap - EXIT
   echo "== restauration de la cle (depuis la sauvegarde distincte) puis de l'etat sur un volume vierge"
-  { cat "$key/rsa_master_key"; echo; } >> "$HERE/qualif.env"
+  push_secrets "$key"   # remet la cle sauvegardee a part dans le volume de secrets (jwt/admin conserves : push partiel)
   "${DC[@]}" run --rm --no-deps -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null || fail "etat sauvegarde refuse avec la cle restauree"
   "${DC[@]}" run --rm --no-deps -v "$bkvol:/backup:ro" secagent-server-a state restore --from /backup/relay.state
   "${DC[@]}" up -d secagent-server-a secagent-server-b
@@ -316,7 +387,7 @@ push_link_key() {
   docker volume create "$SECAGENT_LINK_VOLUME" >/dev/null
   # shellcheck disable=SC2086
   tar -C "$CHAIN_DIR" -cf - $files | docker run --rm -i -v "$SECAGENT_LINK_VOLUME:/link" \
-    alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
+    alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'set -e; tar -xf - -C /link; chmod 755 /link; chown 0:0 /link/root-link.pub; chmod 644 /link/root-link.pub
            if [ -f /link/upstream-token ]; then chown 10001:10001 /link/upstream-token; chmod 0400 /link/upstream-token; fi'
   rm -f "$CHAIN_DIR/upstream-token"
@@ -457,8 +528,8 @@ negative_ca() {
   local m; m="$(master)" || fail "pas de maitre sur la racine"
   echo "== minion sans la CA privee (store systeme seul) : doit etre REFUSE"
   "${DC[@]}" --profile negative up -d --no-deps minion-negca
-  local ok=0 i
-  for i in $(seq 1 30); do
+  local ok=0
+  for _ in $(seq 1 30); do
     if "${DC[@]}" --profile negative logs minion-negca 2>&1 | grep -Eiq 'x509|certificate|unknown authority'; then ok=1; break; fi
     sleep 2
   done
@@ -483,6 +554,7 @@ failover() {
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
     ci-prepare) ci_prepare ;;
+    paths) chain_paths ;;
     bootstrap) bootstrap ;;
     smoke) smoke ;;
     failover) failover ;;
@@ -491,14 +563,17 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     load-images) load_images "${2:-}" ;;
     push-tls) push_tls ;;
     push-hooks) push_hooks ;;
+    push-secrets) push_secrets ;;
     push-link-key) push_link_key ;;
     link-rotation) link_rotation ;;
     link-revoke) link_revoke ;;
     hooks) check_hooks ;;
     negative-ca) negative_ca ;;
+    admission-503) admission_503 ;;
     down) guard_project; "${DC[@]}" down -v
           # le volume du jeton de lien est EXTERNE (non supprime par down -v) et contient un secret : retrait explicite
-          docker volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" >/dev/null 2>&1 || true ;;
-    *) sed -n '2,26p' "$0"; exit 2 ;;
+          docker volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" >/dev/null 2>&1 || true
+          chain_dir_clean ;;   # jetons volatils du poste (garde chain_dir_check avant tout rm)
+    *) sed -n '2,36p' "$0"; exit 2 ;;
   esac
 fi

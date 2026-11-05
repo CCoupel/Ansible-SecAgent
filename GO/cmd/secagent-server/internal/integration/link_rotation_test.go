@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package integration
 
 // #141 (L1d+L1e) — rotation of the root link key through a real tree (SERVER_SPEC §9.2.1, DECISION_141 §4):

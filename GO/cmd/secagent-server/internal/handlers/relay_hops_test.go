@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // relay_hops_test.go — Tests for X-Relay-Hops loop detection in exec/upload/fetch handlers.
 //
 // Spec reference: exec.go lines 219-231 / 362-372 / 459-469

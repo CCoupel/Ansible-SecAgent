@@ -1,5 +1,7 @@
 # Plan de répétition : montée v3.0.3 → v3.0.4 sur la chaîne de qualif (NON JOUÉ)
 
+> **Document historique (v3.0.4)** : les chemins locaux cités (`qualif.env`, `secrets/`, `pki/out`, `chain/`) sont ceux de l'époque. Depuis la v3.0.5 (#250), les données privées de la qualif vivent sous `PRIVATE/qualif/` : voir `DEPLOYMENT/README.md`, « Données privées du poste ».
+
 > Source : `_work/reports/planner-20261007-v304-plan-rev2.md` §4 (procédure) et §2 (état v2). Préparé par `deployer`, 2026-10-07.
 > **Rien n'est exécuté** par ce document. **Mis à jour le 2026-10-08** avec les commandes réelles de L1d/L1e (`tokens create --role relay-child --sub --aud`, `keys link-pubkey|rotate-link|retire-link-previous|link-status`, `REPEATER_ROOT_ID`, `REPEATER_ROOT_LINK_KEY_FILE`, `REPEATER_UPSTREAM_TOKEN_FILE`). **Retour arrière vers v3.0.3 : NON SUPPORTÉ** (décision de l'utilisateur) : le §4 ci-dessous ne décrit plus qu'une reprise sur incident en v3.0.4, pas un retour à v3.0.3. **Rotation de `RSA_MASTER_KEY` recommandée avant la mise en production.** Il ne se joue qu'au batch 4, sur l'image candidate v3.0.4, après validation QA et
 > security-reviewer de L0 à L7, et sur ordre explicite du teamleader. Hôte : 192.168.1.218, projet `secagent-qualif`

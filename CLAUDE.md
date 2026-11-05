@@ -85,6 +85,7 @@ ansible-secagent/
 - GO : `gofmt`, erreurs explicitement retournées, pas de panic en production
 - Python (plugins uniquement) : PEP 8, type hints, docstrings sur les fonctions publiques
 - Logs : `log/slog` (GO) — **masquer `become_pass` dans tous les logs** (CRITIQUE sécurité)
+- Outillage Go de tous les agents (dev, test-writer, qa, deployer, security-reviewer) : bloc d'environnement confiné au scratchpad et installation de golangci-lint dans `.claude/outillage_go.md` (`GOTOOLCHAIN=local` seul échoue : Go installé 1.24.2, `go.work` exige 1.25.5) — #226
 - Tests GO : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -v`
 - Tests Python : pytest, fichier `test_<module>.py` par module
 - Commits : conventionnel (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`) ; **trailer exact en dernière ligne** : `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` (contrôlé sur tous les commits avant un push) ; jamais `git commit --amend` en arbre partagé
@@ -94,11 +95,11 @@ ansible-secagent/
 
 ## Workflow équipe
 
-- `/start-session` : démarre la team complète Ansible-SecAgent (9 agents spécialisés permanents + team-lead)
+- `/start-session` : démarre les agents `socle` (+ la team du milestone en cours) ; la team d'un nouveau milestone est spawnée au GATE 2 selon son cadrage (`agents/context/MILESTONE_CADRAGE.md`)
 - Le rôle CDP est tenu par le **team-lead** (Claude principal) — aucun agent cdp séparé
 - Ordre d'implémentation MVP : `secagent-minion` → `relay server` → `plugins Ansible`
 - Chaque composant est validé par `qa` avant de passer au suivant
-- `security-reviewer` audite chaque PR avant merge
+- `security-reviewer` audite chaque PR avant merge (type `milestone` : le planner l'inclut dans la team du milestone)
 
 ### Règle de démarrage — OBLIGATOIRE
 
@@ -118,32 +119,34 @@ Séquence correcte :
 
 ## Agents Disponibles
 
-Équipe spécialisée du projet (9 agents permanents + 1 ponctuel + team-lead/CDP fusionné) :
+Équipe spécialisée du projet (2 agents socle + 9 milestone + 1 ponctuel + team-lead/CDP fusionné) :
 
 | Nom | Rôle | Fichier | Spawn |
 |-----|------|---------|-------|
-| `planner` | Backlog GitHub Issues + structuration des phases (type `implementation-planner`) | `.claude/agents/implementation-planner.template.md` + compagnon `implementation-planner.md` | permanent |
-| `dev-agent` | Développeur secagent-minion (GO, `GO/cmd/secagent-minion/`) | `.claude/agents/dev-agent.template.md` + compagnon `dev-agent.md` | permanent |
-| `dev-relay` | Développeur secagent-server (GO, `GO/cmd/secagent-server/`) | `.claude/agents/dev-relay.template.md` + compagnon `dev-relay.md` | permanent |
-| `dev-inventory` | Développeur secagent-inventory (GO, `GO/cmd/secagent-inventory/`) | `.claude/agents/dev-inventory.template.md` + compagnon `dev-inventory.md` | permanent |
-| `dev-connexion` | Développeur plugin connexion Ansible (Python, `SECAGENT-PYTHON/`) | `.claude/agents/dev-connexion.template.md` (dev-plugin) + compagnon `dev-connexion.md` | permanent |
-| `test-writer` | Rédaction des tests (unitaires, intégration, E2E) | `.claude/agents/test-writer.template.md` | permanent |
-| `qa` | Exécution des tests, verdict GO/NOGO | `.claude/agents/qa.template.md` | permanent |
-| `security-reviewer` | Audit sécurité (TLS, JWT, become_pass, enrollment) | `.claude/agents/security-reviewer.md` | permanent |
-| `deployer` | BUILD / PUBLISH / DEPLOY QUALIF (Docker Compose 192.168.1.218) et PROD (Docker Compose, même hôte) | `.claude/agents/deploy.template.md` + compagnons `environments/deploy.{qualif,prod}.md` | permanent |
+| `planner` | Backlog GitHub Issues + structuration des phases (type `implementation-planner`) | `.claude/agents/implementation-planner.template.md` + compagnon `implementation-planner.md` | socle |
+| `dev-agent` | Développeur secagent-minion (GO, `GO/cmd/secagent-minion/`) | `.claude/agents/dev-agent.template.md` + compagnon `dev-agent.md` | milestone |
+| `dev-relay` | Développeur secagent-server (GO, `GO/cmd/secagent-server/`) | `.claude/agents/dev-relay.template.md` + compagnon `dev-relay.md` | milestone |
+| `dev-inventory` | Développeur secagent-inventory (GO, `GO/cmd/secagent-inventory/`) | `.claude/agents/dev-inventory.template.md` + compagnon `dev-inventory.md` | milestone |
+| `dev-connexion` | Développeur plugin connexion Ansible (Python, `SECAGENT-PYTHON/`) | `.claude/agents/dev-connexion.template.md` (dev-plugin) + compagnon `dev-connexion.md` | milestone |
+| `test-writer` | Rédaction des tests (unitaires, intégration, E2E) | `.claude/agents/test-writer.template.md` | milestone |
+| `qa` | Exécution des tests, verdict GO/NOGO | `.claude/agents/qa.template.md` | milestone |
+| `code-reviewer` | Revue de code (si `cadrage.review`) | `.claude/agents/code-reviewer.template.md` | milestone |
+| `doc-updater` | Documentation, CHANGELOG (si `cadrage.doc` = agent) | `.claude/agents/doc-updater.template.md` | milestone |
+| `security-reviewer` | Audit sécurité (TLS, JWT, become_pass, enrollment) | `.claude/agents/security-reviewer.md` | milestone |
+| `deployer` | BUILD / PUBLISH / DEPLOY QUALIF (Docker Compose 192.168.1.218) et PROD (Docker Compose, même hôte) | `.claude/agents/deploy.template.md` + compagnons `environments/deploy.{qualif,prod}.md` | socle |
 | `marketing` | Communication de release (release notes, posts, site `gh-pages`) | `.claude/agents/marketing-release.template.md` | ponctuel |
 
 > **Convention template/compagnon** : `xxx.template.md` = template synchronisé (gitignoré, jamais édité) ;
 > `xxx.md` = compagnon projet tracké (périmètre, specs, règles propres à Ansible-SecAgent), à lire après le
-> template. Sans compagnon (`test-writer`, `qa`), le template fait foi tel quel. `security-reviewer.md` reste
+> template. Sans compagnon (`test-writer`, `qa`, `code-reviewer`, `doc-updater`), le template fait foi tel quel. `security-reviewer.md` reste
 > une définition projet autonome (pas de template équivalent).
 
-> **permanent** = spawné au `/start-session`, reste en IDLE toute la session.
-> **ponctuel** = spawné à la demande par sa commande ou sa phase (`marketing` : GATE 4d / `/marketing`), puis arrêté (`TaskStop`).
+> Types de spawn : `agents/context/MILESTONE_CADRAGE.md` section 4.1 (`socle` = au `/start-session` ; `milestone` = au
+> GATE 2 si dans la team du milestone ; `ponctuel` = à la demande, puis `TaskStop` — `marketing` : GATE 4d / `/marketing`).
 
 Agents génériques additionnels livrés par le template (disponibles, **pas encore intégrés** au
 workflow `/start-session` ni au cycle CDP décrit ci-dessus — à activer manuellement si besoin) :
-`code-reviewer`, `doc-updater`, `infra`, `security`, `pr-reviewer`.
+`infra`, `security`, `pr-reviewer`.
 
 <!-- BEGIN TEAMLEADER_PROTOCOL — maintenu par le template, ne pas modifier manuellement -->
 
@@ -173,9 +176,15 @@ Tu **coordonnes et dispatches**. Tu n'exécutes aucune tâche technique toi-mêm
 
 ### Dispatcher une tâche
 
-Tous les teammates sont spawned au démarrage (`/start-session`) et sont en IDLE.
-**Pendant la session : uniquement `SendMessage` — jamais de spawn**, sauf les agents `ponctuel` de la table
-(`security`, `infra`, `marketing`…) : spawnés à la demande par leur commande ou leur phase, puis arrêtés (`TaskStop`).
+Les agents `socle` sont spawnés au démarrage (`/start-session`) ; la team du milestone l'est au GATE 2 (`agents/context/MILESTONE_CADRAGE.md`). Tous attendent en IDLE.
+**Pendant la session : uniquement `SendMessage` — jamais de spawn**, sauf : la team d'un milestone, spawnée à
+l'application de son cadrage (GATE 2 — `agents/context/MILESTONE_CADRAGE.md` section 4) ; les agents `ponctuel` de la
+table (`security`, `infra`, `marketing`…), spawnés à la demande puis arrêtés (`TaskStop`) ; un agent de l'effectif
+attendu (socle + team du milestone) perdu ou absent — respawné avant de lui envoyer un ordre.
+
+**Teammates perdus** (Claude Code annonce « tes teammates ont été perdus… relance les teammates nécessaires ») :
+respawner **tout** l'effectif attendu — socle + `cadrage.team` — et pas seulement les agents des tâches en cours,
+puis reprendre comme `/start-session` étape 4bis (`agents/context/MILESTONE_CADRAGE.md` 4.2).
 
 ```
 SendMessage({ to: "<nom-canonique>", content: "<tâche complète>" })
@@ -240,3 +249,27 @@ SendMessage({
 <!-- END TEAMLEADER_PROTOCOL -->
 
 > **Noms canoniques de ce projet** : ceux de la table « Agents Disponibles » ci-dessus (`dev-agent`, `dev-relay`, `dev-inventory`, `dev-connexion`, `deployer`…) ; les noms génériques du bloc (`dev-backend`, `dev-plugin`…) ne s'appliquent pas.
+
+## Éléments privés — dossier `PRIVATE/`
+
+**Tout élément privé qui ne doit jamais être commité se range dans `PRIVATE/`** (racine du projet, gitignoré) :
+accès aux environnements (kubeconfig, tokens Kubernetes et de comptes de service, clés SSH, JSON de compte
+cloud, certificats `*.pem`/`*.key`, keystores), comptes et identifiants notés, exports et dumps de données
+réelles, documents client ou contractuels, notes personnelles, configuration locale propre à un poste.
+
+| Élément | Emplacement |
+|---------|-------------|
+| Élément privé durable (voir ci-dessus) | `PRIVATE/` (ex. `PRIVATE/k8s/kubeconfig-prod`, `PRIVATE/ssh/deploy_key`) |
+| Variables lues par `/deploy` (globales, par environnement) | `.env`, `.claude/agents/environments/<env>.env` — emplacements fixes sourcés par les scripts, **pas** dans `PRIVATE/` ; une variable qui désigne un fichier d'accès pointe dans `PRIVATE/` (ex. `KUBECONFIG=PRIVATE/k8s/kubeconfig-prod`) |
+| Fichier temporaire de travail | `_work/tmp/` (purgé, pas un stockage durable) |
+
+- Avant de créer un fichier contenant une donnée privée : le placer dans `PRIVATE/` ; le code et la config trackés
+  ne référencent `PRIVATE/` que par chemin relatif, jamais par copie de son contenu.
+- Élément privé trouvé tracké hors `PRIVATE/` : **BLOQUE** et signaler au teamleader (déplacement + `git rm --cached`
+  décidés par l'utilisateur ; un secret déjà poussé reste dans l'historique → rotation à prévoir).
+- Ne jamais retirer `PRIVATE/` du `.gitignore` ni forcer son ajout (`git add -f`).
+- Le contenu attendu de `PRIVATE/` est établi par `/init-project` (Étape 10b) ; un worktree n'en hérite pas —
+  copier depuis le checkout principal ce qui est nécessaire, comme pour `.env`.
+
+---
+

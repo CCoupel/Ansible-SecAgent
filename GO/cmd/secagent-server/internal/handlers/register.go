@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package handlers
 
 import (
@@ -114,8 +117,16 @@ func init() {
 	server = &ServerState{
 		JWTSecret:  os.Getenv("JWT_SECRET_KEY"),
 		AdminToken: os.Getenv("ADMIN_TOKEN"),
-		JWTttl:     time.Hour,
+		JWTttl:     DefaultAgentJWTTTL,
 	}
+}
+
+// ConfigureAgentJWT sets the lifetime of the JWTs issued to agents (AGENT_JWT_TTL, #217); zero = the
+// default (24 h). The caller (server.Build) has already validated it.
+func ConfigureAgentJWT(ttl time.Duration) {
+	server.mu.Lock()
+	server.JWTttl = effectiveJWTTTL(ttl)
+	server.mu.Unlock()
 }
 
 // adminTokenMatches reports whether tok is the configured admin token. An empty configured token

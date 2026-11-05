@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package state
 
 import (
@@ -236,7 +239,7 @@ func TestSecretConfigIsRefusedInClearWhenAMasterKeyIsConfigured(t *testing.T) {
 
 func TestNoSecretInClearInTheFile(t *testing.T) {
 	dir := t.TempDir()
-	if err := Init(InitOptions{Dir: dir, MasterKey: "unit-test-master-key", RSABits: 2048}); err != nil {
+	if err := Init(InitOptions{Dir: dir, MasterKey: "unit-test-master-key-0123456789abcdef", RSABits: 2048}); err != nil {
 		t.Fatal(err)
 	}
 	e := openEngine(t, dir, func(o *Options) { o.RequireEncryptedSecrets = true })
@@ -250,7 +253,7 @@ func TestNoSecretInClearInTheFile(t *testing.T) {
 		return tx.PutPluginToken(PluginToken{ID: "pl", TokenHash: "sha256-of-plugin-token", Role: "plugin", CreatedAt: time.Now()})
 	})
 	raw := string(mustFile(t, filepath.Join(dir, StateFile)))
-	for _, forbidden := range []string{"BEGIN PRIVATE KEY", "BEGIN RSA PRIVATE KEY", "unit-test-master-key"} {
+	for _, forbidden := range []string{"BEGIN PRIVATE KEY", "BEGIN RSA PRIVATE KEY", "unit-test-master-key-0123456789abcdef"} {
 		if strings.Contains(raw, forbidden) {
 			t.Errorf("the file contains %q", forbidden)
 		}

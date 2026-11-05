@@ -1,5 +1,5 @@
 # Build stage — secagent-minion GO
-FROM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS builder
+FROM golang:1.27-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS builder
 
 WORKDIR /build
 
@@ -24,7 +24,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -buildvcs=false -ldflags="-s -w -X main.Version=${VERSION}" -o secagent-minion ./cmd/secagent-minion
 
 # Runtime stage — minimal Alpine
-FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 WORKDIR /app
 
@@ -36,6 +36,9 @@ RUN addgroup -S relay && adduser -S relay -G relay
 
 # Copy binary from builder
 COPY --from=builder /build/secagent-minion /app/secagent-minion
+# AGPL-3.0-or-later license and third-party notices of the linked modules (#237): tracked copies in GO/ (build context),
+# kept identical to the root originals by scripts/ci/gen_third_party_notices.sh --check (lint job).
+COPY LICENSE THIRD_PARTY_NOTICES.md /app/
 
 # Entrypoint: runs as root to set up dirs + key, then drops to relay via su-exec
 # Workaround for Go os.IsNotExist() not handling wrapped errors (uses errors.Is instead)

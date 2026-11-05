@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package crypto provides AES-256-GCM encryption helpers for protecting
 // sensitive values stored in the database (e.g. RSA private keys).
 package crypto
@@ -72,6 +75,12 @@ func DecryptAESGCM(encoded, masterKey string) (string, error) {
 }
 
 // deriveKey returns a 32-byte AES key derived from masterKey via SHA-256.
+//
+// A bare SHA-256 is not a password KDF (no salt, no work factor): it is sound only because
+// RSA_MASTER_KEY is a random secret of at least 32 bytes, which `state init`, the server start and
+// `state rekey` enforce (state.MinNewMasterKeyBytes, #214). The AES key and the HMAC key of the state
+// are separated by domain (crypto/aad.go), and the derivation is deliberately unchanged so a state
+// written by v3.0.4 with such a key is read as before (no HKDF, no schema_version bump).
 func deriveKey(masterKey string) []byte {
 	hash := sha256.Sum256([]byte(masterKey))
 	return hash[:]

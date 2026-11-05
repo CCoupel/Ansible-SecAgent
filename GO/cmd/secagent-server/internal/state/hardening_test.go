@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package state
 
 import (
@@ -16,7 +19,7 @@ import (
 
 // ── #159b: HMAC of the state file, AAD-bound secrets, clear secrets, init, limits ──
 
-const hmKey = "hardening-master-key"
+const hmKey = "hardening-master-key-0123456789abcdef"
 
 // keyedState writes a valid, HMAC-authenticated state with sealed secrets into dir (via Init).
 func keyedState(t *testing.T, dir string) {

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package state
 
 import (
@@ -13,7 +16,7 @@ import (
 )
 
 const (
-	rekeyOld = "rekey-old-master-key"
+	rekeyOld = "rekey-old-master-key-0123456789abcdef"
 	rekeyNew = "rekey-new-master-key-0123456789abcdef"
 )
 
@@ -301,7 +304,7 @@ func TestRekey_NewKeyMinimumLength(t *testing.T) {
 	}{
 		{"one byte", "x", false},
 		{"31 bytes", strings.Repeat("k", 31), false},
-		{"32 bytes", strings.Repeat("k", 32), true},
+		{"32 bytes", varKey(32), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, _ := rekeyState(t) // the current key (rekeyOld) is shorter than 32 bytes: it stays openable

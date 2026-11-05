@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package auth
 
 // #141 / #146 (L1c) — SPECIFICATION tests of the inter-relay link tokens: the single wiring point.

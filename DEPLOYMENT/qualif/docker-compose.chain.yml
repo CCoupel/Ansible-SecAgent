@@ -10,12 +10,15 @@
 # (`sha-<commit>@sha256:<digest>`) OU tag local `secagent-*:ci-<sha12>` charge par `docker load` (artefact CI,
 # SECAGENT_PULL_POLICY=never) ; aucun `build:`, aucun `latest`. TLS de bout en bout avec une CA privee :
 # REPEATER_CA_FILE / RELAY_CA_BUNDLE, aucune desactivation de la verification TLS.
-# Les jetons (enrolement, plugin, LIEN relay-child de l'enfant) sont produits par `chain-test.sh bootstrap` dans ./chain/ (ignore par git, fichiers 0600) :
+# Les jetons (enrolement, plugin, LIEN relay-child de l'enfant) sont produits par `chain-test.sh bootstrap` dans $CHAIN_DIR (jetons volatils, defaut /tmp/secagent-qualif-chain-<uid>, 0700, fichiers 0600) :
 # jamais dans le depot, jamais dans les logs. Le poste de controle Ansible est HORS Compose (voir README).
 include:
   - docker-compose.server.yml
 
 x-child-env: &child-env
+  JWT_SECRET_KEY_FILE: /run/secagent-secrets/jwt_secret_key
+  ADMIN_TOKEN_FILE: /run/secagent-secrets/admin_token
+  RSA_MASTER_KEY_FILE: /run/secagent-secrets/rsa_master_key
   STATE_DIR: /data
   RELAY_STATUS_FILE: /run/secagent/status.json
   API_ADDR: "0.0.0.0:7770"
@@ -33,7 +36,7 @@ x-child-env: &child-env
   # le volume `secagent_link` (proprietaire 10001, mode 0400) par `chain-test.sh` via un conteneur ephemere. PAS un
   # `secrets:` Compose : hors Swarm Compose monte le fichier de l'HOTE (uid/gid/mode ignores) ; or le conteneur tourne
   # en 10001, secretenv exige 0600 ou plus strict, et contre un demon distant le bind serait resolu sur l'hote distant.
-  # Ancre de confiance : REPEATER_ROOT_ID (dans ./chain/child.env, ecrit par le bootstrap) et la cle publique racine
+  # Ancre de confiance : REPEATER_ROOT_ID (dans $CHAIN_DIR/child.env, ecrit par le bootstrap) et la cle publique racine
   # (NON secrete) dans le meme volume.
   REPEATER_UPSTREAM_TOKEN_FILE: /run/secagent-link/upstream-token
   REPEATER_ROOT_LINK_KEY_FILE: /run/secagent-link/root-link.pub
@@ -51,13 +54,15 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     env_file:
-      - path: ./qualif.env
-        required: true
-      - path: ./chain/child.env           # REPEATER_ROOT_ID (non secret) ; plus aucun jeton ici
+      - path: ${CHAIN_DIR:-./chain}/child.env   # REPEATER_ROOT_ID (non secret) ; CHAIN_DIR exporte par chain-test.sh (/tmp, #250)
         required: false
     environment: *child-env
     volumes:
       - child_state:/data
+      - type: volume                       # secrets serveur (#197 item 6) : fichiers 0400 / 10001, lus via *_FILE
+        source: secagent_secrets
+        target: /run/secagent-secrets
+        read_only: true
       - type: volume                       # cle publique racine (ancre) + jeton de lien, lecture seule
         source: secagent_link
         target: /run/secagent-link
@@ -78,14 +83,14 @@ services:
       retries: 3
       start_period: 20s
 
-  # Minions de test : enroles par jeton (RELAY_ENROLLMENT_TOKEN dans ./chain/minion-*.env), listes d'adresses.
+  # Minions de test : enroles par jeton (RELAY_ENROLLMENT_TOKEN dans $CHAIN_DIR/minion-*.env), listes d'adresses.
   minion-root:
     image: ${SECAGENT_MINION_IMAGE:?SECAGENT_MINION_IMAGE est obligatoire (image minion sha-<commit>@sha256:<digest>)}
     hostname: minion-root
     pull_policy: ${SECAGENT_PULL_POLICY:-missing}
     restart: unless-stopped
     env_file:
-      - path: ./chain/minion-root.env
+      - path: ${CHAIN_DIR:-./chain}/minion-root.env
         required: false
     environment:
       RELAY_SERVER_URL: https://secagent-server-a:7770,https://secagent-server-b:7770
@@ -97,6 +102,13 @@ services:
         source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}
         target: /certs
         read_only: true
+    # Durcissement (#238, v3.0.5) : l'entrypoint de l'image minion demarre en root (mkdir, openssl, chown du volume) puis
+    # abandonne les droits par `su-exec relay` : capacites MESUREES minimales = CHOWN, SETUID, SETGID (essai sur 192.168.1.218,
+    # 1er demarrage et redemarrage sur volume existant, minion en `relay`) ; DAC_OVERRIDE inutile. no-new-privileges : verifie
+    # compatible avec su-exec (changement d'uid par setuid(), sans binaire setuid).
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID]
+    security_opt: ["no-new-privileges:true"]
     mem_limit: 512m
 
   minion-child:
@@ -105,7 +117,7 @@ services:
     pull_policy: ${SECAGENT_PULL_POLICY:-missing}
     restart: unless-stopped
     env_file:
-      - path: ./chain/minion-child.env
+      - path: ${CHAIN_DIR:-./chain}/minion-child.env
         required: false
     environment:
       RELAY_SERVER_URL: https://secagent-child:7770
@@ -117,11 +129,16 @@ services:
         source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}
         target: /certs
         read_only: true
+    # Durcissement (#238) : memes capacites minimales que minion-root.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID]
+    security_opt: ["no-new-privileges:true"]
     mem_limit: 512m
 
   # Essai CA NEGATIF (#197, profil `negative`, jamais demarre par `up` sans --profile) : un minion SANS RELAY_CA_BUNDLE
   # (store systeme seul) face a la CA privee de la racine doit REFUSER la connexion TLS. `chain-test.sh negative-ca`
   # le lance, verifie l'erreur de certificat et l'absence du minion dans `minions list`, puis le supprime.
+  # Les DEUX adresses de la racine (a, b), comme les autres minions (#229) : le refus doit etre constate quel que soit le maitre.
   # Jeton d'enrolement FACTICE (forme valide, 64 zeros, non secret) : le refus doit survenir AVANT toute authentification.
   minion-negca:
     profiles: ["negative"]
@@ -130,9 +147,13 @@ services:
     pull_policy: ${SECAGENT_PULL_POLICY:-missing}
     restart: "no"
     environment:
-      RELAY_SERVER_URL: https://secagent-server-a:7770
-      RELAY_WS_URL: wss://secagent-server-a:7772/ws/agent
+      RELAY_SERVER_URL: https://secagent-server-a:7770,https://secagent-server-b:7770
+      RELAY_WS_URL: wss://secagent-server-a:7772/ws/agent,wss://secagent-server-b:7772/ws/agent
       RELAY_ENROLLMENT_TOKEN: secagent_enr_0000000000000000000000000000000000000000000000000000000000000000
+    # Durcissement (#238) : memes capacites minimales que minion-root.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID]
+    security_opt: ["no-new-privileges:true"]
     mem_limit: 256m
 
 volumes:

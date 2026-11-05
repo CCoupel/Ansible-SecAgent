@@ -22,13 +22,17 @@ mkdir -p tls
 openssl req -x509 -newkey rsa:2048 -keyout tls/tls.key -out tls/tls.crt \
   -days 365 -nodes -subj "/CN=localhost" \
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
-# Le conteneur tourne en UID 10001 : la clef doit lui être lisible (essai local UNIQUEMENT).
-chmod 0644 tls/tls.key
+# Le conteneur tourne en UID 10001 : la clef lui appartient, lecture seule, et n'est lisible par personne d'autre.
+# (à lancer hors /mnt/c : NTFS ignore chown/chmod)
+sudo chown 10001:10001 tls/tls.key && sudo chmod 0400 tls/tls.key
+# (sans sudo, essai local UNIQUEMENT : `chmod 0644 tls/tls.key` rend la clé privée lisible par tous, ne jamais le reproduire ailleurs)
 
 # Secrets du serveur (hors dépôt)
-cp qualif.env.example qualif.env
-# Renseigner dans qualif.env : JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY
-#   (chaînes aléatoires, ex. `openssl rand -hex 32` ; RSA_MASTER_KEY est un secret
+# v3.0.5 : trois fichiers (0400) dans PRIVATE/qualif/secrets/ (SECRETS_DIR, gitignoré), déposés dans le volume secagent-qualif_secrets (lus via *_FILE)
+#   mkdir -p PRIVATE/qualif/secrets && for n in jwt_secret_key admin_token rsa_master_key; do openssl rand -base64 48 | tr -d '\n' > PRIVATE/qualif/secrets/$n; done   # depuis la racine du dépôt
+#   bash chain-test.sh push-secrets   # vars requises : DOCKER_HOST, SECRETS_DIR (def. PRIVATE/qualif/secrets), PROJECT ; hote distant : + TLS_MODE=volume SECAGENT_ENDPOINT_HOST
+#   (valeurs aléatoires fictives à générer, ex. `openssl rand -base64 48` pour les trois, comme dans INSTALL_SERVER.md ;
+#    RSA_MASTER_KEY : 32 octets minimum, sinon `state init` et le démarrage sont refusés ; c'est un secret
 #    dont dérivent l'HMAC de l'état et le chiffrement AES-GCM de ses secrets, pas une clef RSA)
 
 # Image candidate (voir l'en-tête de docker-compose.server.yml) et répertoire TLS
@@ -41,7 +45,7 @@ export QUALIF_TLS_DIR="$PWD/tls"
 ## 2️⃣ Initialiser l'état (2 min)
 
 Le serveur **ne crée jamais son état implicitement** : sans `relay.state` il refuse de démarrer.
-`state init` exige `RSA_MASTER_KEY` (présent dans `qualif.env`, chargé par le Compose).
+`state init` exige `RSA_MASTER_KEY` (fichier `rsa_master_key` du volume de secrets, lu via `RSA_MASTER_KEY_FILE`).
 
 ```bash
 # Crée relay.state (clef RSA-4096 du serveur + secret JWT) dans le volume partagé
@@ -74,21 +78,24 @@ curl -s --cacert tls/tls.crt https://localhost:7770/health
 ## 4️⃣ Créer les jetons et enrôler un agent (4 min)
 
 La CLI parle à l'API d'administration (7771, TLS). Dans le conteneur : `RELAY_API_URL` pointe sur
-`https://localhost:7771`, `REPEATER_CA_FILE` sur le certificat monté, `ADMIN_TOKEN` vient de `qualif.env`.
+`https://localhost:7771`, `REPEATER_CA_FILE` sur le certificat monté, `ADMIN_TOKEN` vient du fichier `admin_token` (`ADMIN_TOKEN_FILE`).
 
 ```bash
 # Alias de commodité : exécute la CLI dans l'instance a
 srv() {
-  docker compose -p secagent-qualif -f docker-compose.server.yml exec \
+  docker compose -p secagent-qualif -f docker-compose.server.yml exec -T \
     -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
-    secagent-server-a secagent-server "$@"
+    secagent-server-a /app/secagent-server "$@"
 }
 
 # Jeton d'enrôlement (1 h). Jeton opaque `secagent_enr_` + 64 hex (77 car.), pas un JWT.
-ENR=$(srv tokens create --role enrollment --hostname-pattern 'qualif-host-.*' --expires 1h \
-      | grep -oE 'secagent_enr_[0-9a-f]{64}' | tail -1)
-echo "$ENR"
+# Le jeton va directement dans un fichier 0600 (umask 077) : jamais affiché, jamais en variable d'environnement
+# (à lancer hors /mnt/c : NTFS n'honore ni umask ni chmod, le fichier y serait lisible par tous ; vérifier `ls -l enrollment.token`)
+(umask 077; srv tokens create --role enrollment --hostname-pattern 'qualif-host-.*' --expires 1h \
+      | grep -oE 'secagent_enr_[0-9a-f]{64}' | tail -1 > enrollment.token)
 ```
+
+> Ne pas afficher le jeton (terminal, historique) : le minion le lit dans `enrollment.token` (`RELAY_ENROLLMENT_TOKEN_FILE`, fichier 0600).
 
 > Un jeton n'est affiché qu'**une seule fois**. Rôles possibles : `enrollment`, `plugin`, `relay-child`, `relay-parent` (les deux derniers sont des jetons de lien, créés sur la racine seulement)
 > (il n'existe pas de rôle `agent` ou `admin`). Le jeton d'enrôlement est à usage unique sauf `--reusable`.
@@ -105,7 +112,7 @@ RELAY_AGENT_HOSTNAME=qualif-host-01 \
 RELAY_PRIVATE_KEY="$PWD/minion-data/id_rsa" \
 RELAY_JWT_PATH="$PWD/minion-data/token.jwt" \
 RELAY_ASYNC_DIR="$PWD/minion-data/async" \
-RELAY_ENROLLMENT_TOKEN="$ENR" \
+RELAY_ENROLLMENT_TOKEN_FILE="$PWD/enrollment.token" \
 secagent-minion
 ```
 
@@ -124,7 +131,8 @@ secagent-minion
 PLG=$(srv tokens create --role plugin --description quickstart --expires 1h \
       | grep -oE 'secagent_plg_[0-9a-f]{64}' | tail -1)
 
-curl -s --cacert tls/tls.crt -H "Authorization: Bearer $PLG" \
+# L'en-tête passe par l'entrée standard (-H @-) : le jeton n'apparaît pas dans la liste des processus
+printf 'Authorization: Bearer %s\n' "$PLG" | curl -s --cacert tls/tls.crt -H @- \
   https://localhost:7770/api/inventory | jq .
 # {
 #   "_meta": {"hostvars": {"qualif-host-01": {"ansible_connection": "relay", ...}}},
@@ -138,8 +146,8 @@ curl -s --cacert tls/tls.crt -H "Authorization: Bearer $PLG" \
 
 ```bash
 # Exécuter une commande sur l'agent (REST bloquant, jeton plugin)
-curl -s --cacert tls/tls.crt -X POST \
-  -H "Authorization: Bearer $PLG" \
+printf 'Authorization: Bearer %s\n' "$PLG" | curl -s --cacert tls/tls.crt -X POST \
+  -H @- \
   -H "Content-Type: application/json" \
   -d '{"cmd":"echo Hello from qualif-host-01","timeout":10}' \
   https://localhost:7770/api/exec/qualif-host-01 | jq .
@@ -159,7 +167,7 @@ docker compose -p secagent-qualif -f docker-compose.server.yml logs -f
 
 # Statut local d'une instance (maître / secondaire)
 docker compose -p secagent-qualif -f docker-compose.server.yml exec secagent-server-a \
-  secagent-server status --local
+  /app/secagent-server status --local
 
 # Arrêter tout
 docker compose -p secagent-qualif -f docker-compose.server.yml down
@@ -177,7 +185,7 @@ docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent
 | Problème | Cause | Solution |
 |----------|-------|----------|
 | Le conteneur redémarre en boucle, « relay.state » absent | État non initialisé | Exécuter `state init` (étape 2) |
-| `state init` échoue | `RSA_MASTER_KEY` absent de `qualif.env` | Renseigner `RSA_MASTER_KEY` |
+| `state init` échoue | fichier `rsa_master_key` absent du volume de secrets | `bash chain-test.sh push-secrets` |
 | Refus de démarrer : « admin API … plain HTTP on a non-loopback address » | `ADMIN_ADDR` non loopback sans `ADMIN_TLS=true` | Le Compose qualif fixe `ADMIN_TLS=true` ; ne pas le retirer |
 | `curl` : certificat inconnu / SAN absent | Certificat sans SAN | Regénérer avec `-addext subjectAltName=...` |
 | Rien n'écoute sur 7770 | Cette instance est secondaire (aucun port ouvert) | Interroger l'autre instance (`8770`) ; `status --local` indique le rôle |

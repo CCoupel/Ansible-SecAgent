@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package cli
 
 import (
@@ -14,7 +17,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/state"
 )
 
-const toolsKey = "state-tools-master-key"
+const toolsKey = "state-tools-master-key-0123456789abcdef"
 
 // toolsState builds a real state with two generations in a temporary directory.
 func toolsState(t *testing.T) string {

@@ -64,6 +64,42 @@ qui lance `chain-test.sh` (plugin `SECAGENT-PYTHON`, binaire `secagent-inventory
 
 ---
 
+## Données privées du poste (`PRIVATE/`)
+
+Tout ce qui est privé (secrets, clés, CA de test, jetons) vit sous **`PRIVATE/`** à la racine du dépôt (gitignoré), jamais à côté des scripts ni des Compose. Les scripts, Compose et `.env.example` restent en place et ne désignent `PRIVATE/` que par chemin relatif.
+
+```
+PRIVATE/
+├── qualif/
+│   ├── secrets/   # SECRETS_DIR : jwt_secret_key, admin_token, rsa_master_key (0400)
+│   ├── pki/       # QUALIF_TLS_DIR / PKI_OUT : ca.crt, ca.key, tls.crt, tls.key (CA de test)
+│   └── ci-tls/    # certificat jetable de `failover-test.sh setup-ci`
+└── prod/          # PUBLIC UNIQUEMENT, jamais lue par les scripts
+    ├── pki/ca.crt # certificat de la CA PROD (bundle de confiance des clients)
+    ├── .env       # variables non secrètes de l'hôte (copie)
+    └── README.txt # renvoie vers la référence des secrets (ci-dessous)
+
+~/secagent-private/prod/   # RÉFÉRENCE des secrets et de la PKI PROD : ext4 du poste, 0700, hors dépôt
+├── pki/           # ca.key (ne sort JAMAIS de ce répertoire), ca.crt, tls.key, tls.crt
+├── secrets/       # jwt_secret_key, admin_token, rsa_master_key (+ repeater_upstream_token)
+└── .env
+```
+
+- **Racine** : variable `SECAGENT_PRIVATE_DIR` (défaut `<dépôt>/PRIVATE`). Les défauts `SECRETS_DIR`, `QUALIF_TLS_DIR` et `PKI_OUT` en dérivent ; une variable explicite prime.
+- **Exception `CHAIN_DIR`** : les jetons de chaîne (enrôlement, plugin, `child.env`, `image-ids`) sont volatils et ne sont **pas** sous `PRIVATE/` : défaut `${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>` (0700, fichiers 0600), car un répertoire NTFS en 0777 est refusé par le plugin. `chain-test.sh` refuse un `CHAIN_DIR` non absolu, lien symbolique, non répertoire, d'un autre uid ou plus large que 0700.
+- **Chemin absolu obligatoire** : `SECAGENT_PRIVATE_DIR` doit être un chemin absolu ; un chemin relatif est refusé par les scripts.
+- **Risque NTFS** : un `PRIVATE/` situé sur `/mnt/c` (NTFS) est lisible par tout processus du poste (`chmod`/`chown` sans effet, modes 0400/0600 non appliqués). Risque accepté pour la qualif (secrets jetables, de test) ; **`PRIVATE/prod/` ne contient donc que du public** (`pki/ca.crt`, `.env`, `README.txt`) : aucun secret ni clé PROD sur NTFS. La référence des secrets et de la PKI PROD est `~/secagent-private/prod/` (système de fichiers qui honore les permissions), avec sauvegarde chiffrée hors poste par l'utilisateur.
+- **Fail-closed** : si la racine n'existe pas, les scripts de qualif refusent de générer des secrets (message nommant `SECAGENT_PRIVATE_DIR`) ; ils ne créent que les sous-répertoires.
+- **Jamais sur l'hôte, jamais dans l'archive** : `PRIVATE/` ne voyage ni vers un hôte, ni dans l'archive de release `secagent-compose-<version>.tar.gz`. Sur un hôte PROD la disposition reste `./secrets` + `.env` à côté du Compose ; `PRIVATE/prod/` (public) et `~/secagent-private/prod/` (référence) restent sur le poste. Les secrets de qualif arrivent sur l'hôte distant uniquement via les volumes (`push-secrets`, `push-tls`).
+- **Pourquoi** : le 2026-11-03, les secrets de la qualif n'avaient pour seule source qu'une copie de travail éphémère (scratchpad), perdue ensuite : aucune source durable. `PRIVATE/` est cette source durable, hors des copies de travail.
+- **Lancer depuis une copie hors `/mnt/c`** (NTFS ignore `chmod`/`chown`, nécessaire pour les modes 0400/0600) : l'exécution depuis la copie ne doit jamais écrire de secret dans la copie. Passer la racine du checkout en chemin **absolu** :
+
+```bash
+export SECAGENT_PRIVATE_DIR=/mnt/c/<chemin>/Ansible_SecAgent/PRIVATE   # absolu, jamais relatif
+cd <copie-hors-/mnt/c>/DEPLOYMENT/qualif
+bash chain-test.sh ci-prepare
+```
+
 ## Déploiement Qualif (Single-host Compose)
 
 Version pas à pas : [DOC/project/QUICKSTART.md](../DOC/project/QUICKSTART.md). Résumé :
@@ -80,8 +116,9 @@ openssl req -x509 -newkey rsa:2048 -keyout tls/tls.key -out tls/tls.crt \
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
 chmod 0644 tls/tls.key      # lisible par l'UID 10001 du conteneur (essai local UNIQUEMENT)
 
-# Secrets (hors dépôt) : JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY
-cp qualif.env.example qualif.env
+# Secrets du serveur (hors dépôt) : trois FICHIERS dans PRIVATE/qualif/secrets/ (0400, SECRETS_DIR), déposés dans le volume secagent-qualif_secrets (v3.0.5, #197)
+( umask 077; d="${SECAGENT_PRIVATE_DIR:-$PWD/../../PRIVATE}/qualif/secrets"; mkdir -p "$d"; for n in jwt_secret_key admin_token rsa_master_key; do openssl rand -base64 48 | tr -d '\n' > "$d/$n"; done )
+bash chain-test.sh push-secrets     # [vars requises : DOCKER_HOST, SECRETS_DIR (def. PRIVATE/qualif/secrets), PROJECT ; hote distant : + TLS_MODE=volume SECAGENT_ENDPOINT_HOST] volume externe, propriétaire 10001, mode 0400 ; lus via JWT_SECRET_KEY_FILE etc.
 
 export SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-<commit>@sha256:<digest>
 export QUALIF_TLS_DIR="$PWD/tls"
@@ -117,13 +154,14 @@ Les jetons se créent avec la CLI du serveur, via l'API admin (7771, TLS ; `ADMI
 
 ```bash
 srv() {
-  docker compose -p secagent-qualif -f docker-compose.server.yml exec \
+  docker compose -p secagent-qualif -f docker-compose.server.yml exec -T \
     -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
-    secagent-server-a secagent-server "$@"
+    secagent-server-a /app/secagent-server "$@"
 }
 
 # Jeton d'enrôlement opaque : secagent_enr_ + 64 hex (77 caractères), affiché UNE seule fois
-TOKEN=$(srv tokens create --role enrollment --expires 1h | grep -oE 'secagent_enr_[0-9a-f]{64}' | tail -1)
+# --hostname-pattern est OBLIGATOIRE (regexp ancrée) : ici les hôtes qualif-host-01, qualif-host-02…
+TOKEN=$(srv tokens create --role enrollment --hostname-pattern 'qualif-host-.*' --expires 1h | grep -oE 'secagent_enr_[0-9a-f]{64}' | tail -1)
 
 # Révoquer un jeton plugin ou relay-parent
 srv tokens list
@@ -140,7 +178,7 @@ Il n'existe pas de commande `docker compose set-env` : renseigner l'environnemen
 ```bash
 # Santé locale d'une instance (maître ou secondaire sain : code 0)
 docker compose -p secagent-qualif -f docker-compose.server.yml exec secagent-server-a \
-  secagent-server status --local
+  /app/secagent-server status --local
 
 # Santé HTTP du maître (jeton non requis)
 curl -s --cacert tls/tls.crt https://localhost:7770/health
@@ -148,7 +186,7 @@ curl -s --cacert tls/tls.crt https://localhost:7770/health
 
 # Inventaire : exige un jeton PLUGIN (ADMIN_TOKEN -> 403)
 PLG=$(srv tokens create --role plugin --description verif --expires 1h | grep -oE 'secagent_plg_[0-9a-f]{64}' | tail -1)
-curl -s --cacert tls/tls.crt -H "Authorization: Bearer $PLG" https://localhost:7770/api/inventory | jq .
+printf 'Authorization: Bearer %s\n' "$PLG" | curl -s --cacert tls/tls.crt -H @- https://localhost:7770/api/inventory | jq .
 
 # Ports : seul le maître écoute (le secondaire n'ouvre aucun port)
 ss -ltn | grep -E ':(7770|7771|7772|8770|8771|8772)'
@@ -340,7 +378,7 @@ StartLimitBurst=5
 secagent-server state verify "$STATE_DIR/relay.state"
 
 # Si HMAC invalid ou schema corrompu : restauration depuis backup (TOUTES les instances arrêtées).
-# `restore` revérifie le fichier, sauvegarde l'état courant en relay.state.bak-<UTC> et journalise
+# `restore` revérifie le fichier, sauvegarde l'état courant en relay.state.bak-<UTC ns> et journalise
 # dans state-restore.log. Options : --state-dir, --min-write-seq, --i-know-no-instance-is-running
 secagent-server state restore --from /backup/relay.state
 
@@ -431,7 +469,7 @@ echo $RELAY_SERVER_URL
 echo $RELAY_WS_URL
 
 # Test de connectivité
-curl -v --cacert tls.crt https://relay:7770/health   # -k réservé aux essais avec certificat auto-signé
+curl -v --cacert tls.crt https://relay:7770/health   # --cacert suffit, même avec le certificat auto-signé de qualification : jamais -k
 ```
 
 ### Failover vers passif ne se fait pas

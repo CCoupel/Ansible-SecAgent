@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package cli
 
 import (
@@ -21,7 +24,7 @@ func runStateInit(t *testing.T, dir string, testMode bool) (string, error) {
 }
 
 func TestStateInit_CreatesThenRefusesASecondRun(t *testing.T) {
-	t.Setenv("RSA_MASTER_KEY", "cli-test-master-key")
+	t.Setenv("RSA_MASTER_KEY", "cli-test-master-key-0123456789abcdef")
 	dir := t.TempDir()
 	out, err := runStateInit(t, dir, false)
 	if err != nil || !strings.Contains(out, "state initialized in "+dir) {
@@ -46,7 +49,7 @@ func TestStateInit_WithoutMasterKeyIsRefusedOutsideTestMode(t *testing.T) {
 }
 
 func TestStateInit_UsesStateDirFromTheEnvironment(t *testing.T) {
-	t.Setenv("RSA_MASTER_KEY", "k")
+	t.Setenv("RSA_MASTER_KEY", "k0123456789abcdef0123456789abcdef")
 	dir := t.TempDir()
 	t.Setenv("STATE_DIR", dir)
 	out, err := runStateInit(t, "", false)

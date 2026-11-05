@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package state
 
 import (
@@ -160,7 +163,7 @@ func TestRestore_ReplacesWithBackupsJournalAndAtomicWrite(t *testing.T) {
 	if got := mustFile(t, filepath.Join(dir, PrevFile)); string(got) != string(prevBytes) {
 		t.Error("relay.state.prev must be kept as is (the replaced relay.state is only in the backup)")
 	}
-	if res.BackupFile != "relay.state.bak-20261005T120000Z" || res.BackupPrev != "relay.state.prev.bak-20261005T120000Z" {
+	if res.BackupFile != "relay.state.bak-20261005T120000.000000000Z" || res.BackupPrev != "relay.state.prev.bak-20261005T120000.000000000Z" {
 		t.Errorf("backups %q %q", res.BackupFile, res.BackupPrev)
 	}
 	if string(mustFile(t, filepath.Join(dir, res.BackupFile))) != string(curBytes) {
@@ -172,7 +175,7 @@ func TestRestore_ReplacesWithBackupsJournalAndAtomicWrite(t *testing.T) {
 		}
 	}
 	log := string(mustFile(t, filepath.Join(dir, RestoreLogFile)))
-	for _, want := range []string{`"operator":"ops"`, `"source":"relay.state.prev"`, `"write_seq_before":3`, `"write_seq_after":2`, `"backup":"relay.state.bak-20261005T120000Z"`} {
+	for _, want := range []string{`"operator":"ops"`, `"source":"relay.state.prev"`, `"write_seq_before":3`, `"write_seq_after":2`, `"backup":"relay.state.bak-20261005T120000.000000000Z"`} {
 		if !strings.Contains(log, want) {
 			t.Errorf("journal lacks %s:\n%s", want, log)
 		}

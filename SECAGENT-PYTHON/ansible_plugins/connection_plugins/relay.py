@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # connection_plugins/secagent.py
 #
 # Ansible-SecAgent — Custom Connection Plugin
 #
 # Remplace SSH par un canal WebSocket géré par le secagent-minion côté client.
-# Le serveur FastAPI agit comme broker : il relaie les commandes Ansible
+# Le serveur secagent-server (Go) agit comme broker : il relaie les commandes Ansible
 # vers le bon agent via le WebSocket persistant ouvert par le client.
 #
 # Usage dans l'inventaire :

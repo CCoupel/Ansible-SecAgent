@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package state
 
 import (
@@ -10,7 +13,7 @@ import (
 	"time"
 )
 
-const resetKey = "link-trust-reset-master-key"
+const resetKey = "link-trust-reset-master-key-0123456789abcdef"
 
 // anchoredState builds a sealed state of a NON-ROOT relay: two agents, a blacklist entry and an anchor.
 func anchoredState(t *testing.T) string {

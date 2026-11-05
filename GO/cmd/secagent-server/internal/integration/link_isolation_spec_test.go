@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package integration
 
 // #146 (L1, plan rev2 §3 test 11) — a LINK token (the credential of a relay: `relay` today,

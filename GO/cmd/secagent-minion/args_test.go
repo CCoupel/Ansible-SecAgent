@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package main
 
 import (
@@ -17,8 +20,8 @@ func TestHandleArgs(t *testing.T) {
 	}{
 		{"no argument starts the agent", nil, true, 0, "", ""},
 		{"empty slice starts the agent", []string{}, true, 0, "", ""},
-		{"--version", []string{"--version"}, false, 0, "secagent-minion version dev\n", ""},
-		{"-v", []string{"-v"}, false, 0, "secagent-minion version dev\n", ""},
+		{"--version", []string{"--version"}, false, 0, "secagent-minion version dev\nLicense: AGPL-3.0-or-later\nSource: https://github.com/CCoupel/Ansible-SecAgent\n", ""},
+		{"-v", []string{"-v"}, false, 0, "secagent-minion version dev\nLicense: AGPL-3.0-or-later\nSource: https://github.com/CCoupel/Ansible-SecAgent\n", ""},
 		{"--help", []string{"--help"}, false, 0, "Usage:", ""},
 		{"-h", []string{"-h"}, false, 0, "RELAY_ENROLLMENT_TOKEN", ""},
 		{"unknown word", []string{"kyes"}, false, 1, "", "unexpected argument"},
@@ -67,7 +70,58 @@ func TestVersionIsOverridable(t *testing.T) {
 	defer func() { Version = old }()
 	var out, errb bytes.Buffer
 	handleArgs([]string{"--version"}, &out, &errb)
-	if out.String() != "secagent-minion version 3.0.4\n" {
+	if out.String() != "secagent-minion version 3.0.4\nLicense: AGPL-3.0-or-later\nSource: https://github.com/CCoupel/Ansible-SecAgent\n" {
 		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestInitBannerCarriesTheInjectedVersion(t *testing.T) {
+	old := Version
+	Version = "3.0.5"
+	defer func() { Version = old }()
+	if got, want := initBanner(), "[INIT] Ansible-SecAgent GO Agent 3.0.5"; got != want {
+		t.Errorf("initBanner() = %q, want %q", got, want)
+	}
+	if strings.Contains(initBanner(), "v1.0") {
+		t.Error("hard-coded v1.0 still in the banner")
+	}
+}
+
+// assertVersionThreeLines: exactly 3 lines, line 1 = "<component> version <version>", nothing after the last \n.
+func assertVersionThreeLines(t *testing.T, label, stdout, stderr, component, version string) {
+	t.Helper()
+	if stderr != "" {
+		t.Errorf("%s: stderr = %q, want empty", label, stderr)
+	}
+	if !strings.HasSuffix(stdout, "\n") || strings.HasSuffix(stdout, "\n\n") {
+		t.Errorf("%s: stdout must end with exactly one newline, got %q", label, stdout)
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	want := []string{
+		component + " version " + version,
+		"License: AGPL-3.0-or-later",
+		"Source: https://github.com/CCoupel/Ansible-SecAgent",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("%s: %d lines, want exactly %d: %q", label, len(lines), len(want), stdout)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Errorf("%s: line %d = %q, want %q", label, i+1, lines[i], want[i])
+		}
+	}
+}
+
+func TestVersionThreeExactLines(t *testing.T) {
+	old := Version
+	Version = "3.0.5"
+	defer func() { Version = old }()
+	for _, a := range []string{"--version", "-v"} {
+		var out, errb bytes.Buffer
+		proceed, code := handleArgs([]string{a}, &out, &errb)
+		if proceed || code != 0 {
+			t.Fatalf("%s: proceed=%v code=%d, want false/0", a, proceed, code)
+		}
+		assertVersionThreeLines(t, a, out.String(), errb.String(), "secagent-minion", "3.0.5")
 	}
 }

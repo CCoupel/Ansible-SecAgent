@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package handlers
 
 import (
@@ -9,12 +12,14 @@ import (
 	"testing"
 
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
+	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
 // newTestStore creates an in-memory SQLite store for testing.
 func newTestStore(t *testing.T) *storage.Store {
 	t.Helper()
-	s, err := storage.OpenTemp()
+	s, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatalf("newTestStore: %v", err)
 	}
@@ -466,5 +471,117 @@ func TestAdminRevokeMinion_NotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+// #233: GET /api/admin/minions/{hostname} overlays the live WebSocket state, as the list does (minions delete
+// relies on it to say that the agent is connected).
+func TestAdminGetMinion_StatusFollowsTheLiveConnection(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+	ctx := context.Background()
+	if _, err := s.RegisterAgent(ctx, "live-detail", "pem", "jti-live"); err != nil {
+		t.Fatal(err)
+	}
+	get := func() string {
+		req := adminReq("GET", "/api/admin/minions/live-detail", nil)
+		req.SetPathValue("hostname", "live-detail")
+		w := httptest.NewRecorder()
+		AdminGetMinion(w, req)
+		var d map[string]interface{}
+		_ = json.Unmarshal(w.Body.Bytes(), &d)
+		st, _ := d["status"].(string)
+		return st
+	}
+	if st := get(); st == "connected" {
+		t.Fatalf("no connection yet, status = %q", st)
+	}
+	ws.RegisterConnection("live-detail", &ws.AgentConnection{Hostname: "live-detail"})
+	t.Cleanup(func() { ws.UnregisterConnection("live-detail") })
+	if st := get(); st != "connected" {
+		t.Fatalf("a live connection must show connected, got %q", st)
+	}
+}
+
+// M12 (#233): the holders of the JWT are refused BEFORE the WebSocket is closed. At the moment of the first
+// close the current and the previous JTI are blacklisted and the row is gone; a connection that slipped in
+// meanwhile is closed again.
+func TestAdminDeleteMinion_RefusesTheJWTBeforeClosingTheSocket(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+	ctx := context.Background()
+	if _, err := s.RegisterAgent(ctx, "del-order", "pem", "jti-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateTokenJTIUnlessRevoked(ctx, "del-order", "jti-2"); err != nil { // jti-1 becomes the previous JTI
+		t.Fatal(err)
+	}
+	prev := closeAgentFn
+	t.Cleanup(func() { closeAgentFn = prev })
+	calls := 0
+	closeAgentFn = func(host string, code int, reason string) bool {
+		calls++
+		if calls == 1 {
+			for _, jti := range []string{"jti-1", "jti-2"} {
+				if bl, _ := s.IsJTIBlacklisted(ctx, jti); !bl {
+					t.Errorf("at the first close, %s must already be blacklisted", jti)
+				}
+			}
+			if a, _ := s.GetAgent(ctx, "del-order"); a != nil {
+				t.Errorf("at the first close the row must already be deleted: %+v", a)
+			}
+			// a connection slips in between the deletion and the close
+			ws.RegisterConnection("del-order", &ws.AgentConnection{Hostname: "del-order"})
+		}
+		return true
+	}
+	t.Cleanup(func() { ws.UnregisterConnection("del-order") })
+	req := adminReq("DELETE", "/api/admin/minions/del-order", nil)
+	req.SetPathValue("hostname", "del-order")
+	w := httptest.NewRecorder()
+	AdminDeleteMinion(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	}
+	if calls != 2 {
+		t.Errorf("closeAgent called %d times, want 2 (a second close for the connection that slipped in)", calls)
+	}
+}
+
+// B54: once the host is revoked, a failing step of the deletion closes the link with 4001 (the revoked host must
+// not keep a live connection), like `minions revoke`.
+func TestAdminDeleteMinion_AFailureAfterTheRevocationClosesTheLinkWith4001(t *testing.T) {
+	s := newTestStore(t)
+	SetAdminStore(s)
+	ctx := context.Background()
+	if _, err := s.RegisterAgent(ctx, "del-fail", "pem", "jti-f1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateTokenJTIUnlessRevoked(ctx, "del-fail", "jti-f2"); err != nil { // a previous JTI to blacklist
+		t.Fatal(err)
+	}
+	s.SetWriteGuard(func() error { // the revocation passes; every write after it is refused
+		if a, _ := s.GetAgent(ctx, "del-fail"); a != nil && a.Revoked {
+			return storage.ErrReadOnly
+		}
+		return nil
+	})
+	t.Cleanup(func() { s.SetWriteGuard(func() error { return nil }) })
+	prev := closeAgentFn
+	t.Cleanup(func() { closeAgentFn = prev })
+	var code int
+	closeAgentFn = func(host string, c int, reason string) bool { code = c; return true }
+	req := adminReq("DELETE", "/api/admin/minions/del-fail", nil)
+	req.SetPathValue("hostname", "del-fail")
+	w := httptest.NewRecorder()
+	AdminDeleteMinion(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("a refused write after the revocation must be an error: %d %s", w.Code, w.Body.String())
+	}
+	if code != ws.WSCloseRevoked {
+		t.Fatalf("the link must be closed with 4001, close code = %d", code)
+	}
+	if a, _ := s.GetAgent(ctx, "del-fail"); a == nil || !a.Revoked {
+		t.Errorf("the host stays revoked until the deletion is retried: %+v", a)
 	}
 }

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package integration
 
 // Parent side of the harness: starts nodes (one OS process each, through the real entry point
@@ -306,7 +309,7 @@ func prepareNode(t *testing.T, spec nodeSpec) *node {
 		}
 	}
 	n := &node{t: t, id: spec.ID, adminTok: "admin-" + spec.ID + "-secret-token", jwtSecret: "jwt-signing-secret-of-" + spec.ID + "-0123456789", logs: &syncBuf{}, bin: spec.NodeBinary}
-	masterKey := "integration-master-key-" + spec.ID
+	masterKey := "integration-master-key-0123456789-" + spec.ID
 	stateDir := filepath.Join(t.TempDir(), "state")
 	n.stateDir = stateDir
 	n.hooksPath = filepath.Join(t.TempDir(), "hooks.json")
@@ -857,16 +860,32 @@ func (n *node) admin(method, path string, body any) (int, map[string]any) {
 	return code, m
 }
 
-// pluginToken lazily creates the plugin token used for /api/exec, upload, fetch, inventory.
+// pluginMu serializes the lazy creation of the plugin token of every node. It is package-level on purpose: node is
+// copied by value (sibling), which `go vet` forbids for a struct holding a sync.Mutex. startExecs calls pluginToken
+// from many goroutines at once: an unsynchronized `if n.plugin == ""` was a data race (-race failed the CI).
+var pluginMu sync.Mutex
+
+// pluginToken lazily creates the plugin token used for /api/exec, upload, fetch, inventory. Safe for concurrent
+// use: the first caller creates it, the others wait and read the same value.
 func (n *node) pluginToken() string {
 	n.t.Helper()
+	pluginMu.Lock()
+	defer pluginMu.Unlock()
 	if n.plugin == "" {
 		code, m := n.admin("POST", "/api/admin/tokens", map[string]any{"role": "plugin", "description": "integration"})
 		if code != http.StatusCreated {
-			n.t.Fatalf("create plugin token on %s: %d %v", n.id, code, m)
+			n.t.Errorf("create plugin token on %s: %d %v", n.id, code, m) // Errorf, not Fatalf: callers may be goroutines
+			return ""
 		}
 		n.plugin = m["token"].(string)
 	}
+	return n.plugin
+}
+
+// pluginTokenIfAny returns the plugin token when one was created, "" otherwise, without creating it.
+func (n *node) pluginTokenIfAny() string {
+	pluginMu.Lock()
+	defer pluginMu.Unlock()
 	return n.plugin
 }
 

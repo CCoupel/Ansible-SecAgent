@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package handlers
 
 import (
@@ -8,10 +11,9 @@ import (
 	"net"
 	"os"
 	"testing"
-	"time"
 
 	"secagent-server/cmd/secagent-server/internal/repeater"
-	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 )
 
 // TestMain sets required env vars and bootstraps server state for all handler tests.
@@ -53,14 +55,14 @@ func TestMain(m *testing.M) {
 		server.mu.Lock()
 		server.PrivateKey = privKey
 		server.PublicPEM = pubPEM
-		server.JWTttl = time.Hour
+		server.JWTttl = DefaultAgentJWTTTL
 		server.mu.Unlock()
 
 		log.Println("[TEST] RSA-2048 keypair generated for unit tests")
 	}
 
 	// Initialize an in-memory SQLite store for register/token handler tests.
-	testStore, err := storage.OpenTemp()
+	testStore, err := storagetest.OpenTemp()
 	if err != nil {
 		log.Fatalf("TestMain: create test store: %v", err)
 	}

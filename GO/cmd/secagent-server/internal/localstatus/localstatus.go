@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package localstatus is the local health file of a relay process (#163, decision #158 Q4): the
 // process writes its role and the freshness of its lock activity to a file OUTSIDE the shared
 // STATE_DIR (default /run/secagent/status.json, mode 0600), and `secagent-server status --local`

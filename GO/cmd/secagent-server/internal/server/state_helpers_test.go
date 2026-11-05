@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package server
 
 import (
@@ -8,7 +11,7 @@ import (
 
 	"secagent-server/cmd/secagent-server/internal/handlers"
 	"secagent-server/cmd/secagent-server/internal/state"
-	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 )
 
 // testStateDir returns a directory holding an initial state: encrypted with RSA_MASTER_KEY when the
@@ -20,7 +23,7 @@ func testStateDir(t testing.TB) string {
 	dir := t.TempDir()
 	key := os.Getenv("RSA_MASTER_KEY")
 	if key == "" {
-		s, err := storage.OpenTestDir(dir)
+		s, err := storagetest.OpenTestDir(dir)
 		if err != nil {
 			t.Fatal(err)
 		}

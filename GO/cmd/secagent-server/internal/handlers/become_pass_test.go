@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // become_pass_test.go — Regression tests for logExecSafe stdin masking.
 //
 // SECURITY (CRITICAL): become_pass (stdin when become=true) must NEVER appear

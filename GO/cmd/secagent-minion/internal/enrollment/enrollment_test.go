@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package enrollment
 
 import (
@@ -8,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -755,4 +759,78 @@ func TestDecryptChallengeInvalidBase64(t *testing.T) {
 // isWindows returns true if running on Windows.
 func isWindows() bool {
 	return os.PathSeparator == '\\'
+}
+
+// ========================================================================
+// writeSecret — atomicité (M3 #217)
+// ========================================================================
+
+func TestWriteSecretAtomicPerm0600NoTempLeft(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token.jwt")
+	if err := writeSecret(path, []byte("v1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSecret(path, []byte("v2")); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode: %v %v", fi, err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "v2" {
+		t.Errorf("content %q", b)
+	}
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != 1 {
+		t.Errorf("temp file left behind: %v", ents)
+	}
+}
+
+// Interruption avant publication : l'ancien contenu est intact (jamais tronqué), aucun temporaire.
+func TestWriteSecretInterruptedKeepsOldContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token.jwt")
+	if err := writeSecret(path, []byte("old-complete-jwt")); err != nil {
+		t.Fatal(err)
+	}
+	orig := renameFile
+	defer func() { renameFile = orig }()
+	renameFile = func(string, string) error { return errors.New("simulated crash before rename") }
+
+	if err := writeSecret(path, []byte("new")); err == nil {
+		t.Fatal("expected error")
+	}
+	if b, _ := os.ReadFile(path); string(b) != "old-complete-jwt" {
+		t.Errorf("old content altered: %q", b)
+	}
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != 1 {
+		t.Errorf("temp file left behind: %v", ents)
+	}
+}
+
+// Un lien symbolique à la place du fichier n'est pas suivi : la cible reste intacte.
+func TestWriteSecretDoesNotFollowSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "victim")
+	if err := os.WriteFile(target, []byte("untouched"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "token.jwt")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skip("symlink unsupported")
+	}
+	if err := writeSecret(path, []byte("jwt")); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "untouched" {
+		t.Errorf("symlink target modified: %q", b)
+	}
+	if fi, _ := os.Lstat(path); fi.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("symlink not replaced")
+	}
+	if b, _ := os.ReadFile(path); string(b) != "jwt" {
+		t.Errorf("content %q", b)
+	}
 }

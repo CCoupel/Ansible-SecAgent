@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package files gère les transferts de fichiers entre le relay server et l'agent.
 //
 // Opérations (§11 ARCHITECTURE.md) :

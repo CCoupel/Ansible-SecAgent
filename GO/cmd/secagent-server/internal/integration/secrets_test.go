@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package integration
 
 import (
@@ -42,8 +45,8 @@ func nodeSecrets(nodes ...*node) []string {
 	var out []string
 	for _, n := range nodes {
 		out = append(out, n.adminTok, n.jwtSecret)
-		if n.plugin != "" {
-			out = append(out, n.plugin)
+		if tok := n.pluginTokenIfAny(); tok != "" {
+			out = append(out, tok)
 		}
 	}
 	return out

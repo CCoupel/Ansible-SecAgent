@@ -5,7 +5,7 @@
 # derive entre deux builds du meme tag. Les certificats racine viennent de l'image de build epinglee.
 
 # ---- Build -------------------------------------------------------------------------------------
-FROM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS builder
+FROM golang:1.27-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS builder
 
 WORKDIR /build
 
@@ -24,12 +24,15 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -buildvcs=false -ldflags="-s -w -X secagent-server/cmd/secagent-server/internal/cli.Version=${VERSION}" -o secagent-server ./cmd/secagent-server
 
 # ---- Runtime -----------------------------------------------------------------------------------
-FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 WORKDIR /app
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /build/secagent-server /app/secagent-server
+# Licence AGPL-3.0-or-later et mentions tierces des modules lies (#237) : copies suivies dans GO/ (contexte de build),
+# gardees identiques aux originaux de la racine par scripts/ci/gen_third_party_notices.sh --check (job lint).
+COPY LICENSE THIRD_PARTY_NOTICES.md /app/
 
 # Utilisateur non-root, UID/GID FIXES : le meme sur tous les hotes, car STATE_DIR est un partage
 # (NFS) dont les droits sont portes par l'UID numerique (voir DEPLOYMENT/prod/README.md).

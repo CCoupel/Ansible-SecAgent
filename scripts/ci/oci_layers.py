@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Affiche les digests des couches du premier manifeste d'une image OCI extraite (diagnostic de non-reproductibilite).
 Usage : oci_layers.py <repertoire_extrait>"""
 import json, os, sys

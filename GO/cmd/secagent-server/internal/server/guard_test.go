@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package server
 
 // The write guard of a REAL instance (#163b): RunInstance wires lock.CheckOwnership on EVERY state
@@ -46,7 +49,7 @@ func startInstance(t *testing.T) *instance {
 	t.Helper()
 	t.Setenv("JWT_SECRET_KEY", "node-test-secret")
 	t.Setenv("ADMIN_TOKEN", "node-test-admin")
-	t.Setenv("RSA_MASTER_KEY", "node-test-master-key")
+	t.Setenv("RSA_MASTER_KEY", "node-test-master-key-0123456789abcdef")
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent-hooks.json")
 	t.Setenv("RELAY_ACTION_LOG", t.TempDir()+"/actions.log")
 	dir := testStateDir(t)

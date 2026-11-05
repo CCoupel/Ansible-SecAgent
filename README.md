@@ -24,7 +24,7 @@ inventaire, exécution) est dans **[DOC/project/QUICKSTART.md](./DOC/project/QUI
 ```bash
 cd DEPLOYMENT/qualif   # Compose réel : docker-compose.server.yml (SECAGENT_IMAGE et QUALIF_TLS_DIR requis)
 
-# 1. État initial (RSA_MASTER_KEY requis dans qualif.env ; le serveur refuse de démarrer sans relay.state)
+# 1. État initial (RSA_MASTER_KEY requis, fichier du volume de secrets (`chain-test.sh push-secrets`) ; le serveur refuse de démarrer sans relay.state)
 docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent-server-a state init
 
 # 2. Démarrer (deux instances actif/passif sur un volume partagé ; le secondaire n'ouvre aucun port)
@@ -32,9 +32,9 @@ docker compose -p secagent-qualif -f docker-compose.server.yml up -d
 curl -s --cacert tls/tls.crt https://localhost:7770/health
 
 # 3. Jetons (CLI du serveur ; rôles : enrollment | plugin | relay-child | relay-parent)
-docker compose -p secagent-qualif -f docker-compose.server.yml exec \
+docker compose -p secagent-qualif -f docker-compose.server.yml exec -T \
   -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
-  secagent-server-a secagent-server tokens create --role enrollment --expires 1h
+  secagent-server-a /app/secagent-server tokens create --role enrollment --hostname-pattern 'qualif-host-.*' --expires 1h   # --hostname-pattern obligatoire (regexp ancrée)
 ```
 
 L'agent (`secagent-minion`) se configure par variables d'environnement
@@ -161,9 +161,36 @@ Voir [DOC/security/SECURITY.md](./DOC/security/SECURITY.md) pour le modèle comp
 - ✅ **Phase 14** : Stabilité v3.0.2-3.0.3 (event propagation, group vars, topologie dynamique)
   - ✅ v3.0.2 : Événements origin-first, inventory hiérarchique, group vars validés
   - ✅ v3.0.3 : État fichier (retiré NATS), TLS natif, Compose multi-hôtes, verrou HA
-  - ⏳ v3.0.4 : jetons de lien signés par la racine, ancre épinglée, rotation/révocation, `state rekey` (fusionnée, tag non posé)
+  - ✅ v3.0.4 : jetons de lien signés par la racine, ancre épinglée, rotation/révocation, `state rekey` (publiée le 2026-10-08)
+  - ⏳ v3.0.5 : durcissement et dettes de la v3.0.4, renouvellement des JWT d'agent, licence AGPL-3.0-or-later (en cours de livraison, non publiée)
 
-**Dernière version publiée : v3.0.3** — GO rewrite 100%, state file HA. **v3.0.4** (jetons de lien EdDSA signés par la racine, `state rekey`, limites de concurrence) est fusionnée dans `main` mais pas encore publiée : voir `docs/releases/v3.0.4.md`.
+**Dernière version publiée : v3.0.4** (2026-10-08) — jetons de lien EdDSA signés par la racine, `state rekey`, limites de concurrence : voir `docs/releases/v3.0.4.md`. **v3.0.5** (renouvellement des JWT d'agent, durcissement, licence AGPL-3.0-or-later) est en cours de livraison et n'est pas encore publiée : voir `docs/releases/v3.0.5.md`.
+
+## Licence
+
+Ansible-SecAgent est distribué sous **licence GNU Affero General Public License v3.0 ou ultérieure (AGPL-3.0-or-later)** : voir le fichier [`LICENSE`](LICENSE).
+
+Code source : <https://github.com/CCoupel/Ansible-SecAgent>. Les binaires `secagent-server`, `secagent-minion` et `secagent-inventory` affichent la licence et cette adresse avec `--version`.
+
+Pour contribuer, voir [`CONTRIBUTING.md`](CONTRIBUTING.md) (un accord de contribution, le CLA, est requis).
+
+```
+Ansible-SecAgent
+Copyright (C) 2025-2026 Cyril Coupel
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+```
 
 ## Contacts & Support
 

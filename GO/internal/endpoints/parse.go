@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package endpoints is the shared multi-address helper used by every Go client
 // of the relay (minion, repeater, CLI, inventory).
 //

@@ -13,7 +13,7 @@
 3. [Architecture réseau et flux de données](#3-architecture-réseau-et-flux-de-données)
 4. [Protocole WebSocket](#4-protocole-websocket)
 5. [Routage WebSocket Direct](#5-routage-websocket-direct)
-6. [API REST du relay server](#6-api-rest-du-secagent-server)
+6. [API REST du relay server](#6-api-rest-du-relay-server)
 7. [Sécurité et authentification](#7-sécurité-et-authentification)
 8. [Flow complet d'un playbook](#8-flow-complet-dun-playbook)
 9. [Gestion de la concurrence](#9-gestion-de-la-concurrence)
@@ -22,15 +22,15 @@
 12. [become (élévation de privilèges)](#12-become-élévation-de-privilèges)
 13. [Gestion des erreurs](#13-gestion-des-erreurs)
 14. [Inventaire dynamique](#14-inventaire-dynamique)
-15. [Haute disponibilité et scalabilité](#15-haute-disponibilité-et-scalabilité)
+15. [Relay Actif/Passif v3.0.3](#15-relay-actifpassif-v303)
 16. [Configuration](#16-configuration)
 17. [Roadmap MVP vs V2](#17-roadmap-mvp-vs-v2)
 18. [Déploiement — secagent-minion (systemd)](#18-déploiement--secagent-minion-systemd)
-19. [Déploiement — relay server (Docker Compose)](#19-déploiement--secagent-server-docker-compose)
-20. [Persistance des données](#20-persistance-des-données)
+19. [Déploiement — relay server Docker Compose Multi-Hôtes](#19-déploiement--relay-server-docker-compose-multi-hôtes)
+20. [État Persistant Fichier (STATE_DIR)](#20-état-persistant-fichier-state_dir)
 21. [CLI de Management — secagent-server en mode CLI](#21-cli-de-management--secagent-server-en-mode-cli)
 22. [Rotation des clefs — Période de recouvrement](#22-rotation-des-clefs--période-de-recouvrement)
-23. [Mode Proxy/Gateway multi-zone](#23-mode-proxygateaway-multi-zone)
+23. [Mode Repeater — Arbre Hiérarchique (v3.0.1)](#23-mode-repeater--arbre-hiérarchique-v301)
 
 ---
 
@@ -791,7 +791,7 @@ L'agent **daemonise** le subprocess et répond immédiatement :
 Le job est enregistré dans le registre async persisté sur disque :
 
 ```json
-// ~/.ansible-secagent/async_jobs.json
+// <RELAY_ASYNC_DIR>/jobs.json
 {
   "jid-uuid": {
     "pid": 4521,
@@ -820,7 +820,7 @@ L'agent intercepte cette commande et consulte son registre :
 
 ### Persistance du registre
 
-Le fichier `async_jobs.json` est mis à jour à chaque changement d'état.
+Le fichier `jobs.json` est mis à jour à chaque changement d'état.
 Lors du redémarrage de l'agent :
 - Si le PID est toujours actif (`/proc/{pid}` existe) : job considéré toujours en cours
 - Si le PID est mort : job marqué terminé avec `rc: -1, error: "agent_restarted"`
@@ -1246,7 +1246,7 @@ variables d'environnement (§16).
 /etc/secagent-minion/
   env                     # variables d'environnement (EnvironmentFile)
   id_rsa                  # clef privée (RELAY_PRIVATE_KEY, mode 600, owner secagent-minion)
-  token.jwt               # JWT courant (RELAY_JWT_PATH, renouvelé automatiquement)
+  token.jwt               # JWT courant (RELAY_JWT_PATH, renouvelé par `rekey` périodique sur la WebSocket authentifiée, #217)
 
 /var/lib/secagent-minion/
   async/                  # registres JSON des jobs async (RELAY_ASYNC_DIR)
@@ -1366,7 +1366,7 @@ STATE_DIR/                       # Répertoire configuré via $STATE_DIR (défau
 ├── relay.lock                   # Verrou en fichier (exclusivité actif/passif, contient write_seq publié)
 ├── actions.log                  # Journal des actions de hooks (10 MiB × 5 fichiers : .1 … .4), hors état
 ├── state-restore.log            # Journal des `state restore` (sans secret)
-└── relay.state.bak-<UTC>        # Copies faites par `state restore` uniquement (+ relay.state.prev.bak-<UTC>)
+└── relay.state.bak-<UTC ns>        # Copies faites par `state restore` uniquement (+ relay.state.prev.bak-<UTC ns>)
 ```
 
 Aucune sauvegarde automatique quotidienne n'existe ; `write_seq` est un **champ** (dans `relay.state` et `relay.lock`), pas

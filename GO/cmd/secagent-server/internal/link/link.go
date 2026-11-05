@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package link is the link-token authority of a relay (v3.0.4, #141/#146): on the ROOT it holds the
 // Ed25519 signing key (generated lazily, stored sealed enc: in server_config), mints and revokes the
 // link tokens, rotates the key and builds the frames sent down the tree; on any node it builds the
@@ -54,6 +57,11 @@ type Manager struct {
 	CloseByJTI func(jti string) int
 	States     func() map[string]ConfirmedState
 	Known      func() []string
+	// Direct returns, per relay_id, the last time the relay had a DIRECT link to this node (now when
+	// connected). Used by the status to tell the relays whose confirmation came from an intermediary (#215).
+	Direct func() map[string]time.Time
+
+	rotatedAt time.Time // when this process rotated the key (zero = not since it started); under mu
 
 	mu    sync.Mutex // serializes key operations and the emission of frames (ordered by seq)
 	cache struct {
@@ -321,17 +329,38 @@ func (m *Manager) Rotate(ctx context.Context) (curKID, prevKID string, seq uint6
 	if serr != nil {
 		log.Printf("link_keys not sent: %v", serr)
 	}
+	m.rotatedAt = time.Now()
 	log.Printf("[SECURITY] link key rotated: kid=%s previous=%s seq=%d", auth.LinkKID(pub(newPriv)), auth.LinkKID(pub(oldPriv)), seq)
 	return auth.LinkKID(pub(newPriv)), auth.LinkKID(pub(oldPriv)), seq, nil
 }
 
 // RelayStatus is the confirmation of one relay (R2).
 type RelayStatus struct {
-	RelayID   string `json:"relay_id"`
-	LinkSeq   uint64 `json:"link_seq"`
-	LinkKID   string `json:"link_kid,omitempty"`
+	RelayID string `json:"relay_id"`
+	LinkSeq uint64 `json:"link_seq"`
+	LinkKID string `json:"link_kid,omitempty"`
+	// Confirmed is true only for State "confirmed". State (v3.0.5, #234): "confirmed" (reports the current
+	// kid, or no rotation is open), "unconfirmed" (reported a link_state but not the current kid), or
+	// "never_seen" (no link_state at all: declared or learned from the topology, never connected, or
+	// connected without having reported). A never_seen relay is NOT confirmed, outside a rotation too.
 	Confirmed bool   `json:"confirmed"`
+	State     string `json:"state"`
+	// Direct (#215, option C): the relay has had a direct link to this node since the rotation was
+	// started by this process (or since this process started). A relay that is not Direct is only known
+	// through the relays between us and it, and its link_state reached us unsigned through them.
+	Direct bool `json:"direct"`
 }
+
+// processStart is the earliest instant "since the rotation" can be known with: the direct-link times
+// are in memory, so a restart forgets them.
+var processStart = time.Now()
+
+// Relay states of RelayStatus.
+const (
+	StateConfirmed   = "confirmed"
+	StateUnconfirmed = "unconfirmed"
+	StateNeverSeen   = "never_seen"
+)
 
 // Status describes the link keys and the confirmation of the rotation by the relays below.
 type Status struct {
@@ -341,6 +370,10 @@ type Status struct {
 	CurrentKID  string        `json:"current_kid,omitempty"`
 	PreviousKID string        `json:"previous_kid,omitempty"`
 	Relays      []RelayStatus `json:"relays"`
+	// NotDirect lists the relays that have not been directly connected since the rotation (#215):
+	// their confirmation, if any, was relayed unsigned by an intermediary that could forge it.
+	// Informative, never blocks a retire: the operator decides.
+	NotDirect []string `json:"not_direct"`
 }
 
 // Status builds the status; a relay is confirmed when its reported seq reached the rotation seq and
@@ -353,7 +386,15 @@ func (m *Manager) Status() (Status, error) {
 		return Status{}, err
 	}
 	seq, rot := m.Store.LinkSeq()
-	st := Status{RootID: m.LocalID(), Seq: seq, RotationSeq: rot, Relays: []RelayStatus{}}
+	st := Status{RootID: m.LocalID(), Seq: seq, RotationSeq: rot, Relays: []RelayStatus{}, NotDirect: []string{}}
+	since := processStart
+	if m.rotatedAt.After(since) {
+		since = m.rotatedAt
+	}
+	var direct map[string]time.Time
+	if m.Direct != nil {
+		direct = m.Direct()
+	}
 	if cur != nil {
 		st.CurrentKID = auth.LinkKID(pub(cur))
 	}
@@ -386,12 +427,23 @@ func (m *Manager) Status() (Status, error) {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		s := states[id]
+		s, seen := states[id]
 		// Confirmed = the relay reports the CURRENT kid, i.e. it trusts the new key and verifies the tokens
 		// signed by it. Its reported seq is informational (unsigned): a relay deployed after the
 		// rotation is anchored on the new key and cannot authenticate the rotation's seq.
-		ok := prev == nil || s.KID == st.CurrentKID
-		st.Relays = append(st.Relays, RelayStatus{RelayID: id, LinkSeq: s.Seq, LinkKID: s.KID, Confirmed: ok})
+		state := StateConfirmed
+		switch {
+		case !seen:
+			state = StateNeverSeen
+		case prev != nil && s.KID != st.CurrentKID:
+			state = StateUnconfirmed
+		}
+		at, wasDirect := direct[id]
+		isDirect := wasDirect && !at.Before(since)
+		if !isDirect {
+			st.NotDirect = append(st.NotDirect, id)
+		}
+		st.Relays = append(st.Relays, RelayStatus{RelayID: id, LinkSeq: s.Seq, LinkKID: s.KID, Confirmed: state == StateConfirmed, State: state, Direct: isDirect})
 	}
 	return st, nil
 }
@@ -399,37 +451,62 @@ func (m *Manager) Status() (Status, error) {
 // Retire closes the double-acceptation window. Refused (ErrUnconfirmed, with the relays) while relays
 // below have not confirmed the rotation, unless force (then a [SECURITY WARNING] lists them) (R2).
 func (m *Manager) Retire(ctx context.Context, force bool) (seq uint64, unconfirmed []string, err error) {
+	res, err := m.RetireDetailed(ctx, force)
+	return res.Seq, res.Unconfirmed, err
+}
+
+// RetireResult is the outcome of RetireDetailed. Unconfirmed lists EVERY relay that has not confirmed
+// (never_seen ones included, for the callers of v3.0.4); NeverSeen is the subset that never reported a
+// link_state (#234): it is cleared by connecting the relay or by `relays remove <id>`.
+type RetireResult struct {
+	Seq         uint64
+	Unconfirmed []string
+	NeverSeen   []string
+	NotDirect   []string // #215: relays not directly connected since the rotation (informative)
+}
+
+// RetireDetailed is Retire with the never-seen relays told apart.
+func (m *Manager) RetireDetailed(ctx context.Context, force bool) (res RetireResult, err error) {
 	st, err := m.Status()
 	if err != nil {
-		return 0, nil, err
+		return res, err
 	}
 	if st.PreviousKID == "" {
-		return 0, nil, ErrNoPrevious
+		return res, ErrNoPrevious
 	}
+	res.NotDirect = st.NotDirect
 	for _, r := range st.Relays {
-		if !r.Confirmed {
-			unconfirmed = append(unconfirmed, r.RelayID)
+		if r.State != StateConfirmed {
+			res.Unconfirmed = append(res.Unconfirmed, r.RelayID)
 		}
+		if r.State == StateNeverSeen {
+			res.NeverSeen = append(res.NeverSeen, r.RelayID)
+		}
+	}
+	unconfirmed := res.Unconfirmed
+	if len(res.NotDirect) > 0 {
+		log.Printf("[SECURITY WARNING] retire-link-previous: %d relay(s) not directly connected since the rotation, their confirmation was relayed unsigned: %q", len(res.NotDirect), res.NotDirect)
 	}
 	if len(unconfirmed) > 0 {
 		if !force {
-			return 0, unconfirmed, ErrUnconfirmed
+			return res, ErrUnconfirmed
 		}
-		log.Printf("[SECURITY WARNING] retire-link-previous FORCED while relays have not confirmed the rotation: %v (they will be refused until their trust anchor is re-pinned)", unconfirmed)
+		log.Printf("[SECURITY WARNING] retire-link-previous FORCED while relays have not confirmed the rotation: %q (never seen: %q; they will be refused until their trust anchor is re-pinned)", unconfirmed, res.NeverSeen)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, _, err := m.keys(false)
 	if err != nil || cur == nil {
-		return 0, nil, fmt.Errorf("no signing key: %v", err)
+		return res, fmt.Errorf("no signing key: %v", err)
 	}
-	seq, err = m.Store.RetireLinkPrevious()
+	seq, err := m.Store.RetireLinkPrevious()
 	if err != nil {
 		if errors.Is(err, storage.ErrNoPreviousKey) {
-			return 0, nil, ErrNoPrevious
+			return res, ErrNoPrevious
 		}
-		return 0, nil, err
+		return res, err
 	}
+	res.Seq = seq
 	if msg, serr := auth.SignLinkKeys(cur, pub(cur), nil, seq); serr == nil {
 		if frame, terr := withType(msg, "link_keys"); terr == nil && m.Broadcast != nil {
 			m.Broadcast(frame)
@@ -438,7 +515,7 @@ func (m *Manager) Retire(ctx context.Context, force bool) (seq uint64, unconfirm
 		log.Printf("link_keys (retire) not sent: %v", serr)
 	}
 	log.Printf("[SECURITY] link previous key retired: seq=%d", seq)
-	return seq, unconfirmed, nil
+	return res, nil
 }
 
 // SyncFrames (root) returns the frames of a freshly established child link, in order: link_keys while
@@ -471,34 +548,21 @@ func (m *Manager) SyncFrames() [][]byte {
 	return out
 }
 
-// Trust builds what /ws/relay verifies against, and the expected root relay_id. The root trusts its
-// own keys; any other relay its pinned anchor (link_trust). ErrNoTrust when there is nothing.
+// Trust builds what /ws/relay verifies against, and the expected root relay_id: the keys of the ROOT.
+// A relay that is not the root verifies through repeater.LinkTrust (its pinned anchor), never through
+// the Manager: here it has nothing to trust (ErrNoTrust, #221; the branch that read link_trust was dead).
 func (m *Manager) Trust() (auth.LinkTrust, string, error) {
-	if m.root() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		cur, prev, err := m.keys(false)
-		if err != nil {
-			return auth.LinkTrust{}, "", err
-		}
-		if cur == nil {
-			return auth.LinkTrust{}, "", ErrNoTrust
-		}
-		return auth.LinkTrust{Current: pub(cur), Previous: pub(prev)}, m.LocalID(), nil
-	}
-	lt := m.Store.LinkTrust()
-	if lt.CurrentPub == "" || lt.RootID == "" {
+	if !m.root() {
 		return auth.LinkTrust{}, "", ErrNoTrust
 	}
-	c, err := base64.RawURLEncoding.DecodeString(lt.CurrentPub)
-	if err != nil || len(c) != ed25519.PublicKeySize {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, prev, err := m.keys(false)
+	if err != nil {
+		return auth.LinkTrust{}, "", err
+	}
+	if cur == nil {
 		return auth.LinkTrust{}, "", ErrNoTrust
 	}
-	t := auth.LinkTrust{Current: c, LastSeq: lt.Seq}
-	if lt.PreviousPub != "" {
-		if p, perr := base64.RawURLEncoding.DecodeString(lt.PreviousPub); perr == nil && len(p) == ed25519.PublicKeySize {
-			t.Previous = p
-		}
-	}
-	return t, lt.RootID, nil
+	return auth.LinkTrust{Current: pub(cur), Previous: pub(prev)}, m.LocalID(), nil
 }

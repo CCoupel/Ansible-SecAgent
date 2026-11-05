@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package ws
 
 // QA v3.0.4 reserves R2 — tests that kill the mutants which survived the QA mutation campaign

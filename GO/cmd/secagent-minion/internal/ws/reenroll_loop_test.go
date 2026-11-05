@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package ws
 
 // #182 — boucle de ré-enrôlement : backoff, erreurs permanentes, 4001, pas de secret dans les logs.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package secretenv reads a secret from the environment either directly (X)
 // or from a file (X_FILE), the convention used by Docker/Compose secrets.
 //
@@ -71,8 +74,29 @@ func Get(name string) (string, error) {
 	return v, err
 }
 
-// readFile reads and validates a secret file. The check is done on the opened
-// descriptor (no TOCTOU), after an Lstat that rejects symbolic links.
+// ReadFile reads a secret from the file at path with the same rules as X_FILE (regular file, no symbolic
+// link, mode 0600 or stricter, bounded size, trailing whitespace trimmed, non-empty). The value is never
+// part of an error.
+func ReadFile(path string) (string, error) { return readFile(path) }
+
+// ReadAll reads a secret from r (standard input): bounded size, trailing whitespace trimmed, non-empty.
+func ReadAll(r io.Reader) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxSecretSize+1))
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", ErrFileUnreadable, errKind(err))
+	}
+	if len(data) > maxSecretSize {
+		return "", ErrTooLarge
+	}
+	v := strings.TrimRight(string(data), " \t\r\n")
+	if v == "" {
+		return "", ErrEmpty
+	}
+	return v, nil
+}
+
+// readFile reads and validates a secret file. The file is opened with O_NOFOLLOW|O_NONBLOCK (openSecret), the
+// checks are done on the opened descriptor (no TOCTOU), after an Lstat that rejects symbolic links.
 func readFile(path string) (string, error) {
 	li, err := os.Lstat(path)
 	if err != nil {
@@ -84,8 +108,11 @@ func readFile(path string) (string, error) {
 	if !li.Mode().IsRegular() {
 		return "", ErrNotRegular
 	}
-	f, err := os.Open(path)
+	f, err := openSecret(path)
 	if err != nil {
+		if errors.Is(err, ErrSymlink) {
+			return "", ErrSymlink // replaced by a symbolic link between the Lstat and the open
+		}
 		return "", fmt.Errorf("%w: %s", ErrFileUnreadable, errKind(err))
 	}
 	defer func() { _ = f.Close() }()

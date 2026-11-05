@@ -27,13 +27,20 @@ Booléens du serveur **stricts** : `ADMIN_TLS`, `ADMIN_INSECURE_HTTP`, `TLS_DISA
 - 7770 et 7772 sont publiés. **7771 (admin)** : le serveur y écoute sur `0.0.0.0` *dans le conteneur* avec `ADMIN_TLS=true` ;
   l'hôte ne le publie que sur `ADMIN_PUBLISH_ADDR` (boucle locale par défaut, ou réseau d'administration), **jamais** sur `0.0.0.0`
   ni sans adresse. Contrôlé en CI sur le rendu (`scripts/ci/check_compose.py`).
+- **Ports d'hôte paramétrables (v3.0.5)** : `API_PUBLISH_PORT`, `WS_PUBLISH_PORT`, `ADMIN_PUBLISH_PORT` (défauts 7770 / 7772 / 7771 ; les
+  ports **du conteneur** ne changent jamais). Sur un hôte qui porte aussi la QUALIF (192.168.1.218 : `secagent-qualif` y tient 7770-7772,
+  8770-8772 et 9771), la PROD publie **17770 / 17772 / 17771** (`.env.example`), l'admin restant sur `ADMIN_PUBLISH_ADDR` (boucle locale).
+  Les clients visent alors ces ports d'hôte : minions `RELAY_SERVER_URL=https://<hôte>:17770` et `RELAY_WS_URL=wss://<hôte>:17772/ws/agent`,
+  plugin Ansible (adresse du relay en `:17770`), relays enfants `REPEATER_UPSTREAM_URL=wss://<hôte>:17772`, admin
+  `https://127.0.0.1:17771` sur l'hôte. Le certificat TLS couvre le nom/l'adresse, pas le port. Avant `up` sur un hôte partagé :
+  `docker ps --format '{{.Names}} {{.Ports}}'` ne doit montrer aucun de ces ports.
 - Conteneur non-root `10001:10001`, système de fichiers en lecture seule, `cap_drop: ALL`.
   **Le même UID/GID 10001 doit avoir les droits d'écriture sur le partage depuis tous les hôtes** :
   `chown 10001:10001 <partage>` ; `chmod 0700`.
 - Healthcheck : `secagent-server status --local` (lit le statut local sous le tmpfs `/run/secagent`, jamais sur le partage).
   Maître et secondaire sont `healthy` ; un process figé passe `unhealthy`.
 - Clients (minion, `secagent-inventory`, plugin, relays enfants) : listes d'adresses (`RELAY_SERVER_URL`, `RELAY_WS_URL`,
-  `REPEATER_UPSTREAM_URL`) couvrant **tous les hôtes** : seul le maître répond. Côté minion systemd : `RestartPreventExitStatus=77 78`.
+  `REPEATER_UPSTREAM_URL`, en `wss://<parent>:7772` — port WebSocket du parent, pas l'API 7770) couvrant **tous les hôtes** : seul le maître répond. Côté minion systemd : `RestartPreventExitStatus=77 78`.
 
 ## Stockage partagé (NFS)
 
@@ -56,6 +63,15 @@ Alternative : volume Docker NFS (bloc commenté en bas du Compose).
 Il vérifie, avec 500 fichiers : `O_CREAT|O_EXCL` (un seul gagnant par fichier), `rename` atomique (aucun fichier partiel
 lu), `fsync` fichier et répertoire. À répéter (au moins 3 fois), horloges synchronisées (NTP). Complément manuel : `kill -9`
 d'un maître pendant l'écriture, puis `secagent-server state verify <STATE_DIR>/relay.state` (avec `RSA_MASTER_KEY`). Supprimer ensuite `.storage-test`.
+
+### Stockages partagés qualifiés
+
+| Stockage | Statut | Preuve |
+|---|---|---|
+| **MooseFS** (FUSE `mfs#192.168.1.231:9421`, `rw,relatime,allow_other`, monté sur deux hôtes) | **validé** le 2026-11-03 (hôtes 192.168.1.218 « srv8 » et 192.168.1.211 « srv1 », images v3.0.5 attestées, #239) | `test_shared_storage.py` : **3 exécutions CONFORMES** (écrivain h218, h211, h218), 500 fichiers `O_EXCL` à un seul gagnant chacune, 0 lecture partielle sur ≈ 48 000-50 000 lectures. Paire a (.218) / b (srv1), `STATE_DIR` en bind mount du partage, **jamais deux maîtres** : arrêt propre du maître → reprise en **2,3 s** ; gel (SIGSTOP) → maître `unhealthy` à **62,9 s**, reprise par l'autre nœud à **218,7 s**, le maître gelé s'auto-retire au dégel (`lock lost`, code 75, redémarré en secondaire par la politique de redémarrage) ; `kill` → reprise en **305,3 s**, un seul `relay.lock`, `state verify` OK. |
+| NFS, CIFS/SMB, autres | non testé = **non supporté** | — |
+
+Non réalisé : le **test de coupure du montage** (coupure du partage pendant une écriture) : l'équipe ne peut pas couper le montage MooseFS partagé avec d'autres services (`chunks`) ; #239 est close sans ce test. Il reste à faire avant toute mise en production sur un autre stockage, et ne dispense pas de l'essai `kill -9` + `state verify` décrit ci-dessus.
 
 ## Variables d'environnement essentielles
 
@@ -96,14 +112,14 @@ StartLimitBurst=5
 
 Le lien enfant → parent est authentifié par un **jeton de lien** Ed25519 signé par la **racine** et par une **ancre** : la clé publique de la racine, épinglée sur chaque relay non racine. Les jetons HS256 de v3.0.3 sont refusés ; **il n'y a pas de retour arrière** vers v3.0.3 (décision) et la rotation de `RSA_MASTER_KEY` est recommandée avant la mise en production.
 
-1. Sur la racine : `docker compose exec secagent-server secagent-server keys link-pubkey > root-link.pub` (PEM public sur stdout ; `root_id=<id> kid=<kid>` sur stderr = `REPEATER_ROOT_ID`). Copier `root-link.pub` sur l'hôte de l'enfant (`chmod 0644`), non secret mais jamais inscriptible par d'autres.
+1. Sur la racine : `docker compose exec secagent-server /app/secagent-server keys link-pubkey > root-link.pub` (PEM public sur stdout ; `root_id=<id> kid=<kid>` sur stderr = `REPEATER_ROOT_ID`). Copier `root-link.pub` sur l'hôte de l'enfant (`chmod 0644`), non secret mais jamais inscriptible par d'autres.
 2. Sur la racine : `… tokens create --role relay-child --sub <REPEATER_ID de l'enfant> --aud <relay_id du parent> [--expires 720h]` ; le jeton n'est affiché **qu'une fois** : l'écrire avec `printf '%s' "$JETON" | sudo ./preflight-secrets.sh --write repeater_upstream_token` (0400, UID 10001) sur l'hôte de l'enfant.
-3. `.env` de l'enfant : `REPEATER_ID`, `REPEATER_UPSTREAM_URL`, `REPEATER_ROOT_ID`, `ROOT_LINK_KEY_FILE` ; `set -a; . ./.env; set +a` (le script lit `SECRETS_DIR` et `ROOT_LINK_KEY_FILE` dans l'environnement, pas dans `.env`) puis `./preflight-secrets.sh --child` (code 0 exigé) ; puis `-f docker-compose.server.yml -f docker-compose.child.yml`.
+3. `.env` de l'enfant : `REPEATER_ID`, `REPEATER_UPSTREAM_URL` (liste `wss://<hôte-parent>:7772,…` couvrant tous les hôtes du parent ; `wss://` obligatoire : tout autre schéma fait refuser le démarrage de l'enfant), `REPEATER_ROOT_ID`, `ROOT_LINK_KEY_FILE` ; `set -a; . ./.env; set +a` (le script lit `SECRETS_DIR` et `ROOT_LINK_KEY_FILE` dans l'environnement, pas dans `.env`) puis `./preflight-secrets.sh --child` (code 0 exigé) ; puis `-f docker-compose.server.yml -f docker-compose.child.yml`.
 4. Rotation : `keys rotate-link` sur la racine, attendre que `keys link-status` confirme chaque relay, re-minter le jeton de chaque lien (signé par la nouvelle clé) et le remplacer avec le fichier de clé publique épinglé sur chaque relay (redémarrage), puis `keys retire-link-previous` (refusé `409 rotation_unconfirmed` tant que des relays n'ont pas confirmé). Révocation : `tokens revoke <id>` (lien fermé en 4010 à chaque niveau).
 
 ## Dimensionnement (parc > 3 000 hôtes)
 
-Mesures QA (#160) : fichier d'état 5,9 Mio à 3 000 agents, 19,7 Mio à 10 000 ; RSS établi 111 à 349 Mio, mais **pic de 640 à 884 Mio**
+Mesures QA (#160) : fichier d'état 5,9 Mio à 3 000 agents, ≈ 10 Mio à 10 000 (valeur de `DOC/server/STATE_SPEC.md`, « Dimensionnement mesuré ») ; RSS établi 111 à 349 Mio, mais **pic de 640 à 884 Mio**
 pendant des rafales d'enrôlement à 10 000 agents (déchets des opérations RSA-4096, copies du modèle d'état) ; 253 enrôlements/s ;
 exec 5,8 ms à 10 000 agents. Valeur de départ : **limite mémoire 2 GiB** (`SECAGENT_MEM_LIMIT`) et `GOMEMLIMIT` à ~80 %
 (`1638MiB`) pour que le GC travaille avant l'OOM-kill. Modifier les deux ensemble (ex. 4g → 3276MiB). Surveiller le RSS et
@@ -113,10 +129,11 @@ Limites de tâches (#179) : chaque tâche admise réserve 5 Mio de budget stdout
 
 ## Premier déploiement
 
-1. Sur chaque hôte : `.env`, répertoire `secrets/` (voir `prod.env.example`), **`./preflight-secrets.sh` (code 0 exigé : propriétaire UID 10001, mode 0400)**, certificats, partage monté, `docker login ghcr.io` si l'image est privée.
+1. Sur chaque hôte : `.env`, répertoire `secrets/` (voir `prod.env.example`), **`./preflight-secrets.sh` (code 0 exigé : propriétaire UID 10001, mode 0400)**, certificats, partage monté. Les images `ghcr.io/ccoupel/secagent-*` sont **publiques** (pull anonyme, sans `docker login`) ; **avant tout pull, vérifier l'attestation** sur le poste : `gh attestation verify oci://ghcr.io/ccoupel/secagent-server@<digest> --repo CCoupel/Ansible-SecAgent --signer-workflow CCoupel/Ansible-SecAgent/.github/workflows/release.yml` (`gh` ≥ 2.49), puis tirer **par digest** (archive de release : `image:` déjà en `tag@sha256`).
 2. **Initialiser l'état une seule fois**, depuis un seul hôte, avant de démarrer les autres :
    `docker compose run --rm --no-deps secagent-server state init` (nécessite `RSA_MASTER_KEY`).
 3. `docker compose -p secagent-prod-<relay_id> up -d` sur chaque hôte.
+   **Hôte distant sans SSH (API Docker seule)** : `secrets: file:` et les binds se résolvent sur l'hôte. Exécuter Compose **sur l'hôte**, dans un conteneur `docker:cli` (image épinglée par digest) : `docker -H tcp://<hôte>:2375 run --rm -v /var/run/docker.sock:/var/run/docker.sock -v <répertoire-du-compose>:/wd -w /wd docker:<version>-cli@sha256:<digest> compose -p secagent-prod-<relay_id> -f docker-compose.server.yml <commande>` ; `preflight-secrets.sh` s'exécute de même dans un conteneur `bash` avec ce répertoire monté.
 4. **Vérification de déploiement (obligatoire, avant et après `up`)**, sur l'hôte, dans le répertoire du Compose :
 
        docker compose config --format json | python3 tools/check_compose.py --require-memory-limit -
@@ -125,7 +142,7 @@ Limites de tâches (#179) : chaque tâche admise réserve 5 Mio de budget stdout
        docker compose ps --format '{{.Name}} {{.Ports}}' | grep 7771   # jamais 0.0.0.0:7771 ni :::7771
 
    (`check_compose.py` est livré dans l'archive à côté de ce README.) Toute erreur = ne pas déployer.
-5. Contrôle : exactement **un** hôte écoute sur 7770/7771/7772 (le maître ; les secondaires n'ouvrent aucun port) ; `docker ps` : tous `healthy`.
+5. Contrôle : exactement **un** hôte écoute sur les ports d'hôte publiés (7770/7771/7772 par défaut, 17770/17771/17772 sur 192.168.1.218) (le maître ; les secondaires n'ouvrent aucun port) ; `docker ps` : tous `healthy`.
 
 ## Bascule manuelle
 
@@ -140,7 +157,7 @@ secondaire (`restart: unless-stopped`).
 ### État (`relay.state`)
 Fichier unique, cohérent par construction : copier `relay.state` (ou `relay.state.prev`) **hors hôte et hors du partage**,
 à intervalle régulier et avant chaque montée de version. Restauration : relay arrêté sur tous les hôtes,
-`secagent-server state verify <fichier>` puis `state restore --from <fichier>` (qui revérifie le fichier, sauvegarde l'état courant en `relay.state.bak-<UTC>` et journalise dans `state-restore.log`), redémarrage. `RSA_MASTER_KEY` doit être défini. Le fichier d'état n'est pas rétrocompatible au-delà d'un
+`secagent-server state verify <fichier>` puis `state restore --from <fichier>` (qui revérifie le fichier, sauvegarde l'état courant en `relay.state.bak-<UTC ns>` et journalise dans `state-restore.log`), redémarrage. `RSA_MASTER_KEY` doit être défini. Le fichier d'état n'est pas rétrocompatible au-delà d'un
 changement de `schema_version`.
 
 ### `RSA_MASTER_KEY` — procédure **distincte**

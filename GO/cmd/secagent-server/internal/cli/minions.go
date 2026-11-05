@@ -1,8 +1,12 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package cli
 
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -23,6 +27,7 @@ func init() {
 		minionsSuspendCmd,
 		minionsResumeCmd,
 		minionsRevokeCmd,
+		minionsDeleteCmd,
 		minionsAuthorizeCmd,
 		minionsVarsCmd,
 	)
@@ -68,7 +73,7 @@ var minionsGetCmd = &cobra.Command{
 	Short: "Get details for one agent",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		data, status, err := apiRequest("GET", "/api/admin/minions/"+args[0], nil)
+		data, status, err := apiRequest("GET", "/api/admin/minions/"+url.PathEscape(args[0]), nil)
 		if err != nil {
 			return err
 		}
@@ -103,7 +108,7 @@ var minionsSetStateCmd = &cobra.Command{
 		if state != "connected" && state != "disconnected" {
 			return fmt.Errorf("state must be 'connected' or 'disconnected'")
 		}
-		data, status, err := apiRequest("POST", "/api/admin/minions/"+args[0]+"/set-state",
+		data, status, err := apiRequest("POST", "/api/admin/minions/"+url.PathEscape(args[0])+"/set-state",
 			map[string]string{"status": state})
 		if err != nil {
 			return err
@@ -123,7 +128,7 @@ var minionsSuspendCmd = &cobra.Command{
 	Short: "Suspend an agent (exec returns 503)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		data, status, err := apiRequest("POST", "/api/admin/minions/"+args[0]+"/suspend", nil)
+		data, status, err := apiRequest("POST", "/api/admin/minions/"+url.PathEscape(args[0])+"/suspend", nil)
 		if err != nil {
 			return err
 		}
@@ -142,7 +147,7 @@ var minionsResumeCmd = &cobra.Command{
 	Short: "Resume a suspended agent",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		data, status, err := apiRequest("POST", "/api/admin/minions/"+args[0]+"/resume", nil)
+		data, status, err := apiRequest("POST", "/api/admin/minions/"+url.PathEscape(args[0])+"/resume", nil)
 		if err != nil {
 			return err
 		}
@@ -161,7 +166,7 @@ var minionsRevokeCmd = &cobra.Command{
 	Short: "Revoke agent token (blacklist JTI + close WS 4001)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		data, status, err := apiRequest("POST", "/api/admin/revoke/"+args[0], nil)
+		data, status, err := apiRequest("POST", "/api/admin/revoke/"+url.PathEscape(args[0]), nil)
 		if err != nil {
 			return err
 		}
@@ -171,6 +176,55 @@ var minionsRevokeCmd = &cobra.Command{
 		fmt.Printf("Agent %s revoked\n", args[0])
 		return nil
 	},
+}
+
+// ── minions delete ────────────────────────────────────────────────────────────
+
+var minionsDeleteYes bool
+
+var minionsDeleteCmd = &cobra.Command{
+	Use:   "delete <hostname>",
+	Short: "Delete an agent permanently (state, authorized key); lifts a revocation",
+	Long: `Removes the agent from the relay state (DELETE /api/admin/minions/{hostname}) and closes its connection
+with the normal code 4000. Destructive: the agent is forgotten, a revocation on it (minions revoke) is
+lifted, and an agent that still has a valid enrollment token comes back by enrolling again. To keep a
+host out, REVOKE it and do not delete it. Asks for confirmation (type the hostname); without a terminal
+it is refused unless --yes is given.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		host := args[0]
+		data, status, err := apiRequest("GET", "/api/admin/minions/"+url.PathEscape(host), nil)
+		if err != nil {
+			return err
+		}
+		if code := checkError(data, status); code != 0 {
+			os.Exit(code)
+		}
+		var agent map[string]interface{}
+		_ = json.Unmarshal(data, &agent)
+		if rv, _ := agent["revoked"].(bool); rv {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "WARNING: %q is REVOKED: deleting it LIFTS the revocation (the host may enroll again with a valid enrollment token).\n", host)
+		}
+		if st, _ := agent["status"].(string); st == "connected" {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "NOTE: %q is connected: its connection will be closed (code 4000) and it will try to reconnect; with a valid enrollment token it enrolls again. To keep it out use 'minions revoke' instead.\n", host)
+		}
+		if err := confirmDestructive(cmd, minionsDeleteYes, "delete", host); err != nil {
+			return err
+		}
+		data, status, err = apiRequest("DELETE", "/api/admin/minions/"+url.PathEscape(host), nil)
+		if err != nil {
+			return err
+		}
+		if code := checkError(data, status); code != 0 {
+			os.Exit(code)
+		}
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Agent %q deleted\n", host)
+		return nil
+	},
+}
+
+func init() {
+	minionsDeleteCmd.Flags().BoolVar(&minionsDeleteYes, "yes", false, "confirm without prompting (required in non-interactive use)")
 }
 
 // ── minions authorize ─────────────────────────────────────────────────────────
@@ -232,7 +286,7 @@ var minionsVarsGetCmd = &cobra.Command{
 	Short: "Get Ansible vars for an agent",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		data, status, err := apiRequest("GET", "/api/admin/minions/"+args[0]+"/vars", nil)
+		data, status, err := apiRequest("GET", "/api/admin/minions/"+url.PathEscape(args[0])+"/vars", nil)
 		if err != nil {
 			return err
 		}
@@ -272,7 +326,7 @@ var minionsVarsSetCmd = &cobra.Command{
 			kvPairs[parts[0]] = parts[1]
 		}
 
-		data, status, err := apiRequest("POST", "/api/admin/minions/"+hostname+"/vars", kvPairs)
+		data, status, err := apiRequest("POST", "/api/admin/minions/"+url.PathEscape(hostname)+"/vars", kvPairs)
 		if err != nil {
 			return err
 		}
@@ -290,7 +344,7 @@ var minionsVarsDeleteCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		data, status, err := apiRequest("DELETE",
-			"/api/admin/minions/"+args[0]+"/vars/"+args[1], nil)
+			"/api/admin/minions/"+url.PathEscape(args[0])+"/vars/"+url.PathEscape(args[1]), nil)
 		if err != nil {
 			return err
 		}

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package repeater
 
 // #151 (L7) — SPECIFICATION of the configurable dial policy (plan rev2 §5): REPEATER_DIAL_ALLOW_LOOPBACK,

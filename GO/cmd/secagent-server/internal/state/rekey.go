@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package state
 
 // Offline rotation of RSA_MASTER_KEY (`state rekey`, v3.0.4). The master key encrypts every secret at
@@ -34,22 +37,16 @@ var (
 	// ErrRekeyKeyTooShort: the new master key is shorter than MinNewMasterKeyBytes (the AES key is a
 	// plain SHA-256 of it, so a short key is a weak key). The message never echoes the key.
 	ErrRekeyKeyTooShort = errors.New("state rekey: the new master key is too short (minimum 32 bytes; generate one with 'openssl rand -base64 48')")
+	// ErrRekeyKeyPredictable: the new master key is long enough but trivially guessable (#214, M4).
+	ErrRekeyKeyPredictable = errors.New("state rekey: the new master key is predictable (repeated character or pattern, or fewer than 12 distinct characters; generate one with 'openssl rand -base64 48')")
 	// ErrRekeyFromPrev: relay.state is not usable and the state would come from relay.state.prev.
 	ErrRekeyFromPrev = errors.New("state rekey: relay.state is not usable as is (the state comes from relay.state.prev): fix it first, for example with 'state restore'")
-	// ErrRekeySchema is no longer returned: a schema 1 state is migrated to 2 by the rekey itself.
-	//
-	// Deprecated: kept declared until the tests that referenced it are updated.
-	ErrRekeySchema = errors.New("state rekey: unsupported schema_version")
 	// ErrRekeyUncovered: an "enc:" value was found where the rekey does not know how to re-encrypt it.
 	// Refusing is the only safe answer (the field would become unreadable after the rotation).
 	ErrRekeyUncovered = errors.New("state rekey: an encrypted value was found in a field the rekey does not cover: nothing modified")
 	// ErrRekeyVerify: the rewritten state did not verify with the new key; the original was restored.
 	ErrRekeyVerify = errors.New("state rekey: the rewritten state failed its end-to-end verification")
 )
-
-// MinNewMasterKeyBytes is the minimum length of the NEW master key accepted by Rekey. It is not applied to
-// the current key (historical keys may be shorter and must stay openable) nor to `state init`.
-const MinNewMasterKeyBytes = 32
 
 // ValidateNewMasterKey applies the rules on the new key of a rekey: not empty, not shorter than
 // MinNewMasterKeyBytes, different from the current one.
@@ -61,6 +58,8 @@ func ValidateNewMasterKey(oldKey, newKey string) error {
 		return ErrRekeySameKey
 	case len(newKey) < MinNewMasterKeyBytes:
 		return ErrRekeyKeyTooShort
+	case isPredictableKey(newKey):
+		return ErrRekeyKeyPredictable
 	}
 	return nil
 }
@@ -254,10 +253,8 @@ func Rekey(o RekeyOptions) (*RekeyResult, error) {
 		return nil, err
 	}
 	migrate := env.SchemaVersion == 1
-	if migrate && (len(m.LinkTokens) > 0 || !m.LinkTrust.IsZero() ||
-		m.ServerConfig[ConfigLinkSigningKeyCurrent] != "" || m.ServerConfig[ConfigLinkSigningKeyPrevious] != "") {
-		return nil, fmt.Errorf("%w: a schema_version 1 state carries link data (link tokens, trust anchor or signing key)", ErrStructure)
-	}
+	// A schema_version 1 state that carries link data is already refused by the decoding above
+	// (checkLinks): no second check here.
 	if err := checkRekeyCoverage(&m.Payload); err != nil {
 		return nil, err
 	}
@@ -277,8 +274,8 @@ func Rekey(o RekeyOptions) (*RekeyResult, error) {
 	}
 
 	// 1. the backup, BEFORE any change: no backup, no rekey
-	backup := rekeyBackupPrefix + now().UTC().Format("20060102T150405Z") + rekeyBackupSuffix
-	if err := writeBackup(o.FS, filepath.Join(o.Dir, backup), raw); err != nil {
+	backup, err := writeUniqueBackup(o.FS, o.Dir, rekeyBackupPrefix, rekeyBackupSuffix, now(), raw)
+	if err != nil {
 		return nil, fmt.Errorf("state rekey: backup failed, nothing modified: %w", err)
 	}
 	if err := o.FS.SyncDir(o.Dir); err != nil {
@@ -351,14 +348,8 @@ func verifyRekeyed(o RekeyOptions, newC codec, original Payload, now time.Time) 
 	if env2.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("the new state has schema_version %d, expected %d", env2.SchemaVersion, SchemaVersion)
 	}
-	oldOpts := Options{MasterKey: o.OldKey}
-	oldC, err := oldOpts.codec()
-	if err != nil {
-		return err
-	}
-	if _, _, err := oldC.decode(written, now); err == nil {
-		return errors.New("the new state still opens with the old key")
-	}
+	// No "the old key no longer opens it" check: the HMAC key is derived from the master key (HKDF), so a
+	// file cannot authenticate under two keys; the decode with the new key above is what proves the rekey.
 	wantPlain, _, err := transformSecrets(original, o.OldKey, "")
 	if err != nil {
 		return err

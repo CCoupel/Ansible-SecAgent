@@ -1,9 +1,14 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package server
 
 import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +16,8 @@ import (
 	"github.com/gorilla/websocket"
 
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
+	"secagent-server/cmd/secagent-server/internal/ws"
 )
 
 // ── /ws/agent revocation check (#169) ────────────────────────────────────────
@@ -92,8 +99,9 @@ func TestWiring_AgentReplacedTokenIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := signAgentToken(t, serverJWTSecret(), "host-r", "jti-old")
-	// re-enrollment / refresh / rekey replace the current JTI
-	if _, err := n.store.UpdateTokenJTI(ctx, "host-r", "jti-new"); err != nil {
+	// a re-enrollment replaces the current JTI and forgets the old one (a rekey keeps it until the new
+	// one is used: TestAgentJTICheck_ReplacedJTIIsKeptUntilTheCurrentOneIsUsed)
+	if _, err := n.store.RegisterAgent(ctx, "host-r", "pem", "jti-new"); err != nil {
 		t.Fatal(err)
 	}
 	if _, status, err := dialAgentWS(wsAddr, old); err == nil || status != http.StatusUnauthorized {
@@ -115,7 +123,7 @@ func TestWiring_AgentReplacedTokenIsRefused(t *testing.T) {
 
 func newMemStore(t *testing.T) *storage.Store {
 	t.Helper()
-	st, err := storage.OpenTemp()
+	st, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +154,7 @@ func TestAgentJTICheck_Matrix(t *testing.T) {
 		{"blacklisted", "h", "bad", false, "token_revoked"},
 		{"blacklisted even in grace period", "h", "bad", true, "token_revoked"},
 		{"replaced token", "h", "older", false, "token_replaced"},
-		{"older token during rotation grace period is accepted", "h", "older", true, ""},
+		{"older token signed with the previous secret is refused too (M1)", "h", "older", true, "token_replaced"},
 		{"unknown agent", "nobody", "cur", false, "unknown_agent"},
 	}
 	for _, tc := range cases {
@@ -166,5 +174,238 @@ func TestAgentJTICheck_Matrix(t *testing.T) {
 	_ = closed.Close()
 	if err := agentJTICheck(closed)("h", "cur", false); err == nil {
 		t.Error("a store failure must refuse the connection")
+	}
+}
+
+// M1/M2 (#217): the JTI replaced by a rekey stays valid only until the current one serves a handshake.
+func TestAgentJTICheck_ReplacedJTIIsKeptUntilTheCurrentOneIsUsed(t *testing.T) {
+	st := newMemStore(t)
+	ctx := context.Background()
+	if _, err := st.RegisterAgent(ctx, "h", "pem", "j1"); err != nil {
+		t.Fatal(err)
+	}
+	check := agentJTICheck(st)
+	if _, err := st.UpdateTokenJTIUnlessRevoked(ctx, "h", "j2"); err != nil { // renewal: j1 -> prev
+		t.Fatal(err)
+	}
+	for _, usedPrev := range []bool{false, true} { // whichever secret signed it
+		if err := check("h", "j1", usedPrev); err != nil {
+			t.Fatalf("the replaced JTI must be accepted while j2 was never used (usedPrevious=%v): %v", usedPrev, err)
+		}
+	}
+	if err := check("h", "j2", false); err != nil { // first handshake with the current JTI
+		t.Fatal(err)
+	}
+	for _, usedPrev := range []bool{false, true} {
+		if err := check("h", "j1", usedPrev); err == nil || !strings.Contains(err.Error(), "token_replaced") {
+			t.Fatalf("j1 must be refused once j2 was used (usedPrevious=%v): %v", usedPrev, err)
+		}
+	}
+	a, _ := st.GetAgent(ctx, "h")
+	if a.PrevTokenJTI != "" || a.TokenJTI != "j2" {
+		t.Fatalf("state after confirmation: %+v", a)
+	}
+	// two renewals without a handshake: only the JTI right before the current one is kept
+	_, _ = st.UpdateTokenJTIUnlessRevoked(ctx, "h", "j3")
+	_, _ = st.UpdateTokenJTIUnlessRevoked(ctx, "h", "j4")
+	if err := check("h", "j2", false); err == nil {
+		t.Error("a JTI two generations old must be refused")
+	}
+	if err := check("h", "j3", false); err != nil {
+		t.Errorf("the previous generation is still accepted: %v", err)
+	}
+	// a re-enrollment forgets the replaced JTI
+	if _, err := st.RegisterAgent(ctx, "h", "pem", "j5"); err != nil {
+		t.Fatal(err)
+	}
+	if err := check("h", "j4", false); err == nil {
+		t.Error("an enrollment must drop the replaced JTI")
+	}
+}
+
+// N1 (#217): without a live connection the replaced JTI is accepted.
+func TestAgentJTICheck_ReplacedJTIIsAcceptedWithoutALiveConnection(t *testing.T) {
+	st := newMemStore(t)
+	ctx := context.Background()
+	if _, err := st.RegisterAgent(ctx, "n1-host", "pem", "k1"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = st.UpdateTokenJTIUnlessRevoked(ctx, "n1-host", "k2")
+	if err := agentJTICheck(st)("n1-host", "k1", true); err != nil {
+		t.Fatalf("without a live connection the replaced JTI is accepted: %v", err)
+	}
+}
+
+// N1 with the probe, through the real handshake: a live connection that answers the ping makes the
+// replaced JTI be refused (401) and stays registered; one that does not answer within the probe delay
+// is dropped and the replaced JTI is accepted.
+func TestWiring_ReplacedJTIProbeDecidesBetweenALiveAndADeadConnection(t *testing.T) {
+	n, _, _, wsAddr := startNode(t, func(c *Config) { c.AgentWSProbeTimeout = time.Second; c.AgentWSPingInterval = 5 * time.Second })
+	ctx := context.Background()
+	secret := serverJWTSecret()
+
+	// enroll with j1, then a rekey makes j2 current; the agent connects with j2; a later rekey makes
+	// j3 current and j2 the replaced JTI that a stale holder (or the agent after a cut) presents
+	connect := func(host string) *websocket.Conn {
+		if _, err := n.store.RegisterAgent(ctx, host, "pem", "j1"); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = n.store.UpdateTokenJTIUnlessRevoked(ctx, host, "j2")
+		c, status, err := dialAgentWS(wsAddr, signAgentToken(t, secret, host, "j2"))
+		if err != nil {
+			t.Fatalf("current token must connect: %v (%d)", err, status)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		_, _ = n.store.UpdateTokenJTIUnlessRevoked(ctx, host, "j3")
+		return c
+	}
+
+	// responsive agent: its client keeps reading, so gorilla answers the ping
+	live := connect("n1-live")
+	go func() {
+		for {
+			if _, _, err := live.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+	if c, status, err := dialAgentWS(wsAddr, signAgentToken(t, secret, "n1-live", "j2")); err == nil || status != http.StatusUnauthorized {
+		if c != nil {
+			_ = c.Close()
+		}
+		t.Fatalf("a responsive live connection must make the replaced JTI be refused: status %d err %v", status, err)
+	}
+	if _, gerr := ws.GetConnection("n1-live"); gerr != nil {
+		t.Fatalf("the live connection must stay registered: %v", gerr)
+	}
+
+	// dead agent: its client never reads, so no pong
+	_ = connect("n1-dead") // its client never reads: no pong
+	// N2: the probe concludes "dead" only after one ping interval without any sign of life
+	time.Sleep(5200 * time.Millisecond)
+	start := time.Now()
+	c, status, err := dialAgentWS(wsAddr, signAgentToken(t, secret, "n1-dead", "j2"))
+	if err != nil {
+		t.Fatalf("a connection that does not answer the probe must let the replaced JTI in: status %d err %v", status, err)
+	}
+	_ = c.Close()
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("the handshake waited %s for the probe (probe delay 1 s)", d)
+	}
+}
+
+// M12 (#233): after `minions delete`, the old JWT is refused at the handshake (the row is gone and the JTIs are
+// blacklisted) and the live socket is closed; a reconnection DURING the deletion cannot be accepted either, since
+// the JTI is refused before the row goes.
+func TestWiring_DeletedAgentCannotComeBackWithItsJWT(t *testing.T) {
+	n, _, admin, wsAddr := startNode(t, nil)
+	ctx := context.Background()
+	secret := serverJWTSecret()
+	if _, err := n.store.RegisterAgent(ctx, "del-host", "pem", "jti-d1"); err != nil {
+		t.Fatal(err)
+	}
+	tok := signAgentToken(t, secret, "del-host", "jti-d1")
+	live, status, err := dialAgentWS(wsAddr, tok)
+	if err != nil {
+		t.Fatalf("connect: %v (%d)", err, status)
+	}
+	defer func() { _ = live.Close() }()
+	closed := make(chan struct{})
+	go func() {
+		for {
+			if _, _, rerr := live.ReadMessage(); rerr != nil {
+				close(closed)
+				return
+			}
+		}
+	}()
+
+	// hammer the handshake with the old JWT while the deletion runs: once it is blacklisted, nothing is accepted
+	stop := make(chan struct{})
+	var accepted atomic.Int32
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if c, _, derr := dialAgentWS(wsAddr, tok); derr == nil {
+				accepted.Add(1)
+				_ = c.Close()
+			}
+		}
+	}()
+	time.Sleep(100 * time.Millisecond)
+	code, body := adminCall(t, admin, "DELETE", "/api/admin/minions/del-host", nil)
+	if code != http.StatusOK {
+		t.Fatalf("delete: %d %s", code, body)
+	}
+	before := accepted.Load()
+	time.Sleep(300 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+	if accepted.Load() != before {
+		t.Errorf("%d handshake(s) accepted AFTER the deletion returned", accepted.Load()-before)
+	}
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Error("the live socket was not closed")
+	}
+	if c, st, derr := dialAgentWS(wsAddr, tok); derr == nil || st != http.StatusUnauthorized {
+		if c != nil {
+			_ = c.Close()
+		}
+		t.Errorf("the old JWT after the deletion: status %d err %v, want 401", st, derr)
+	}
+	if bl, _ := n.store.IsJTIBlacklisted(ctx, "jti-d1"); !bl {
+		t.Error("the deleted agent's JTI must be blacklisted")
+	}
+}
+
+// B55 through the real handler: a host revoked between the handshake check and the registration is closed by the
+// replayed check. The replay is simulated by revoking in the store from inside the handshake check.
+func TestWiring_ARevocationBetweenTheCheckAndTheRegistrationClosesTheLink(t *testing.T) {
+	n, _, _, wsAddr := startNode(t, nil)
+	ctx := context.Background()
+	secret := serverJWTSecret()
+	if _, err := n.store.RegisterAgent(ctx, "race-b55", "pem", "jti-r1"); err != nil {
+		t.Fatal(err)
+	}
+	inner := agentJTICheck(n.store)
+	ws.SetAgentJTICheckFunc(func(host, jti string, prev bool) error {
+		err := inner(host, jti, prev) // accepted...
+		if err == nil && host == "race-b55" {
+			// ...and the host is revoked right after the check, before the connection is registered
+			_, _ = n.store.RevokeAgent(ctx, host, jti, "race", time.Now().Add(time.Hour))
+		}
+		return err
+	})
+	t.Cleanup(func() { ws.SetAgentJTICheckFunc(agentJTICheck(n.store)) })
+	c, status, err := dialAgentWS(wsAddr, signAgentToken(t, secret, "race-b55", "jti-r1"))
+	if err != nil {
+		t.Fatalf("the handshake itself is accepted: %v (%d)", err, status)
+	}
+	defer func() { _ = c.Close() }()
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, _, rerr := c.ReadMessage()
+	ce, ok := rerr.(*websocket.CloseError)
+	if !ok || ce.Code != 4001 {
+		t.Fatalf("the link must be closed with 4001 right after registration, got %v", rerr)
+	}
+	// The close frame is written before the server unregisters the link: wait (bounded) for the removal.
+	unregistered := false
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if _, gerr := ws.GetConnection("race-b55"); gerr != nil {
+			unregistered = true
+			break
+		}
+	}
+	if !unregistered {
+		t.Error("the revoked connection must not stay registered")
 	}
 }

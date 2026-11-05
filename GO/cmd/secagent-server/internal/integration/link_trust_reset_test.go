@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package integration
 
 // `state link-trust reset` end to end: a relay pinned on root A cannot be re-pinned on root B (the
@@ -28,7 +31,7 @@ func TestLinkTrustReset_AllowsRePinningOnANewRoot(t *testing.T) {
 	}
 
 	// offline reset (the node is stopped: its lock is gone), then the new anchor is accepted
-	res, err := state.ResetLinkTrust(state.LinkTrustResetOptions{Dir: relay1.stateDir, MasterKey: "integration-master-key-relay1", Operator: "test"})
+	res, err := state.ResetLinkTrust(state.LinkTrustResetOptions{Dir: relay1.stateDir, MasterKey: "integration-master-key-0123456789-relay1", Operator: "test"})
 	if err != nil || !res.Changed || res.BackupFile == "" {
 		t.Fatalf("reset: %+v %v", res, err)
 	}

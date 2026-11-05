@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //go:build slow
 
 package integration
@@ -58,7 +61,7 @@ func TestRekeyBinary_RealNodesRootAndNonRoot(t *testing.T) {
 	agentTok := root.enrollAgent("agent-r")
 	connectMinionWithToken(t, root, "agent-r", agentTok)
 	root.mintParentToken("x") // a token minted on the root: the state holds a link registry entry too
-	oldRoot, oldChild := "integration-master-key-root", "integration-master-key-relay1"
+	oldRoot, oldChild := "integration-master-key-0123456789-root", "integration-master-key-0123456789-relay1"
 	newRoot, newChild := "NEWKEY-root-0123456789-abcdef-0123456789", "NEWKEY-child-0123456789-abcdef-0123456789"
 	state := filepath.Join(root.stateDir, "relay.state")
 
@@ -179,7 +182,7 @@ func TestRekeyBinary_RollbackByRestoreWithTheOldKey(t *testing.T) {
 	bin := serverBinary(t)
 	n := startNode(t, nodeSpec{ID: "solo"})
 	n.enrollAgent("agent-s")
-	old, nw := "integration-master-key-solo", "NEWKEY-solo-0123456789-abcdef-0123456789"
+	old, nw := "integration-master-key-0123456789-solo", "NEWKEY-solo-0123456789-abcdef-0123456789"
 	n.stop()
 	sp := filepath.Join(n.stateDir, "relay.state")
 	h0 := rekeyFileHash(t, sp)
@@ -296,12 +299,12 @@ func TestRekeyBinary_NewKeyMinimumIs32Bytes(t *testing.T) {
 	bin := serverBinary(t)
 	n := startNode(t, nodeSpec{ID: "solo"})
 	n.stop()
-	old := "integration-master-key-solo" // 27 bytes: shorter than the minimum, and fine as a CURRENT key
+	old := "integration-master-key-0123456789-solo" // the CURRENT key is not subject to the minimum (a historical key must stay openable); only the NEW one is
 	sp := filepath.Join(n.stateDir, "relay.state")
 	h0 := rekeyFileHash(t, sp)
 	env := func(k string) []string { return []string{"RSA_MASTER_KEY=" + old, "NEW_RSA_MASTER_KEY=" + k} }
 
-	k31, k32 := strings.Repeat("k", 31), strings.Repeat("k", 32)
+	k31, k32 := strings.Repeat("k", 31), varKey(32)
 	code, out := rekeyCLI(t, bin, n, env(k31), "state", "rekey", "--yes")
 	if code != 11 || rekeyFileHash(t, sp) != h0 || strings.Contains(out, k31) || !strings.Contains(out, "32 bytes") {
 		t.Fatalf("31 bytes: exit %d, state unchanged=%v, output %q (want exit 11, nothing modified, the key not echoed)", code, rekeyFileHash(t, sp) == h0, rekeyFirstLine(out))
@@ -316,4 +319,14 @@ func TestRekeyBinary_NewKeyMinimumIs32Bytes(t *testing.T) {
 	if c, _ := rekeyCLI(t, bin, n, []string{"RSA_MASTER_KEY=" + k32}, "state", "verify", sp); c != 0 {
 		t.Errorf("the rekeyed state does not verify with the new key: %d", c)
 	}
+}
+
+// varKey returns a non-predictable test master key of n bytes (the key rules refuse repeated characters and patterns).
+func varKey(n int) string {
+	const src = "Tq9vXr2LmZk8WcYb4HnJ7sUd1EoGfAp5iBx3NtVw6QyKzRaMlSjCh0e+/=PdFgIuOl"
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = src[(i*7+i/len(src))%len(src)]
+	}
+	return string(out)
 }

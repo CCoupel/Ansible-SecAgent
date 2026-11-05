@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package server
 
 import (
@@ -10,6 +13,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/handlers"
 	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 )
 
 type fakePushStarter struct {
@@ -43,8 +47,8 @@ func seedRelay(t *testing.T, st *storage.Store, id, mode, url, tokenField string
 }
 
 func TestStartPushDialers_OnlyPushNodesWithASealedToken(t *testing.T) {
-	t.Setenv("RSA_MASTER_KEY", "main-test-master-key")
-	st, err := storage.OpenTemp()
+	t.Setenv("RSA_MASTER_KEY", "main-test-master-key-0123456789abcdef")
+	st, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,13 +80,13 @@ func TestStartPushDialers_OnlyPushNodesWithASealedToken(t *testing.T) {
 }
 
 func TestStartPushDialers_SkipsUndecryptableAndInvalidRows(t *testing.T) {
-	st, err := storage.OpenTemp()
+	st, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
 
-	t.Setenv("RSA_MASTER_KEY", "k1")
+	t.Setenv("RSA_MASTER_KEY", "k1-0123456789abcdef0123456789abcdef")
 	sealed, _ := handlers.SealPushToken("dmz1", "child-jwt")
 	t.Setenv("RSA_MASTER_KEY", "") // key lost: the sealed row cannot be opened
 	seedRelay(t, st, "dmz1", "push", "wss://dmz1:7772", sealed)
@@ -106,8 +110,8 @@ func (v *validatingStarter) Start(t repeater.DialTarget) error {
 }
 
 func TestStartPushDialers_ForbiddenStoredAddressIsNeverDialed(t *testing.T) {
-	t.Setenv("RSA_MASTER_KEY", "main-test-master-key")
-	st, err := storage.OpenTemp()
+	t.Setenv("RSA_MASTER_KEY", "main-test-master-key-0123456789abcdef")
+	st, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}

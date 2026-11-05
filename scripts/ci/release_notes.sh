@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Extrait de CHANGELOG.md les notes de la release d'un tag : le contenu de la section `## [vX.Y.Z] …` jusqu'a la section
 # `## [` suivante (parseur historique de release.yml, deplace ici pour etre teste et joue AVANT toute publication).
 # Echec (code 1, ::error::) si la section n'existe pas ou ne contient aucune ligne non vide.

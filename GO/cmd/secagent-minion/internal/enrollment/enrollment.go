@@ -1,6 +1,9 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package enrollment gère l'enregistrement de l'agent auprès du relay server.
 //
-// Flow Phase 10 (challenge-response) :
+// Flow d'enrôlement (challenge-response) :
 //  1. POST /api/register { hostname, pubkey_pem, enrollment_token }
 //     → Server répond { challenge: OAEP(nonce, agent_pubkey), server_public_key_pem }
 //  2. Agent déchiffre nonce avec sa clef privée
@@ -48,8 +51,8 @@ type Config struct {
 	PublicKeyPEM string
 	// PrivateKey est la clef privée RSA pour déchiffrer le JWT retourné.
 	PrivateKey *rsa.PrivateKey
-	// EnrollmentToken est le token d'enrollment single-use (env RELAY_ENROLLMENT_TOKEN).
-	// Requis pour le challenge-response Phase 10.
+	// EnrollmentToken est le jeton d'enrôlement, à usage unique ou réutilisable
+	// (env RELAY_ENROLLMENT_TOKEN). Requis pour le challenge-response.
 	// JAMAIS loggé en clair.
 	EnrollmentToken string
 	// CABundle est le chemin vers un CA bundle PEM custom (vide = store système).
@@ -396,23 +399,57 @@ func buildHTTPClient(caBundle string, insecure bool, timeout time.Duration) (*ht
 	}, nil
 }
 
-// writeSecret écrit content dans path avec mode 0600 de façon atomique.
-// Le fichier est créé directement avec O_CREATE et perm 0600 — pas de fenêtre
-// TOCTOU entre création et chmod (§HAUT-4).
-func writeSecret(path string, content []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+// renameFile est os.Rename, injectable pour simuler une interruption entre l'écriture du
+// fichier temporaire et sa publication (tests).
+var renameFile = os.Rename
+
+// writeSecret écrit content dans path (mode 0600) de façon atomique et durable : fichier temporaire
+// 0600 créé dans le même répertoire (os.CreateTemp : O_EXCL, jamais de lien symbolique suivi),
+// fsync, rename sur path, fsync du répertoire. Un crash ou une coupure laisse l'ancien contenu ou
+// le nouveau, jamais un fichier tronqué. Si path est un lien symbolique, il est remplacé, pas suivi.
+func writeSecret(path string, content []byte) (err error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	_, writeErr := f.Write(content)
-	closeErr := f.Close()
-	if writeErr != nil {
-		return writeErr
+	tmpName := tmp.Name()
+	defer func() {
+		if err != nil {
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err = tmp.Chmod(0600); err != nil {
+		return err
 	}
-	return closeErr
+	if _, err = tmp.Write(content); err != nil {
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if err = renameFile(tmpName, path); err != nil {
+		return err
+	}
+	// Durabilité du rename : fsync du répertoire (best effort sur les systèmes qui le refusent).
+	if d, derr := os.Open(dir); derr == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
+}
+
+// PersistToken écrit atomiquement un JWT dans path (0600). Utilisé par le dispatcher pour retenter
+// la persistance après une PersistError.
+func PersistToken(path, jwt string) error {
+	return writeSecret(path, []byte(jwt))
 }
 
 // loadCABundle charge un fichier PEM et retourne un pool de CAs.

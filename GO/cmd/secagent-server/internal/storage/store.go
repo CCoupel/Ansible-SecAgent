@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package storage is the relay's data store: the permanent data lives in the single-file state
 // engine (internal/state, #159/#160), read from memory through indexes and written by atomic
 // mutations; the volatile data (agent status and last_seen, plugin token last_used, relay status,
@@ -24,6 +27,7 @@ type AgentRecord struct {
 	Hostname     string
 	PublicKeyPEM string
 	TokenJTI     string
+	PrevTokenJTI string // #217: the JTI replaced by TokenJTI, valid until TokenJTI is used at a handshake
 	EnrolledAt   time.Time
 	LastSeen     time.Time
 	Status       string // "connected", "disconnected"
@@ -124,6 +128,9 @@ func (s *Store) SetWriteGuard(fn func() error) { s.eng.SetBeforeWrite(fn) }
 // Engine exposes the state engine (reload on promotion, write counters).
 func (s *Store) Engine() *state.Engine { return s.eng }
 
+// AfterClose registers fn to run when the store is closed (the temporary directory of a test store).
+func (s *Store) AfterClose(fn func()) { s.cleanup = fn }
+
 // Close releases what the store owns (a temporary directory for OpenTemp).
 func (s *Store) Close() error {
 	if s.cleanup != nil {
@@ -172,6 +179,14 @@ func (s *Store) WriteSeq() uint64 { return s.snap().WriteSeq() }
 
 func (s *Store) snap() state.Snapshot { return s.eng.Snapshot() }
 
+// shortJTI keeps the first 8 characters of a JTI for the logs (a full JTI never goes to a journal).
+func shortJTI(jti string) string {
+	if len(jti) > 8 {
+		return jti[:8] + "…"
+	}
+	return jti
+}
+
 func nowUTC() time.Time { return time.Now().UTC().Truncate(time.Second) }
 
 // ========================================================================
@@ -218,7 +233,7 @@ func (s *Store) RevokeKey(ctx context.Context, hostname string) (bool, error) {
 // ========================================================================
 
 func (s *Store) agentRecord(a state.Agent) AgentRecord {
-	rec := AgentRecord{Hostname: a.Hostname, PublicKeyPEM: a.PublicKeyPEM, TokenJTI: a.TokenJTI, EnrolledAt: a.EnrolledAt,
+	rec := AgentRecord{Hostname: a.Hostname, PublicKeyPEM: a.PublicKeyPEM, TokenJTI: a.TokenJTI, PrevTokenJTI: a.PrevTokenJTI, EnrolledAt: a.EnrolledAt,
 		LastSeen: a.EnrolledAt, Status: "disconnected", Suspended: a.Suspended, Revoked: a.Revoked, Vars: varsJSON(a.Vars)}
 	if a.LastSeen != nil {
 		rec.LastSeen = *a.LastSeen
@@ -257,7 +272,7 @@ func (s *Store) RegisterAgent(ctx context.Context, hostname, publicKeyPEM, token
 		return "", fmt.Errorf("failed to register agent: %w", err)
 	}
 	s.touchAgent(hostname, "disconnected", now, false)
-	log.Printf("Agent registered: hostname=%q jti=%q", hostname, tokenJTI)
+	log.Printf("Agent registered: hostname=%q jti=%q", hostname, shortJTI(tokenJTI))
 	return hostname, nil
 }
 
@@ -270,7 +285,7 @@ func putEnrolledAgent(tx *state.Tx, hostname, publicKeyPEM, tokenJTI string, now
 	if a.Revoked {
 		return ErrAgentRevoked
 	}
-	a.Hostname, a.PublicKeyPEM, a.TokenJTI, a.EnrolledAt = hostname, publicKeyPEM, tokenJTI, now
+	a.Hostname, a.PublicKeyPEM, a.TokenJTI, a.PrevTokenJTI, a.EnrolledAt = hostname, publicKeyPEM, tokenJTI, "", now
 	a.LastSeen = &now
 	return tx.PutAgent(a)
 }
@@ -306,7 +321,7 @@ func (s *Store) EnrollAgent(ctx context.Context, tokenID, hostname, publicKeyPEM
 		return fmt.Errorf("EnrollAgent: %w", err)
 	}
 	s.touchAgent(hostname, "disconnected", now, false)
-	log.Printf("Agent enrolled: hostname=%q token_id=%q jti=%q", hostname, tokenID, tokenJTI)
+	log.Printf("Agent enrolled: hostname=%q token_id=%q jti=%q", hostname, tokenID, shortJTI(tokenJTI))
 	return nil
 }
 
@@ -404,9 +419,57 @@ func (s *Store) UpdateTokenJTI(ctx context.Context, hostname, tokenJTI string) (
 			return nil
 		}
 		found = true
-		a.TokenJTI = tokenJTI
+		a.PrevTokenJTI, a.TokenJTI = a.TokenJTI, tokenJTI
 		return tx.PutAgent(a)
 	})
+	if err != nil {
+		return false, fmt.Errorf("failed to update token JTI: %w", err)
+	}
+	return found, nil
+}
+
+// ConfirmTokenJTI records that jti, the agent's CURRENT JTI, was used at a handshake: the replaced one
+// (PrevTokenJTI) is no longer accepted. One write, and none when there is nothing to clear.
+func (s *Store) ConfirmTokenJTI(ctx context.Context, hostname, jti string) error {
+	if a, ok := s.snap().Agent(hostname); !ok || a.TokenJTI != jti || a.PrevTokenJTI == "" {
+		return nil
+	}
+	err := s.mutate(func(tx *state.Tx) error {
+		a, ok := tx.Agent(hostname)
+		if !ok || a.TokenJTI != jti || a.PrevTokenJTI == "" {
+			return nil
+		}
+		a.PrevTokenJTI = ""
+		return tx.PutAgent(a)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to confirm token JTI: %w", err)
+	}
+	return nil
+}
+
+// UpdateTokenJTIUnlessRevoked replaces the current JTI of an agent like UpdateTokenJTI, but the
+// revocation check and the write are ONE transaction: an agent revoked between a caller's earlier read
+// and this write never gets a new JTI (#217: a renewal racing a revocation must not issue a token
+// after the revocation committed). A revoked agent leaves the state untouched and returns
+// ErrAgentRevoked (the same error as enrollment); an unknown one (false, nil).
+func (s *Store) UpdateTokenJTIUnlessRevoked(ctx context.Context, hostname, tokenJTI string) (bool, error) {
+	found := false
+	err := s.mutate(func(tx *state.Tx) error {
+		a, ok := tx.Agent(hostname)
+		if !ok {
+			return nil
+		}
+		found = true
+		if a.Revoked {
+			return ErrAgentRevoked
+		}
+		a.PrevTokenJTI, a.TokenJTI = a.TokenJTI, tokenJTI
+		return tx.PutAgent(a)
+	})
+	if errors.Is(err, ErrAgentRevoked) {
+		return true, ErrAgentRevoked
+	}
 	if err != nil {
 		return false, fmt.Errorf("failed to update token JTI: %w", err)
 	}
@@ -431,7 +494,7 @@ func (s *Store) AddToBlacklist(ctx context.Context, jti, hostname, expiresAt str
 	if err != nil {
 		return fmt.Errorf("failed to add to blacklist: %w", err)
 	}
-	log.Printf("JTI blacklisted: jti=%q hostname=%q reason=%q", jti, hostname, reasonStr)
+	log.Printf("JTI blacklisted: jti=%q hostname=%q reason=%q", shortJTI(jti), hostname, reasonStr)
 	return nil
 }
 
@@ -552,7 +615,7 @@ func (s *Store) RevokeAgent(ctx context.Context, hostname, jti, reason string, b
 		return false, fmt.Errorf("failed to revoke agent: %w", err)
 	}
 	if found {
-		log.Printf("Agent revoked: hostname=%q jti=%q reason=%q", hostname, jti, reason)
+		log.Printf("Agent revoked: hostname=%q jti=%q reason=%q", hostname, shortJTI(jti), reason)
 	}
 	return found, nil
 }

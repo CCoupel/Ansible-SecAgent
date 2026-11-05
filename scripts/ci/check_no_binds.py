@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Lit un rendu `docker compose config --format json` sur stdin : exit 1 si le rendu reference un CHEMIN DU CLIENT, ce qui
 est interdit contre un demon Docker DISTANT (le chemin serait resolu sur l'hote distant, pas sur le poste) :
 

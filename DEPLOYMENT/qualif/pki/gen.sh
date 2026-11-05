@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # PKI de TEST de la topologie en chaine (#188) : une CA privee et un certificat serveur (chaine complete) dont
 # les SAN couvrent toutes les instances de la chaine. Aucune cle privee n'est versionnee : tout est ecrit dans
-# $PKI_OUT (defaut : ce repertoire/out, ignore par git). NE JAMAIS reutiliser en production.
+# $PKI_OUT (defaut : $SECAGENT_PRIVATE_DIR/qualif/pki, racine PRIVATE/ du depot ignoree par git, #250).
+# NE JAMAIS reutiliser en production.
 #
 #   bash pki/gen.sh [repertoire_de_sortie]
 # Produit : ca.crt (bundle de confiance : REPEATER_CA_FILE, RELAY_CA_BUNDLE), tls.crt + tls.key (TLS_CERT/TLS_KEY).
@@ -12,13 +16,23 @@
 # QUALIF_TLS_DIR ; une CA de test et des SAN explicites suffisent a verifier la chaine TLS sans skip-verify.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUT="${1:-${PKI_OUT:-$HERE/out}}"
+REPO="$(cd "$HERE/../../.." && pwd)"
+PRIVATE_DIR="${SECAGENT_PRIVATE_DIR:-$REPO/PRIVATE}"
+PRIVATE_DIR="${PRIVATE_DIR%/}"
+OUT="${1:-${PKI_OUT:-$PRIVATE_DIR/qualif/pki}}"
 DAYS="${PKI_DAYS:-30}"
+# Garde FAIL-CLOSED (#250) : la racine PRIVATE/ n'est jamais creee ici (copie ephemere du depot = refus) ; une racine
+# RELATIVE est refusee (elle dependrait du repertoire courant et contournerait la comparaison des chemins).
+case "$PRIVATE_DIR" in /*) ;; *) echo "ERREUR : SECAGENT_PRIVATE_DIR=$PRIVATE_DIR n'est pas un chemin absolu : refus (exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE en chemin absolu)." >&2; exit 1 ;; esac
+case "$OUT" in
+  "$PRIVATE_DIR"|"$PRIVATE_DIR"/*)
+    [ -d "$PRIVATE_DIR" ] || { echo "ERREUR : racine des donnees privees introuvable (SECAGENT_PRIVATE_DIR=$PRIVATE_DIR) : refus de generer des cles dans un emplacement ephemere. Creer la racine ou exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE (chemin absolu)." >&2; exit 1; } ;;
+esac
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 # Garde : refuse d'ecrire des cles dans un depot git hors d'un chemin IGNORE (une cle ne doit jamais etre versionnee).
 if git -C "$OUT" rev-parse --is-inside-work-tree >/dev/null 2>&1 && ! { git -C "$OUT" check-ignore -q "$OUT/tls.key" && git -C "$OUT" check-ignore -q "$OUT/ca.key"; }; then
-  echo "ERREUR : $OUT est dans un depot git et n'est pas ignore : refus de generer des cles (utiliser pki/out ou un repertoire hors depot)." >&2
+  echo "ERREUR : $OUT est dans un depot git et n'est pas ignore : refus de generer des cles (utiliser PRIVATE/qualif/pki ou un repertoire hors depot)." >&2
   exit 1
 fi
 cd "$OUT"

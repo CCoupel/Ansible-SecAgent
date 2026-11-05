@@ -1,8 +1,11 @@
-// Phase 12 — relays.go
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// relays.go — commandes `relays`
 // CLI subcommand "relays" — manage relay nodes registered on a proxy.
 //
 //	secagent-server relays list   [--format table|json|yaml]
-//	secagent-server relays add    --id <relay_id> --url <url> --token <token> [--mode push|pull] [--description <desc>]
+//	secagent-server relays add    --id <relay_id> --url <url> --token-file <file|-> [--mode push|pull] [--description <desc>]
 //	secagent-server relays remove <relay_id_or_uuid>
 //	secagent-server relays status [--format table|json|yaml]
 package cli
@@ -10,10 +13,13 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"secagent-server/internal/secretenv"
 )
 
 // relaysCmd is the top-level "relays" subcommand.
@@ -25,6 +31,7 @@ var relaysCmd = &cobra.Command{
 func init() {
 	relaysCmd.AddCommand(
 		relaysListCmd,
+		relaysRevokeCmd,
 		relaysAddCmd,
 		relaysRemoveCmd,
 		relaysStatusCmd,
@@ -86,6 +93,7 @@ var (
 	addRelayMode        string
 	addRelayURL         string
 	addRelayToken       string
+	addRelayTokenFile   string
 	addRelayDescription string
 )
 
@@ -105,12 +113,16 @@ minted on the ROOT relay for this node:
 It is stored sealed under RSA_MASTER_KEY (503 without it) and never shown again. The child must be
 anchored on the root key (REPEATER_ROOT_ID + REPEATER_ROOT_LINK_KEY_FILE).
 
+The token should not be given on the command line (--token: visible in the process list and in the
+history). Use --token-file <path> (a regular file, mode 0600) or --token-file - to read it from standard
+input; --token and --token-file together are refused.
+
 Examples:
   # Pull mode: declare the child (then mint its relay-child token on the root)
   secagent-server relays add --id dmz1 --description "Zone DMZ1"
 
   # Push mode: this node initiates the connection to the child
-  secagent-server relays add --id dmz2 --mode push --url wss://dmz2:7772 --token "<relay-parent link token>" --description "Zone DMZ2"`,
+  secagent-server relays add --id dmz2 --mode push --url wss://dmz2:7772 --token-file /etc/secagent/dmz2.token --description "Zone DMZ2"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(addRelayID) == "" {
 			return fmt.Errorf("--id is required")
@@ -134,8 +146,12 @@ Examples:
 			}
 			body["urls"] = urls
 		}
-		if addRelayToken != "" {
-			body["token"] = addRelayToken
+		token, terr := relayAddToken(cmd)
+		if terr != nil {
+			return terr
+		}
+		if token != "" {
+			body["token"] = token
 		}
 		if addRelayDescription != "" {
 			body["description"] = addRelayDescription
@@ -188,30 +204,167 @@ func init() {
 	relaysAddCmd.Flags().StringVar(&addRelayID, "id", "", "Relay unique ID (required)")
 	relaysAddCmd.Flags().StringVar(&addRelayMode, "mode", "pull", "Connection mode: pull (relay→proxy) or push (proxy→relay)")
 	relaysAddCmd.Flags().StringVar(&addRelayURL, "url", "", "wss:// URL of the child relay (push mode only; comma separated list accepted)")
-	relaysAddCmd.Flags().StringVar(&addRelayToken, "token", "", "relay-parent link token minted on the root for this node (push mode only; stored sealed)")
+	relaysAddCmd.Flags().StringVar(&addRelayToken, "token", "", "relay-parent link token (push mode only; stored sealed). DEPRECATED: it shows in the process list and the shell history, use --token-file")
+	relaysAddCmd.Flags().StringVar(&addRelayTokenFile, "token-file", "", "file holding the relay-parent link token (mode 0600), or - for standard input (push mode only)")
 	relaysAddCmd.Flags().StringVar(&addRelayDescription, "description", "", "Human-readable description")
+	relaysRevokeCmd.Flags().BoolVar(&relaysRevokeYes, "yes", false, "confirm without prompting (required in non-interactive use)")
+	relaysRemoveCmd.Flags().BoolVar(&relaysRemoveRevoke, "revoke", false, "revoke the relay first (needed for a relay whose link token the node does not track)")
+	relaysRemoveCmd.Flags().BoolVar(&relaysRemoveYes, "yes", false, "confirm without prompting (required in non-interactive use)")
+}
+
+// relayAddToken returns the push token from --token-file (file or "-" for stdin) or the deprecated --token.
+// Both together are an error. The value is never printed.
+func relayAddToken(cmd *cobra.Command) (string, error) {
+	if addRelayToken != "" && addRelayTokenFile != "" {
+		return "", fmt.Errorf("--token and --token-file are mutually exclusive")
+	}
+	switch {
+	case addRelayTokenFile == "-":
+		v, err := secretenv.ReadAll(cmd.InOrStdin())
+		if err != nil {
+			return "", fmt.Errorf("--token-file -: %w", err)
+		}
+		return v, nil
+	case addRelayTokenFile != "":
+		v, err := secretenv.ReadFile(addRelayTokenFile)
+		if err != nil {
+			return "", fmt.Errorf("--token-file %s: %w", addRelayTokenFile, err)
+		}
+		return v, nil
+	case addRelayToken != "":
+		_, _ = fmt.Fprintln(os.Stderr, "WARNING: --token puts the link token in the process list and the shell history; use --token-file <path> or --token-file - (standard input)")
+		return addRelayToken, nil
+	}
+	return "", nil
 }
 
 // ── relays remove ─────────────────────────────────────────────────────────────
 
-var relaysRemoveCmd = &cobra.Command{
-	Use:   "remove <id>",
-	Short: "Remove a registered relay node by its UUID",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		id := strings.TrimSpace(args[0])
-		if id == "" {
-			return fmt.Errorf("relay id is required")
+// resolveRelay maps what the operator typed to the internal id of the relay row: the row id (UUID, as
+// printed by the API) or the relay_id (the name, as in 'relays list'). An unknown or ambiguous name is an error.
+func resolveRelay(arg string) (rowID, relayID string, err error) {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return "", "", fmt.Errorf("relay id is required")
+	}
+	data, status, err := apiRequest("GET", "/api/admin/relays", nil)
+	if err != nil {
+		return "", "", err
+	}
+	if code := checkError(data, status); code != 0 {
+		os.Exit(code)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return "", "", fmt.Errorf("parse response: %w", err)
+	}
+	list, _ := result["relays"].([]interface{})
+	var byName []map[string]interface{}
+	for _, it := range list {
+		m, _ := it.(map[string]interface{})
+		if id, _ := m["id"].(string); id == arg {
+			rid, _ := m["relay_id"].(string)
+			return id, rid, nil
 		}
+		if rid, _ := m["relay_id"].(string); rid == arg {
+			byName = append(byName, m)
+		}
+	}
+	switch len(byName) {
+	case 0:
+		return "", "", fmt.Errorf("no relay with id or relay_id %q (see 'relays list')", arg)
+	case 1:
+		id, _ := byName[0]["id"].(string)
+		return id, arg, nil
+	}
+	return "", "", fmt.Errorf("relay_id %q matches %d rows: use the row id", arg, len(byName))
+}
 
-		data, status, err := apiRequest("DELETE", "/api/admin/relays/"+id, nil)
+func revokeRelayRow(rowID string) error {
+	data, status, err := apiRequest("POST", "/api/admin/relays/"+url.PathEscape(rowID)+"/revoke", nil)
+	if err != nil {
+		return err
+	}
+	if code := checkError(data, status); code != 0 {
+		os.Exit(code)
+	}
+	return nil
+}
+
+var relaysRevokeYes bool
+
+var relaysRevokeCmd = &cobra.Command{
+	Use:   "revoke <id|relay_id>",
+	Short: "Revoke a relay: blacklist its link token and cut its link (permanent, code 4010)",
+	Long: `Revokes a relay node (POST /api/admin/relays/{id}/revoke): its link token is blacklisted, its link is
+closed with the permanent code 4010 and it is refused until a new token is minted for it. A relay that never
+connected (never_seen) must be revoked before it can be removed. Accepts the relay_id (as in 'relays list')
+or the row id. Asks for confirmation (type the relay_id); without a terminal it is refused unless --yes.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		rowID, relayID, err := resolveRelay(args[0])
 		if err != nil {
 			return err
+		}
+		if err := confirmDestructive(cmd, relaysRevokeYes, "revoke", relayID); err != nil {
+			return err
+		}
+		if err := revokeRelayRow(rowID); err != nil {
+			return err
+		}
+		fmt.Printf("Relay %q revoked.\n", relayID)
+		return nil
+	},
+}
+
+var (
+	relaysRemoveRevoke bool
+	relaysRemoveYes    bool
+)
+
+var relaysRemoveCmd = &cobra.Command{
+	Use:   "remove <id|relay_id>",
+	Short: "Remove a registered relay node (row id or relay_id); --revoke revokes it first",
+	Long: `Removes a relay node. Accepts the relay_id (as in 'relays list') or the row id (UUID). The node refuses
+(409 relay_not_revoked) a relay whose link token it does not track — typically a relay declared with
+'relays add' that never connected (never_seen): revoke it first, or pass --revoke to revoke then remove in
+one go. Destructive: confirmation as for 'relays revoke' (type the relay_id; without a terminal it is refused unless --yes). A descendant that only appears in the topology (no row)
+cannot be removed: it disappears when its ancestor stops declaring it.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		id, relayID, err := resolveRelay(args[0])
+		if err != nil {
+			return err
+		}
+		what := "remove"
+		if relaysRemoveRevoke {
+			what = "revoke and remove"
+		}
+		if err := confirmDestructive(cmd, relaysRemoveYes, what, relayID); err != nil {
+			return err
+		}
+		if relaysRemoveRevoke {
+			if err := revokeRelayRow(id); err != nil {
+				return err
+			}
+			fmt.Printf("Relay %q revoked.\n", relayID)
+		}
+
+		data, status, err := apiRequest("DELETE", "/api/admin/relays/"+url.PathEscape(id), nil)
+		if err != nil {
+			return err
+		}
+		if status == 409 && !relaysRemoveRevoke {
+			var e map[string]interface{}
+			if json.Unmarshal(data, &e) == nil && e["error"] == "relay_not_revoked" {
+				_, _ = fmt.Fprintf(os.Stderr, "Error: relay_not_revoked (HTTP 409): the node does not track the link token of %q; run 'secagent-server relays remove --revoke %s' (or 'relays revoke' then 'relays remove')\n", relayID, relayID)
+				os.Exit(1)
+			}
 		}
 
 		// 204 No Content — success
 		if status == 204 {
-			fmt.Printf("Relay %s removed.\n", id)
+			fmt.Printf("Relay %q removed.\n", relayID)
 			return nil
 		}
 

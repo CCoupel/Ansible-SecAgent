@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package server
 
 import (
@@ -79,7 +82,7 @@ func buildWith(t *testing.T, dbPath string, tune func(*Config)) *Node {
 }
 
 func TestBuild_StartsADialerForEachStoredPushRelay(t *testing.T) {
-	t.Setenv("RSA_MASTER_KEY", "build-push-master-key")
+	t.Setenv("RSA_MASTER_KEY", "build-push-master-key-0123456789abcdef")
 	child := newCountingListener(t)
 	sealed, err := handlers.SealPushToken("dmz-push", "child-signed-jwt")
 	if err != nil {
@@ -106,7 +109,7 @@ func TestBuild_StartsADialerForEachStoredPushRelay(t *testing.T) {
 
 // A push row with an insecure URL is skipped with a warning and the node still starts.
 func TestBuild_SkipsInsecurePushRowsWithoutBlockingStartup(t *testing.T) {
-	t.Setenv("RSA_MASTER_KEY", "build-push-master-key")
+	t.Setenv("RSA_MASTER_KEY", "build-push-master-key-0123456789abcdef")
 	sealed, err := handlers.SealPushToken("dmz-insecure", "child-signed-jwt")
 	if err != nil {
 		t.Fatal(err)
@@ -123,13 +126,13 @@ func TestBuild_SkipsInsecurePushRowsWithoutBlockingStartup(t *testing.T) {
 // A state sealed under another master key is refused as a whole (fail closed): the node does not
 // start with secrets it can not authenticate.
 func TestBuild_RefusesAStateSealedUnderAnotherMasterKey(t *testing.T) {
-	t.Setenv("RSA_MASTER_KEY", "key-at-registration-time")
+	t.Setenv("RSA_MASTER_KEY", "key-at-registration-time-0123456789abcdef")
 	child := newCountingListener(t)
 	sealed, _ := handlers.SealPushToken("dmz-sealed", "child-signed-jwt")
 	db := seedDB(t, func(st *storage.Store) {
 		seedRelay(t, st, "dmz-sealed", "push", child.wssURL(), sealed)
 	})
-	t.Setenv("RSA_MASTER_KEY", "another-key")
+	t.Setenv("RSA_MASTER_KEY", "another-key-0123456789abcdef0123456789")
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
 	if _, err := Build(Config{TLSDisable: true, AdminAddr: "127.0.0.1:0", JWTSecret: "s", AdminToken: "a", StateDir: db, WriteGuard: allowWrites}); err == nil {
 		t.Fatal("a state that does not open with the configured master key must refuse to start")

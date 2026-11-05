@@ -1,15 +1,27 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Verifie que `<commande> --version` affiche EXACTEMENT « <composant> version <attendue> », sans demarrer de service :
 # `--version` est gere par le binaire (tout argument inconnu est refuse, rien n'est lance).
-#   [COMPONENT=secagent-server|secagent-minion] assert_version.sh <version attendue sans le v> <commande...>
+#   [COMPONENT=secagent-server|secagent-minion|secagent-inventory] assert_version.sh <version attendue sans le v> <commande...>
 # Exemples : assert_version.sh 3.0.4 ./secagent-server ; assert_version.sh 3.0.4 docker run --rm secagent-server:ci
 #            COMPONENT=secagent-minion assert_version.sh 3.0.4 docker run --rm secagent-minion:ci
 set -euo pipefail
 WANT="${1:?version attendue (X.Y.Z)}"; shift
 COMPONENT="${COMPONENT:-secagent-server}"
-case "$COMPONENT" in secagent-server|secagent-minion) ;; *) echo "COMPONENT invalide '$COMPONENT'" >&2; exit 2 ;; esac
+case "$COMPONENT" in secagent-server|secagent-minion|secagent-inventory) ;; *) echo "COMPONENT invalide '$COMPONENT'" >&2; exit 2 ;; esac
 [ $# -ge 1 ] || { echo "commande manquante" >&2; exit 2; }
-GOT="$("$@" --version 2>&1 | head -1)"
+# Sortie COMPLETE capturee (stdout seul : stderr n'est pas melange a la ligne de version), puis premiere ligne en bash.
+# Pas de `| head -1` : sous pipefail, head ferme le tube apres une ligne et un binaire qui en ecrit plusieurs
+# (licence et source depuis v3.0.5, #237) meurt de SIGPIPE (rc 141). Le code de retour du binaire est conserve.
+rc=0
+OUT="$("$@" --version)" || rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "::error::'$* --version' a echoue (rc $rc)" >&2
+  exit "$rc"
+fi
+GOT="${OUT%%$'\n'*}"
 if [ "$GOT" != "$COMPONENT version $WANT" ]; then
   echo "::error::version affichee '$GOT' != '$COMPONENT version $WANT' (ldflags -X non applique ou mauvais symbole ?)" >&2
   exit 1

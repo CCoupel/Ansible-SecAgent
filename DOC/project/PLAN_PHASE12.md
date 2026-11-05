@@ -510,7 +510,7 @@ secagent-server relays get <relay_id> [--format table|json|yaml]
 secagent-server relays status [--format table|json|yaml]
   → Statut temps réel (query port 7771)
 
-secagent-server relays add --id <relay_id> --url <url> --token <token> [--description <desc>]
+secagent-server relays add --id <relay_id> --url <url> --token-file <fichier|-> [--description <desc>]
   → Enregistrer un relay en mode push (appelle POST /api/admin/relays)
 
 secagent-server relays remove <relay_id>

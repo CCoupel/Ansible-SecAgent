@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package integration
 
 // #141 / #146 (L1d, plan rev2 §1.3, §1.8, §3 tests 7, 8, 10) — minting of the link tokens on the ROOT:
@@ -165,7 +168,7 @@ func TestLinkMint_ThePrivateKeyIsEncryptedAtRestAndNeverLogged(t *testing.T) {
 	assertNoSecrets(t, logs, tok, root.adminTok, root.jwtSecret)
 
 	// T10c: nor in `state verify`, nor in any API answer
-	rep, err := state.VerifyFile(filepath.Join(root.stateDir, state.StateFile), state.VerifyOptions{MasterKey: "integration-master-key-root"})
+	rep, err := state.VerifyFile(filepath.Join(root.stateDir, state.StateFile), state.VerifyOptions{MasterKey: "integration-master-key-0123456789-root"})
 	if err != nil {
 		t.Fatalf("state verify: %v", err)
 	}

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package ws gère la connexion WebSocket persistante de l'agent et le dispatch
 // des messages entrants vers les handlers appropriés.
 //
@@ -26,6 +29,7 @@ import (
 	"log"
 	"log/slog"
 	"math"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -203,7 +207,7 @@ type EnrollConfig struct {
 	PrivateKey *rsa.PrivateKey
 	// JWTPath est le chemin de stockage du JWT persisté.
 	JWTPath string
-	// EnrollmentToken est le token d'enrollment (RELAY_ENROLLMENT_TOKEN) — requis Phase 10.
+	// EnrollmentToken est le jeton d'enrôlement (RELAY_ENROLLMENT_TOKEN) — requis.
 	// JAMAIS loggé en clair.
 	EnrollmentToken string
 	// CABundle est le chemin vers un CA bundle PEM custom (vide = store système).
@@ -237,6 +241,22 @@ type Dispatcher struct {
 	reconnectBase, reconnectMax float64
 	// connected est vrai quand la dernière connexion a abouti (handshake WS réussi).
 	connected atomic.Bool
+	// rekeyCount compte les JWT renouvelés par rekey depuis le démarrage (journal : jamais le jeton).
+	rekeyCount atomic.Uint64
+
+	// Relance de persistance du JWT (M4 #217) : une seule goroutine à la fois, arrêtée par un
+	// nouveau rekey, la fermeture de la connexion ou l'arrêt du processus.
+	persistMu            sync.Mutex
+	persistCancel        context.CancelFunc
+	persistRetryInterval time.Duration // 0 = persistRetryDefault
+	// persistPending : le JWT en mémoire n'est pas (encore) sur disque. Survit à la fermeture de
+	// la connexion : la relance reprend à la reconnexion (B9).
+	persistPending atomic.Bool
+
+	// unauthRetryMax : réessais sur 401 avant ré-enrôlement (0 = défaut 3, < 0 = aucun).
+	// unauthRetryBase : délai du premier réessai (0 = 12 s).
+	unauthRetryMax  int
+	unauthRetryBase time.Duration
 
 	// wsRotor ordonne les adresses WS ; enrollRotor (EnrollConfig.Rotor) celles d'enrôlement. Les
 	// deux listes sont appariées par position : la dernière bonne instance est partagée.
@@ -296,6 +316,28 @@ func sleepCtx(ctx context.Context, delay time.Duration) error {
 // partir duquel le minion journalise une erreur explicite (il continue d'essayer, avec backoff).
 const ConsecutiveAuthFailuresAlert = 5
 
+// Réessais sur 401 au handshake, JWT conservé, avant d'effacer token.jwt et de se ré-enrôler.
+// Un relais juge parfois encore vivante l'ancienne connexion de l'agent (JTI précédent refusé le
+// temps de la sonde / du pong) : le refus est alors transitoire. Durée totale par défaut
+// 12 + 24 + 48 s = 84 s (±20 % de jitter, donc ≥ 67 s), au-delà de la sonde du relais (~5 s) et du
+// délai de pong (~60 s). Borné : un agent révoqué (le relais répond le même 401 masqué) ne boucle
+// pas, il revient au comportement historique après unauthRetryMax réessais.
+const (
+	unauthRetryBaseDefault = 12 * time.Second
+	unauthRetryJitter      = 0.2
+)
+
+// unauthRetryMaxDefault : variable (et non constante) pour que les tests historiques, qui attendent
+// un ré-enrôlement immédiat, désactivent les réessais (valeur < 0) ; la production garde 3.
+var unauthRetryMaxDefault = 3
+
+// unauthRetryDelay donne le délai avant le réessai n (1 = premier) : base×2^(n-1), jitter ±20 %.
+func unauthRetryDelay(base time.Duration, n int) time.Duration {
+	d := float64(base) * math.Pow(2, float64(n-1))
+	d *= 1 + unauthRetryJitter*(2*rand.Float64()-1)
+	return time.Duration(d)
+}
+
 // NewDispatcher crée un Dispatcher avec le handler fourni.
 // maxConcurrent = 0 → utilise MaxConcurrentTasks (constante, défaut 10).
 func NewDispatcher(cfg ConnConfig, handler MessageHandler, maxConcurrent ...int) *Dispatcher {
@@ -348,6 +390,101 @@ func (d *Dispatcher) updateJWT(token string) {
 	d.jwt = token
 }
 
+// handleRekey traite une trame rekey (rotation ou renouvellement périodique, #217). Toute anomalie
+// est journalisée sans couper la connexion ; le JWT n'apparaît jamais dans les journaux.
+// Ordre : déchiffrement → persistance (token.jwt, 0600) → updateJWT. Si la persistance échoue,
+// le JWT est tout de même adopté en mémoire : le serveur a déjà remplacé le JTI, l'ancien JWT
+// serait refusé en 401 à la reconnexion.
+func (d *Dispatcher) handleRekey(ctx context.Context, raw []byte) {
+	var msg RekeyMsg
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		log.Printf("[WS] Bad rekey message: %v", err)
+		return
+	}
+	if msg.TokenEncrypted == "" {
+		log.Printf("[WS] Bad rekey message: empty token_encrypted")
+		return
+	}
+	if d.enrollCfg.PrivateKey == nil {
+		log.Printf("[SECURITY] rekey received but no private key configured — ignoring")
+		return
+	}
+	newJWT, err := decryptAndSaveToken(msg.TokenEncrypted, d.enrollCfg.PrivateKey, d.enrollCfg.JWTPath)
+	if err != nil {
+		var pe *enrollment.PersistError
+		if !errors.As(err, &pe) || newJWT == "" {
+			log.Printf("[SECURITY] rekey: failed to decrypt new token: %v", err)
+			return
+		}
+		log.Printf("[ERROR] rekey: new JWT not persisted (%v) — kept in memory only, retrying", pe.Err)
+		d.updateJWT(newJWT)
+		d.startPersistRetry(ctx)
+		log.Printf("[SECURITY] JWT rotated — new token received (renewal #%d)", d.rekeyCount.Add(1))
+		return
+	}
+	d.stopPersistRetry() // un rekey persisté remplace toute écriture en attente
+	d.persistPending.Store(false)
+	d.updateJWT(newJWT)
+	log.Printf("[SECURITY] JWT rotated — new token received (renewal #%d)", d.rekeyCount.Add(1))
+}
+
+// persistRetryDefault : période de relance de l'écriture de token.jwt après une PersistError.
+const persistRetryDefault = time.Minute
+
+// persistToken écrit le JWT sur disque (injectable pour les tests).
+var persistToken = enrollment.PersistToken
+
+func (d *Dispatcher) stopPersistRetry() {
+	d.persistMu.Lock()
+	defer d.persistMu.Unlock()
+	if d.persistCancel != nil {
+		d.persistCancel()
+		d.persistCancel = nil
+	}
+}
+
+// startPersistRetry relance l'écriture du JWT COURANT (en mémoire) toutes les ~1 min tant que le
+// fichier n'est pas à jour. S'arrête au succès, à un nouveau rekey ou à l'annulation de ctx
+// (fermeture de la connexion / arrêt du processus). Le jeton n'est jamais journalisé.
+func (d *Dispatcher) startPersistRetry(ctx context.Context) {
+	path := d.enrollCfg.JWTPath
+	if path == "" {
+		return
+	}
+	interval := d.persistRetryInterval
+	if interval <= 0 {
+		interval = persistRetryDefault
+	}
+	d.persistPending.Store(true)
+	rctx, cancel := context.WithCancel(ctx)
+	d.persistMu.Lock()
+	if d.persistCancel != nil {
+		d.persistCancel()
+	}
+	d.persistCancel = cancel
+	d.persistMu.Unlock()
+
+	go func() {
+		defer cancel()
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-rctx.Done():
+				return
+			case <-t.C:
+			}
+			if err := persistToken(path, d.currentJWT()); err != nil {
+				log.Printf("[ERROR] rekey: JWT persistence retry failed: %v", err)
+				continue
+			}
+			d.persistPending.Store(false)
+			log.Printf("[SECURITY] rekey: JWT persisted after retry")
+			return
+		}
+	}()
+}
+
 // Run ouvre la connexion WebSocket et entre dans la boucle de lecture.
 // Tourne jusqu'à ce que ctx soit annulé, que la connexion soit révoquée (4001) ou qu'une erreur
 // permanente survienne.
@@ -377,6 +514,15 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		wait = sleepCtx
 	}
 	authFailures := 0 // cycles consécutifs sans connexion WS réussie, côté authentification
+	retries401 := 0   // 401 consécutifs réessayés avec le même JWT
+	freshJWT := false // JWT obtenu par un ré-enrôlement et pas encore accepté : pas de réessai
+	maxRetries401, retryBase := d.unauthRetryMax, d.unauthRetryBase
+	if maxRetries401 == 0 {
+		maxRetries401 = unauthRetryMaxDefault
+	}
+	if retryBase <= 0 {
+		retryBase = unauthRetryBaseDefault
+	}
 
 	for {
 		d.connected.Store(false)
@@ -387,6 +533,8 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		}
 		if d.connected.Load() {
 			authFailures = 0 // le WS a fonctionné : on repart de zéro
+			retries401 = 0
+			freshJWT = false
 		}
 
 		// Vérification révocation (code WS 4001)
@@ -397,6 +545,19 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 
 		// Gestion du 401 : ré-enrôlement automatique
 		if isHTTP401(err) {
+			// 401 possiblement transitoire (ancienne connexion encore jugée vivante par le relais) :
+			// réessais bornés avec le MÊME JWT, backoff exponentiel + jitter. Pas de lecture du corps
+			// (motif masqué), pas de distinction révocation/remplacement : la borne suffit.
+			if !freshJWT && retries401 < maxRetries401 {
+				retries401++
+				delay := unauthRetryDelay(retryBase, retries401)
+				log.Printf("[WS] Handshake rejected (401) — keeping the JWT, retry %d/%d in %s", retries401, maxRetries401, delay.Round(time.Second))
+				if werr := wait(ctx, delay); werr != nil {
+					return werr
+				}
+				continue
+			}
+			retries401 = 0
 			authFailures++
 			if authFailures >= ConsecutiveAuthFailuresAlert {
 				log.Printf("[ERROR] %d consecutive authentication cycles without a working WebSocket (JWT refused after re-enrollment) — still retrying with backoff; check the server and the minion enrollment", authFailures)
@@ -418,6 +579,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 				continue
 			}
 			d.updateJWT(newJWT)
+			freshJWT = true
 			log.Printf("[SECURITY] Re-enrollment after JWT rejection (401) — reconnecting")
 			// pas de reconnect.Reset() ici : seul un handshake WS réussi remet le backoff à zéro
 			if delay := reconnect.Cycle(); delay > 0 {
@@ -586,6 +748,11 @@ func (d *Dispatcher) serve(ctx context.Context, conn *websocket.Conn, host strin
 		}
 	}()
 
+	// ctx propre à la connexion : arrête la relance de persistance à sa fermeture.
+	ctx, cancelConn := context.WithCancel(ctx)
+	defer cancelConn()
+	defer d.stopPersistRetry()
+
 	// Arrêt demandé (SIGTERM → ctx annulé) : fermer la socket débloque la lecture ci-dessous,
 	// sinon un minion connecté ne s'arrêterait qu'à la perte de la connexion.
 	stopWatch := make(chan struct{})
@@ -598,6 +765,11 @@ func (d *Dispatcher) serve(ctx context.Context, conn *websocket.Conn, host strin
 		}
 	}()
 
+	// Écriture du JWT encore en attente d'une connexion précédente (coupée pendant la relance).
+	if d.persistPending.Load() {
+		d.startPersistRetry(ctx)
+	}
+
 	reconnect.Reset()
 	d.connected.Store(true)
 	log.Printf("[WS] Connected to %s", host)
@@ -609,10 +781,15 @@ func (d *Dispatcher) serve(ctx context.Context, conn *websocket.Conn, host strin
 		log.Printf("[WS] Pong received")
 		return nil
 	})
+	// Comme le handler par défaut de gorilla : WriteControl est sûr à côté d'un écrivain concurrent
+	// et ne bloque pas la boucle de lecture derrière une grosse écriture (pas de sendMu).
 	conn.SetPingHandler(func(appData string) error {
-		sendMu.Lock()
-		defer sendMu.Unlock()
-		return conn.WriteMessage(websocket.PongMessage, []byte(appData))
+		err := conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(time.Second))
+		var ne net.Error
+		if errors.Is(err, websocket.ErrCloseSent) || (errors.As(err, &ne) && ne.Timeout()) {
+			return nil
+		}
+		return err
 	})
 
 	send := func(payload any) error {
@@ -647,22 +824,7 @@ func (d *Dispatcher) serve(ctx context.Context, conn *websocket.Conn, host strin
 			// Rotation JWT sans interruption de connexion (§22 ARCHITECTURE.md).
 			// Traité en-ligne (pas de goroutine) : le JWT doit être mis à jour
 			// immédiatement avant tout envoi ultérieur.
-			var msg RekeyMsg
-			if err := json.Unmarshal(raw, &msg); err != nil {
-				log.Printf("[WS] Bad rekey message: %v", err)
-				continue
-			}
-			if d.enrollCfg.PrivateKey == nil {
-				log.Printf("[SECURITY] rekey received but no private key configured — ignoring")
-				continue
-			}
-			newJWT, err := decryptAndSaveToken(msg.TokenEncrypted, d.enrollCfg.PrivateKey, d.enrollCfg.JWTPath)
-			if err != nil {
-				log.Printf("[SECURITY] rekey: failed to decrypt new token: %v", err)
-				continue
-			}
-			d.updateJWT(newJWT)
-			log.Printf("[SECURITY] JWT rotated — new token received")
+			d.handleRekey(ctx, raw)
 
 		case "exec":
 			var msg ExecMsg

@@ -1,4 +1,7 @@
-// Phase 12 — admin_relays.go
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// admin_relays.go — API admin des relays
 // Admin REST endpoints for managing relay nodes in proxy/gateway mode.
 //
 //	POST   /api/admin/relays           — register a relay (push or pull mode)

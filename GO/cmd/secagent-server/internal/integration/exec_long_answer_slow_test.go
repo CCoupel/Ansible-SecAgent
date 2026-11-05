@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //go:build slow
 
 // Regression (#179, slow suite: the subject IS a 17 s task): the API listener has a 15 s WriteTimeout meant

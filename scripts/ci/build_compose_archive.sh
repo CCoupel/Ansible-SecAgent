@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Fabrique secagent-compose-<version>.tar.gz : Compose de production avec l'image du serveur reecrite en
 # tag@digest, controles bloquants (aucun `latest`/`build:`/NATS, image epinglee). Utilise a l'identique par
 # release.yml (digest reel) et par la repetition a vide de ci.yml (digest factice, rien n'est publie).
@@ -14,6 +17,11 @@ case "$SRV" in sha256:??????????????????????????????????????????????????????????
 D="$STAGE_DIR/secagent-compose-${VERSION}"
 rm -rf "$D"; mkdir -p "$D" "$OUT"
 cp -r "$SRC_DIR/." "$D/"
+# LICENSE et mentions tierces du depot dans l'archive (#237) : l'archive est distribuee seule, sans le depot
+for lic in LICENSE THIRD_PARTY_NOTICES.md; do
+  [ -f "$REPO/$lic" ] || { echo "::error::$lic absente de $REPO : l'archive Compose doit la contenir"; exit 1; }
+  cp "$REPO/$lic" "$D/$lic"
+done
 rm -f "$D"/prod.env "$D"/.env
 mkdir -p "$D/tools"; cp "$REPO/scripts/ci/check_compose.py" "$D/tools/check_compose.py"
 for f in "$D"/docker-compose*.yml; do

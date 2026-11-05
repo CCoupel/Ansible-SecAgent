@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Test des gardes de failover-test.sh en mode hote distant (faux `docker`, aucun demon) :
 #  - distant sans TLS_MODE=volume => refus ; distant + volume => mode volume repris (chaine + surcharge + volume) ;
 #  - SECAGENT_ENDPOINT_HOST non local => refus aussi ; local/CI => inchange ;

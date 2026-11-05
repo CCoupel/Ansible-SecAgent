@@ -80,11 +80,11 @@ Ansible **NE SUPPORTE PAS** les plugins GO nativement. Les alternatives sont :
 
 - **Plugins Python** : Maintenez ensemble si changements API Ansible
   - Vérifiez compatibility avec Ansible versions
-  - Tests via `pytest` dans PYTHON/
+  - Tests via `pytest` dans SECAGENT-PYTHON/
 
-- **Binaire GO** : Maintenez dans GO/cmd/inventory/
+- **Binaire GO** : Maintenez dans GO/cmd/secagent-inventory/
   - Mêmes tests que serveur/agent
-  - Binaire inclus dans images Docker
+  - Binaire publié avec la release (aucune image Docker ne l'embarque)
 
 ### Pour les futures extensions
 
@@ -97,8 +97,8 @@ Ansible **NE SUPPORTE PAS** les plugins GO nativement. Les alternatives sont :
 - `DOC/common/ARCHITECTURE.md` §2 : tableau composants
 - `DOC/plugins/PLUGINS_SPEC.md` §1 : constraint Ansible expliquée
 - `DOC/inventory/INVENTORY_SPEC.md` : specs secagent-inventory binary
-- `GO/cmd/inventory/main.go` : implémentation binaire
-- `PYTHON/ansible_plugins/connection_plugins/relay.py` : plugin connection
+- `GO/cmd/secagent-inventory/main.go` : implémentation binaire
+- `SECAGENT-PYTHON/ansible_plugins/connection_plugins/relay.py` : plugin connection
 
 ---
 

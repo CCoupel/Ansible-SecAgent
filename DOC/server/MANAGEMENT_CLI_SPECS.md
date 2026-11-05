@@ -2,10 +2,10 @@
 
 > **Document de conception historique (Phase 6, CLI Python `relay`).** La CLI réelle est `secagent-server` (GO, cobra,
 > `GO/cmd/secagent-server/internal/cli`) ; les exemples `relay …` ci-dessous sont des maquettes de conception.
-> Commandes réelles (v3.0.3) : `minions` (list, get, set-state, suspend, resume, revoke, authorize, vars get/set/delete),
-> `tokens` (create, list, revoke, delete, purge), `relays` (list, add, remove, status), `security` (keys status/rotate,
+> Commandes réelles (v3.0.5) : `minions` (list, get, set-state, suspend, resume, revoke, delete, authorize, vars get/set/delete),
+> `tokens` (create, list, revoke, delete, purge), `relays` (list, add, revoke, remove, status), `security` (keys status/rotate,
 > tokens list, blacklist list/purge), `hooks` (status, log), `inventory list`, `server` (status, stats), `status --local`,
-> `state` (init, verify, restore, link-trust reset, rekey). Il n'existe **pas** de `minions refresh`, de login/refresh de jeton ni de composant NATS :
+> `keys` (link-pubkey, rotate-link, retire-link-previous, link-status), `state` (init, verify, restore, link-trust reset, rekey). Il n'existe **pas** de `minions refresh`, de login/refresh de jeton ni de composant NATS :
 > l'authentification se fait par jeton admin (`ADMIN_TOKEN`), sans renouvellement automatique côté CLI.
 > Voir `DOC/server/SERVER_SPEC.md`.
 
@@ -113,9 +113,7 @@ relay minions detail <hostname> [OPTIONS]
   #   [20:05] fetch_file: /tmp/test.txt → rc=0
 
 # Revoke minion token (force re-enrollment)
-relay minions revoke <hostname> [OPTIONS]
-  # Options:
-  #   --force (skip confirmation)
+secagent-server minions revoke <hostname>      # réel : pas d'option --force (cli/minions.go:162), effet immédiat
 
   # Output:
   # ⚠️  Revoking token for qualif-01
@@ -125,9 +123,9 @@ relay minions revoke <hostname> [OPTIONS]
   # ⚠️  Minion will be disconnected immediately
 
 # Delete minion (unregister completely)
-relay minions delete <hostname> [OPTIONS]
+secagent-server minions delete <hostname> [OPTIONS]      # réel (v3.0.5, #233) ; la sortie ci-dessous est une maquette
   # Options:
-  #   --force (skip confirmation)
+  #   --yes (confirmer sans invite ; obligatoire hors terminal, sinon code 9 — cli/minions.go:224)
 
   # Output:
   # ⚠️  DELETING minion: qualif-01
@@ -350,8 +348,8 @@ Toutes les sous-commandes passent par l'API admin (`ADMIN_TOKEN`, `RELAY_API_URL
 |---|---|---|---|
 | `keys link-pubkey` | écrit sur stdout la clé **publique** PEM (`PUBLIC KEY`) à épingler sur les enfants (`REPEATER_ROOT_LINK_KEY_FILE`) ; `root_id=… kid=…` sur stderr ; génère la clé si elle n'existe pas encore | `GET /api/admin/link/pubkey` | `cli/keys.go:40-58` |
 | `keys rotate-link` | la clé courante devient `previous`, nouvelle courante, `link_keys` poussé aux enfants ; affiche `current`, `previous`, `seq` | `POST /api/admin/link/keys/rotate` | `409 previous_key_not_retired` si une rotation est déjà ouverte (`handlers/admin_link.go:43-44`) |
-| `keys retire-link-previous [--force]` | ferme la fenêtre de double acceptation ; les jetons signés par l'ancienne clé sont ensuite refusés | `POST /api/admin/link/keys/retire-previous` `{"force":bool}` | `409 rotation_unconfirmed` + liste `unconfirmed` tant que des relays n'ont pas confirmé (`handlers/admin_link.go:221-225`) ; `409 no_previous_key` (`:45-46`) ; `--force` passe outre, `[SECURITY WARNING]` côté serveur, la CLI affiche les relays non confirmés |
-| `keys link-status` | `root_id`, `seq`, `kid` courant/précédent, puis tableau `RELAY / LINK_SEQ / KID / CONFIRMED` | `GET /api/admin/link/status` | `cli/keys.go:101-120` |
+| `keys retire-link-previous [--force]` | ferme la fenêtre de double acceptation ; les jetons signés par l'ancienne clé sont ensuite refusés | `POST /api/admin/link/keys/retire-previous` `{"force":bool}` | `409 rotation_unconfirmed` + listes `unconfirmed` et `never_seen` (v3.0.5, #234) tant que des relays n'ont pas confirmé (`handlers/admin_link.go:221-225`) ; `409 no_previous_key` (`:45-46`) ; `--force` passe outre, `[SECURITY WARNING]` côté serveur, la CLI affiche les relays non confirmés |
+| `keys link-status` | `root_id`, `seq`, `kid` courant/précédent, puis tableau `RELAY / LINK_SEQ / KID / CONFIRMED / STATE` (`state` : `confirmed`, `unconfirmed`, `never_seen`) et, s'il y en a, une ligne de rappel du remède pour les relais `never_seen` | `GET /api/admin/link/status` | `cli/keys.go:101-120` |
 
 Codes de sortie de ces commandes (`cli/client.go:188-209`, `cli/keys.go:25-32`) : `0` succès ; `1` toute erreur HTTP (dont 409 et 503, message `Error: <code> (HTTP <n>)` sur stderr) ou `401/403` (`unauthorized — check ADMIN_TOKEN`) ; `2` sur `404`. Il n'y a pas de code de sortie dédié à `rotation_unconfirmed`.
 
@@ -365,7 +363,7 @@ Commande **hors ligne** (elle ouvre `STATE_DIR` directement, pas l'API) qui effa
 | `--yes` | confirme sans invite ; **obligatoire** hors terminal interactif |
 | `--i-know-no-instance-is-running` | passe outre un `relay.lock` orphelin (stockage figé) ; `[SECURITY WARNING]` |
 
-Sans `--yes` en terminal, la commande demande de taper `reset`. Avant toute écriture : copie de `relay.state` dans `relay.state.linktrust-reset.<UTC>.bak` (0600) ; si elle échoue, rien n'est modifié. Une ligne est ajoutée à `state-restore.log` (`source: link-trust-reset`).
+Sans `--yes` en terminal, la commande demande de taper `reset`. Avant toute écriture : copie de `relay.state` dans `relay.state.linktrust-reset.<UTC ns>.bak` (0600) ; si elle échoue, rien n'est modifié. Une ligne est ajoutée à `state-restore.log` (`source: link-trust-reset`).
 
 | Code | Signification | Preuve |
 |---|---|---|
@@ -388,7 +386,7 @@ Commande **hors ligne** (ouvre `STATE_DIR` directement) qui fait la rotation de 
 | `--yes` | confirme sans invite ; **obligatoire** hors terminal interactif |
 | `--i-know-no-instance-is-running` | passe outre un `relay.lock` orphelin (stockage figé) ; `[SECURITY WARNING]` |
 
-Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écriture : `relay.state.rekey.<UTC>.bak` (0600, **lisible avec l'ancienne clé** : à détruire une fois la nouvelle clé en service). Un état encore en schéma 1 est accepté et migré en schéma 2 par la même écriture (`relay.state.v1.bak` = copie de l'original, en plus de la sauvegarde `rekey`). Après l'écriture : relecture avec la nouvelle clé et comparaison des clairs ; échec = original remis en place.
+Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écriture : `relay.state.rekey.<UTC ns>.bak` (0600, **lisible avec l'ancienne clé** : à détruire une fois la nouvelle clé en service). Un état encore en schéma 1 est accepté et migré en schéma 2 par la même écriture (`relay.state.v1.bak` = copie de l'original, en plus de la sauvegarde `rekey`). Après l'écriture : relecture avec la nouvelle clé et comparaison des clairs ; échec = original remis en place.
 
 | Code | Signification |
 |---|---|
@@ -398,6 +396,32 @@ Sans `--yes` en terminal, la commande demande de taper `rekey`. Avant toute écr
 | 9 | refusé, rien n'est modifié : nouvelle clé absente ou identique à l'ancienne, champ `enc:` non couvert, état issu de `relay.state.prev`, confirmation absente (`--yes` manquant) ou réponse ≠ `rekey` |
 | 10 | vérification après écriture échouée (l'original a été remis en place, sauf message contraire) |
 | 11 | nouvelle clé de moins de 32 octets, rien n'est modifié (l'ancienne clé n'est pas contrôlée) |
+
+#### `--version` (v3.0.5, #220, D5)
+
+`secagent-server --version` (ou `-v`) affiche trois lignes (`secagent-server version <version>`, puis `License: AGPL-3.0-or-later` et `Source: https://github.com/CCoupel/Ansible-SecAgent`) et sort en **0** (la ligne 1 est inchangée : `assert_version.sh` ne lit que `head -1`) ; la version est injectée à la compilation (`-ldflags -X secagent-server/cmd/secagent-server/internal/cli.Version=…`, `dev` sinon) et figure aussi dans la ligne `[INIT] Ansible-SecAgent GO Server <version>` du démarrage (elle disait `v1.0` en dur). `--version` suivi d'un argument supplémentaire (`--version extra`) sort en **1** avec un message, comme `secagent-minion` (avant : 0).
+
+#### Codes de sortie des groupes et sauvegardes (v3.0.5, #219)
+
+- **Groupe seul ou `--help`** (`minions`, `security`, `inventory`, `server`, `tokens`, `hooks`, `relays`, `state`, `keys`, ainsi que `minions vars` et `state link-trust`) : aide sur stdout, code **0**.
+- **Mot inconnu après un groupe** (`state frob`) : `Error: unknown command "frob" for "secagent-server state"` et l'aide du groupe sur **stderr**, code **1** (avant : aide et code 0, une faute de frappe dans un script passait pour un succès).
+- **Sauvegardes de `state rekey` et `state link-trust reset`** : `relay.state.rekey.<UTC à la nanoseconde>.bak` et `relay.state.linktrust-reset.<UTC à la nanoseconde>.bak`, avec un suffixe `.<n>` si le nom existe (création exclusive inchangée) : deux exécutions dans la même seconde réussissent toutes les deux, aucune sauvegarde n'est écrasée. Même règle pour `state restore` : `relay.state.bak-<UTC ns>[.n]` et `relay.state.prev.bak-<UTC ns>[.n]` (avant : à la seconde, la seconde restauration d'une même seconde échouait en code 5).
+
+#### `relays add --token-file` (v3.0.5, M14)
+
+Le jeton relay-parent d'un lien push ne doit pas passer par `argv` (visible dans la liste des processus et l'historique du shell). `relays add --mode push … --token-file <chemin>` le lit dans un fichier régulier (pas de lien symbolique, mode 0600 ou plus strict, 64 Kio au plus, espaces finaux retirés, non vide : mêmes règles que les `*_FILE`) ; `--token-file -` le lit sur l'entrée standard : l'utiliser avec un tube (`printf '%s' "$JETON" | … --token-file -`), car lu sur un terminal la saisie s'affiche à l'écran. `--token` et `--token-file` ensemble sont refusés. `--token` reste accepté (compatibilité) mais écrit un `WARNING` sur stderr. La valeur n'est jamais affichée ni placée dans une erreur.
+
+**Option globale `--token <jwt>` (section « Global Options » ci-dessous)** : c'est une maquette historique, elle n'existe pas dans le binaire réel (seule option globale : `--format`). Le jeton d'administration de la vraie CLI se donne par `ADMIN_TOKEN` ou `ADMIN_TOKEN_FILE` (jamais en argument) ; `RELAY_TOKEN` n'est pas lu.
+
+#### Commandes destructrices de v3.0.5 (#233) : `minions delete`, `relays revoke`, `relays remove`
+
+| Commande | Effet | Route |
+|---|---|---|
+| `minions delete <hostname> [--yes]` | supprime l'agent (état, clé autorisée), ferme sa connexion en 4000, **lève une révocation** ; signale un agent connecté | `DELETE /api/admin/minions/{hostname}` |
+| `relays revoke <relay_id\|uuid> [--yes]` | révoque un relay (JTI blacklisté, lien fermé en 4010) | `POST /api/admin/relays/{id}/revoke` |
+| `relays remove <relay_id\|uuid> [--revoke] [--yes]` | supprime un relay ; `--revoke` le révoque d'abord (relay jamais connecté : sans cela `409 relay_not_revoked`, la CLI le dit) | `DELETE /api/admin/relays/{id}` |
+
+Le nom `relay_id` est résolu par `GET /api/admin/relays` (inconnu ou ambigu : erreur, rien n'est envoyé). **Confirmation** : taper le nom (hôte ou `relay_id`) ; sans terminal sur stdin (`/dev/null` compris) la commande est **refusée, rien n'est fait, code de sortie 9**, sauf `--yes`. `relays remove` est destructif avec ou sans `--revoke` : même confirmation (taper le `relay_id`), refus code 9 sans terminal sauf `--yes` (B49). Les arguments (hostname, id, clé de variable) sont échappés comme segment de chemin (`/` ⇒ `%2F`, B50). `minions delete` d'un agent révoqué avertit avant la confirmation que la suppression **lève la révocation** (B51).
 
 Le code 7 (`--min-write-seq`) n'existe que pour `state verify` / `state restore`.
 
@@ -544,7 +568,7 @@ Continue? [y/N]: y
 ✅ Token revoked for qualif-03
 
 # Delete minion (permanent)
-$ relay minions delete qualif-03 --force
+$ secagent-server minions delete qualif-03 --yes
 ⚠️  DELETING minion: qualif-03
 ✅ Minion qualif-03 deleted from database
 📝 Audit log entry created

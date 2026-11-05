@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //go:build slow
 
 // Slow suite: run with `-tags slow`, in its own CI job (slow-tests). See .github/workflows/ci.yml.

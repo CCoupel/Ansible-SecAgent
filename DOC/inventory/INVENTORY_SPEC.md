@@ -30,7 +30,16 @@ secagent-inventory --list
 
 # Vars d'un hôte spécifique
 secagent-inventory --host my-host
+
+# Version du binaire (aussi : -v) — affiche sur stdout 3 lignes, exit 0 :
+#   secagent-inventory version <version>
+#   License: AGPL-3.0-or-later
+#   Source: https://github.com/CCoupel/Ansible-SecAgent
+# sans configuration ni accès réseau (« dev » si le binaire n'a pas été compilé avec la version injectée)
+secagent-inventory --version
 ```
+
+La version est injectée à la compilation : `go build -ldflags "-X main.Version=<version>" ./cmd/secagent-inventory`.
 
 ---
 
@@ -38,7 +47,7 @@ secagent-inventory --host my-host
 
 ```bash
 RELAY_SERVER_URL=https://relay.example.com    # défaut: https://localhost:7770 ; liste possible : https://a:7770,https://b:7770 (#167)
-RELAY_TOKEN=secagent_plg_xxxxx                 # Bearer token (jeton plugin, opaque)
+RELAY_TOKEN=secagent_plg_xxxxx                 # Bearer token : jeton plugin (tokens create --role plugin), REQUIS
 RELAY_CA_BUNDLE=/path/to/ca.pem               # CA custom (optionnel)
 RELAY_INSECURE_TLS=false                      # true = désactiver vérif TLS (TESTS UNIQUEMENT, voir ci-dessous)
 RELAY_INSECURE_TLS_ACK=                       # i-understand-the-risk = confirmation pour un serveur non-bouclage

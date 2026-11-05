@@ -122,15 +122,30 @@ L'agent envoie `SIGTERM` au subprocess associé au `task_id`. Le mapping `task_i
 
 ---
 
-### `rekey` — Rotation des clefs serveur
+### Keepalive de `/ws/agent` (v3.0.5)
+
+Le relais envoie un **ping WebSocket** à chaque agent connecté toutes les `AGENT_WS_PING_INTERVAL` (défaut `30s`, entre 5 s et 60 s ; borne haute liée aux réessais du minion sur un 401, ~84 s : la règle N1 ne juge une connexion morte qu'après un intervalle de silence) et ferme la connexion (puis la désenregistre : `host.down`, tâches en cours en erreur `agent_disconnected`) si **rien** n'arrive (ni pong, ni trame) pendant `2 × AGENT_WS_PING_INTERVAL`. Un agent qui lit sa socket répond par un pong automatiquement (gorilla, côté minion : aucun changement requis, à condition que sa boucle de lecture ne reste pas bloquée). Avant v3.0.5 le relais n'avait ni ping ni délai (coupure franche détectée par le keepalive TCP, ~150 s).
+
+**Sonde (N1)** : une reconnexion qui présente le JWT *précédent* (JTI remplacé, voir `rekey`) alors qu'une connexion paraît vivante pour l'hôte déclenche un ping de sonde ; l'ancienne connexion n'est jugée morte que si son dernier signe de vie (pong ou trame) date d'au moins un `AGENT_WS_PING_INTERVAL` **et** qu'elle ne répond pas au ping de sonde sous `AGENT_WS_PROBE_TIMEOUT` (défaut `5s`, entre 1 s et 30 s) : elle est alors fermée et la reconnexion acceptée. Sinon (signe de vie récent, réponse, ou plus de 64 sondes simultanées sur le relais) la reconnexion reçoit un 401 sans remplacer la connexion. Une sonde à la fois par hôte ; le handshake attend au plus ce délai.
+
+### `rekey` — Nouveau JWT pour l'agent
 
 ```json
 {
-  "type": "rekey"
+  "type": "rekey",
+  "token_encrypted": "<base64 RSA-OAEP(SHA-256) du JWT, chiffré avec la clé publique de l'agent>"
 }
 ```
 
-Pas de `task_id`. Déclenche un ré-enrollment automatique côté agent (voir `DOC/contracts/REST_ENROLLMENT.md`).
+Pas de `task_id`. L'agent déchiffre le JWT, le persiste (`token.jwt`, 0600) et l'utilise pour ses reconnexions ; la connexion en cours est maintenue. Le JTI précédent est remplacé : refusé en HTTP 401 à toute reconnexion (corps générique `unauthorized` ; le motif `token_replaced` n'apparaît que dans le journal du relay). Une trame `rekey` sans `token_encrypted` (repli du serveur quand le chiffrement échoue) demande à l'agent de se ré-enrôler.
+
+**Émissions** (format identique, un minion antérieur à v3.0.5 les traite déjà) :
+
+1. rotation de `JWT_SECRET_KEY` (`security keys rotate`) ;
+2. reconnexion d'un agent avec le JWT signé par l'ancien secret ;
+3. **[CHANGED v3.0.5, #217] renouvellement périodique** : le relay envoie un JWT frais à chaque agent connecté avant l'expiration du sien, toutes les `AGENT_JWT_RENEW_INTERVAL` (défaut `AGENT_JWT_TTL`/3, gigue ±10 %). `AGENT_JWT_TTL` : 24 h par défaut (1 h avant v3.0.5), entre 5 min et 7 jours. Un agent révoqué ne reçoit rien ; un état en lecture seule non plus. Voir `DOC/security/SECURITY.md` §5.
+
+`/ws/agent` : la sémantique du 401 (JTI remplacé, révoqué ou expiré) est inchangée.
 
 ---
 

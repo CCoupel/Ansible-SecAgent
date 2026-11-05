@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Garde-fou : un workflow de push/PR ne publie rien. Echoue si le fichier contient (hors commentaires)
 `packages: write`, `docker/login-action`, `push: true`, `push=true` ou `pull_request_target`.
 Usage : check_no_publish.py workflow.yml [...]"""

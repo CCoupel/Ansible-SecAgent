@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package auth
 
 // R4 (v3.0.4, QA survivors): VerifyLinkKeysReplay accepts a re-sent link_keys only when it is signed by a key

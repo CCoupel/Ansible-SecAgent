@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package testnet gives tests loopback ports that cannot be stolen between "release" and "use".
 //
 // A port obtained with net.Listen("…:0") then Close() sits in the kernel's EPHEMERAL range: until

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package executor gère l'exécution de commandes shell via os/exec.
 //
 // Responsabilités (§4, §9, §12 ARCHITECTURE.md) :

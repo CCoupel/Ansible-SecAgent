@@ -8,7 +8,8 @@
 # sur milestone/** (ghcr.io/ccoupel/secagent-server:sha-<commit>@sha256:<digest>).
 #
 #   export SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-<commit>@sha256:<digest>
-#   cp qualif.env.example qualif.env   # secrets de QUALIF (jamais ceux de PROD), hors depot
+#   bash failover-test.sh setup-ci     # ou, en qualif : deposer SES secrets (secrets/jwt_secret_key, admin_token,
+#                                      # rsa_master_key) puis `push_secrets` : volume ${PROJECT}_secrets (jamais ceux de PROD)
 #   DOCKER_HOST=tcp://192.168.1.218:2375 docker compose -p secagent-qualif \
 #       -f docker-compose.server.yml up -d
 #
@@ -25,11 +26,15 @@ x-secagent: &secagent
   mem_limit: ${SECAGENT_MEM_LIMIT:-2g}
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
-  env_file:
-    - path: ./qualif.env
-      required: true
+  # Secrets (#197 item 6, v3.0.5) : FICHIERS lus via *_FILE, plus aucune variable d'environnement (invisibles dans
+  # `docker inspect`). Volume EXTERNE (modele des volumes tls / hooks / link : un `secrets: file:` serait un bind mount du
+  # CLIENT, irrealisable contre un demon distant) alimente par `push_secrets` (proprietaire 10001, mode 0400).
   volumes:
     - secagent_state:/data
+    - type: volume
+      source: secagent_secrets
+      target: /run/secagent-secrets
+      read_only: true
     - type: bind
       source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt / tls.key)}
       target: /certs
@@ -45,6 +50,9 @@ x-secagent: &secagent
     start_period: 20s
 
 x-secagent-env: &secagent-env
+  JWT_SECRET_KEY_FILE: /run/secagent-secrets/jwt_secret_key
+  ADMIN_TOKEN_FILE: /run/secagent-secrets/admin_token
+  RSA_MASTER_KEY_FILE: /run/secagent-secrets/rsa_master_key
   STATE_DIR: /data
   RELAY_STATUS_FILE: /run/secagent/status.json
   API_ADDR: "0.0.0.0:7770"
@@ -81,3 +89,8 @@ volumes:
   # Volume local partage par les 2 conteneurs (meme hote). Pour tester un vrai partage reseau (NFS),
   # remplacer par un volume `driver_opts type=nfs` : voir DEPLOYMENT/prod/README.md.
   secagent_state:
+  # Volume EXTERNE des secrets serveur (cree et alimente par `failover-test.sh setup-ci` / `chain-test.sh bootstrap`) :
+  # JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY en fichiers 0400 (10001). Retire par `down` / `teardown`.
+  secagent_secrets:
+    external: true
+    name: ${SECAGENT_SECRETS_VOLUME:-secagent-qualif_secrets}

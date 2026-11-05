@@ -34,9 +34,13 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # #213 : Environment protege (regle par le mainteneur dans GitHub : branches main et milestone/* seulement).
+    environment: candidate
     permissions:
       contents: read
       packages: write
+      id-token: write       # #213 : jeton OIDC pour signer l'attestation de provenance (Sigstore)
+      attestations: write   # #213 : enregistrement de l'attestation par GitHub
     strategy:
       fail-fast: false
       matrix:
@@ -57,10 +61,11 @@ jobs:
             echo "::error::Ref invalide (caracteres autorises : lettres, chiffres, . _ / -)."; exit 1
           fi
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref || 'main' }}
           fetch-depth: 0
+          persist-credentials: false   # depot public : le `git fetch origin` ci-dessous est anonyme (B32)
 
       # Le commit construit doit appartenir a une BRANCHE du depot (un commit n'existant que dans une PR est refuse).
       - name: Le commit appartient a une branche du depot
@@ -75,6 +80,25 @@ jobs:
         id: commit
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      # #213 M7 : la provenance signee inscrit le ref et le commit DU WORKFLOW (GITHUB_REF / GITHUB_SHA), pas ceux du
+      # checkout. Construire un autre commit (`ref` different du ref de lancement) reste possible pour la qualif, mais
+      # l'image n'est alors PAS attestee (avertissement + resume). Image attestee : lancer le workflow SUR la branche a
+      # construire, `gh workflow run candidate-images.yml --ref <branche> -f ref=<branche> -f publish=true`.
+      - name: Le commit construit est-il celui qui serait atteste
+        id: attestable
+        env:
+          HEAD_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$HEAD_SHA" = "$GITHUB_SHA" ] && [[ "$GITHUB_REF" == refs/heads/* ]]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "provenance = code construit : ${GITHUB_REF}@${GITHUB_SHA}"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Code construit ${HEAD_SHA} different du workflow ${GITHUB_REF}@${GITHUB_SHA} : image candidate NON attestee (M7)."
+            echo "Image candidate NON attestee : commit construit ${HEAD_SHA} != ${GITHUB_REF}@${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -85,21 +109,42 @@ jobs:
 
       - name: Build et push
         id: build
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: GO
           file: GO/${{ matrix.dockerfile }}
           push: true
           platforms: linux/amd64
           tags: ghcr.io/ccoupel/${{ matrix.image }}:sha-${{ steps.commit.outputs.sha }}
+          labels: org.opencontainers.image.licenses=AGPL-3.0-or-later
           provenance: true
           sbom: true
           cache-from: type=gha,scope=${{ matrix.image }}
+
+      # #213 : provenance SLSA SIGNEE (Sigstore, jeton OIDC du job) et rangee par GitHub ; les attestations BuildKit ci-dessus
+      # (provenance + SBOM) restent attachees a l'image mais ne sont PAS signees. Verification : DOC/project/DEPLOYMENT.md.
+      # create-storage-record: false : le storage record exige `artifact-metadata: write` (API d'organisation, non accordee).
+      - name: Attestation de provenance signee
+        if: steps.attestable.outputs.ok == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/ccoupel/${{ matrix.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
 
       - name: Reference de promotion QUALIF
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           SHA: ${{ steps.commit.outputs.sha }}
           IMAGE: ${{ matrix.image }}
+          ATTESTED: ${{ steps.attestable.outputs.ok }}
         run: |
-          echo "ghcr.io/ccoupel/${IMAGE}:sha-${SHA}@${DIGEST}" | tee -a "$GITHUB_STEP_SUMMARY"
+          # B39 : la ligne de promotion dit si l'image porte une attestation signee (sinon : ne pas la presenter comme prouvee)
+          if [ "$ATTESTED" = "true" ]; then
+            STATUS="ATTESTEE (provenance signee, ${GITHUB_REF})"
+          else
+            STATUS="NON ATTESTEE (commit construit != commit du workflow)"
+            echo "::warning::${IMAGE} : image candidate NON attestee, a ne pas promouvoir comme image prouvee."
+          fi
+          echo "ghcr.io/ccoupel/${IMAGE}:sha-${SHA}@${DIGEST} -- ${STATUS}" | tee -a "$GITHUB_STEP_SUMMARY"

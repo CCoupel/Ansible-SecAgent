@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package server holds the wiring of secagent-server: configuration, construction of every
 // component (store, hooks, handlers, repeater client, dialers, routers) and the lifecycle
 // (listen, serve, graceful shutdown). main() only reads the environment and calls it, so the
@@ -61,6 +64,19 @@ type Config struct {
 	InsecureTestState bool
 	// PurgeInterval is the period of the blacklist purge task (0 = one hour). TEST SEAM.
 	PurgeInterval time.Duration
+
+	// AgentJWTTTL is AGENT_JWT_TTL: the lifetime of the JWT issued to agents (0 = 24 h) and
+	// AgentJWTRenewInterval AGENT_JWT_RENEW_INTERVAL: the period of its renewal over the open
+	// WebSocket (0 = TTL/3). Validated by ResolveAgentJWT (#217).
+	AgentJWTTTL           time.Duration
+	AgentJWTRenewInterval time.Duration
+
+	// AgentWSPingInterval is AGENT_WS_PING_INTERVAL (0 = 30 s): the relay pings every agent connection
+	// this often and closes one that sends nothing for twice as long. AgentWSProbeTimeout is
+	// AGENT_WS_PROBE_TIMEOUT (0 = 5 s): how long a handshake carrying the replaced JTI waits for the
+	// live connection of that host to answer a ping (N1). Validated by ResolveAgentWS.
+	AgentWSPingInterval time.Duration
+	AgentWSProbeTimeout time.Duration
 
 	// Listen addresses; empty = the defaults above.
 	APIAddr   string
@@ -136,6 +152,98 @@ type Config struct {
 	MaxStdoutBufferTotal int64
 }
 
+// Environment variables of the agent JWT lifetime and renewal (#217).
+const (
+	EnvAgentJWTTTL           = "AGENT_JWT_TTL"
+	EnvAgentJWTRenewInterval = "AGENT_JWT_RENEW_INTERVAL"
+
+	// MaxAgentJWTTTL bounds AGENT_JWT_TTL: a longer life widens the window of a stolen token and the
+	// blacklist that must outlive it.
+	MaxAgentJWTTTL = 7 * 24 * time.Hour
+)
+
+// Minimums of AGENT_JWT_TTL and AGENT_JWT_RENEW_INTERVAL (security review of #217: a tiny TTL makes the
+// fleet renew in a loop, a tiny interval floods the state with writes). Variables, not constants, only so
+// that a binary built with the `testhelpers` tag (agent_jwt_testhelpers.go) can lower them; the release
+// binary has no way around them, not even through the environment.
+var (
+	minAgentJWTTTL      = 5 * time.Minute
+	minAgentJWTInterval = time.Minute
+)
+
+// ResolveAgentJWT applies the defaults (TTL 24 h, interval TTL/3) and validates the pair: TTL in
+// [5 min, 7 days], interval at least 1 min and at most TTL/2 (so a token is renewed at least twice before it
+// expires: one missed renewal does not lose the agent).
+func ResolveAgentJWT(ttl, interval time.Duration) (time.Duration, time.Duration, error) {
+	if ttl == 0 {
+		ttl = handlers.DefaultAgentJWTTTL
+	}
+	if ttl < minAgentJWTTTL || ttl > MaxAgentJWTTTL {
+		return 0, 0, fmt.Errorf("%s: %s is out of range (must be between %s and %s)", EnvAgentJWTTTL, ttl, minAgentJWTTTL, MaxAgentJWTTTL)
+	}
+	if interval == 0 {
+		interval = ttl / 3
+	}
+	if interval < minAgentJWTInterval {
+		return 0, 0, fmt.Errorf("%s: %s is too short (at least %s)", EnvAgentJWTRenewInterval, interval, minAgentJWTInterval)
+	}
+	if interval*2 > ttl {
+		return 0, 0, fmt.Errorf("%s: %s is too long for %s=%s (the interval must be at most half of the TTL)", EnvAgentJWTRenewInterval, interval, EnvAgentJWTTTL, ttl)
+	}
+	return ttl, interval, nil
+}
+
+// envDuration reads a Go duration variable ("" = unset = 0; "0s" is kept as 0 ONLY when unset: an
+// explicit zero is refused by the callers).
+func envDuration(name string) (time.Duration, bool, error) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return 0, false, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, true, fmt.Errorf("%s: %q is not a duration (for example 24h, 90m)", name, v)
+	}
+	return d, true, nil
+}
+
+// Environment variables, defaults and bounds of the agent connection keepalive (#217, N1).
+const (
+	EnvAgentWSPingInterval = "AGENT_WS_PING_INTERVAL"
+	EnvAgentWSProbeTimeout = "AGENT_WS_PROBE_TIMEOUT"
+
+	DefaultAgentWSPingInterval = 30 * time.Second
+	DefaultAgentWSProbeTimeout = 5 * time.Second
+	// The ping interval is capped at 60 s: the minion retries a 401 handshake for about 84 s, and the N1
+	// rule only treats a connection as dead after one silent ping interval (B15).
+	maxAgentWSPingInterval = time.Minute
+	maxAgentWSProbeTimeout = 30 * time.Second
+)
+
+// Minimums: variables only so that a `testhelpers` binary can lower them (agent_jwt_testhelpers.go).
+var (
+	minAgentWSPingInterval = 5 * time.Second
+	minAgentWSProbeTimeout = time.Second
+)
+
+// ResolveAgentWS applies the defaults (ping 30 s, probe 5 s) and validates the pair: ping in
+// [5 s, 5 min], probe in [1 s, 30 s].
+func ResolveAgentWS(ping, probe time.Duration) (time.Duration, time.Duration, error) {
+	if ping == 0 {
+		ping = DefaultAgentWSPingInterval
+	}
+	if probe == 0 {
+		probe = DefaultAgentWSProbeTimeout
+	}
+	if ping < minAgentWSPingInterval || ping > maxAgentWSPingInterval {
+		return 0, 0, fmt.Errorf("%s: %s is out of range (must be between %s and %s)", EnvAgentWSPingInterval, ping, minAgentWSPingInterval, maxAgentWSPingInterval)
+	}
+	if probe < minAgentWSProbeTimeout || probe > maxAgentWSProbeTimeout {
+		return 0, 0, fmt.Errorf("%s: %s is out of range (must be between %s and %s)", EnvAgentWSProbeTimeout, probe, minAgentWSProbeTimeout, maxAgentWSProbeTimeout)
+	}
+	return ping, probe, nil
+}
+
 // Environment variables of the task admission limits (#179).
 const (
 	EnvMaxTasksPerAgent     = "MAX_TASKS_PER_AGENT"
@@ -188,6 +296,9 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, terr
 	}
 	if cfg.MasterKey, terr = secretenv.Get("RSA_MASTER_KEY"); terr != nil {
+		return Config{}, terr
+	}
+	if terr = state.ValidateMasterKeyLength(cfg.MasterKey); terr != nil { // #214: refused at the start, never logged
 		return Config{}, terr
 	}
 	if cfg.TLSDisable, terr = envStrictBool(EnvTLSDisable); terr != nil {
@@ -255,6 +366,37 @@ func ConfigFromEnv() (Config, error) {
 	} else {
 		cfg.MaxTasksInflight = int(n)
 	}
+	ttl, ttlSet, err := envDuration(EnvAgentJWTTTL)
+	if err != nil {
+		return Config{}, err
+	}
+	interval, intervalSet, err := envDuration(EnvAgentJWTRenewInterval)
+	if err != nil {
+		return Config{}, err
+	}
+	for _, v := range []struct {
+		name string
+		dst  *time.Duration
+	}{{EnvAgentWSPingInterval, &cfg.AgentWSPingInterval}, {EnvAgentWSProbeTimeout, &cfg.AgentWSProbeTimeout}} {
+		d, set, derr := envDuration(v.name)
+		if derr != nil {
+			return Config{}, derr
+		}
+		if set && d == 0 {
+			return Config{}, fmt.Errorf("%s: an explicit zero duration is refused (unset the variable for the default)", v.name)
+		}
+		*v.dst = d
+	}
+	if _, _, err := ResolveAgentWS(cfg.AgentWSPingInterval, cfg.AgentWSProbeTimeout); err != nil {
+		return Config{}, err
+	}
+	if (ttlSet && ttl == 0) || (intervalSet && interval == 0) {
+		return Config{}, fmt.Errorf("%s / %s: an explicit zero duration is refused (unset the variable for the default)", EnvAgentJWTTTL, EnvAgentJWTRenewInterval)
+	}
+	if _, _, err := ResolveAgentJWT(ttl, interval); err != nil {
+		return Config{}, err
+	}
+	cfg.AgentJWTTTL, cfg.AgentJWTRenewInterval = ttl, interval
 	if cfg.JWTSecret == "" {
 		return Config{}, ErrMissingJWTSecret
 	}

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package state
 
 import (
@@ -10,7 +13,7 @@ import (
 
 func TestInitCreatesTheStateThenTheServerCanOpenIt(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "fresh", "state") // the directory is created too
-	if err := Init(InitOptions{Dir: dir, MasterKey: "k", RSABits: 2048}); err != nil {
+	if err := Init(InitOptions{Dir: dir, MasterKey: "k0123456789abcdef0123456789abcdef", RSABits: 2048}); err != nil {
 		t.Fatal(err)
 	}
 	if m := mode(t, filepath.Join(dir, StateFile)); m != 0o600 {
@@ -31,7 +34,7 @@ func TestInitCreatesTheStateThenTheServerCanOpenIt(t *testing.T) {
 	}
 	// two inits produce different secrets (nothing deterministic)
 	dir2 := t.TempDir()
-	if err := Init(InitOptions{Dir: dir2, MasterKey: "k", RSABits: 2048}); err != nil {
+	if err := Init(InitOptions{Dir: dir2, MasterKey: "k0123456789abcdef0123456789abcdef", RSABits: 2048}); err != nil {
 		t.Fatal(err)
 	}
 	e2, _ := Open(Options{Dir: dir2})
@@ -49,7 +52,7 @@ func TestInitRefusesWhenAnythingAlreadyThere(t *testing.T) {
 			if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			err := Init(InitOptions{Dir: dir, MasterKey: "k", RSABits: 2048})
+			err := Init(InitOptions{Dir: dir, MasterKey: "k0123456789abcdef0123456789abcdef", RSABits: 2048})
 			if err == nil || !strings.Contains(err.Error(), "refusing to initialize") || !strings.Contains(err.Error(), existing) {
 				t.Fatalf("init over %s: %v", existing, err)
 			}

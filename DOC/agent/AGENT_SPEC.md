@@ -47,8 +47,9 @@ GO/cmd/secagent-minion/
 |---|---|---|---|
 | `/etc/secagent-minion/id_rsa` | `RELAY_PRIVATE_KEY` | Clef privée RSA-4096 PEM | 0600 |
 | `/etc/secagent-minion/token.jwt` | `RELAY_JWT_PATH` | JWT courant (réécrit à chaque enrollment) | 0600 |
-| `/var/lib/secagent-minion/async_jobs.json` | — | Registre jobs async persisté | 0644 |
-| `/var/log/secagent-minion/agent.log` | — | Logs (become_pass masqué) | 0644 |
+| `/var/lib/secagent-minion/async/jobs.json` (`<RELAY_ASYNC_DIR>/jobs.json`, `main.go:113,432`) | `RELAY_ASYNC_DIR` | Registre jobs async persisté (écriture atomique, `registry/registry.go:229`) ; répertoire créé en 0755 (`registry.go:224`) | 0600 |
+
+Il n'y a pas de fichier de log : le minion journalise sur la sortie d'erreur (`log` standard, journald sous systemd), `become_pass` masqué.
 
 ---
 
@@ -123,13 +124,19 @@ Limite : **500KB** décodé. Retourner `rc: 1, error: "payload_too_large"` si d�
 
 `SIGTERM` sur le subprocess associé au `task_id`. Le mapping `task_id → subprocess` est **interne à l'agent**, jamais exposé.
 
-### `rekey` — Rotation des clefs serveur
+### `rekey` — Remplacement du JWT (rotation et renouvellement périodique)
 
 ```json
-{ "type": "rekey" }
+{ "type": "rekey", "token_encrypted": "<base64(RSA-OAEP-SHA256(JWT))>" }
 ```
 
-Déclenche un ré-enrollment automatique : génère un nouvel enrollment token (via admin si possible) ou utilise le mécanisme de refresh token.
+Le serveur émet cette trame pour rotation de `JWT_SECRET_KEY` et, depuis v3.0.5 (#217), périodiquement pour renouveler le JWT avant son expiration. Le format de trame est inchangé. Le minion la traite en ligne (read loop, sans goroutine), connexion maintenue :
+
+1. déchiffre `token_encrypted` avec sa clef privée ;
+2. **persiste** le JWT dans `token.jwt` (0600) **avant** de l'adopter ;
+3. remplace son JWT courant (utilisé pour toute reconnexion).
+
+Robustesse : une trame malformée (JSON invalide, `token_encrypted` absent/vide/non base64, mauvaise clef, texte clair vide) est journalisée et ignorée — le JWT et la connexion sont inchangés. Si l'écriture de `token.jwt` échoue, le JWT est tout de même adopté en mémoire (le serveur a déjà remplacé le JTI : l'ancien JWT serait refusé en 401) et `[ERROR] rekey: new JWT not persisted` est journalisé. Le journal indique un compteur de renouvellements (`renewal #N`), jamais le jeton.
 
 ---
 
@@ -238,7 +245,7 @@ Agent daemonise le subprocess, répond immédiatement :
 }
 ```
 
-Job persisté dans `async_jobs.json` :
+Job persisté dans `jobs.json` :
 ```json
 {
   "jid-uuid": {
@@ -332,7 +339,7 @@ Le minion est configuré **uniquement par l'environnement** (§11) ; il n'accept
 | Invocation | Effet | Code de sortie |
 |---|---|---|
 | `secagent-minion` (sans argument) | démarre l'agent | selon §7 |
-| `secagent-minion --version` ou `-v` | affiche `secagent-minion version <version>` (stdout) sans rien démarrer | 0 |
+| `secagent-minion --version` ou `-v` | affiche 3 lignes (stdout) : `secagent-minion version <version>`, `License: AGPL-3.0-or-later`, `Source: https://github.com/CCoupel/Ansible-SecAgent`, sans rien démarrer | 0 |
 | `secagent-minion --help` ou `-h` | affiche l'aide et les variables d'environnement (stdout) sans rien démarrer | 0 |
 | tout autre argument (mot inconnu, `-d`, `--config x`, `7770`, `--version extra`…) | message d'erreur et aide sur stderr, **avant** toute initialisation (ni bannière, ni lecture de configuration ou de secret, ni génération de clé) | 1 |
 
@@ -364,12 +371,17 @@ Les tâches Ansible **ne reçoivent PAS** l'environnement complet du minion. Une
 
 Le minion gère automatiquement le ré-enrôlement en cas de token JWT expiré ou révoqué :
 
-1. **HTTP 401 à l'upgrade WebSocket** (JWT expiré, invalide ou rejeté) → le JWT local est supprimé, appel à `POST /api/register` (enrollment, avec `RELAY_ENROLLMENT_TOKEN`) → nouveau JWT → reconnexion WS. Aucun code de fermeture WebSocket ne déclenche un ré-enrôlement
-2. **Message `rekey`** → le minion déchiffre `token_encrypted`, remplace son JWT et garde la connexion ouverte (pas de ré-enrôlement)
+1. **HTTP 401 à l'upgrade WebSocket** (JWT expiré, invalide, remplacé ou rejeté). Le relais répond toujours le même 401 au motif masqué (JWT expiré, remplacé, hôte révoqué) : le minion ne les distingue pas.
+   - **Réessais d'abord (v3.0.5)** : le minion **garde son JWT** (et `token.jwt`) et réessaie jusqu'à **3 fois** avec backoff exponentiel (12 s, 24 s, 48 s, jitter ±20 %, soit ≥ 67 s au pire), plus long que la sonde du relais (~5 s) et que son délai de pong (~60 s) : un 401 transitoire (le relais juge encore vivante l'ancienne connexion) se résorbe sans consommer de jeton d'enrôlement. Le JWT n'est jamais journalisé.
+   - **Borné** : un agent révoqué ne boucle pas ; après les 3 réessais, comportement ci-dessous. Une révocation d'une connexion ouverte (fermeture 4001) arrête le minion (code 77) sans aucun réessai. Un JWT tout juste obtenu par ré-enrôlement n'est pas réessayé.
+   - **Ensuite** : le JWT local est supprimé, appel à `POST /api/register` (enrollment, avec `RELAY_ENROLLMENT_TOKEN`) → nouveau JWT → reconnexion WS. Aucun code de fermeture WebSocket ne déclenche un ré-enrôlement
+2. **Message `rekey`** (rotation ou renouvellement périodique, §4) → le minion déchiffre `token_encrypted`, persiste puis adopte le nouveau JWT et garde la connexion ouverte (pas de ré-enrôlement) ; une trame invalide est ignorée sans couper la connexion
 3. **Échec corrigible d'enrôlement** (réseau, 400, 5xx, coupure après envoi de la requête) → nouveau tour après un backoff exponentiel : **1 s → 2 s → 4 s → … → 60 s max**, en passant à l'adresse suivante de `RELAY_SERVER_URL`
    - Un jeton à usage unique n'est jamais rejoué sur une autre adresse une fois la requête partie
    - Si le serveur accepte le ré-enrôlement mais refuse encore le JWT à l'upgrade, un message `[ERROR] N consecutive authentication cycles without a working WebSocket…` est journalisé et le minion continue avec backoff
 4. **HTTP 403 à l'enrôlement** (jeton invalide, expiré ou déjà consommé) ou **absence de `RELAY_ENROLLMENT_TOKEN`** → **refus permanent, aucun retry** : sortie avec le code **78**. **NE PAS redémarrer** (voir codes sortie §7) ; l'opérateur crée un nouveau jeton d'enrôlement
+
+**Pings du relais** : le minion n'applique aucun délai de lecture sur la WebSocket (une connexion qui ne reçoit que des pings reste ouverte) et répond à chaque ping par un pong (`WriteControl`, sans bloquer la boucle de lecture derrière une écriture en cours).
 
 ---
 

@@ -45,7 +45,7 @@ Authorization: Bearer <ADMIN_TOKEN>
 
 ### `GET /api/admin/minions/{hostname}` — Détail d'un agent
 
-**Réponse 200 :** `hostname`, `status`, `last_seen`, `suspended`, `enrolled_at`, `key_fingerprint` (début de la clef publique, 16 caractères + `...`) et `vars` (variables Ansible de l'hôte) — `MinionDetail`, `handlers/admin.go`. La clef publique complète n'est pas renvoyée.
+**Réponse 200 :** `hostname`, `status`, `last_seen`, `suspended`, `revoked`, `enrolled_at`, `key_fingerprint` (début de la clef publique, 16 caractères + `...`) et `vars` (variables Ansible de l'hôte) — `MinionDetail`, `handlers/admin.go`. La clef publique complète n'est pas renvoyée. `revoked` (booléen, additif en v3.0.5) : l'hôte est révoqué (`minions revoke`) ; `minions delete` s'en sert pour avertir que la suppression lève la révocation. **`status` suit la connexion WebSocket vivante** (`connected` si l'agent est connecté à ce nœud, comme la liste `GET /api/admin/minions`), sinon le dernier statut de l'état (v3.0.5, #233 : il valait avant le seul statut persisté, `disconnected` pour un agent connecté).
 
 **Codes d'erreur :**
 
@@ -109,7 +109,7 @@ Effets (#193) :
 
 ### `DELETE /api/admin/minions/{hostname}` — Supprimer un agent
 
-Ferme la WS (code `4000`), supprime l'agent **et sa clef autorisée** de l'état et émet l'événement `host.deleted`. Réponse 200 : `{ "hostname", "status": "deleted", "ws_disconnected" }` ; `404 agent_not_found`. Différent de la révocation, qui blackliste et pose le drapeau sans supprimer.
+**Ordre (v3.0.5, M12)** : (1) le JTI courant et le précédent sont mis en liste noire et l'hôte marqué révoqué, en une écriture d'état (aucune poignée de main avec l'ancien JWT n'est plus acceptée dès cet instant ; état en lecture seule ⇒ erreur, rien d'autre n'est fait) ; (2) la ligne est supprimée, **avec sa clef autorisée** ; (3) **puis** la WS est fermée (code `4000`), et fermée une seconde fois si une connexion est apparue entre-temps ; l'événement `host.deleted` est émis. Avant, la WS était fermée en premier : l'agent pouvait se reconnecter avec son JWT encore valide. Réponse 200 : `{ "hostname", "status": "deleted", "ws_disconnected" }` ; `404 agent_not_found`. Différent de la révocation, qui blackliste et pose le drapeau sans supprimer.
 
 **C'est aussi la levée explicite d'une révocation** : l'agent disparaît, donc son drapeau `revoked` aussi ; l'hôte peut alors s'enrôler de nouveau avec un jeton d'enrôlement. Ses variables sont perdues. (`storage/store.go:339` `DeleteAgent`.)
 
@@ -459,7 +459,7 @@ Lu dans le journal append-only `actions.log` (#161). `limit` : 1–200 (défaut 
 | `GET /api/admin/relays` | Liste des relays |
 | `GET /api/admin/relays/status` | État des relays : `{ "relays": [...], "timestamp": "..." }` |
 | `DELETE /api/admin/relays/{id}` | Supprime un relay |
-| `POST /api/admin/relays/{id}/revoke` | Révoque un relay (c'est la seule forme de révocation : il n'y a pas de sous-commande CLI `relays revoke`) |
+| `POST /api/admin/relays/{id}/revoke` | Révoque un relay (CLI : `relays revoke <relay_id|uuid>` ou `relays remove --revoke`, depuis v3.0.5) |
 
 (`server/routers.go:96-100`, `handlers/admin_relays.go`.)
 
@@ -471,8 +471,8 @@ Tous : `409 {"error":"not_root"}` sur un nœud non racine ; `503 {"error":"maste
 |---|---|
 | `GET /api/admin/link/pubkey` | Clé **publique** de la racine, à épingler sur les enfants (`REPEATER_ROOT_LINK_KEY_FILE`). 200 : `{ "root_id": "<relay_id>", "current_kid": "...", "current_pub_pem": "-----BEGIN PUBLIC KEY-----…" (PKIX Ed25519), "previous_kid": "..." (si fenêtre de rotation ouverte), "seq": N }`. Génère la clé si elle n'existe pas encore. Jamais de clé privée. |
 | `POST /api/admin/link/keys/rotate` | `current` devient `previous`, nouvelle `current` ; `seq`++ ; pousse `link_keys` (signé par l'**ancienne** `current`). 200 : `{ "current_kid", "previous_kid", "seq" }`. `409 previous_key_not_retired` si une rotation précédente n'est pas close (une seule rotation en vol). |
-| `POST /api/admin/link/keys/retire-previous` | Ferme la fenêtre de double acceptation (`previous` supprimée) ; `seq`++ ; pousse `link_keys` sans `previous`. Corps optionnel `{ "force": true }`. `409 no_previous_key` ; **`409 {"error":"rotation_unconfirmed","unconfirmed":["relay-x",…]}`** tant que des relays connus n'ont pas confirmé la rotation (`link_state`) — avec `force` : exécuté, `[SECURITY WARNING]` journalisé listant les relays (R2). |
-| `GET /api/admin/link/status` | `{ "root_id", "seq", "rotation_seq", "previous_kid", "relays": [ { "relay_id", "link_seq", "link_kid", "confirmed": bool } ] }` : confirmation de rotation par relay (messages `link_state`, informatifs). |
+| `POST /api/admin/link/keys/retire-previous` | Ferme la fenêtre de double acceptation (`previous` supprimée) ; `seq`++ ; pousse `link_keys` sans `previous`. Corps optionnel `{ "force": true }`. `409 no_previous_key` ; **`409 {"error":"rotation_unconfirmed","unconfirmed":["relay-x",…],"never_seen":["relay-y",…],"message":…}`** (`never_seen`, ajouté en v3.0.5 : le sous-ensemble de `unconfirmed` qui n'a **jamais** envoyé de `link_state` ; `message` — remède `relays remove <id>` — présent seulement s'il y en a) tant que des relays connus n'ont pas confirmé la rotation (`link_state`) — avec `force` : exécuté, `[SECURITY WARNING]` journalisé listant les relays (R2). |
+| `GET /api/admin/link/status` | `{ "root_id", "seq", "rotation_seq", "previous_kid", "relays": [ { "relay_id", "link_seq", "link_kid", "confirmed": bool, "state": "confirmed"|"unconfirmed"|"never_seen", "direct": bool } ], "not_direct": ["relay-z",…] }` : confirmation de rotation par relay (messages `link_state`, informatifs). **v3.0.5 (#234)** : `state` ajouté ; `never_seen` = aucun `link_state` reçu (relay déclaré ou appris de la topologie mais jamais connecté) ; `confirmed` vaut alors `false`, **y compris hors rotation** (il valait `true`). `unconfirmed` = a rapporté un autre kid que le courant. **#215 (option C)** : `direct` = le relais a confirmé son `link_state` lui-même, sur son propre lien, depuis la rotation (ou depuis son démarrage : horodatage en mémoire) ; `not_direct` liste les autres (confirmation relayée, non signée) ; informatif, ne bloque jamais ; `retire-previous` renvoie aussi `not_direct`. |
 
 CLI : `secagent-server keys link-pubkey`, `keys rotate-link`, `keys retire-link-previous [--force]`, `keys link-status`.
 

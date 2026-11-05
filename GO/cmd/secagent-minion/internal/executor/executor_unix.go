@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package executor — partie spécifique Unix/Linux.
 //
 // Ce fichier implémente le kill par groupe de processus pour garantir que les

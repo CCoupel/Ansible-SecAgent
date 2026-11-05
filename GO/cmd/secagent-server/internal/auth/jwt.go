@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package auth provides JWT signing and verification for the relay server.
 // It implements dual-key validation (ARCHITECTURE.md §22): tokens signed with
 // the previous secret remain valid until the rotation deadline expires.

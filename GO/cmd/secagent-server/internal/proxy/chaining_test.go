@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // chaining_test.go — Tests for proxy anti-loop hop counting.
 //
 // The push-mode HTTP chaining tests (RelayClient propagation, three-level

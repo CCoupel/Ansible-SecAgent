@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Controles de securite sur le RENDU d'un Compose (`docker compose config --format json`).
 
-Usage : check_compose.py [--allow-build] [--require-memory-limit] [--require-digest] rendu.json [rendu2.json ...]
+Usage : check_compose.py [--allow-build] [--require-memory-limit] [--require-digest] [--require-secret-files] rendu.json [rendu2.json ...]
         docker compose -f X config --format json | check_compose.py -
 
 Echec (exit 1) si, pour un service :
@@ -11,9 +14,21 @@ Echec (exit 1) si, pour un service :
   - TLS_DISABLE vaut true ;
   - une image est `latest` ou sans tag, ou un `build:` est present (sauf --allow-build : qualif locale) ;
   - --require-memory-limit : pas de limite memoire de conteneur, ou GOMEMLIMIT absent ;
+  - REPEATER_UPSTREAM_URL contient une adresse qui n'est pas en wss:// (#232, meme regle que le serveur :
+    config/repeater.go -> endpoints.ParseSchemes(v, "wss")), ou un relay enfant (REPEATER_ID defini) n'en a pas ;
+  - un service serveur (image secagent-server ou ADMIN_ADDR) recoit JWT_SECRET_KEY, ADMIN_TOKEN ou RSA_MASTER_KEY
+    en variable d'environnement (y compris un `env_file` rendu en `environment`), ou par un `env_file` (#197) :
+    ces secrets passent par `<NOM>_FILE` (secret Compose ou fichier), jamais par `docker inspect` ;
+    --require-secret-files exige en plus les trois `<NOM>_FILE` sur chaque service serveur ;
+  - un service minion (image secagent-minion ou nom `minion-*`) n'a pas `cap_drop: [ALL]` ou pas
+    `security_opt: no-new-privileges` (#238), ou un `cap_add` hors liste blanche CHOWN / SETUID / SETGID ;
+  - deux services du rendu publient le meme port d'HOTE (meme protocole) sur des adresses qui se recouvrent
+    (meme host_ip, ou l'une des deux en wildcard) : `up` echouerait sur l'allocation du port (v3.0.5, ports PROD
+    parametrables API_PUBLISH_PORT / WS_PUBLISH_PORT / ADMIN_PUBLISH_PORT) ;
   - la configuration mentionne NATS / JetStream / Caddy.
 """
 import json
+import os
 import re
 import sys
 
@@ -44,6 +59,38 @@ def admin_host(addr: str) -> str:
     return addr.rsplit(":", 1)[0] if ":" in addr else addr
 
 
+MAX_UPSTREAM = 16  # endpoints.MaxAddresses
+
+
+def check_upstream(env: dict, where: str, errs: list) -> None:
+    """#232 : liste d'adresses du parent, chacune en wss://<hote>[:port] (TLS obligatoire), sans userinfo.
+
+    Meme regle que le serveur (schema insensible a la casse, espaces autour des elements ignores, 16 adresses au plus).
+    Les erreurs citent la POSITION de l'adresse, jamais son contenu (elle pourrait porter des identifiants).
+    Le port WebSocket du parent (7772 dans les Compose du depot) est une convention, pas une exigence du serveur."""
+    url = env.get("REPEATER_UPSTREAM_URL", "")
+    if not url.strip():
+        if env.get("REPEATER_ID", "").strip():
+            errs.append(f"{where}: REPEATER_ID defini mais REPEATER_UPSTREAM_URL vide ou absent "
+                        "(relay enfant : liste wss://<parent>:7772 obligatoire)")
+        return
+    items = url.split(",")
+    if len(items) > MAX_UPSTREAM:
+        errs.append(f"{where}: REPEATER_UPSTREAM_URL : {len(items)} adresses, maximum {MAX_UPSTREAM}")
+    for pos, raw in enumerate(items, 1):
+        u = raw.strip()
+        scheme, sep, rest = u.partition("://")
+        host = rest.split("/", 1)[0]
+        if not sep or scheme.lower() != "wss":
+            errs.append(f"{where}: REPEATER_UPSTREAM_URL adresse #{pos} : schema wss:// obligatoire "
+                        "(le serveur refuse https://, ws:// et l'absence de schema ; port WebSocket du parent, 7772)")
+        elif "@" in host:
+            errs.append(f"{where}: REPEATER_UPSTREAM_URL adresse #{pos} : identifiants interdits dans l'adresse "
+                        "(le jeton passe par REPEATER_UPSTREAM_TOKEN_FILE)")
+        elif not host or host.startswith(":"):
+            errs.append(f"{where}: REPEATER_UPSTREAM_URL adresse #{pos} : hote absent (attendu wss://<hote>:7772)")
+
+
 def env_of(svc: dict) -> dict:
     env = svc.get("environment") or {}
     if isinstance(env, list):
@@ -51,8 +98,76 @@ def env_of(svc: dict) -> dict:
     return {k: ("" if v is None else str(v)) for k, v in env.items()}
 
 
-def check(doc: dict, allow_build: bool, require_mem: bool = False, require_digest: bool = False) -> list:
+SERVER_SECRETS = ("JWT_SECRET_KEY", "ADMIN_TOKEN", "RSA_MASTER_KEY")
+# env_file tolere sur un service serveur : ne porte aucun secret (REPEATER_ROOT_ID de l'enfant, ecrit par chain-test.sh).
+ENV_FILE_ALLOWED = {"child.env"}
+
+
+def env_files(svc: dict) -> list:
+    """Chemins des `env_file` d'un service (forme chaine, liste de chaines ou liste de {path, required})."""
+    ef = svc.get("env_file") or []
+    if isinstance(ef, (str, dict)):
+        ef = [ef]
+    return [e.get("path", "") if isinstance(e, dict) else str(e) for e in ef]
+
+
+def check_server_secrets(svc: dict, env: dict, where: str, errs: list, require_files: bool) -> None:
+    """#197 : un service serveur ne recoit aucun secret en variable d'environnement ni par env_file."""
+    for key in SERVER_SECRETS:
+        if key in env:
+            errs.append(f"{where}: {key} fourni en variable d'environnement (visible par docker inspect) : "
+                        f"utiliser {key}_FILE (secret Compose ou fichier 0400)")
+        if require_files and not env.get(key + "_FILE"):
+            errs.append(f"{where}: {key}_FILE absent (secret serveur obligatoire par fichier)")
+    for path in env_files(svc):
+        if os.path.basename(path) not in ENV_FILE_ALLOWED:
+            errs.append(f"{where}: env_file {os.path.basename(path)!r} interdit sur un service serveur "
+                        "(les secrets passent par *_FILE ; seul child.env, sans secret, est tolere)")
+
+
+MINION_CAP_ALLOW = {"CHOWN", "SETUID", "SETGID"}  # strictement ce que su-exec (entrypoint minion) requiert
+
+
+def check_minion_hardening(svc: dict, where: str, errs: list) -> None:
+    """#238 : un minion de qualif demarre en root (su-exec) : cap_drop ALL et no-new-privileges obligatoires."""
+    if not any(str(c).upper() in ("ALL", "CAP_ALL") for c in svc.get("cap_drop") or []):
+        errs.append(f"{where}: minion sans cap_drop: [ALL] (ajouter seulement les cap_add necessaires a su-exec)")
+    for cap in svc.get("cap_add") or []:
+        name = str(cap).upper().removeprefix("CAP_")
+        if name not in MINION_CAP_ALLOW:
+            errs.append(f"{where}: minion avec cap_add {cap} hors liste blanche (CHOWN, SETUID, SETGID)")
+    opts = [str(o).replace("=", ":").lower() for o in svc.get("security_opt") or []]
+    if not any(o in ("no-new-privileges", "no-new-privileges:true") for o in opts):
+        errs.append(f"{where}: minion sans security_opt: no-new-privileges:true")
+
+
+def is_minion(name: str, svc: dict) -> bool:
+    return "secagent-minion" in svc.get("image", "") or name.startswith("minion-")
+
+
+def host_port_collisions(doc: dict) -> list:
+    """Ports d'hote publies deux fois dans le rendu (forme longue de `config --format json` ; un `published` absent =
+    port ephemere, ignore). Deux publications se recouvrent si meme port et meme protocole, et meme host_ip ou l'une en
+    wildcard (0.0.0.0 / :: / vide)."""
+    seen, errs = [], []
+    for name, svc in (doc.get("services") or {}).items():
+        for p in svc.get("ports") or []:
+            if not isinstance(p, dict) or not str(p.get("published") or "").strip():
+                continue
+            pub, proto = str(p["published"]).strip(), p.get("protocol") or "tcp"
+            ip = (p.get("host_ip") or "").strip("[]")
+            for other, opub, oproto, oip in seen:
+                if opub == pub and oproto == proto and (ip == oip or ip in WILDCARD or oip in WILDCARD):
+                    errs.append(f"services '{other}' et '{name}': meme port d'hote {pub}/{proto} publie deux fois "
+                                f"(host_ip {oip or '*'} / {ip or '*'})")
+            seen.append((name, pub, proto, ip))
+    return errs
+
+
+def check(doc: dict, allow_build: bool, require_mem: bool = False, require_digest: bool = False,
+          require_secret_files: bool = False) -> list:
     errs = []
+    errs += host_port_collisions(doc)
     for name, svc in (doc.get("services") or {}).items():
         where = f"service '{name}'"
         env = env_of(svc)
@@ -80,6 +195,11 @@ def check(doc: dict, allow_build: bool, require_mem: bool = False, require_diges
                 errs.append(f"{where}: ADMIN_ADDR={admin!r} non loopback sans ADMIN_TLS=true ni derogation complete")
         if tls_disable:
             errs.append(f"{where}: TLS_DISABLE interdit")
+        if is_server:
+            check_server_secrets(svc, env, where, errs, require_secret_files)
+        elif is_minion(name, svc):
+            check_minion_hardening(svc, where, errs)
+        check_upstream(env, where, errs)
         image = svc.get("image", "")
         if image:
             ref = image.split("@")[0]
@@ -111,6 +231,7 @@ def main(argv):
     allow = "--allow-build" in argv
     req = "--require-memory-limit" in argv
     reqd = "--require-digest" in argv
+    reqf = "--require-secret-files" in argv
     files = [a for a in argv if not a.startswith("--")]
     if not files:
         print(__doc__)
@@ -118,7 +239,7 @@ def main(argv):
     rc = 0
     for f in files:
         doc = json.load(sys.stdin if f == "-" else open(f, encoding="utf-8"))
-        errs = check(doc, allow, req, reqd)
+        errs = check(doc, allow, req, reqd, reqf)
         for e in errs:
             print(f"::error::{f}: {e}")
         print(f"{'FAIL' if errs else 'OK'} {f}")

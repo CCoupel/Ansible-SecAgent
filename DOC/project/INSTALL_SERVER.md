@@ -126,7 +126,7 @@ docker compose up -d
 
 # 3. Contrôles
 docker compose ps                                          # tous « healthy »
-docker compose exec secagent-server secagent-server status --local   # code 0 : maître sain ou secondaire sain
+docker compose exec secagent-server /app/secagent-server status --local   # code 0 : maître sain ou secondaire sain
 curl -s --cacert <ca.pem> https://<hôte>:7770/health        # seul le MAÎTRE répond sur 7770/7772
 ```
 
@@ -145,8 +145,8 @@ production l'admin est en TLS ; l'alias suivant fournit l'URL et la CA :
 
 ```bash
 srv() {
-  docker compose exec -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
-    secagent-server secagent-server "$@"
+  docker compose exec -T -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/tls.crt \
+    secagent-server /app/secagent-server "$@"
 }
 ```
 
@@ -210,13 +210,13 @@ par des tests mais n'a pas été exercé en qualification réelle (il faut ≥ 2
   toute montée de version ; sauvegardez `rsa_master_key` séparément (§5).
 - **Restauration** (tous les relays arrêtés) : `secagent-server state verify <fichier>` puis
   `secagent-server state restore --from <fichier>` (revérifie le fichier, refuse si une instance tient un verrou frais —
-  code 8 —, sauvegarde l'état courant en `relay.state.bak-<UTC>`, journalise dans `state-restore.log`). Redémarrez ensuite.
+  code 8 —, sauvegarde l'état courant en `relay.state.bak-<UTC ns>`, journalise dans `state-restore.log`). Redémarrez ensuite.
 - **Bascule** : arrêt propre du maître (`docker compose stop secagent-server`) → un secondaire devient maître en quelques
   secondes (de l'ordre de 5 à 6 s mesurées en qualification, pour une limite de 10 s). Perte brutale (`kill -9`, hôte perdu) : le verrou n'est pas libéré par le système de
   fichiers ; la reprise attend sa péremption (**≈ 5 minutes**). Un maître qui perd le verrou en étant vivant sort avec le
   code 75 et redémarre secondaire.
 - **Rotation de `RSA_MASTER_KEY`** : commande hors ligne `state rekey` (arrêter *tous* les nœuds, une seule exécution sur
-  le `STATE_DIR` partagé, sauvegarde obligatoire `relay.state.rekey.<UTC>.bak` lisible avec l'**ancienne** clé : à
+  le `STATE_DIR` partagé, sauvegarde obligatoire `relay.state.rekey.<UTC ns>.bak` lisible avec l'**ancienne** clé : à
   détruire ensuite). La nouvelle clé doit faire au moins 32 octets. Procédure et limites : `SECURITY.md` §11.
 
 ## 11. Mise à jour depuis la v3.0.3
@@ -237,7 +237,7 @@ racine :
    `relay.state.v1.bak`** (ou celle que vous avez prise à l'étape 1) avec les binaires **v3.0.3 et les anciens jetons HS256**,
    en perdant toutes les écritures faites sous v3.0.4 (enrôlements, révocations).
 6. **Avant la montée**, prévoyez un jeton d'enrôlement **réutilisable** pour les agents : le redémarrage des relays force la
-   reconnexion, donc le ré-enrôlement de ceux dont le JWT (1 h) a expiré (voir [`INSTALL_AGENT.md`](INSTALL_AGENT.md) §7).
+   reconnexion, donc le ré-enrôlement de ceux dont le JWT a expiré (24 h par défaut et renouvelé en marche depuis la v3.0.5 ; 1 h avant) (voir [`INSTALL_AGENT.md`](INSTALL_AGENT.md) §7).
 
 ## 12. Dépannage
 

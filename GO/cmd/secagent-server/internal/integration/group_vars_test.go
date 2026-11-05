@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package integration
 
 // Ansible group vars per relay (#139 / #137 scenario 4) on real nodes: RELAY_GROUP_VARS reaches the

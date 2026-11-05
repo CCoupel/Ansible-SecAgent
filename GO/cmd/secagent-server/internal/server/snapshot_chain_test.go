@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package server
 
 import (
@@ -12,6 +15,7 @@ import (
 	"secagent-server/cmd/secagent-server/internal/logsafe"
 	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 )
 
 func chainsOfSnapshot(t *testing.T, selfID string, st *storage.Store) (relays map[string][]string, agents map[string][]string) {
@@ -31,7 +35,7 @@ func chainsOfSnapshot(t *testing.T, selfID string, st *storage.Store) (relays ma
 // depth: it used to declare every relay as a direct child ([self, relay]), which flattened the
 // tree at the ancestors (wrong inventory, wrong scope, wrong event chain validation).
 func TestBuildSnapshot_KeepsTheRealChainsAtDepth(t *testing.T) {
-	st, err := storage.OpenTemp()
+	st, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +82,7 @@ func TestBuildSnapshot_KeepsTheRealChainsAtDepth(t *testing.T) {
 // A relay without a stored path (direct child, never seen below another relay) is a direct child;
 // an inconsistent stored path (not ending at the relay) is ignored rather than published.
 func TestBuildSnapshot_DirectChildAndInconsistentChain(t *testing.T) {
-	st, err := storage.OpenTemp()
+	st, err := storagetest.OpenTemp()
 	if err != nil {
 		t.Fatal(err)
 	}

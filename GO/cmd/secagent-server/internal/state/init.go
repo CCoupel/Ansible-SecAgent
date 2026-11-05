@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package state
 
 import (
@@ -24,6 +27,11 @@ type InitOptions struct {
 	// RSABits is the RSA key size (default 4096; tests use less to stay fast).
 	RSABits int
 	Now     func() time.Time
+
+	// allowShortKey lets in-package tests build the state of a historical deployment whose key is
+	// shorter than MinNewMasterKeyBytes (to prove it stays openable and can be rekeyed). Unexported:
+	// no caller outside this package can skip the length rule (#214).
+	allowShortKey bool
 }
 
 // Init creates the initial state: RSA keypair and JWT secret, encrypted when a master key is
@@ -46,6 +54,11 @@ func Init(o InitOptions) error {
 	}
 	if o.MasterKey == "" && !o.AllowPlaintext {
 		return errors.New("state init: RSA_MASTER_KEY is required (the RSA private key and the JWT secret are stored encrypted); it is only optional in test mode")
+	}
+	if !o.allowShortKey {
+		if err := ValidateMasterKeyLength(o.MasterKey); err != nil {
+			return fmt.Errorf("state init: %w", err)
+		}
 	}
 	if o.MasterKey != "" && o.AllowPlaintext {
 		return errors.New("state init: --insecure-test-mode is refused while RSA_MASTER_KEY is set (a server holding a master key never accepts clear-text secrets): unset RSA_MASTER_KEY or drop the flag")

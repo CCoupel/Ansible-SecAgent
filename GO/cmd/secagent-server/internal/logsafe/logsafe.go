@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package logsafe stops log forging: whatever a peer, an agent or a legacy database row managed to
 // put in a value (a newline followed by a fake "[SECURITY WARNING]" line), one log call is ONE line.
 package logsafe

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package cli
 
 // `state verify` and `state restore` (#187): local commands, no API, no port.
@@ -281,10 +284,7 @@ const ExitRefused = 9
 var (
 	stateLTResetDir string
 	stateLTResetYes bool
-	stateLTStdinTTY = func() bool { // tests replace it
-		fi, err := os.Stdin.Stat()
-		return err == nil && fi.Mode()&os.ModeCharDevice != 0
-	}
+	stateLTStdinTTY = stdinLooksInteractive // tests replace it
 )
 
 var stateLinkTrustCmd = &cobra.Command{
@@ -571,10 +571,10 @@ func rekeyError(err error, prefix string) error {
 	switch {
 	case errors.Is(err, state.ErrRekeyVerify):
 		return &ExitError{Code: ExitRekeyVerify, Msg: prefix + err.Error()}
-	case errors.Is(err, state.ErrRekeyKeyTooShort):
+	case errors.Is(err, state.ErrRekeyKeyTooShort), errors.Is(err, state.ErrRekeyKeyPredictable):
 		return &ExitError{Code: ExitRekeyKeyTooShort, Msg: prefix + "refused, nothing modified: " + err.Error()}
 	case errors.Is(err, state.ErrRekeySameKey), errors.Is(err, state.ErrRekeyNoNewKey), errors.Is(err, state.ErrRekeyUncovered),
-		errors.Is(err, state.ErrRekeySchema), errors.Is(err, state.ErrRekeyFromPrev):
+		errors.Is(err, state.ErrRekeyFromPrev):
 		return &ExitError{Code: ExitRefused, Msg: prefix + "refused, nothing modified: " + err.Error()}
 	default:
 		code, why := verifyExit(err)

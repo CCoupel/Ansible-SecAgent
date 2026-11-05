@@ -32,7 +32,7 @@ services:
     # d'hote : il doit APPARTENIR a l'UID 10001 (celui du conteneur) en mode 0400 (ou 0600), sinon le serveur refuse de
     # demarrer. Creer/corriger avec ./preflight-secrets.sh (--write, --fix) et le LANCER AVANT `docker compose up`.
     # Ne JAMAIS definir en plus la variable directe (JWT_SECRET_KEY...) : les deux ensemble = refus de demarrer.
-    # (l'ancien `env_file: prod.env` est supprime ; `docker exec ... secagent-server <cmd>` herite des *_FILE.)
+    # (l'ancien `env_file: prod.env` est supprime ; `docker exec ... /app/secagent-server <cmd>` herite des *_FILE.)
     secrets:
       - jwt_secret_key
       - admin_token
@@ -87,13 +87,16 @@ services:
     tmpfs:
       - /run/secagent:uid=10001,gid=10001,mode=0700
       - /tmp:uid=10001,gid=10001,mode=1777
+    # Ports d'HOTE parametrables (v3.0.5) : defauts 7770/7772/7771 ; les ports DU CONTENEUR ne changent jamais. Sur un hote
+    # qui porte aussi la QUALIF (192.168.1.218), la PROD publie 17770/17772/17771 (voir .env.example) : les clients
+    # (minions RELAY_SERVER_URL/RELAY_WS_URL, plugin, relays enfants REPEATER_UPSTREAM_URL) visent CES ports d'hote.
     ports:
-      - "7770:7770"      # API
-      - "7772:7772"      # WebSocket agents
+      - "${API_PUBLISH_PORT:-7770}:7770"      # API
+      - "${WS_PUBLISH_PORT:-7772}:7772"       # WebSocket agents
       # Admin : JAMAIS sans adresse d'hote (publierait sur toutes les interfaces). Boucle locale par
       # defaut ; ADMIN_PUBLISH_ADDR = adresse du reseau d'administration si besoin. Controle CI :
       # scripts/ci/check_compose.py.
-      - "${ADMIN_PUBLISH_ADDR:-127.0.0.1}:7771:7771"
+      - "${ADMIN_PUBLISH_ADDR:-127.0.0.1}:${ADMIN_PUBLISH_PORT:-7771}:7771"
     healthcheck:
       # Un secondaire (aucun port ouvert) est `healthy` ; un process fige passe `unhealthy`.
       test: ["CMD", "/app/secagent-server", "status", "--local"]

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package handlers
 
 import (
@@ -121,6 +124,7 @@ type MinionDetail struct {
 	Status         string                 `json:"status"`
 	LastSeen       string                 `json:"last_seen"`
 	Suspended      bool                   `json:"suspended"`
+	Revoked        bool                   `json:"revoked"` // v3.0.5 (#233): persistent revocation (minions revoke)
 	EnrolledAt     string                 `json:"enrolled_at"`
 	KeyFingerprint string                 `json:"key_fingerprint"`
 	Vars           map[string]interface{} `json:"vars"`
@@ -161,9 +165,16 @@ func AdminGetMinion(w http.ResponseWriter, r *http.Request) {
 		vars = make(map[string]interface{})
 	}
 
+	// The live WebSocket registry decides, like the list does: the store only has the last persisted status.
+	status := agent.Status
+	if _, cerr := ws.GetConnection(agent.Hostname); cerr == nil {
+		status = "connected"
+	}
+
 	detail := MinionDetail{
 		Hostname:       agent.Hostname,
-		Status:         agent.Status,
+		Status:         status,
+		Revoked:        agent.Revoked,
 		LastSeen:       agent.LastSeen.UTC().Format(time.RFC3339),
 		Suspended:      agent.Suspended,
 		EnrolledAt:     agent.EnrolledAt.UTC().Format(time.RFC3339),
@@ -617,6 +628,9 @@ func AdminStats(w http.ResponseWriter, r *http.Request) {
 // DELETE /api/admin/minions/{hostname}
 // ========================================================================
 
+// closeAgentFn closes the WebSocket of an agent (replaced in tests to observe the order of the steps).
+var closeAgentFn = ws.CloseAgent
+
 // AdminDeleteMinion permanently removes an agent from the DB.
 // Closes the WS connection (code 4000) if active, then dispatches host.deleted.
 // Distinct from POST /api/admin/revoke/{hostname} which blacklists but does not delete.
@@ -649,20 +663,50 @@ func AdminDeleteMinion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Close active WS connection with code 4000 (normal close)
-	wsDisconnected := ws.CloseAgent(hostname, ws.WSCloseNormal, "admin_delete")
+	// Order matters (M12): (1) refuse the holders of the JWT FIRST — the persistent revoked flag and the
+	// blacklist of the current JTI in one state write, and the previous JTI too — so that no handshake
+	// is accepted from here on, whatever the moment of the deletion; if that write is refused (read-only
+	// state) nothing else is done; (2) delete the row; (3) THEN close the WebSocket (code 4000), and
+	// close again if a connection slipped in between. Closing first, as before, let the agent reconnect
+	// with its still valid JWT before the row disappeared and keep a live link to a deleted host.
+	until := time.Now().Add(25 * time.Hour)
+	if _, rerr := adminStore.RevokeAgent(ctx, hostname, agent.TokenJTI, "admin_delete", until); rerr != nil {
+		log.Printf("AdminDeleteMinion RevokeAgent: %v", rerr)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		return
+	}
+	// From here the host IS revoked: whatever fails next, its link must not survive (4001, like
+	// AdminRevokeMinion) — the caller retries the deletion.
+	failRevoked := func() {
+		closeAgentFn(hostname, ws.WSCloseRevoked, "token_revoked")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+	}
+	if prev := agent.PrevTokenJTI; prev != "" {
+		reason := "admin_delete"
+		if berr := adminStore.AddToBlacklist(ctx, prev, hostname, until.UTC().Format(time.RFC3339), &reason); berr != nil {
+			log.Printf("AdminDeleteMinion blacklist previous JTI: %v", berr)
+			failRevoked()
+			return
+		}
+	}
 
 	// Delete from DB (agents + authorized_keys best-effort)
 	deleted, err := adminStore.DeleteAgent(ctx, hostname)
 	if err != nil {
 		log.Printf("AdminDeleteMinion DeleteAgent: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		failRevoked()
 		return
 	}
 	if !deleted {
 		// Race: another request deleted it between GetAgent and DeleteAgent
+		closeAgentFn(hostname, ws.WSCloseRevoked, "token_revoked")
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent_not_found"})
 		return
+	}
+
+	wsDisconnected := closeAgentFn(hostname, ws.WSCloseNormal, "admin_delete")
+	if _, cerr := ws.GetConnection(hostname); cerr == nil { // a connection arrived while we were deleting
+		wsDisconnected = closeAgentFn(hostname, ws.WSCloseNormal, "admin_delete") || wsDisconnected
 	}
 
 	// Dispatch host.deleted event (async, nil-safe during tests)

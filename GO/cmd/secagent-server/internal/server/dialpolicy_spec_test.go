@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package server
 
 // #151 (L7, plan rev2 §5 "démarrage avec une ligne push stockée devenue interdite") — a stored push
@@ -16,7 +19,7 @@ import (
 	"testing"
 
 	"secagent-server/cmd/secagent-server/internal/handlers"
-	"secagent-server/cmd/secagent-server/internal/storage"
+	"secagent-server/cmd/secagent-server/internal/storage/storagetest"
 )
 
 var specConfigureDialPolicy func(allowLoopback bool, deny, allow string) (restore func(), err error)
@@ -40,8 +43,8 @@ func TestStartPushDialers_AStoredLineForbiddenByThePolicyIsNeverDialed(t *testin
 			nil, map[string]string{"mixed": "deny"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("RSA_MASTER_KEY", "main-test-master-key")
-			st, err := storage.OpenTemp()
+			t.Setenv("RSA_MASTER_KEY", "main-test-master-key-0123456789abcdef")
+			st, err := storagetest.OpenTemp()
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package server
 
 // Native TLS of secagent-server (#175): TLS_CERT / TLS_KEY on the API (7770) and WebSocket (7772)

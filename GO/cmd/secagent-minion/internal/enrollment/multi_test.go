@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package enrollment
 
 // #166 — multi-address enrollment: the one-shot token is never replayed on another address once

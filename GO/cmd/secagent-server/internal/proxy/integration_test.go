@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // integration_test.go — Phase 12 — Tests d'intégration topologie DMZ simulée
 //
 // Implements PLAN_PHASE12.md §12.10 — Issue #119
@@ -12,7 +15,7 @@
 //
 // All tests run in-memory (no external infrastructure required):
 //   - Pull-mode tests: httptest.Server + gorilla/websocket relay goroutines
-//   - Storage: storage.OpenTemp()
+//   - Storage: storagetest.OpenTemp()
 //
 // Non-regression: additive tests only — no modifications to existing *_test.go files.
 package proxy

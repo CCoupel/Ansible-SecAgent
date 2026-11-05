@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package server
 
 import (
@@ -33,24 +36,24 @@ func TestConfigFromEnv_SecretsFromFiles(t *testing.T) {
 	t.Setenv("RSA_MASTER_KEY", "")
 	t.Setenv("JWT_SECRET_KEY_FILE", secretFile(t, "jwt-from-file\n", 0o600))
 	t.Setenv("ADMIN_TOKEN_FILE", secretFile(t, "admin-from-file\n", 0o400))
-	t.Setenv("RSA_MASTER_KEY_FILE", secretFile(t, "master-from-file \n", 0o600))
+	t.Setenv("RSA_MASTER_KEY_FILE", secretFile(t, "master-from-file-0123456789abcdef0123456789 \n", 0o600))
 	cfg, err := ConfigFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.JWTSecret != "jwt-from-file" || cfg.AdminToken != "admin-from-file" || cfg.MasterKey != "master-from-file" {
+	if cfg.JWTSecret != "jwt-from-file" || cfg.AdminToken != "admin-from-file" || cfg.MasterKey != "master-from-file-0123456789abcdef0123456789" {
 		t.Fatalf("secrets = %q %q %q", cfg.JWTSecret, cfg.AdminToken, cfg.MasterKey)
 	}
 }
 
 func TestConfigFromEnv_DirectSecretsStillAccepted(t *testing.T) {
 	setServerEnv(t)
-	t.Setenv("RSA_MASTER_KEY", "direct-master")
+	t.Setenv("RSA_MASTER_KEY", "direct-master-key-0123456789abcdef0123456789")
 	t.Setenv("JWT_SECRET_KEY_FILE", "")
 	t.Setenv("ADMIN_TOKEN_FILE", "")
 	t.Setenv("RSA_MASTER_KEY_FILE", "")
 	cfg, err := ConfigFromEnv()
-	if err != nil || cfg.JWTSecret != "s" || cfg.AdminToken != "a" || cfg.MasterKey != "direct-master" {
+	if err != nil || cfg.JWTSecret != "s" || cfg.AdminToken != "a" || cfg.MasterKey != "direct-master-key-0123456789abcdef0123456789" {
 		t.Fatalf("%+v %v", cfg, err)
 	}
 }
@@ -102,7 +105,7 @@ func TestConfigFromEnv_NoSecretValueInStartupLogs(t *testing.T) {
 	setServerEnv(t)
 	t.Setenv("JWT_SECRET_KEY", "")
 	t.Setenv("ADMIN_TOKEN", "")
-	t.Setenv("RSA_MASTER_KEY", "master-DIRECT-4242")
+	t.Setenv("RSA_MASTER_KEY", "master-DIRECT-4242-0123456789abcdef0123456789")
 	t.Setenv("JWT_SECRET_KEY_FILE", secretFile(t, "jwt-FILE-4242", 0o600))
 	t.Setenv("ADMIN_TOKEN_FILE", secretFile(t, "admin-FILE-4242", 0o600))
 	var buf bytes.Buffer

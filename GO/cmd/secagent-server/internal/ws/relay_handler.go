@@ -1,5 +1,7 @@
-// Phase 12 — relay_handler.go
-// WebSocket handler for /ws/relay — mode pull.
+// SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// relay_handler.go — WebSocket handler for /ws/relay (relay chain, pull mode).
 //
 // Relays connect here with a link token (Ed25519, role relay-child / relay-parent, signed by the root)
 // and announce their agents.
@@ -57,9 +59,7 @@ type RelayConnection struct {
 	descendants  map[string]struct{} // relays declared in the validated topology_snapshot
 	helloDone    bool                // relay_hello accepted: required before topology_snapshot / event_forward
 	snapshotDone bool
-	reject       *relayRejection // set by a handler to make the read loop close the link
-	evWindow     time.Time       // event_forward rate limit window start
-	evCount      int
+	reject       *relayRejection   // set by a handler to make the read loop close the link
 	reported     map[string]string // hostname → "old->new" already reported as host.conflict (no event storm)
 }
 
@@ -1467,6 +1467,13 @@ func resetRelayState() {
 	snapQuotaMu.Lock()
 	snapQuotas = map[string]*snapQuota{}
 	snapQuotaMu.Unlock()
+	eventQuotaMu.Lock()
+	eventQuotas = map[string]*eventQuota{}
+	eventQuotaPurged = time.Time{}
+	eventQuotaMu.Unlock()
+	linkMu.Lock()
+	directSeen = map[string]time.Time{}
+	linkMu.Unlock()
 	descOwnerMu.Lock()
 	for k := range descendantOwner {
 		delete(descendantOwner, k)
@@ -1696,12 +1703,8 @@ func handleEventForward(conn *RelayConnection, msg RelayMessage) {
 		log.Printf("[SECURITY WARNING] event_forward before relay_hello: relay_id=%q (dropped)", conn.RelayID)
 		return
 	}
-	now := time.Now()
-	if now.Sub(conn.evWindow) >= time.Second {
-		conn.evWindow, conn.evCount = now, 0
-	}
-	conn.evCount++
-	if conn.evCount > maxEventsPerSecond {
+	// The quota belongs to the relay_id, not to the link (#216): a reconnection does not reset it.
+	if !allowEvent(conn.RelayID, time.Now()) {
 		log.Printf("[RELAY] event_forward rate limit exceeded: relay_id=%q (dropped)", conn.RelayID)
 		return
 	}
