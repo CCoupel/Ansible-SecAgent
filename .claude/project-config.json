@@ -428,6 +428,7 @@
   "private": {
     "reviewed": "2026-11-05",
     "root_env": "SECAGENT_PRIVATE_DIR",
+    "volatile_outside": "jetons de la chaine de qualif (CHAIN_DIR) : volatils, hors PRIVATE/, defaut ${TMPDIR:-/tmp}/secagent-qualif-chain-<uid> (0700), regeneres par chain-test.sh bootstrap",
     "items": [
       {
         "path": "PRIVATE/qualif/pki/",
@@ -440,12 +441,6 @@
         "kind": "secrets serveur de la qualif (jwt_secret_key, admin_token, rsa_master_key ; fichiers lus via *_FILE) - SECRETS_DIR",
         "origin": "moved",
         "from": "DEPLOYMENT/qualif/secrets/ (copie scratchpad de la derniere session, source d'origine perdue le 2026-11-03)"
-      },
-      {
-        "path": "PRIVATE/qualif/chain/",
-        "kind": "jetons de la chaine de qualif (minion-*.env, plugin.token/plugin.header, inventory.sh, upstream-token transitoire ; child.env, root-link.pub, root-id, image-ids non secrets) - CHAIN_DIR",
-        "origin": "generated",
-        "from": "DEPLOYMENT/qualif/chain/ (regenere par chain-test.sh bootstrap)"
       },
       {
         "path": "PRIVATE/qualif/ci-tls/",

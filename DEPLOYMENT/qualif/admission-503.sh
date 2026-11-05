@@ -144,7 +144,7 @@ admission_503() {
   local slots=$(( ADM503_BUDGET / ADM503_TASK_BYTES )) m n code probe
   [ "$slots" -ge 2 ] || fail "ADM503_BUDGET=$ADM503_BUDGET trop bas (moins de 2 taches)"
   [ "$slots" -le 20 ] || fail "ADM503_BUDGET=$ADM503_BUDGET : $slots taches > 2 x MAX_TASKS_PER_AGENT, le refus serait un 429 et non un 503"
-  require_private_dir "$CHAIN_DIR"   # fail-closed (#250) : jamais de racine PRIVATE/ creee par mkdir -p
+  chain_dir   # garde de CHAIN_DIR (lien, proprietaire, 0700) avant d'y ecrire
   ADM503_DIR="$CHAIN_DIR/admission-503"; rm -rf "$ADM503_DIR"; mkdir -p "$ADM503_DIR"; chmod 700 "$ADM503_DIR"
   trap adm503_cleanup EXIT
   # 0. jeton plugin frais -> en-tete d'autorisation en fichier 0600 (jamais affiche)

@@ -25,11 +25,13 @@
 # Variables : SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (obligatoires, references promues ou locales),
 #   SECAGENT_PRIVATE_DIR (racine des donnees privees, defaut <depot>/PRIVATE, jamais creee : chemin ABSOLU du
 #   checkout depuis une copie), SECRETS_DIR (defaut $SECAGENT_PRIVATE_DIR/qualif/secrets),
-#   QUALIF_TLS_DIR (defaut $SECAGENT_PRIVATE_DIR/qualif/pki), CHAIN_DIR (defaut $SECAGENT_PRIVATE_DIR/qualif/chain),
+#   QUALIF_TLS_DIR (defaut $SECAGENT_PRIVATE_DIR/qualif/pki),
+#   CHAIN_DIR (jetons VOLATILS, defaut ${TMPDIR:-/tmp}/secagent-qualif-chain-<uid> : hors PRIVATE/, sur un systeme de fichiers
+#   qui honore chmod ; repertoire 0700 de l'utilisateur, refuse s'il est un lien, d'un autre proprietaire ou plus ouvert),
 #   INVENTORY_BIN (binaire secagent-inventory du poste de controle),
 #   ANSIBLE_BIN (defaut `ansible`), PROJECT (defaut secagent-chain), TOKEN_TTL (defaut 2h).
 #   LINK_TTL (defaut = TOKEN_TTL) : duree du jeton de lien relay-child de l'enfant.
-# Les jetons sont ecrits UNIQUEMENT dans $CHAIN_DIR (0700, fichiers 0600, sous PRIVATE/ ignore par git) : jamais affiches.
+# Les jetons sont ecrits UNIQUEMENT dans $CHAIN_DIR (0700, fichiers 0600, hors du depot) : jamais affiches.
 # Le poste de controle Ansible (plugin SECAGENT-PYTHON + secagent-inventory) est ici le poste qui lance ce script,
 # il joint la racine par les ports d'hote 7770 (a) et 8770 (b) avec la CA de test.
 set -euo pipefail
@@ -58,8 +60,11 @@ C_A="secagent-qualif-a"; C_B="secagent-qualif-b"; C_CHILD="secagent-qualif-child
 export C_A C_B
 TOKEN_TTL="${TOKEN_TTL:-2h}"
 LINK_TTL="${LINK_TTL:-$TOKEN_TTL}"
-# Exporte : docker-compose.chain.yml lit les env_file des minions et de l'enfant dans ${CHAIN_DIR:-./chain}.
-export CHAIN_DIR="${CHAIN_DIR:-$PRIVATE_DIR/qualif/chain}"
+# Jetons de la chaine : VOLATILS (regeneres par bootstrap), donc hors PRIVATE/ ; defaut sur /tmp (ext4 sous WSL : les modes
+# 0700/0600 exiges par le plugin y sont honores, contrairement a NTFS). Exporte : docker-compose.chain.yml lit les env_file
+# des minions et de l'enfant dans ${CHAIN_DIR:-./chain}.
+_tmp="${TMPDIR:-/tmp}"; CHAIN_DIR="${CHAIN_DIR:-${_tmp%/}/secagent-qualif-chain-$(id -u)}"; unset _tmp
+export CHAIN_DIR="${CHAIN_DIR%/}"
 # shellcheck source=failover-test.sh
 source "$HERE/failover-test.sh"   # fonctions : listening, is_master, wait_for, health, fail, DC...
 # shellcheck source=admission-503.sh
@@ -70,7 +75,29 @@ adm() { # $1 conteneur, puis la commande secagent-server : CLI admin en TLS (CA 
   docker exec -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/ca.crt "$c" /app/secagent-server "$@"
 }
 master() { is_master "$C_A" && echo "$C_A" || { is_master "$C_B" && echo "$C_B"; }; }
-chain_dir() { require_private_dir "$CHAIN_DIR"; mkdir -p "$CHAIN_DIR"; chmod 700 "$CHAIN_DIR"; }   # fail-closed (#250)
+# Garde de $CHAIN_DIR (repertoire potentiellement partage comme /tmp) : refus FAIL-CLOSED d'un lien symbolique, d'un non
+# repertoire, d'un autre proprietaire que l'utilisateur courant ou de droits plus larges que 0700. Jamais de chmod correctif
+# sur un repertoire existant (il a pu etre lu entre-temps) : le supprimer et relancer.
+chain_dir_check() {
+  local d="$CHAIN_DIR" uid mode
+  # chemin ABSOLU exige : un chemin relatif serait resolu par Compose depuis le repertoire du fichier compose, pas d'ici
+  case "$d" in /?*) ;; *) fail "CHAIN_DIR='$d' n'est pas un chemin absolu (ni la racine) : refus" ;; esac
+  [ ! -L "$d" ] || fail "CHAIN_DIR=$d est un lien symbolique : refus (jetons de la chaine)"
+  [ -e "$d" ] || return 0
+  [ -d "$d" ] || fail "CHAIN_DIR=$d existe et n'est pas un repertoire : refus"
+  uid="$(stat -c %u -- "$d")"
+  [ "$uid" = "$(id -u)" ] || fail "CHAIN_DIR=$d appartient a l'uid $uid (utilisateur courant : $(id -u)) : refus"
+  mode="$(stat -c %a -- "$d")"
+  [ $(( 8#$mode & 8#077 )) -eq 0 ] || fail "CHAIN_DIR=$d a les droits $mode, plus larges que 0700 : refus (supprimer le repertoire puis relancer)"
+}
+chain_dir() { # cree $CHAIN_DIR en 0700 (sans course : mkdir echoue si un tiers l'a cree entre-temps) puis le reverifie
+  chain_dir_check
+  if [ ! -e "$CHAIN_DIR" ]; then
+    mkdir -p -- "$(dirname -- "$CHAIN_DIR")"
+    mkdir -m 700 -- "$CHAIN_DIR" || fail "CHAIN_DIR=$CHAIN_DIR : creation impossible"
+  fi
+  chain_dir_check
+}
 write_secret() { # $1 fichier relatif a chain/, valeur lue sur stdin : jamais affichee
   ( umask 077; cat > "$CHAIN_DIR/$1" )
   chmod 600 "$CHAIN_DIR/$1"
@@ -173,7 +200,8 @@ ci_prepare() {
 
 # Chemins prives resolus (support de scripts/ci/private_paths_selftest.sh) : aucun appel docker, rien n'est cree.
 chain_paths() {
-  require_private_dir "$SECRETS_DIR" "$QUALIF_TLS_DIR" "$CHAIN_DIR"
+  require_private_dir "$SECRETS_DIR" "$QUALIF_TLS_DIR"
+  chain_dir_check   # CHAIN_DIR verifie s'il existe (lien, proprietaire, droits), jamais cree ici
   printf 'PRIVATE_DIR=%s\nSECRETS_DIR=%s\nQUALIF_TLS_DIR=%s\nCHAIN_DIR=%s\n' "$PRIVATE_DIR" "$SECRETS_DIR" "$QUALIF_TLS_DIR" "$CHAIN_DIR"
 }
 
@@ -535,6 +563,6 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     down) guard_project; "${DC[@]}" down -v
           # le volume du jeton de lien est EXTERNE (non supprime par down -v) et contient un secret : retrait explicite
           docker volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" >/dev/null 2>&1 || true ;;
-    *) sed -n '2,34p' "$0"; exit 2 ;;
+    *) sed -n '2,36p' "$0"; exit 2 ;;
   esac
 fi
