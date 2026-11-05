@@ -7,6 +7,7 @@
 #  (b) PRIVATE existant => PRIVATE_DIR, SECRETS_DIR, QUALIF_TLS_DIR (failover : qualif/ci-tls ; chain : qualif/pki), CHAIN_DIR (chain seul) ;
 #  (c) une variable explicite (SECRETS_DIR=/x) prime sur le defaut ;
 #  (d) pki/gen.sh refuse d'ecrire des cles dans un depot git ou le chemin n'est pas ignore ;
+#  (f) SECAGENT_PRIVATE_DIR relatif => refus ("n'est pas un chemin absolu"), meme avec SECRETS_DIR absolu, y compris pki/gen.sh ;
 #  (e) plus aucun ancien defaut ($HERE/secrets, $HERE/pki/out, $HERE/.ci-tls, $HERE/chain) dans DEPLOYMENT/qualif.
 # Contrat : sous-commande `paths` de failover-test.sh et chain-test.sh, imprimant PRIVATE_DIR=, SECRETS_DIR=, QUALIF_TLS_DIR= (+ CHAIN_DIR= pour chain-test.sh seul).
 set -uo pipefail
@@ -64,6 +65,22 @@ if git -C "$REPO" init -q 2>/dev/null; then
 else
   ko "(d) git init impossible"
 fi
+
+# (f) SECAGENT_PRIVATE_DIR relatif => refus (meme avec SECRETS_DIR explicite absolu), message explicite
+chk_rel() { # $1 nom, reste = commande ; env : SECAGENT_PRIVATE_DIR=relp
+  local name="$1"; shift
+  local out rc
+  out="$(cd "$TMP" && "$@" 2>&1)"; rc=$?
+  [ $rc -ne 0 ] && ok "(f) $name : chemin relatif => code != 0" || ko "(f) $name : chemin relatif accepte (rc=0)"
+  printf '%s' "$out" | grep -q "n'est pas un chemin absolu" && ok "(f) $name : message 'n'est pas un chemin absolu'" || ko "(f) $name : message sans 'n'est pas un chemin absolu'"
+  printf '%s' "$out" | grep -q 'SECAGENT_PRIVATE_DIR' && ok "(f) $name : message cite SECAGENT_PRIVATE_DIR" || ko "(f) $name : message sans SECAGENT_PRIVATE_DIR"
+}
+mkdir -p "$TMP/relp"
+for s in failover-test.sh chain-test.sh; do
+  chk_rel "$s" env -u SECRETS_DIR -u QUALIF_TLS_DIR -u CHAIN_DIR -u PKI_OUT SECAGENT_PRIVATE_DIR=relp bash "$Q/$s" paths
+  chk_rel "$s + SECRETS_DIR absolu" env -u QUALIF_TLS_DIR -u CHAIN_DIR -u PKI_OUT SECAGENT_PRIVATE_DIR=relp SECRETS_DIR=/abs/secrets bash "$Q/$s" paths
+done
+chk_rel "pki/gen.sh" env -u PKI_OUT SECAGENT_PRIVATE_DIR=relp bash "$Q/pki/gen.sh"
 
 # (e) anciens defauts supprimes (hors README : la doc peut les citer pour la migration)
 OLD='\$\{?HERE\}?/(secrets|pki/out|\.ci-tls|chain($|[^-A-Za-z0-9_.]))'
