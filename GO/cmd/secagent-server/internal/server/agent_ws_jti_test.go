@@ -397,7 +397,15 @@ func TestWiring_ARevocationBetweenTheCheckAndTheRegistrationClosesTheLink(t *tes
 	if !ok || ce.Code != 4001 {
 		t.Fatalf("the link must be closed with 4001 right after registration, got %v", rerr)
 	}
-	if _, gerr := ws.GetConnection("race-b55"); gerr == nil {
+	// The close frame is written before the server unregisters the link: wait (bounded) for the removal.
+	unregistered := false
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if _, gerr := ws.GetConnection("race-b55"); gerr != nil {
+			unregistered = true
+			break
+		}
+	}
+	if !unregistered {
 		t.Error("the revoked connection must not stay registered")
 	}
 }

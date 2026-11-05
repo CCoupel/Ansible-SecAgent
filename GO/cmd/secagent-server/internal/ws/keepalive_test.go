@@ -241,7 +241,8 @@ func TestAgentHandler_ReplaysTheRevocationCheckAfterRegistering(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("no close frame")
 	}
-	if _, err := GetConnection("b55"); err == nil {
+	// The close frame is written before the server unregisters the link: wait (bounded) for the removal.
+	if !awaitCondition(3*time.Second, func() bool { _, err := GetConnection("b55"); return err != nil }) {
 		t.Error("the revoked connection must be unregistered")
 	}
 }
