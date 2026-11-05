@@ -10,15 +10,35 @@
 #   failover-test.sh run kill            # docker kill : reprise apres la peremption du verrou (~5-6 min)
 #   failover-test.sh run freeze          # SIGSTOP du maitre : doit passer `unhealthy`, puis SIGCONT : un seul maitre
 #   failover-test.sh teardown            # docker compose down -v
+#   failover-test.sh paths               # chemins prives resolus (sans docker) ; echec si la racine PRIVATE/ manque
 #
 # Variables : COMPOSE_FILE (defaut docker-compose.server.yml de ce repertoire), PROJECT (secagent-qualif),
 #   C_A / C_B (noms de conteneurs, defaut secagent-qualif-a / -b), STOP_MAX_S (defaut 10), KILL_MAX_S (defaut 600),
 #   INSPECT_MINION_CMD / INVENTORY_CMD : commandes optionnelles (code 0 = OK) lancees apres chaque bascule
 #   (minion reconnecte sans re-enrolement ; secagent-inventory avec la liste des 2 adresses).
+#   Donnees privees (#250) : racine SECAGENT_PRIVATE_DIR (defaut <depot>/PRIVATE, jamais creee par ce script) ;
+#   SECRETS_DIR (defaut $SECAGENT_PRIVATE_DIR/qualif/secrets), QUALIF_TLS_DIR (defaut .../qualif/ci-tls, CI).
 # Ne demarre rien a l'import ; exige docker et docker compose. Exit 0 = OK, 1 = echec.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
 fail() { echo "ECHEC: $*" >&2; exit 1; }
+# Racine UNIQUE des donnees privees du poste (#250) : secrets, PKI de test, jetons de la chaine. Depuis une copie du
+# depot (scratchpad hors /mnt/c), exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE (chemin absolu).
+PRIVATE_DIR="${SECAGENT_PRIVATE_DIR:-$REPO/PRIVATE}"
+PRIVATE_DIR="${PRIVATE_DIR%/}"
+# Garde FAIL-CLOSED (incident du 2026-11-03 : secrets generes dans une copie ephemere puis perdus) : un chemin situe
+# sous $PRIVATE_DIR n'est jamais ecrit si la racine n'existe pas ; la racine n'est JAMAIS creee par les scripts.
+# Un chemin explicite hors de $PRIVATE_DIR (ex. SECRETS_DIR=/autre) n'est pas concerne.
+require_private_dir() { # $@ chemins qui vont etre ecrits
+  local p
+  for p in "$@"; do
+    case "$p" in
+      "$PRIVATE_DIR"|"$PRIVATE_DIR"/*)
+        [ -d "$PRIVATE_DIR" ] || fail "racine des donnees privees introuvable (SECAGENT_PRIVATE_DIR=$PRIVATE_DIR) : refus d'ecrire $p dans un emplacement ephemere. Creer la racine ou exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE (chemin absolu)" ;;
+    esac
+  done
+}
 # Mode HOTE DISTANT : DOCKER_HOST non local, ou point d'acces (SECAGENT_ENDPOINT_HOST / CONTROL_HOST) non local.
 is_remote() {
   case "${DOCKER_HOST:-}" in ""|unix://*|npipe://*) ;; *) return 0 ;; esac
@@ -43,7 +63,8 @@ C_A="${C_A:-secagent-qualif-a}"; C_B="${C_B:-secagent-qualif-b}"
 # Volume EXTERNE des secrets serveur (#197 item 6, v3.0.5) : trois fichiers (jwt_secret_key, admin_token, rsa_master_key)
 # lus via JWT_SECRET_KEY_FILE / ADMIN_TOKEN_FILE / RSA_MASTER_KEY_FILE ; plus aucun secret en variable d'environnement.
 export SECAGENT_SECRETS_VOLUME="${SECAGENT_SECRETS_VOLUME:-${PROJECT}_secrets}"
-SECRETS_DIR="${SECRETS_DIR:-$HERE/secrets}"   # cote client, ignore par git, fichiers 0400
+SECRETS_DIR="${SECRETS_DIR:-$PRIVATE_DIR/qualif/secrets}"   # cote client, sous PRIVATE/ (ignore par git), fichiers 0400
+CI_TLS_DIR="$PRIVATE_DIR/qualif/ci-tls"   # certificat jetable de setup-ci (defaut de QUALIF_TLS_DIR dans ce script)
 STOP_MAX_S="${STOP_MAX_S:-10}"; KILL_MAX_S="${KILL_MAX_S:-600}"
 DC=(docker compose -p "$PROJECT" -f "$COMPOSE_FILE")
 # Fichiers de surcharge optionnels (ex. docker-compose.remote-tls.yml pour un hote Docker distant) : liste separee par des espaces.
@@ -100,6 +121,7 @@ wait_for() { # $1 description, $2 delai max, $3... commande
 # Genere des secrets ALEATOIRES et JETABLES (jamais ceux de prod) dans $SECRETS_DIR (0700, fichiers 0400), sans les afficher.
 # Un fichier DEJA present est conserve (RSA_MASTER_KEY ne doit pas changer apres `state init`) sauf FORCE=1.
 gen_secrets() {
+  require_private_dir "$SECRETS_DIR"
   ( umask 077; mkdir -p "$SECRETS_DIR"; chmod 700 "$SECRETS_DIR"
     local n; for n in jwt_secret_key admin_token rsa_master_key; do
       if [ "${FORCE:-0}" = 1 ] || [ ! -s "$SECRETS_DIR/$n" ]; then
@@ -128,7 +150,8 @@ push_secrets() {
 }
 
 setup_ci() {
-  local d="${QUALIF_TLS_DIR:-$HERE/.ci-tls}"
+  local d="${QUALIF_TLS_DIR:-$CI_TLS_DIR}"
+  require_private_dir "$d" "$SECRETS_DIR"
   mkdir -p "$d"
   openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=localhost" \
     -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -keyout "$d/tls.key" -out "$d/tls.crt" 2>/dev/null
@@ -143,7 +166,7 @@ setup_ci() {
 
 up_and_identify() {
   guard_remote_binds
-  QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$HERE/.ci-tls}" "${DC[@]}" up -d
+  QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$CI_TLS_DIR}" "${DC[@]}" up -d
   wait_for "les deux conteneurs healthy" 120 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_A)\" = healthy ] && [ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_B)\" = healthy ]" >/dev/null
   sleep 3
   local ma=0 mb=0
@@ -194,14 +217,22 @@ run() {
   echo "OK ($mode)"
 }
 
+# Chemins prives resolus (support de scripts/ci/private_paths_selftest.sh) : aucun appel docker, rien n'est cree.
+paths() {
+  local tls="${QUALIF_TLS_DIR:-$CI_TLS_DIR}"
+  require_private_dir "$SECRETS_DIR" "$tls"
+  printf 'PRIVATE_DIR=%s\nSECRETS_DIR=%s\nQUALIF_TLS_DIR=%s\n' "$PRIVATE_DIR" "$SECRETS_DIR" "$tls"
+}
+
 # Sourceable (chain-test.sh reutilise les fonctions) : le dispatch ne s'execute que lance directement.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
     setup-ci) setup_ci ;;
+    paths) paths ;;
     run) run "${2:?mode stop|kill}" ;;
     teardown) guard_project; "${DC[@]}" down -v
               # le volume des secrets est EXTERNE (non supprime par down -v) et contient des secrets : retrait explicite
               docker volume rm "$SECAGENT_SECRETS_VOLUME" >/dev/null 2>&1 || true ;;
-    *) sed -n '2,15p' "$0"; exit 2 ;;
+    *) sed -n '2,21p' "$0"; exit 2 ;;
   esac
 fi

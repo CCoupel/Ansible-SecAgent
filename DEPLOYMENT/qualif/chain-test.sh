@@ -4,7 +4,7 @@
 
 # Topologie de qualif EN CHAINE (#188) : amorcage, smoke et bascule de la racine.
 #
-#   chain-test.sh ci-prepare   # CI uniquement : PKI de test + secrets aleatoires et jetables (secrets/, fichiers 0400)
+#   chain-test.sh ci-prepare   # PKI de test + secrets aleatoires et jetables (SECRETS_DIR, fichiers 0400) ; ne regenere que l'absent
 #   chain-test.sh bootstrap    # state init (racine, enfant), relays add, jetons enrolement/plugin, demarrage
 #   chain-test.sh smoke        # relais connectes, minions connectes, inventaire hierarchique, ansible -m ping
 #   chain-test.sh failover     # arret propre du maitre de la racine (failover-test.sh) puis smoke
@@ -12,25 +12,32 @@
 #   chain-test.sh load-images <dir>  # docker load des images d'un artefact CI (sans registre), SECAGENT_PULL_POLICY=never
 #   chain-test.sh push-tls     # TLS_MODE=volume : copie les certificats dans le volume Docker (hote distant)
 #   chain-test.sh push-hooks    # hooks.json -> volume ${PROJECT}_hooks (fait par bootstrap)
-#   chain-test.sh push-secrets  # secrets/ -> volume ${PROJECT}_secrets, 10001 0400 (fait par bootstrap)
+#   chain-test.sh push-secrets  # SECRETS_DIR -> volume ${PROJECT}_secrets, 10001 0400 (fait par bootstrap)
 #   chain-test.sh push-link-key  # cle publique racine (+ jeton de lien s'il existe) -> volume ${PROJECT}_link
 #   chain-test.sh link-rotation  # rotation de la cle de lien, confirmation, nouveau jeton, retire-link-previous (v3.0.4)
 #   chain-test.sh link-revoke    # revocation du lien d'un enfant : fermeture 4010, pas de reconnexion, puis remise en etat
 #   chain-test.sh hooks        # journal des hooks (host.up/host.down) de la racine et de l'enfant (#197, hooks.json)
 #   chain-test.sh negative-ca  # essai CA negatif (profil Compose `negative`) : un minion sans la CA est refuse (#197)
 #   chain-test.sh admission-503  # refus 503 memory_budget_exhausted en reel (#241) : plafond abaisse, voir admission-503.sh
+#   chain-test.sh paths        # chemins prives resolus (sans docker) ; echec si la racine PRIVATE/ manque
 #   chain-test.sh logs | down
 #
 # Variables : SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (obligatoires, references promues ou locales),
-#   QUALIF_TLS_DIR (defaut ./pki/out), INVENTORY_BIN (binaire secagent-inventory du poste de controle),
+#   SECAGENT_PRIVATE_DIR (racine des donnees privees, defaut <depot>/PRIVATE, jamais creee : chemin ABSOLU du
+#   checkout depuis une copie), SECRETS_DIR (defaut $SECAGENT_PRIVATE_DIR/qualif/secrets),
+#   QUALIF_TLS_DIR (defaut $SECAGENT_PRIVATE_DIR/qualif/pki), CHAIN_DIR (defaut $SECAGENT_PRIVATE_DIR/qualif/chain),
+#   INVENTORY_BIN (binaire secagent-inventory du poste de controle),
 #   ANSIBLE_BIN (defaut `ansible`), PROJECT (defaut secagent-chain), TOKEN_TTL (defaut 2h).
 #   LINK_TTL (defaut = TOKEN_TTL) : duree du jeton de lien relay-child de l'enfant.
-# Les jetons sont ecrits UNIQUEMENT dans ./chain/ (0700, fichiers 0600, ignore par git) : jamais affiches.
+# Les jetons sont ecrits UNIQUEMENT dans $CHAIN_DIR (0700, fichiers 0600, sous PRIVATE/ ignore par git) : jamais affiches.
 # Le poste de controle Ansible (plugin SECAGENT-PYTHON + secagent-inventory) est ici le poste qui lance ce script,
 # il joint la racine par les ports d'hote 7770 (a) et 8770 (b) avec la CA de test.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
+# Racine des donnees privees (#250) : meme resolution que failover-test.sh (source plus bas, garde require_private_dir).
+PRIVATE_DIR="${SECAGENT_PRIVATE_DIR:-$REPO/PRIVATE}"
+PRIVATE_DIR="${PRIVATE_DIR%/}"
 # Projet dedie `secagent-qualif` (conteneurs secagent-qualif-a/-b/-child, ports d'hote 7770/7772 + 8770/8772 pour b,
 # admin 127.0.0.1:7771/8771/9771). Deployer sur un hote qui heberge deja une ancienne qualif : liberer ces ports avant.
 export COMPOSE_FILE="$HERE/docker-compose.chain.yml" PROJECT="${PROJECT:-${COMPOSE_PROJECT_NAME:-secagent-qualif}}"
@@ -45,13 +52,14 @@ fi
 # Hote sur lequel le poste de controle joint la racine (ports d'hote 7770 et 8770) ; defaut : poste local / runner.
 # Hote distant : SECAGENT_ENDPOINT_HOST=192.168.1.218 (doit figurer dans les SAN : PKI_EXTRA_SAN=IP:192.168.1.218).
 ENDPOINT_HOST="${CONTROL_HOST:-${SECAGENT_ENDPOINT_HOST:-127.0.0.1}}"   # CONTROL_HOST = alias
-export QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$HERE/pki/out}"
+export QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$PRIVATE_DIR/qualif/pki}"
 export SECAGENT_LINK_VOLUME="${SECAGENT_LINK_VOLUME:-${PROJECT}_link}"   # volume de l'ancre (cle publique racine)
 C_A="secagent-qualif-a"; C_B="secagent-qualif-b"; C_CHILD="secagent-qualif-child"
 export C_A C_B
 TOKEN_TTL="${TOKEN_TTL:-2h}"
 LINK_TTL="${LINK_TTL:-$TOKEN_TTL}"
-CHAIN_DIR="$HERE/chain"
+# Exporte : docker-compose.chain.yml lit les env_file des minions et de l'enfant dans ${CHAIN_DIR:-./chain}.
+export CHAIN_DIR="${CHAIN_DIR:-$PRIVATE_DIR/qualif/chain}"
 # shellcheck source=failover-test.sh
 source "$HERE/failover-test.sh"   # fonctions : listening, is_master, wait_for, health, fail, DC...
 # shellcheck source=admission-503.sh
@@ -62,6 +70,7 @@ adm() { # $1 conteneur, puis la commande secagent-server : CLI admin en TLS (CA 
   docker exec -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/ca.crt "$c" /app/secagent-server "$@"
 }
 master() { is_master "$C_A" && echo "$C_A" || { is_master "$C_B" && echo "$C_B"; }; }
+chain_dir() { require_private_dir "$CHAIN_DIR"; mkdir -p "$CHAIN_DIR"; chmod 700 "$CHAIN_DIR"; }   # fail-closed (#250)
 write_secret() { # $1 fichier relatif a chain/, valeur lue sur stdin : jamais affichee
   ( umask 077; cat > "$CHAIN_DIR/$1" )
   chmod 600 "$CHAIN_DIR/$1"
@@ -144,7 +153,7 @@ load_images() {
     gunzip -c "$a" | docker load
   done
   # Empreintes reelles apres chargement == celles de l'artefact ; ils sont enregistres dans l'etat local (verify_images).
-  local ref want id; mkdir -p "$CHAIN_DIR"; chmod 700 "$CHAIN_DIR"
+  local ref want id; chain_dir
   while read -r ref want; do
     [ -n "$ref" ] || continue
     docker image inspect "$ref" >/dev/null 2>&1 || fail "image $ref absente apres docker load"
@@ -157,14 +166,21 @@ load_images() {
 }
 
 ci_prepare() {
+  require_private_dir "$QUALIF_TLS_DIR" "$SECRETS_DIR"   # fail-closed (#250) avant toute generation
   bash "$HERE/pki/gen.sh" "$QUALIF_TLS_DIR"
-  gen_secrets   # $SECRETS_DIR (defaut ./secrets) : jwt_secret_key, admin_token, rsa_master_key en fichiers 0400
+  gen_secrets   # $SECRETS_DIR (defaut PRIVATE/qualif/secrets) : jwt_secret_key, admin_token, rsa_master_key en fichiers 0400
+}
+
+# Chemins prives resolus (support de scripts/ci/private_paths_selftest.sh) : aucun appel docker, rien n'est cree.
+chain_paths() {
+  require_private_dir "$SECRETS_DIR" "$QUALIF_TLS_DIR" "$CHAIN_DIR"
+  printf 'PRIVATE_DIR=%s\nSECRETS_DIR=%s\nQUALIF_TLS_DIR=%s\nCHAIN_DIR=%s\n' "$PRIVATE_DIR" "$SECRETS_DIR" "$QUALIF_TLS_DIR" "$CHAIN_DIR"
 }
 
 bootstrap() {
   need SECAGENT_IMAGE; need SECAGENT_MINION_IMAGE
   verify_images
-  mkdir -p "$CHAIN_DIR"; chmod 700 "$CHAIN_DIR"
+  chain_dir
   push_hooks
   push_secrets   # secrets serveur -> volume ${PROJECT}_secrets (10001, 0400) ; lus via *_FILE
   echo "== etat initial (racine)"
@@ -223,7 +239,7 @@ wait_inventory() {
 # non revoque expire de lui-meme (TTL) ; description horodatee pour les reperer dans `tokens list`.
 plugin_token() {
   local m; m="$(master)" || fail "pas de maitre sur la racine (jeton plugin)"
-  mkdir -p "$CHAIN_DIR"; chmod 700 "$CHAIN_DIR"
+  chain_dir
   adm "$m" tokens create --role plugin --description "chain-smoke-$(date +%s)" --expires "$TOKEN_TTL" 2>&1 \
     | extract 'secagent_plg_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton plugin non extrait"; printf '%s' "$t" | write_secret plugin.token; }
 }
@@ -500,6 +516,7 @@ failover() {
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
     ci-prepare) ci_prepare ;;
+    paths) chain_paths ;;
     bootstrap) bootstrap ;;
     smoke) smoke ;;
     failover) failover ;;
@@ -518,6 +535,6 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     down) guard_project; "${DC[@]}" down -v
           # le volume du jeton de lien est EXTERNE (non supprime par down -v) et contient un secret : retrait explicite
           docker volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" >/dev/null 2>&1 || true ;;
-    *) sed -n '2,27p' "$0"; exit 2 ;;
+    *) sed -n '2,34p' "$0"; exit 2 ;;
   esac
 fi

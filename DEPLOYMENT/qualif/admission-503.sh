@@ -7,7 +7,7 @@
 # connected, wait_for, fail, control_env, need, write_secret, CHAIN_DIR, ENDPOINT_HOST, QUALIF_TLS_DIR, C_CHILD...).
 #
 # Principe : le plafond par defaut (1 Gio => 204 taches) est inatteignable avec 2 minions. On abaisse
-# MAX_STDOUT_BUFFER_TOTAL des deux noeuds racine (surcharge Compose ecrite dans ./chain/, rien dans le depot) :
+# MAX_STDOUT_BUFFER_TOTAL des deux noeuds racine (surcharge Compose ecrite dans $CHAIN_DIR, rien dans le depot) :
 # chaque tache admise RESERVE 5 Mio (stdoutMaxBytes) => 52428800 (50 Mio) = 10 taches simultanees, en dessous des
 # 2 x 10 de MAX_TASKS_PER_AGENT : le refus est donc bien un 503 memoire, jamais un 429 agent_busy.
 # Les taches relayees (minion-child) sont comptees aussi sur la racine, a chaque saut.
@@ -144,6 +144,7 @@ admission_503() {
   local slots=$(( ADM503_BUDGET / ADM503_TASK_BYTES )) m n code probe
   [ "$slots" -ge 2 ] || fail "ADM503_BUDGET=$ADM503_BUDGET trop bas (moins de 2 taches)"
   [ "$slots" -le 20 ] || fail "ADM503_BUDGET=$ADM503_BUDGET : $slots taches > 2 x MAX_TASKS_PER_AGENT, le refus serait un 429 et non un 503"
+  require_private_dir "$CHAIN_DIR"   # fail-closed (#250) : jamais de racine PRIVATE/ creee par mkdir -p
   ADM503_DIR="$CHAIN_DIR/admission-503"; rm -rf "$ADM503_DIR"; mkdir -p "$ADM503_DIR"; chmod 700 "$ADM503_DIR"
   trap adm503_cleanup EXIT
   # 0. jeton plugin frais -> en-tete d'autorisation en fichier 0600 (jamais affiche)

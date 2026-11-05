@@ -10,7 +10,7 @@
 # (`sha-<commit>@sha256:<digest>`) OU tag local `secagent-*:ci-<sha12>` charge par `docker load` (artefact CI,
 # SECAGENT_PULL_POLICY=never) ; aucun `build:`, aucun `latest`. TLS de bout en bout avec une CA privee :
 # REPEATER_CA_FILE / RELAY_CA_BUNDLE, aucune desactivation de la verification TLS.
-# Les jetons (enrolement, plugin, LIEN relay-child de l'enfant) sont produits par `chain-test.sh bootstrap` dans ./chain/ (ignore par git, fichiers 0600) :
+# Les jetons (enrolement, plugin, LIEN relay-child de l'enfant) sont produits par `chain-test.sh bootstrap` dans $CHAIN_DIR (defaut PRIVATE/qualif/chain, ignore par git, fichiers 0600) :
 # jamais dans le depot, jamais dans les logs. Le poste de controle Ansible est HORS Compose (voir README).
 include:
   - docker-compose.server.yml
@@ -36,7 +36,7 @@ x-child-env: &child-env
   # le volume `secagent_link` (proprietaire 10001, mode 0400) par `chain-test.sh` via un conteneur ephemere. PAS un
   # `secrets:` Compose : hors Swarm Compose monte le fichier de l'HOTE (uid/gid/mode ignores) ; or le conteneur tourne
   # en 10001, secretenv exige 0600 ou plus strict, et contre un demon distant le bind serait resolu sur l'hote distant.
-  # Ancre de confiance : REPEATER_ROOT_ID (dans ./chain/child.env, ecrit par le bootstrap) et la cle publique racine
+  # Ancre de confiance : REPEATER_ROOT_ID (dans $CHAIN_DIR/child.env, ecrit par le bootstrap) et la cle publique racine
   # (NON secrete) dans le meme volume.
   REPEATER_UPSTREAM_TOKEN_FILE: /run/secagent-link/upstream-token
   REPEATER_ROOT_LINK_KEY_FILE: /run/secagent-link/root-link.pub
@@ -54,7 +54,7 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     env_file:
-      - path: ./chain/child.env           # REPEATER_ROOT_ID (non secret) ; plus aucun jeton ni secret ici
+      - path: ${CHAIN_DIR:-./chain}/child.env   # REPEATER_ROOT_ID (non secret) ; CHAIN_DIR = PRIVATE/qualif/chain (chain-test.sh, #250)
         required: false
     environment: *child-env
     volumes:
@@ -83,14 +83,14 @@ services:
       retries: 3
       start_period: 20s
 
-  # Minions de test : enroles par jeton (RELAY_ENROLLMENT_TOKEN dans ./chain/minion-*.env), listes d'adresses.
+  # Minions de test : enroles par jeton (RELAY_ENROLLMENT_TOKEN dans $CHAIN_DIR/minion-*.env), listes d'adresses.
   minion-root:
     image: ${SECAGENT_MINION_IMAGE:?SECAGENT_MINION_IMAGE est obligatoire (image minion sha-<commit>@sha256:<digest>)}
     hostname: minion-root
     pull_policy: ${SECAGENT_PULL_POLICY:-missing}
     restart: unless-stopped
     env_file:
-      - path: ./chain/minion-root.env
+      - path: ${CHAIN_DIR:-./chain}/minion-root.env
         required: false
     environment:
       RELAY_SERVER_URL: https://secagent-server-a:7770,https://secagent-server-b:7770
@@ -117,7 +117,7 @@ services:
     pull_policy: ${SECAGENT_PULL_POLICY:-missing}
     restart: unless-stopped
     env_file:
-      - path: ./chain/minion-child.env
+      - path: ${CHAIN_DIR:-./chain}/minion-child.env
         required: false
     environment:
       RELAY_SERVER_URL: https://secagent-child:7770
