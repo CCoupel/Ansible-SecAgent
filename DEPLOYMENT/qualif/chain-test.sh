@@ -64,7 +64,8 @@ LINK_TTL="${LINK_TTL:-$TOKEN_TTL}"
 # 0700/0600 exiges par le plugin y sont honores, contrairement a NTFS). Exporte : docker-compose.chain.yml lit les env_file
 # des minions et de l'enfant dans ${CHAIN_DIR:-./chain}.
 _tmp="${TMPDIR:-/tmp}"; CHAIN_DIR="${CHAIN_DIR:-${_tmp%/}/secagent-qualif-chain-$(id -u)}"; unset _tmp
-export CHAIN_DIR="${CHAIN_DIR%/}"
+case "$CHAIN_DIR" in ?*/) CHAIN_DIR="${CHAIN_DIR%/}" ;; esac   # slash final retire, sauf `/` (refuse tel quel par la garde)
+export CHAIN_DIR
 # shellcheck source=failover-test.sh
 source "$HERE/failover-test.sh"   # fonctions : listening, is_master, wait_for, health, fail, DC...
 # shellcheck source=admission-503.sh
