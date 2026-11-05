@@ -4,18 +4,19 @@ name: Failover (docker kill)
 # l'image est construite localement depuis le commit. Planifie, manuel, et appelable avant une release.
 #
 # Le declencheur `schedule` est reste NEUTRALISE (commente) : main contient desormais le code actif/passif
-# (v3.0.3 et v3.0.4), donc le cron peut etre reactive (decommenter) sur decision de l'utilisateur ; le ref par defaut
-# du declenchement manuel est `main`.
+# (v3.0.3 et v3.0.4), donc le cron peut etre reactive (decommenter) sur decision de l'utilisateur.
+# Ref teste par defaut : le COMMIT QUI PORTE CE WORKFLOW (github.sha, soit la branche choisie par `--ref`), jamais une autre
+# branche : un workflow et un failover-test.sh de commits differents se contredisent (chemins TLS, incident LOT-9 #250).
 on:
   # schedule:
   #   - cron: '17 3 * * *'
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Branche, tag ou commit a tester (le code construit et le script sont ceux de ce ref)'
+        description: 'Branche, tag ou commit a tester (vide = le commit du workflow lance ; code construit et script de ce ref)'
         required: false
         type: string
-        default: 'main'
+        default: ''
 
 permissions:
   contents: read
@@ -29,7 +30,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ inputs.ref || 'main' }}
+          ref: ${{ inputs.ref || github.sha }}
       - name: Build de l'image du commit
         run: docker build -t secagent-server:ci -f GO/Dockerfile GO
       - name: Racine PRIVATE jetable hors workspace (#250)
@@ -57,5 +58,5 @@ jobs:
           SECAGENT_IMAGE: secagent-server:ci
           QUALIF_TLS_DIR: ${{ runner.temp }}/private/qualif/ci-tls
         run: |
-          docker compose -p secagent-failover -f DEPLOYMENT/qualif/docker-compose.server.yml logs --tail=80 || true
+          docker compose -p secagent-qualif -f DEPLOYMENT/qualif/docker-compose.server.yml logs --tail=80 || true
           bash DEPLOYMENT/qualif/failover-test.sh teardown || true
