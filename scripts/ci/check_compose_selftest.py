@@ -171,6 +171,8 @@ secret_cases = [
     ("secrets : env_file qualif.env refuse (forme {path, required})", srv(FILES, env_file=[{"path": "./qualif.env", "required": True}]), lambda d: why(d, "env_file 'qualif.env' interdit")),
     ("secrets : env_file prod.env refuse", srv(FILES, env_file=["/opt/secagent/prod.env"]), lambda d: why(d, "env_file 'prod.env' interdit")),
     ("secrets : env_file child.env (sans secret) tolere", srv(FILES, env_file=[{"path": "./chain/child.env", "required": False}]), lambda d: not check(d, False, require_secret_files=True)),
+    ("secrets : env_file PRIVATE/qualif/chain/child.env (#250) tolere", srv(FILES, env_file=[{"path": "/home/poste/Ansible_SecAgent/PRIVATE/qualif/chain/child.env", "required": False}]), lambda d: not check(d, False, require_secret_files=True)),
+    ("secrets : env_file PRIVATE/qualif/chain/minion-root.env (#250) refuse sur un serveur", srv(FILES, env_file=[{"path": "/home/poste/Ansible_SecAgent/PRIVATE/qualif/chain/minion-root.env", "required": False}]), lambda d: why(d, "env_file 'minion-root.env' interdit")),
     ("secrets : un env_file tolere ne masque pas un env_file interdit", srv(FILES, env_file=["./chain/child.env", "./qualif.env"]), lambda d: why(d, "env_file 'qualif.env' interdit")),
     ("secrets : sans *_FILE accepte par defaut (rendu synthetique)", srv(), lambda d: not check(d, False)),
     ("secrets : --require-secret-files refuse l'absence de JWT_SECRET_KEY_FILE", srv({k: v for k, v in FILES.items() if k != "JWT_SECRET_KEY_FILE"}),
