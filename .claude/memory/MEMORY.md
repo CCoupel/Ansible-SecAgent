@@ -34,7 +34,6 @@
 - `docker.exe` (Windows) seul dans WSL, sans `DOCKER_HOST` : utiliser `-H`. Démon Docker local arrêté : ne pas le démarrer.
 
 ## Suivis / à trancher
-- Fichier non suivi `GO/cmd/secagent-server/internal/integration/zz_old_i2_test.go` : à supprimer par l'utilisateur.
 - Branche locale `lot6-wip` (redondante, commits déjà intégrés) et worktree `wt9` : conservés par décision utilisateur.
 - B63 (`pip install --require-hashes` dans 3 jobs CI) ; Environments GitHub `release`/`candidate` et protection de `main` = réglages utilisateur (#254).
 - Historique git : trois `.exe` obsolètes (purge `git filter-repo` = décision utilisateur) ; secrets de l'ancien `.env.qualif` lisibles dans l'historique poussé (rotation conseillée si réutilisés).
