@@ -26,6 +26,8 @@ Docker Compose. Pas de Kubernetes/Helm, pas de Swarm, pas de NATS, pas de Caddy,
 
 ## Spécificités PROD
 - 7771 n'est publié que sur `ADMIN_PUBLISH_ADDR` (boucle locale par défaut, jamais 0.0.0.0) ; `ADMIN_TLS=true` ; `TLS_DISABLE` et `RELAY_INSECURE_TLS` jamais définis.
+- `tls.key` sur l'hôte : `10001:10001` mode `0600` (0640 déclenche `[SECURITY WARNING]`, constaté au déploiement v3.0.5) ; à reposer à chaque dépôt/rotation de la feuille, puis redémarrer et vérifier les logs.
+- Administration PROD (CLI `tokens`, `status`…) : `RELAY_API_URL=https://srv8.local:17771` (ou l'IP du SAN), conteneur éphémère de la même image (digest) en `--network host --add-host srv8.local:127.0.0.1` avec `ADMIN_TOKEN_FILE` ; **jamais `localhost`** (hors SAN : échec TLS), jamais `RELAY_INSECURE_TLS`.
 - Stockage partagé non testé avec `DEPLOYMENT/prod/tools/test_shared_storage.py` = non supporté.
 - Ne jamais lancer `docker compose down -v` ni supprimer un volume ou le stockage d'état sans ordre explicite.
 
