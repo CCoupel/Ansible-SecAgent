@@ -40,7 +40,8 @@
       <span class="badge">JWT + RSA-4096</span>
       <span class="badge blue" data-i18n="hero.badge.native">Ansible natif</span>
       <span class="badge orange">Open Source · Go</span>
-      <span class="badge green">v3.0.4</span>
+      <span class="badge green">v3.0.5</span>
+      <span class="badge">AGPL-3.0-or-later</span>
       <span class="badge teal" data-i18n="hero.badge.proxy">Relays chaînés</span>
       <span class="badge purple" data-i18n="hero.badge.hooks">Event Hooks</span>
     </div>
@@ -235,6 +236,16 @@
         <h3 data-i18n="security.rot.title">Rotation et révocation</h3>
         <p data-i18n="security.rot.body">Rotation de la clef de lien de la racine avec double acceptation, révocation d'un jeton propagée de proche en proche, rotation hors ligne de la clef maître (<code>state rekey</code>).</p>
       </div>
+      <div class="sec-card new-badge">
+        <span class="feature-new" data-badge-version="v3.0.5"></span>
+        <h3 data-i18n="security.renew.title">JWT d'agent renouvelés</h3>
+        <p data-i18n="security.renew.body">Le serveur renouvelle le JWT de l'agent sur la connexion ouverte ; l'agent le persiste de façon atomique. L'expiration du jeton n'arrête plus les agents en masse.</p>
+      </div>
+      <div class="sec-card new-badge">
+        <span class="feature-new" data-badge-version="v3.0.5"></span>
+        <h3 data-i18n="security.attest.title">Images attestées</h3>
+        <p data-i18n="security.attest.body">Les images de release et candidates portent une provenance SLSA signée, vérifiable face au dépôt source et à la référence du tag.</p>
+      </div>
     </div>
     <table class="sec-table">
       <thead>
@@ -357,7 +368,20 @@
     <h2 data-i18n="features.title">Implémentées par version</h2>
     <p class="section-lead" data-i18n="features.lead">Chaque version est livrée par jalons, avec ses notes de version et son journal des changements sur GitHub.</p>
     <div class="version-block">
-      <span class="version-tag current"><span data-i18n="fv.v3_0_4">v3.0.4 — Liens de confiance signés et exploitation</span></span>
+      <span class="version-tag current"><span data-i18n="fv.v3_0_5">v3.0.5 — Durcissement, JWT d'agent renouvelés, licence AGPL</span></span>
+      <ul class="feature-list">
+        <li data-i18n="f305.1">Les JWT d'agent sont renouvelés sur la WebSocket ouverte et persistés de façon atomique : plus d'arrêt en masse des minions à l'expiration (<code>AGENT_JWT_TTL</code> 24 h, <code>AGENT_JWT_RENEW_INTERVAL</code>)</li>
+        <li data-i18n="f305.2"><code>RSA_MASTER_KEY</code> d'au moins 32 octets et non prévisible : refus au démarrage et à <code>state init</code> sinon</li>
+        <li data-i18n="f305.3">Images de release et candidates avec provenance SLSA signée ; actions CI épinglées par SHA</li>
+        <li data-i18n="f305.4">Dépendances corrigées après <code>govulncheck</code> (<code>gorilla/websocket</code> 1.5.3, <code>jwt/v5</code> 5.3.1), binaires compilés avec Go 1.27.3</li>
+        <li data-i18n="f305.5">CLI : <code>minions delete</code>, <code>relays revoke</code>, <code>relays remove --revoke</code>, <code>relays add --token-file</code> ; <code>--version</code> pour <code>secagent-inventory</code></li>
+        <li data-i18n="f305.6">Statuts <code>never_seen</code> / <code>not_direct</code> à la rotation des clés de lien ; quota d'<code>event_forward</code> par identité de relay</li>
+        <li data-i18n="f305.7">Passage sous licence <strong>AGPL-3.0-or-later</strong> ; <code>--version</code> affiche la licence et l'adresse du code source ; contributions via un accord Harmony CLA</li>
+        <li data-i18n="f305.8">Aucune rupture de lien ni d'agent depuis la v3.0.4 ; la montée demande une clé maître valide et une sauvegarde de l'état</li>
+      </ul>
+    </div>
+    <div class="version-block">
+      <span class="version-tag"><span data-i18n="fv.v3_0_4">v3.0.4 — Liens de confiance signés et exploitation</span></span>
       <ul class="feature-list">
         <li data-i18n="f304.1">Jetons de lien relay ↔ relay signés Ed25519 par la racine, clef publique racine épinglée sur chaque relay non racine</li>
         <li data-i18n="f304.2">Rotation de la clef de lien (<code>keys rotate-link</code>, double acceptation) et révocation propagée de proche en proche</li>
@@ -479,43 +503,13 @@ secagent-server hooks log</code></pre>
   <div class="container">
     <span class="section-tag" data-i18n="roadmap.tag">Roadmap</span>
     <h2 data-i18n="roadmap.title">Prochainement</h2>
-    <p data-i18n="roadmap.lead">Le jalon « v3.0.5 — Durcissement et dettes issues de v3.0.4 » regroupe les thèmes suivants. Il s'agit de travaux planifiés, sans date annoncée.</p>
-    <div class="timeline">
-      <div class="tl-item">
-        <div class="tl-dot"></div>
-        <div class="tl-content">
-          <h3 data-i18n="rm.a.title">Durcissement des secrets et de la clef maître</h3>
-          <p data-i18n="rm.a.body">Longueur minimale partout et dérivation de la clef de chiffrement de l'état par une fonction dédiée.</p>
-        </div>
-      </div>
-      <div class="tl-item">
-        <div class="tl-dot"></div>
-        <div class="tl-content">
-          <h3 data-i18n="rm.b.title">Moins de fragilité à l'expiration des jetons d'agent</h3>
-          <p data-i18n="rm.b.body">Éviter l'arrêt en masse des agents lorsque le JWT d'agent (1 h) expire.</p>
-        </div>
-      </div>
-      <div class="tl-item">
-        <div class="tl-dot"></div>
-        <div class="tl-content">
-          <h3 data-i18n="rm.c.title">Chaîne de livraison et exploitation</h3>
-          <p data-i18n="rm.c.body">Attestation des images publiées, messages de démarrage plus explicites sur une ancre périmée, <code>--version</code> pour <code>secagent-inventory</code>.</p>
-        </div>
-      </div>
-      <div class="tl-item">
-        <div class="tl-dot"></div>
-        <div class="tl-content">
-          <h3 data-i18n="rm.d.title">Dettes de test, de CI et de documentation</h3>
-          <p data-i18n="rm.d.body">Regroupées dans le jalon « v3.0.5 — Durcissement et dettes issues de v3.0.4 ».</p>
-        </div>
-      </div>
-    </div>
+    <p data-i18n="roadmap.lead">La v3.0.5 est livrée. Le jalon v3.0.6 est ouvert ; il comprend notamment un contrôle de version d'<code>ansible-core</code> dans le test de chaîne de la qualification. Travaux planifiés, sans date annoncée.</p>
     <div class="warning-block" id="limits">
       <h4 data-i18n="lim.title">Limites connues</h4>
       <ul class="feature-list">
-        <li data-i18n="lim.1">Un relay qui monte en v3.0.4 ne peut pas revenir en v3.0.3 : l'état est migré et les liens relay ↔ relay sont coupés pendant la montée (prévoir une fenêtre annoncée).</li>
-        <li data-i18n="lim.2">Le JWT d'un agent dure 1 h sans renouvellement : après expiration, toute reconnexion repose sur le jeton d'enrôlement ; un jeton à usage unique ou expiré arrête l'agent (code 78). Utilisez un jeton réutilisable restreint par motif de nom d'hôte.</li>
-        <li data-i18n="lim.3">L'actif/passif sur un stockage partagé entre deux hôtes réels n'a pas été vérifié.</li>
+        <li data-i18n="lim.1">Un relay qui monte en v3.0.4 ne peut pas revenir en v3.0.3 (état migré, liens relay ↔ relay coupés pendant la montée) ; le retour de v3.0.5 vers v3.0.4 passe par <code>state restore</code> d'une sauvegarde.</li>
+        <li data-i18n="lim.2">Si l'écriture du JWT renouvelé échoue sur l'hôte, l'agent réessaie chaque minute ; un jeton d'enrôlement à usage unique ou expiré arrête l'agent après perte de son JWT (code 78). Utilisez un jeton réutilisable restreint par motif de nom d'hôte.</li>
+        <li data-i18n="lim.3">L'actif/passif sur stockage partagé a été qualifié sur MooseFS entre deux hôtes ; les autres systèmes de fichiers partagés n'ont pas été vérifiés.</li>
         <li data-i18n="lim.5">Périmètre actuel : hôtes Linux uniquement.</li>
         <li data-i18n="lim.6">Les fichiers transférés doivent rester inférieurs à 500 Ko.</li>
         <li data-i18n="lim.4">Sans changement du budget mémoire par défaut, un relay accepte au plus 204 tâches simultanées.</li>
@@ -674,7 +668,7 @@ graph TB
       </div>
     </div>
     <p class="section-lead" style="margin-top:2rem">
-      <a class="btn btn-primary" href="https://github.com/CCoupel/Ansible-SecAgent/releases" data-i18n="install.rel">Releases (v3.0.4)</a>
+      <a class="btn btn-primary" href="https://github.com/CCoupel/Ansible-SecAgent/releases" data-i18n="install.rel">Releases (v3.0.5)</a>
       <a class="btn btn-outline" href="https://github.com/CCoupel/Ansible-SecAgent/tree/main/DOC" data-i18n="install.doc">Documentation</a>
     </p>
   </div>
@@ -683,7 +677,7 @@ graph TB
 <footer>
   <div class="container">
     <div class="footer-inner">
-      <span>Ansible-SecAgent v3.0.4 — Open Source · MIT License</span>
+      <span>Ansible-SecAgent v3.0.5 — Open Source · <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/LICENSE">AGPL-3.0-or-later</a> · <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/CONTRIBUTING.md" data-i18n="footer.cla">Contribuer (CLA)</a></span>
       <div class="footer-links">
         <a href="https://github.com/CCoupel/Ansible-SecAgent" data-i18n="footer.github">GitHub</a>
         <a href="https://github.com/CCoupel/Ansible-SecAgent/blob/main/DOC/common/ARCHITECTURE.md" data-i18n="footer.specs">Specs techniques</a>
@@ -758,6 +752,20 @@ const T = {
   "f304.7": "<code>--version</code> sur <code>secagent-server</code> et <code>secagent-minion</code> ; les arguments inconnus sont refusés au lieu de démarrer",
   "f304.8": "Suspension d'un agent visible dans l'inventaire des relays ancêtres",
   "f304.9": "Correctif : la réponse d'une tâche synchrone durant plus de 15 s n'est plus coupée",
+  "footer.cla": "Contribuer (CLA)",
+  "security.attest.body": "Les images de release et candidates portent une provenance SLSA signée, vérifiable face au dépôt source et à la référence du tag.",
+  "security.attest.title": "Images attestées",
+  "security.renew.body": "Le serveur renouvelle le JWT de l'agent sur la connexion ouverte ; l'agent le persiste de façon atomique. L'expiration du jeton n'arrête plus les agents en masse.",
+  "security.renew.title": "JWT d'agent renouvelés",
+  "f305.8": "Aucune rupture de lien ni d'agent depuis la v3.0.4 ; la montée demande une clé maître valide et une sauvegarde de l'état",
+  "f305.7": "Passage sous licence <strong>AGPL-3.0-or-later</strong> ; <code>--version</code> affiche la licence et l'adresse du code source ; contributions via un accord Harmony CLA",
+  "f305.6": "Statuts <code>never_seen</code> / <code>not_direct</code> à la rotation des clés de lien ; quota d'<code>event_forward</code> par identité de relay",
+  "f305.5": "CLI : <code>minions delete</code>, <code>relays revoke</code>, <code>relays remove --revoke</code>, <code>relays add --token-file</code> ; <code>--version</code> pour <code>secagent-inventory</code>",
+  "f305.4": "Dépendances corrigées après <code>govulncheck</code> (<code>gorilla/websocket</code> 1.5.3, <code>jwt/v5</code> 5.3.1), binaires compilés avec Go 1.27.3",
+  "f305.3": "Images de release et candidates avec provenance SLSA signée ; actions CI épinglées par SHA",
+  "f305.2": "<code>RSA_MASTER_KEY</code> d'au moins 32 octets et non prévisible : refus au démarrage et à <code>state init</code> sinon",
+  "f305.1": "Les JWT d'agent sont renouvelés sur la WebSocket ouverte et persistés de façon atomique : plus d'arrêt en masse des minions à l'expiration (<code>AGENT_JWT_TTL</code> 24 h, <code>AGENT_JWT_RENEW_INTERVAL</code>)",
+  "fv.v3_0_5": "v3.0.5 — Durcissement, JWT d'agent renouvelés, licence AGPL",
   "fbase.1": "Agent <code>secagent-minion</code> : enrôlement RSA-4096, connexion WSS persistante, exécution par sous-processus, transferts de fichiers, <code>become</code>",
   "fbase.2": "Plugin de connexion Ansible en Python ; inventaire par le binaire Go <code>secagent-inventory</code> (inventaire externe Ansible)",
   "fbase.3": "CLI d'administration intégrée au binaire serveur (v1.1.0)",
@@ -807,12 +815,12 @@ const T = {
   "ins.server.title": "Serveur (relay racine)",
   "install.doc": "Documentation",
   "install.lead": "Trois guides d'installation complets, maintenus avec le code. Commencez par le serveur, puis les relays enfants si vous en avez besoin, puis les agents.",
-  "install.rel": "Releases (v3.0.4)",
+  "install.rel": "Releases (v3.0.5)",
   "install.tag": "Démarrer",
   "install.title": "Démarrer",
-  "lim.1": "Un relay qui monte en v3.0.4 ne peut pas revenir en v3.0.3 : l'état est migré et les liens relay ↔ relay sont coupés pendant la montée (prévoir une fenêtre annoncée).",
-  "lim.2": "Le JWT d'un agent dure 1 h sans renouvellement : après expiration, toute reconnexion repose sur le jeton d'enrôlement ; un jeton à usage unique ou expiré arrête l'agent (code 78). Utilisez un jeton réutilisable restreint par motif de nom d'hôte.",
-  "lim.3": "L'actif/passif sur un stockage partagé entre deux hôtes réels n'a pas été vérifié.",
+  "lim.1": "Un relay qui monte en v3.0.4 ne peut pas revenir en v3.0.3 (état migré, liens relay ↔ relay coupés pendant la montée) ; le retour de v3.0.5 vers v3.0.4 passe par <code>state restore</code> d'une sauvegarde.",
+  "lim.2": "Si l'écriture du JWT renouvelé échoue sur l'hôte, l'agent réessaie chaque minute ; un jeton d'enrôlement à usage unique ou expiré arrête l'agent après perte de son JWT (code 78). Utilisez un jeton réutilisable restreint par motif de nom d'hôte.",
+  "lim.3": "L'actif/passif sur stockage partagé a été qualifié sur MooseFS entre deux hôtes ; les autres systèmes de fichiers partagés n'ont pas été vérifiés.",
   "lim.4": "Sans changement du budget mémoire par défaut, un relay accepte au plus 204 tâches simultanées.",
   "lim.5": "Périmètre actuel : hôtes Linux uniquement.",
   "lim.6": "Les fichiers transférés doivent rester inférieurs à 500 Ko.",
@@ -891,7 +899,7 @@ const T = {
   "rm.c.title": "Chaîne de livraison et exploitation",
   "rm.d.body": "Regroupées dans le jalon « v3.0.5 — Durcissement et dettes issues de v3.0.4 ».",
   "rm.d.title": "Dettes de test, de CI et de documentation",
-  "roadmap.lead": "Le jalon « v3.0.5 — Durcissement et dettes issues de v3.0.4 » regroupe les thèmes suivants. Il s'agit de travaux planifiés, sans date annoncée.",
+  "roadmap.lead": "La v3.0.5 est livrée. Le jalon v3.0.6 est ouvert ; il comprend notamment un contrôle de version d'<code>ansible-core</code> dans le test de chaîne de la qualification. Travaux planifiés, sans date annoncée.",
   "roadmap.tag": "Roadmap",
   "roadmap.title": "Prochainement",
   "sec.r1.r": "Aucun port entrant sur les hôtes gérés",
@@ -999,6 +1007,20 @@ const T = {
   "f304.7": "<code>--version</code> on <code>secagent-server</code> and <code>secagent-minion</code>; unknown arguments are refused instead of starting",
   "f304.8": "An agent's suspension is visible in ancestor relays' inventory",
   "f304.9": "Fix: the response of a synchronous task running longer than 15 s is no longer cut off",
+  "footer.cla": "Contribute (CLA)",
+  "security.attest.body": "Release and candidate images carry a signed SLSA provenance, verifiable against the source repository and the tag reference.",
+  "security.attest.title": "Attested images",
+  "security.renew.body": "The server renews the agent's JWT over the open connection; the agent persists it atomically. Token expiry no longer stops agents en masse.",
+  "security.renew.title": "Renewed agent JWTs",
+  "f305.8": "No link or agent break since v3.0.4; upgrading needs a valid master key and a state backup",
+  "f305.7": "Now licensed under <strong>AGPL-3.0-or-later</strong>; <code>--version</code> prints the license and source code address; contributions go through a Harmony CLA",
+  "f305.6": "<code>never_seen</code> / <code>not_direct</code> statuses on link-key rotation; <code>event_forward</code> quota per relay identity",
+  "f305.5": "CLI: <code>minions delete</code>, <code>relays revoke</code>, <code>relays remove --revoke</code>, <code>relays add --token-file</code>; <code>--version</code> for <code>secagent-inventory</code>",
+  "f305.4": "Dependencies fixed after <code>govulncheck</code> (<code>gorilla/websocket</code> 1.5.3, <code>jwt/v5</code> 5.3.1), binaries built with Go 1.27.3",
+  "f305.3": "Release and candidate images with signed SLSA provenance; CI actions pinned by SHA",
+  "f305.2": "<code>RSA_MASTER_KEY</code> of at least 32 bytes and not predictable: refused at startup and by <code>state init</code> otherwise",
+  "f305.1": "Agent JWTs are renewed over the open WebSocket and persisted atomically: no more mass minion shutdown at expiry (<code>AGENT_JWT_TTL</code> 24 h, <code>AGENT_JWT_RENEW_INTERVAL</code>)",
+  "fv.v3_0_5": "v3.0.5 — Hardening, renewed agent JWTs, AGPL license",
   "fbase.1": "<code>secagent-minion</code> agent: RSA-4096 enrollment, persistent WSS connection, subprocess execution, file transfers, <code>become</code>",
   "fbase.2": "Ansible connection plugin in Python; inventory through the Go binary <code>secagent-inventory</code> (Ansible external inventory)",
   "fbase.3": "Administration CLI built into the server binary (v1.1.0)",
@@ -1048,12 +1070,12 @@ const T = {
   "ins.server.title": "Server (root relay)",
   "install.doc": "Documentation",
   "install.lead": "Three complete installation guides, maintained with the code. Start with the server, then child relays if you need them, then agents.",
-  "install.rel": "Releases (v3.0.4)",
+  "install.rel": "Releases (v3.0.5)",
   "install.tag": "Get started",
   "install.title": "Get started",
-  "lim.1": "A relay upgraded to v3.0.4 cannot go back to v3.0.3: the state is migrated and relay ↔ relay links are cut during the upgrade (plan an announced window).",
-  "lim.2": "An agent's JWT lasts 1 h with no renewal: after expiry, any reconnection relies on the enrollment token; a single-use or expired token stops the agent (code 78). Use a reusable token restricted by hostname pattern.",
-  "lim.3": "Active/passive over shared storage between two real hosts has not been verified.",
+  "lim.1": "A relay upgraded to v3.0.4 cannot go back to v3.0.3 (state migrated, relay ↔ relay links cut during the upgrade); going back from v3.0.5 to v3.0.4 goes through <code>state restore</code> of a backup.",
+  "lim.2": "If writing the renewed JWT fails on the host, the agent retries every minute; a single-use or expired enrollment token stops the agent after it loses its JWT (code 78). Use a reusable token restricted by hostname pattern.",
+  "lim.3": "Active/passive over shared storage was qualified on MooseFS between two hosts; other shared file systems have not been verified.",
   "lim.4": "With the default memory budget unchanged, a relay accepts at most 204 simultaneous tasks.",
   "lim.5": "Current scope: Linux hosts only.",
   "lim.6": "Transferred files must stay under 500 KB.",
@@ -1132,7 +1154,7 @@ const T = {
   "rm.c.title": "Supply chain and operations",
   "rm.d.body": "Grouped in the “v3.0.5 — Durcissement et dettes issues de v3.0.4” milestone.",
   "rm.d.title": "Test, CI and documentation debt",
-  "roadmap.lead": "The “v3.0.5 — Durcissement et dettes issues de v3.0.4” milestone groups the following themes. These are planned items with no announced date.",
+  "roadmap.lead": "v3.0.5 is released. The v3.0.6 milestone is open; it notably includes an <code>ansible-core</code> version check in the qualification chain test. Planned work, no announced date.",
   "roadmap.tag": "Roadmap",
   "roadmap.title": "Coming next",
   "sec.r1.r": "No inbound port on managed hosts",
