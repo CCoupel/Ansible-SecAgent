@@ -24,6 +24,7 @@ Nom de projet : `docker compose -p secagent-prod-<relay_id> …`.
 Booléens du serveur **stricts** : `ADMIN_TLS`, `ADMIN_INSECURE_HTTP`, `TLS_DISABLE` n'acceptent que `true` ou `false` exacts (`1`, `yes`, `TRUE`, `on` = refus de démarrer). Dérogation admin (déconseillée, uniquement si 7771 n'est publié que sur la boucle locale) : `ADMIN_INSECURE_HTTP=true` **et** `ADMIN_INSECURE_HTTP_ACK=i-understand-the-risk` exact ; une dérogation partielle est refusée.
 
 - TLS natif : `tls.crt` (chaîne complète) et `tls.key` dans `TLS_CERT_DIR`, montés en lecture seule ; pas de reverse proxy ; `TLS_DISABLE` ne doit jamais être défini.
+  **`tls.key` sur l'hôte : propriétaire `10001:10001`, mode `0600`** (0640 root:10001 déclenche `[SECURITY WARNING]` au démarrage). À rétablir (`chown 10001:10001`, `chmod 0600`) à chaque dépôt ou rotation de la feuille TLS, puis redémarrer le service et vérifier l'absence de `[SECURITY WARNING]` dans les logs.
 - 7770 et 7772 sont publiés. **7771 (admin)** : le serveur y écoute sur `0.0.0.0` *dans le conteneur* avec `ADMIN_TLS=true` ;
   l'hôte ne le publie que sur `ADMIN_PUBLISH_ADDR` (boucle locale par défaut, ou réseau d'administration), **jamais** sur `0.0.0.0`
   ni sans adresse. Contrôlé en CI sur le rendu (`scripts/ci/check_compose.py`).
@@ -32,7 +33,7 @@ Booléens du serveur **stricts** : `ADMIN_TLS`, `ADMIN_INSECURE_HTTP`, `TLS_DISA
   8770-8772 et 9771), la PROD publie **17770 / 17772 / 17771** (`.env.example`), l'admin restant sur `ADMIN_PUBLISH_ADDR` (boucle locale).
   Les clients visent alors ces ports d'hôte : minions `RELAY_SERVER_URL=https://<hôte>:17770` et `RELAY_WS_URL=wss://<hôte>:17772/ws/agent`,
   plugin Ansible (adresse du relay en `:17770`), relays enfants `REPEATER_UPSTREAM_URL=wss://<hôte>:17772`, admin
-  `https://127.0.0.1:17771` sur l'hôte. Le certificat TLS couvre le nom/l'adresse, pas le port. Avant `up` sur un hôte partagé :
+  `https://srv8.local:17771` ou `https://192.168.1.218:17771` (noms du SAN du certificat, avec `--add-host srv8.local:127.0.0.1` depuis un conteneur d'administration en `--network host`) : **jamais `localhost`** (absent du SAN, `RELAY_API_URL=https://localhost:7771` échoue à la vérification TLS ; ne pas contourner par `RELAY_INSECURE_TLS`). Le certificat TLS couvre le nom/l'adresse, pas le port. Avant `up` sur un hôte partagé :
   `docker ps --format '{{.Names}} {{.Ports}}'` ne doit montrer aucun de ces ports.
 - Conteneur non-root `10001:10001`, système de fichiers en lecture seule, `cap_drop: ALL`.
   **Le même UID/GID 10001 doit avoir les droits d'écriture sur le partage depuis tous les hôtes** :
