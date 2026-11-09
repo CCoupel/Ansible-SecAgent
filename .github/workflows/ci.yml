@@ -386,6 +386,8 @@ jobs:
           bash scripts/ci/preflight_secrets_selftest.sh
           bash scripts/ci/private_paths_selftest.sh
           bash scripts/ci/install_node_selftest.sh
+          bash scripts/ci/podman_cli_selftest.sh
+          bash scripts/ci/podman_node_files_selftest.sh
           python3 scripts/ci/check_scripts.py .github/workflows/*.yml
 
       # Variables d'exemple NON secretes : uniquement pour que `docker compose config` puisse interpoler.
@@ -439,8 +441,13 @@ jobs:
           # utilisateur rootless de l'hote. Rendu par docker compose (userns_mode est une cle Compose standard).
           docker compose -f DEPLOYMENT/prod/docker-compose.server.yml -f DEPLOYMENT/podman/docker-compose.podman.yml config --format json > render/podman-prod-root.json
           docker compose -f DEPLOYMENT/prod/docker-compose.server.yml -f DEPLOYMENT/prod/docker-compose.child.yml -f DEPLOYMENT/podman/docker-compose.podman.yml config --format json > render/podman-prod-child.json
-          docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml -f DEPLOYMENT/podman/docker-compose.podman.qualif.yml config --format json > render/podman-qualif-chain.json
+          # Chaine QUALIF repartie (srv3/srv4) : chemins du partage tels que vus par les noeuds (rien n'est lu ici)
+          PQ=/share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/QUALIF
+          QUALIF_PRIVATE_DIR="$PQ" QUALIF_TLS_DIR="$PQ/pki" QUALIF_NODE_A_ADDR=192.168.1.213 \
+            docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml -f DEPLOYMENT/podman/docker-compose.podman.qualif.yml config --format json > render/podman-qualif-chain.json
           python3 scripts/ci/check_compose.py --require-memory-limit --require-secret-files --require-userns-keepid render/podman-prod-root.json render/podman-prod-child.json render/podman-qualif-chain.json
+          # Binds (y compris les volumes driver_opts) limites aux sous-chemins permis de PRIVATE/QUALIF ; jamais ca.key ni poste-cyril
+          python3 scripts/ci/check_no_binds.py --allow-prefix "$PQ" < render/podman-qualif-chain.json
           # Rendu destine a un demon Docker DISTANT (qualif reelle) : aucun chemin du client (bind, secret/config file:, build).
           # Le CI a un demon local et ne peut pas voir ce defaut a l'execution : ce controle statique est la seule garde.
           python3 scripts/ci/check_no_binds.py < render/qualif-chain-remote.json
