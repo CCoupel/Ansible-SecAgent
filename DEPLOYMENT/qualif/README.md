@@ -13,13 +13,13 @@ Le poste de contrôle Ansible (plugin `SECAGENT-PYTHON`, `secagent-inventory`, `
 export SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-<commit>@sha256:<digest>
 export SECAGENT_MINION_IMAGE=ghcr.io/ccoupel/secagent-minion:sha-<commit>@sha256:<digest>
 export INVENTORY_BIN=/chemin/secagent-inventory     # binaire du poste de controle
-bash chain-test.sh ci-prepare   # CI/essai : PKI de test (`PRIVATE/qualif/pki/`) + secrets jetables (`PRIVATE/qualif/secrets/`, 3 fichiers 0400) ; en qualif : vos propres secrets
+bash chain-test.sh ci-prepare   # CI/essai : PKI de test (`PRIVATE/QUALIF/pki/`) + secrets jetables (`PRIVATE/QUALIF/secrets/`, 3 fichiers 0400) ; en qualif : vos propres secrets
 bash chain-test.sh bootstrap    # state init, relays add, jetons d'enrolement et plugin (`CHAIN_DIR`, hors `PRIVATE/` : `${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>`, 0700, fichiers 0600), demarrage
 bash chain-test.sh smoke        # relais, minions, inventaire hierarchique, ansible -m ping
 bash chain-test.sh failover     # arret propre du maitre de la racine puis smoke ; kill : failover-test.sh run kill
 bash chain-test.sh down
 ```
-Les données privées de la qualif (`secrets/`, `pki/`, `ci-tls/`) vivent sous `PRIVATE/qualif/` (dossier gitignoré ; racine = `SECAGENT_PRIVATE_DIR`, défaut `<dépôt>/PRIVATE`), jamais à côté des scripts : voir « Données privées du poste » dans `DEPLOYMENT/README.md`. Les scripts refusent de générer des secrets si cette racine n'existe pas. Chemins par défaut : `SECRETS_DIR`, `QUALIF_TLS_DIR` (PKI) ; une valeur explicite prime. **`CHAIN_DIR` fait exception** : les jetons de chaîne sont volatils et vont par défaut dans `${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>` (système de fichiers local du poste, hors partage réseau : le plugin refuse un répertoire plus large que 0700). `chain-test.sh` refuse (fail-closed) un `CHAIN_DIR` non absolu, lien symbolique, non répertoire, appartenant à un autre uid ou plus large que 0700 ; il le crée en 0700. Les trois secrets du serveur (`jwt_secret_key`, `admin_token`, `rsa_master_key`) sont des **fichiers** déposés dans le volume `${PROJECT}_secrets` (propriétaire 10001, mode 0400) et lus via `JWT_SECRET_KEY_FILE`, `ADMIN_TOKEN_FILE`, `RSA_MASTER_KEY_FILE` : `docker inspect` n'en montre aucun (#197 item 6, v3.0.5 ; `qualif.env` et `qualif.env.example` sont supprimés). En CI, le job « Chaîne en conteneurs » rejoue ce scénario à chaque push.
+Les données privées de la qualif (`secrets/`, `pki/`, `ci-tls/`) vivent sous `PRIVATE/QUALIF/` (dossier gitignoré ; racine = `SECAGENT_PRIVATE_DIR`, défaut `<dépôt>/PRIVATE`), jamais à côté des scripts : voir « Données privées du poste » dans `DEPLOYMENT/README.md`. Les scripts refusent de générer des secrets si cette racine n'existe pas. Chemins par défaut : `SECRETS_DIR`, `QUALIF_TLS_DIR` (PKI) ; une valeur explicite prime. **`CHAIN_DIR` fait exception** : les jetons de chaîne sont volatils et vont par défaut dans `${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>` (système de fichiers local du poste, hors partage réseau : le plugin refuse un répertoire plus large que 0700). `chain-test.sh` refuse (fail-closed) un `CHAIN_DIR` non absolu, lien symbolique, non répertoire, appartenant à un autre uid ou plus large que 0700 ; il le crée en 0700. Les trois secrets du serveur (`jwt_secret_key`, `admin_token`, `rsa_master_key`) sont des **fichiers** déposés dans le volume `${PROJECT}_secrets` (propriétaire 10001, mode 0400) et lus via `JWT_SECRET_KEY_FILE`, `ADMIN_TOKEN_FILE`, `RSA_MASTER_KEY_FILE` : `docker inspect` n'en montre aucun (#197 item 6, v3.0.5 ; `qualif.env` et `qualif.env.example` sont supprimés). En CI, le job « Chaîne en conteneurs » rejoue ce scénario à chaque push.
 
 ### Hôte Docker distant (qualif réelle 192.168.1.218), sans tunnel ni copie de certificats par scp
 
@@ -39,7 +39,7 @@ export TLS_MODE=volume                            # certificats dans un volume n
 export SECAGENT_ENDPOINT_HOST=192.168.1.218       # adresse que le poste de contrôle utilise pour 7770 / 8770
 export PKI_EXTRA_SAN="IP:192.168.1.218"           # SAN supplémentaire dans le certificat de test
 export SECAGENT_IMAGE=… SECAGENT_MINION_IMAGE=… INVENTORY_BIN=…
-bash chain-test.sh ci-prepare                     # PKI + secrets jetables sous PRIVATE/qualif/, en LOCAL (jamais ceux de prod) ; `bootstrap` les depose dans le volume de l'hote
+bash chain-test.sh ci-prepare                     # PKI + secrets jetables sous PRIVATE/QUALIF/, en LOCAL (jamais ceux de prod) ; `bootstrap` les depose dans le volume de l'hote
 bash chain-test.sh push-tls                       # copie tls.crt/tls.key/ca.crt dans le volume secagent-qualif_tls de l'hôte
 bash chain-test.sh bootstrap && bash chain-test.sh smoke
 ```
@@ -143,16 +143,16 @@ Recoupement (2026-11-03) : le binaire `docker` du paquet signé et celui de l'an
 ## Prérequis
 
 - Docker remote access actif sur `192.168.1.218:2375`
-- Un répertoire de certificats TLS (`tls.crt`, `tls.key`) : `QUALIF_TLS_DIR` (défaut `PRIVATE/qualif/pki/`)
+- Un répertoire de certificats TLS (`tls.crt`, `tls.key`) : `QUALIF_TLS_DIR` (défaut `PRIVATE/QUALIF/pki/`)
 - Une image candidate publiée par la CI (voir « Promotion » plus bas) : `SECAGENT_IMAGE`
-- Un répertoire `PRIVATE/qualif/secrets/` (`SECRETS_DIR`, gitignoré) avec `jwt_secret_key`, `admin_token`, `rsa_master_key` (secrets de qualification, jamais ceux de PROD ; `rsa_master_key` ≥ 32 octets) ; `bash failover-test.sh setup-ci` / `chain-test.sh ci-prepare` les génèrent aléatoirement, puis `push_secrets` les dépose dans le volume `${PROJECT}_secrets`
+- Un répertoire `PRIVATE/QUALIF/secrets/` (`SECRETS_DIR`, gitignoré) avec `jwt_secret_key`, `admin_token`, `rsa_master_key` (secrets de qualification, jamais ceux de PROD ; `rsa_master_key` ≥ 32 octets) ; `bash failover-test.sh setup-ci` / `chain-test.sh ci-prepare` les génèrent aléatoirement, puis `push_secrets` les dépose dans le volume `${PROJECT}_secrets`
 
 ## Lancer
 
 ```bash
 export SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-<commit>@sha256:<digest>
-export QUALIF_TLS_DIR=/chemin/vers/certs        # facultatif : défaut PRIVATE/qualif/pki
-bash chain-test.sh ci-prepare        # ou deposer PRIVATE/qualif/secrets/{jwt_secret_key,admin_token,rsa_master_key} (0400), puis : bash failover-test.sh setup-ci
+export QUALIF_TLS_DIR=/chemin/vers/certs        # facultatif : défaut PRIVATE/QUALIF/pki
+bash chain-test.sh ci-prepare        # ou deposer PRIVATE/QUALIF/secrets/{jwt_secret_key,admin_token,rsa_master_key} (0400), puis : bash failover-test.sh setup-ci
 
 # L'état n'est jamais créé implicitement : `secagent-server state init` une fois (voir DOC/project/DEPLOYMENT.md, étape 1)
 DOCKER_HOST=tcp://192.168.1.218:2375 docker compose -p secagent-qualif -f docker-compose.server.yml up -d

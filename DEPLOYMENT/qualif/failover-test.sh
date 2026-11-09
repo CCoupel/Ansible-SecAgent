@@ -17,7 +17,7 @@
 #   INSPECT_MINION_CMD / INVENTORY_CMD : commandes optionnelles (code 0 = OK) lancees apres chaque bascule
 #   (minion reconnecte sans re-enrolement ; secagent-inventory avec la liste des 2 adresses).
 #   Donnees privees (#250) : racine SECAGENT_PRIVATE_DIR (defaut <depot>/PRIVATE, jamais creee par ce script) ;
-#   SECRETS_DIR (defaut $SECAGENT_PRIVATE_DIR/qualif/secrets), QUALIF_TLS_DIR (defaut .../qualif/ci-tls, CI).
+#   SECRETS_DIR (defaut $SECAGENT_PRIVATE_DIR/QUALIF/secrets), QUALIF_TLS_DIR (defaut .../QUALIF/ci-tls, CI).
 # Ne demarre rien a l'import ; exige docker et docker compose. Exit 0 = OK, 1 = echec.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,8 +65,8 @@ C_A="${C_A:-secagent-qualif-a}"; C_B="${C_B:-secagent-qualif-b}"
 # Volume EXTERNE des secrets serveur (#197 item 6, v3.0.5) : trois fichiers (jwt_secret_key, admin_token, rsa_master_key)
 # lus via JWT_SECRET_KEY_FILE / ADMIN_TOKEN_FILE / RSA_MASTER_KEY_FILE ; plus aucun secret en variable d'environnement.
 export SECAGENT_SECRETS_VOLUME="${SECAGENT_SECRETS_VOLUME:-${PROJECT}_secrets}"
-SECRETS_DIR="${SECRETS_DIR:-$PRIVATE_DIR/qualif/secrets}"   # cote client, sous PRIVATE/ (ignore par git), fichiers 0400
-CI_TLS_DIR="$PRIVATE_DIR/qualif/ci-tls"   # certificat jetable de setup-ci (defaut de QUALIF_TLS_DIR dans ce script)
+SECRETS_DIR="${SECRETS_DIR:-$PRIVATE_DIR/QUALIF/secrets}"   # cote client, sous PRIVATE/ (ignore par git), fichiers 0400
+CI_TLS_DIR="$PRIVATE_DIR/QUALIF/ci-tls"   # certificat jetable de setup-ci (defaut de QUALIF_TLS_DIR dans ce script)
 STOP_MAX_S="${STOP_MAX_S:-10}"; KILL_MAX_S="${KILL_MAX_S:-600}"
 DC=(docker compose -p "$PROJECT" -f "$COMPOSE_FILE")
 # Fichiers de surcharge optionnels (ex. docker-compose.remote-tls.yml pour un hote Docker distant) : liste separee par des espaces.

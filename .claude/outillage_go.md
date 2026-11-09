@@ -101,7 +101,7 @@ la recontrôler lors d'une montée de version). Même principe pour tout autre o
 Le dépôt est sur `/share/MFS/...`, un **partage réseau MooseFS** (FUSE, maître 192.168.1.231, `allow_other`). Les
 modes POSIX y sont conservés (`chmod 600`/`700` constatés le 2026-11-09) : le contournement `git archive` hors `/mnt/c`
 n'est plus nécessaire pour les permissions. Mais c'est un partage : tout client MooseFS monté en root peut lire les
-fichiers, quels que soient leurs modes. Conséquences : les secrets PROD de `PRIVATE/prod/` (référence depuis le
+fichiers, quels que soient leurs modes. Conséquences : les secrets PROD de `PRIVATE/PROD/` (référence depuis le
 2026-11-09, décision utilisateur) sont exposés à ce risque résiduel, jetons volatils toujours dans `${TMPDIR:-/tmp}` (local au poste), et des E/S plus lentes que sur un disque
 local (d'où la marge de 900 s).
 

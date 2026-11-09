@@ -28,9 +28,9 @@ sudo chown 10001:10001 tls/tls.key && sudo chmod 0400 tls/tls.key
 # (sans sudo, essai local UNIQUEMENT : `chmod 0644 tls/tls.key` rend la clé privée lisible par tous, ne jamais le reproduire ailleurs)
 
 # Secrets du serveur (hors dépôt)
-# v3.0.5 : trois fichiers (0400) dans PRIVATE/qualif/secrets/ (SECRETS_DIR, gitignoré), déposés dans le volume secagent-qualif_secrets (lus via *_FILE)
-#   mkdir -p PRIVATE/qualif/secrets && for n in jwt_secret_key admin_token rsa_master_key; do openssl rand -base64 48 | tr -d '\n' > PRIVATE/qualif/secrets/$n; done   # depuis la racine du dépôt
-#   bash chain-test.sh push-secrets   # vars requises : DOCKER_HOST, SECRETS_DIR (def. PRIVATE/qualif/secrets), PROJECT ; hote distant : + TLS_MODE=volume SECAGENT_ENDPOINT_HOST
+# v3.0.5 : trois fichiers (0400) dans PRIVATE/QUALIF/secrets/ (SECRETS_DIR, gitignoré), déposés dans le volume secagent-qualif_secrets (lus via *_FILE)
+#   mkdir -p PRIVATE/QUALIF/secrets && for n in jwt_secret_key admin_token rsa_master_key; do openssl rand -base64 48 | tr -d '\n' > PRIVATE/QUALIF/secrets/$n; done   # depuis la racine du dépôt
+#   bash chain-test.sh push-secrets   # vars requises : DOCKER_HOST, SECRETS_DIR (def. PRIVATE/QUALIF/secrets), PROJECT ; hote distant : + TLS_MODE=volume SECAGENT_ENDPOINT_HOST
 #   (valeurs aléatoires fictives à générer, ex. `openssl rand -base64 48` pour les trois, comme dans INSTALL_SERVER.md ;
 #    RSA_MASTER_KEY : 32 octets minimum, sinon `state init` et le démarrage sont refusés ; c'est un secret
 #    dont dérivent l'HMAC de l'état et le chiffrement AES-GCM de ses secrets, pas une clef RSA)

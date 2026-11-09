@@ -32,14 +32,14 @@ for s in failover-test.sh chain-test.sh; do
   if printf '%s' "$out" | grep -q 'SECAGENT_PRIVATE_DIR'; then ok "(a) $s : message cite SECAGENT_PRIVATE_DIR"; else ko "(a) $s : message sans SECAGENT_PRIVATE_DIR"; fi
   if [ ! -e "$MISSING" ]; then ok "(a) $s : racine non creee"; else ko "(a) $s : racine creee par le script"; fi
 
-  # (b) racine existante : defauts sous <PRIVATE>/qualif/ ; failover-test.sh : cert jetable ci-tls (jamais qualif/pki), pas de CHAIN_DIR
+  # (b) racine existante : defauts sous <PRIVATE>/QUALIF/ ; failover-test.sh : cert jetable ci-tls (jamais QUALIF/pki), pas de CHAIN_DIR
   if [ "$s" = failover-test.sh ]; then TLS_SUB=ci-tls; HAS_CHAIN=0; else TLS_SUB=pki; HAS_CHAIN=1; fi
   P="$TMP/private-$s"; mkdir -p "$P"
   out="$(clean_env SECAGENT_PRIVATE_DIR="$P" bash "$Q/$s" paths 2>&1)"; rc=$?
   [ $rc -eq 0 ] && ok "(b) $s : paths accepte une racine existante" || ko "(b) $s : paths refuse une racine existante (rc=$rc)"
   [ "$(val "$out" PRIVATE_DIR)" = "$P" ] && ok "(b) $s : PRIVATE_DIR" || ko "(b) $s : PRIVATE_DIR=$(val "$out" PRIVATE_DIR)"
-  [ "$(val "$out" SECRETS_DIR)" = "$P/qualif/secrets" ] && ok "(b) $s : SECRETS_DIR" || ko "(b) $s : SECRETS_DIR=$(val "$out" SECRETS_DIR)"
-  [ "$(val "$out" QUALIF_TLS_DIR)" = "$P/qualif/$TLS_SUB" ] && ok "(b) $s : QUALIF_TLS_DIR=qualif/$TLS_SUB" || ko "(b) $s : QUALIF_TLS_DIR=$(val "$out" QUALIF_TLS_DIR)"
+  [ "$(val "$out" SECRETS_DIR)" = "$P/QUALIF/secrets" ] && ok "(b) $s : SECRETS_DIR" || ko "(b) $s : SECRETS_DIR=$(val "$out" SECRETS_DIR)"
+  [ "$(val "$out" QUALIF_TLS_DIR)" = "$P/QUALIF/$TLS_SUB" ] && ok "(b) $s : QUALIF_TLS_DIR=QUALIF/$TLS_SUB" || ko "(b) $s : QUALIF_TLS_DIR=$(val "$out" QUALIF_TLS_DIR)"
   if [ $HAS_CHAIN = 1 ]; then
     # CHAIN_DIR volatil : ${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>, hors PRIVATE/, non cree par `paths`
     TD="$TMP/tmpd"; mkdir -p "$TD"; UID_N="$(id -u)"
@@ -60,7 +60,7 @@ for s in failover-test.sh chain-test.sh; do
   # (c) variable explicite prioritaire, les autres gardent le defaut
   out="$(clean_env SECAGENT_PRIVATE_DIR="$P" SECRETS_DIR=/x bash "$Q/$s" paths 2>&1)"
   [ "$(val "$out" SECRETS_DIR)" = "/x" ] && ok "(c) $s : SECRETS_DIR explicite prime" || ko "(c) $s : SECRETS_DIR=$(val "$out" SECRETS_DIR)"
-  [ "$(val "$out" QUALIF_TLS_DIR)" = "$P/qualif/$TLS_SUB" ] && ok "(c) $s : QUALIF_TLS_DIR garde son defaut" || ko "(c) $s : QUALIF_TLS_DIR=$(val "$out" QUALIF_TLS_DIR)"
+  [ "$(val "$out" QUALIF_TLS_DIR)" = "$P/QUALIF/$TLS_SUB" ] && ok "(c) $s : QUALIF_TLS_DIR garde son defaut" || ko "(c) $s : QUALIF_TLS_DIR=$(val "$out" QUALIF_TLS_DIR)"
   out="$(clean_env SECAGENT_PRIVATE_DIR="$P" QUALIF_TLS_DIR=/z bash "$Q/$s" paths 2>&1)"
   [ "$(val "$out" QUALIF_TLS_DIR)" = "/z" ] && ok "(c) $s : QUALIF_TLS_DIR explicite prime" || ko "(c) $s : QUALIF_TLS_DIR explicite ignore"
   if [ $HAS_CHAIN = 1 ]; then

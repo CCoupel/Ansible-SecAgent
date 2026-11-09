@@ -24,8 +24,8 @@
 #
 # Variables : SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (obligatoires, references promues ou locales),
 #   SECAGENT_PRIVATE_DIR (racine des donnees privees, defaut <depot>/PRIVATE, jamais creee : chemin ABSOLU du
-#   checkout depuis une copie), SECRETS_DIR (defaut $SECAGENT_PRIVATE_DIR/qualif/secrets),
-#   QUALIF_TLS_DIR (defaut $SECAGENT_PRIVATE_DIR/qualif/pki),
+#   checkout depuis une copie), SECRETS_DIR (defaut $SECAGENT_PRIVATE_DIR/QUALIF/secrets),
+#   QUALIF_TLS_DIR (defaut $SECAGENT_PRIVATE_DIR/QUALIF/pki),
 #   CHAIN_DIR (jetons VOLATILS, defaut ${TMPDIR:-/tmp}/secagent-qualif-chain-<uid> : hors PRIVATE/, sur un systeme de fichiers
 #   qui honore chmod ; repertoire 0700 de l'utilisateur, refuse s'il est un lien, d'un autre proprietaire ou plus ouvert),
 #   INVENTORY_BIN (binaire secagent-inventory du poste de controle),
@@ -54,7 +54,7 @@ fi
 # Hote sur lequel le poste de controle joint la racine (ports d'hote 7770 et 8770) ; defaut : poste local / runner.
 # Hote distant : SECAGENT_ENDPOINT_HOST=192.168.1.218 (doit figurer dans les SAN : PKI_EXTRA_SAN=IP:192.168.1.218).
 ENDPOINT_HOST="${CONTROL_HOST:-${SECAGENT_ENDPOINT_HOST:-127.0.0.1}}"   # CONTROL_HOST = alias
-export QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$PRIVATE_DIR/qualif/pki}"
+export QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$PRIVATE_DIR/QUALIF/pki}"
 export SECAGENT_LINK_VOLUME="${SECAGENT_LINK_VOLUME:-${PROJECT}_link}"   # volume de l'ancre (cle publique racine)
 C_A="secagent-qualif-a"; C_B="secagent-qualif-b"; C_CHILD="secagent-qualif-child"
 export C_A C_B
@@ -205,7 +205,7 @@ load_images() {
 ci_prepare() {
   require_private_dir "$QUALIF_TLS_DIR" "$SECRETS_DIR"   # fail-closed (#250) avant toute generation
   bash "$HERE/pki/gen.sh" "$QUALIF_TLS_DIR"
-  gen_secrets   # $SECRETS_DIR (defaut PRIVATE/qualif/secrets) : jwt_secret_key, admin_token, rsa_master_key en fichiers 0400
+  gen_secrets   # $SECRETS_DIR (defaut PRIVATE/QUALIF/secrets) : jwt_secret_key, admin_token, rsa_master_key en fichiers 0400
 }
 
 # Chemins prives resolus (support de scripts/ci/private_paths_selftest.sh) : aucun appel docker, rien n'est cree.

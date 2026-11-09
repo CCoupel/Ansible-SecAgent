@@ -44,19 +44,19 @@ jobs:
       - name: docker kill du maitre
         env:
           SECAGENT_IMAGE: secagent-server:ci
-          QUALIF_TLS_DIR: ${{ runner.temp }}/private/qualif/ci-tls
+          QUALIF_TLS_DIR: ${{ runner.temp }}/private/QUALIF/ci-tls
           KILL_MAX_S: '600'
         run: bash DEPLOYMENT/qualif/failover-test.sh run kill
       - name: "Process fige (SIGSTOP), doit passer unhealthy"
         env:
           SECAGENT_IMAGE: secagent-server:ci
-          QUALIF_TLS_DIR: ${{ runner.temp }}/private/qualif/ci-tls
+          QUALIF_TLS_DIR: ${{ runner.temp }}/private/QUALIF/ci-tls
         run: bash DEPLOYMENT/qualif/failover-test.sh run freeze
       - name: Journaux et nettoyage
         if: always()
         env:
           SECAGENT_IMAGE: secagent-server:ci
-          QUALIF_TLS_DIR: ${{ runner.temp }}/private/qualif/ci-tls
+          QUALIF_TLS_DIR: ${{ runner.temp }}/private/QUALIF/ci-tls
         run: |
           docker compose -p secagent-qualif -f DEPLOYMENT/qualif/docker-compose.server.yml logs --tail=80 || true
           bash DEPLOYMENT/qualif/failover-test.sh teardown || true
