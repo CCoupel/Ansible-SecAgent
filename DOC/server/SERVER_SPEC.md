@@ -381,8 +381,10 @@ Le client WebSocket (celui qui ouvre) et le serveur (celui qui accepte) établis
 Le client envoie son identité avec JWT(sub = son REPEATER_ID) :
 
 ```json
-{"type":"relay_hello", "relay_id":"<client_id>", "ancestors":["parent","grandparent"], "version":"3.1"}
+{"type":"relay_hello", "relay_id":"<client_id>", "ancestors":["parent","grandparent"], "version":"3.1", "conn_seq":3}
 ```
+
+`conn_seq` (v3.0.6, additif) : nombre de connexions que **ce process** de l'enfant a ouvertes vers son parent depuis son démarrage, entier décimal `1..2³¹` (1 = première connexion du process). Absent, nul, négatif, non entier ou hors borne ⇒ **traité comme 1** (fail-safe : `relay.up`). Le serveur ne garde rien : la valeur sert seulement à choisir `relay.up` (≤ 1) ou `relay.reconnect` (> 1) au premier `topology_snapshot` du lien. Un parent v3.0.5 ignore le champ (décodeur non strict).
 
 Serveur (récepteur) valide :
 - ✅ `relay_hello.relay_id` présent ET `relay_hello.relay_id == jwt.sub` (identité du client)
@@ -398,6 +400,8 @@ Le serveur répond avec SON identité et la liste de SES ancêtres :
 ```json
 {"type":"relay_ack", "relay_id":"<server_id>", "ancestors":["parent_of_server"], "status":"ok", "timestamp":"..."}
 ```
+
+**Mode push (v3.0.6)** : l'enfant n'envoie pas de `relay_hello` (c'est le parent qui ouvre) ; c'est donc **son `relay_ack`** qui porte `conn_seq` (mêmes règles que ci-dessus, compteur de l'enfant pour les liens entrants `ServeDialedRelay`). Le parent le lit dans l'ack (`Dialer.session`) et le rattache à la connexion de relais.
 
 **Validation côté client (l'ouvreur)** :
 - ✅ Vérifier que `relay_ack.relay_id` correspond à l'identité ATTENDUE du serveur :
@@ -479,6 +483,20 @@ Après handshake établi, tous les changements (hôtes, relays) sont notifiés v
   "timestamp":"..."
 }
 ```
+
+**Événements de cycle de vie des relais (v3.0.6, #225 #245 #265)** — kinds `relay.*` : **sans `hostname`** (le champ doit être vide), clé d'ordre (FIFO) = `relay_id`, `relay_chain` origine en premier comme `relay.updated` (`relay_chain[0] == relay_id`). Le nom d'hôte n'apparaît **jamais** dans un `relay.*` ; les compteurs sont des entiers `≥ 0`. Un champ non listé pour un kind est ignoré à la réception (additif).
+
+| Kind | Champs propres (en plus de `type`, `event`, `relay_id`, `relay_chain`, `timestamp`) | Émis par |
+|---|---|---|
+| `relay.failover` | `instance_id`, `previous_instance_id` (absent après arrêt propre), `cause` = `takeover` (verrou périmé supprimé) \| `start` (verrou absent) | le nouveau maître, **avant** toute ouverture de port ; aucun `host.up` pour les hôtes indirects |
+| `relay.up` | `mode` (`pull`\|`push`), `hosts_routed`, `relays_below`, `relays_below_ids` (≤ 256 ids valides), `conn_seq` | le parent, au premier `topology_snapshot` d'un lien dont `conn_seq ≤ 1` ou absent |
+| `relay.reconnect` | idem `relay.up` (`conn_seq > 1`) | le parent ; exclusif avec `relay.up` |
+| `relay.down` | `reason` = `revoked` \| `peer_closed:<code>` (code WS 1000..4999) \| `read_error` \| `idle_timeout`, `hosts_routed` | le parent, à la fermeture d'un lien dont le snapshot était établi, avant l'effacement des routes ; **aucun** pour les fermetures propres du parent sortant (`CloseAllLinks` 1001) |
+| `relay.discover` / `relay.rerouted` / `relay.removed` / `relay.converged` | réservés (formes acceptées, émis à partir de LOT-3.2/3.3) : `mode`, `hosts_routed` / `old_chain`, `new_chain`, `hosts_routed` / `mode`, `cause=deleted` / `relays_connected`, `relays_missing`, `hosts_direct`, `hosts_routed`, `upstream_dropped_events_total` | — |
+
+Kinds `host.*` ajoutés : `host.reconnect` (`status=connected`, `conn_seq`), `host.discover`, `host.rerouted`, `host.removed` (formes réservées, mêmes règles que `host.up` : `hostname` valide, hôte du sous-arbre du pair). `host.up` et `host.reconnect` portent `conn_seq` (additif). **`host.up` n'est émis que pour la première connexion d'un process minion (≥ 3.0.6) ; les reconnexions du même process donnent `host.reconnect`** ([CHANGED] ; un minion v3.0.5 n'envoie pas l'en-tête `X-SecAgent-Conn-Seq` ⇒ toujours `host.up`).
+
+`up`/`reconnect` sont **exclusifs** et annoncés par le client : le serveur ne garde aucune mémoire des connexions précédentes (après une bascule, le nouveau maître lit `conn_seq > 1` et émet `*.reconnect`). **Compatibilité** : un parent v3.0.5 jette tout kind inconnu (`[SECURITY WARNING] … unsupported event kind`) sans fermer le lien et ignore `conn_seq` ; un relais v3.0.5 intermédiaire interrompt la propagation des nouveaux kinds : monter **les parents d'abord**.
 
 **Ordre de `relay_chain` dans un `event_forward`** : **origine en premier, pair émetteur en dernier** (`relay_handler.go:1617-1633`) ; pour `relay.updated`, le premier élément est le relay décrit
 (`eventShapeError`, `relay_handler.go:1692-1701`). Les snapshots utilisent l'ordre inverse (l'enfant émetteur en premier, le propriétaire en dernier).
@@ -825,7 +843,8 @@ le routage (`relay_routing` : clé simple `hostname`, `relay_id`, `hop_type` age
 | `host.suspended` / `host.resumed` | `POST /api/admin/minions/{hostname}/suspend` / `resume` sur le relay qui détient l'agent (#180) | `[relay_id]` | `status` absent, `suspended` ou `resumed`. Remonte comme `host.up`/`host.down` (même validation, même limite de débit `maxEventsPerSecond`). Un ancêtre ne l'accepte que pour un hôte **routé par le lien émetteur** (route connue de ce sous-arbre) et jamais pour un hôte connecté localement ; sinon rejeté avec `[SECURITY WARNING]`, lien ouvert. |
 | `host.new` | Agent apparaît via `agent_list` d'un enfant | `[relay_id_origine, relay_parent, ...]` (chaîne de l'agent) | — |
 | `host.conflict` | Un relay déclare un hôte déjà routé vers un autre relay | `[relay_id_nouveau_propriétaire]` (l'hôte va au nouveau proprietaire) | Rare ; indicatif d'une mal-configuration ou d'une attaque (détournement de route). Un événement max par changement de propriétaire. |
-| `relay.updated` | `group_vars` d'un relay changeant | `[relay_id]` | Permet aux hooks de réagir à la mise à jour des variables d'un relay |
+| `relay.updated` | `group_vars` d'un relay changeant | `[relay_id]` | Propagé aux ancêtres ; **ne déclenche aucun hook** (jamais passé au dispatcher) — correction de doc v3.0.6 |
+| `relay.failover`, `relay.up`, `relay.reconnect`, `relay.down` (+ `host.reconnect`) | voir §9.2 « Événements de cycle de vie des relais » | `[relay_id, …]` | v3.0.6 ; clé FIFO = `relay_id`, sans hostname |
 
 **Sémantique chaîne** :
 - Chaque relay ajoute son propre ID à la chaîne lors du relayage vers le parent

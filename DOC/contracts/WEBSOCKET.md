@@ -26,6 +26,14 @@ Authorization: Bearer eyJhbGci...
 
 Le serveur valide le JWT (signature + expiration + JTI blacklist) avant d'accepter l'upgrade, puis vérifie l'agent : un hostname inconnu, un JTI remplacé ou un agent **révoqué** (drapeau persistant `revoked`, même si l'entrée de blacklist a expiré, #193) est refusé en `401` avant l'upgrade (`server/helpers.go:205-218`). Seul le rôle `agent` est accepté sur `/ws/agent` (un JWT d'un autre rôle, ou un jeton plugin, est refusé : `ws/handler.go:409`).
 
+### En-tête `X-SecAgent-Conn-Seq` (v3.0.6, additif)
+
+```http
+X-SecAgent-Conn-Seq: 3
+```
+
+Posé par le minion à côté de `Authorization` : nombre de connexions que **ce process** a ouvertes vers le serveur depuis son démarrage (1 = première). Entier décimal `1..2³¹` ; **absent, vide, nul, négatif, non décimal ou hors borne ⇒ traité comme 1** (fail-safe). Le serveur n'en garde rien : `1` ⇒ événement `host.up` (nouveau process : démarrage du service ou de l'hôte), `> 1` ⇒ `host.reconnect` (même process qui revient : coupure, bascule du relais, keepalive), jamais les deux. Un minion v3.0.5 n'envoie pas l'en-tête ⇒ toujours `host.up`. Un serveur v3.0.5 l'ignore. Le JWT ne peut pas porter cette valeur (claims signés par le serveur).
+
 ---
 
 ## 2. Format d'enveloppe
@@ -275,3 +283,12 @@ Si le sémaphore est saturé, l'agent répond immédiatement :
 - Toutes les tâches d'un même agent sont multiplexées sur cette connexion unique
 - Le serveur stocke `ws_connections[hostname]` en mémoire — perte sur restart node. La HA est assurée par l'état fichier (v3.0.3, voir DEPLOYMENT.md)
 - Heartbeat : ping WebSocket standard (pas de message applicatif dédié)
+
+---
+
+## 8. Liens relais (`/ws/relay`) — renvoi
+
+Le contrat complet des liens enfant ↔ parent (handshake, `topology_snapshot`, `event_forward`) est dans `DOC/server/SERVER_SPEC.md` §9.2. Ajouts v3.0.6 (additifs) :
+
+- `relay_hello.conn_seq` (pull) et `relay_ack.conn_seq` (push, renvoyé par l'enfant) : entier décimal `1..2³¹`, nombre de connexions du process enfant vers son parent ; absent/invalide ⇒ traité comme 1. Le parent en déduit `relay.up` (≤ 1) ou `relay.reconnect` (> 1) au premier `topology_snapshot`.
+- `event_forward` : kinds `relay.failover`, `relay.up`, `relay.reconnect`, `relay.down`, `relay.discover`, `relay.rerouted`, `relay.removed`, `relay.converged`, `host.reconnect`, `host.discover`, `host.rerouted`, `host.removed` ; les `relay.*` n'ont **pas** de `hostname` (clé `relay_id`). Un parent v3.0.5 jette les kinds inconnus sans fermer le lien.
