@@ -120,7 +120,7 @@ type message struct {
 	TaskID     string         `json:"task_id,omitempty"`
 	Hostname   string         `json:"hostname,omitempty"`
 	RelayChain []string       `json:"relay_chain,omitempty"`
-	ConnSeq    int            `json:"conn_seq,omitempty"` // relay_hello / relay_ack: connections of this process (v3.0.6)
+	ConnSeq    hooks.Seq      `json:"conn_seq,omitempty"` // relay_hello / relay_ack: connections of this process (v3.0.6)
 }
 
 type snapshotMessage struct {
@@ -356,7 +356,7 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 	// 1. relay_hello
 	hello := message{Type: "relay_hello", NodeType: NodeTypeRelay, Mode: ModePull,
 		RelayID: c.cfg.ID, Ancestors: []string{}, Version: ProtocolVersion, GroupVars: c.opts.GroupVars,
-		ConnSeq: int(min(c.links.Load()+1, maxConnSeq))}
+		ConnSeq: hooks.Seq(min(c.links.Load()+1, maxConnSeq))}
 	if err := c.write(conn, hello); err != nil {
 		return false, fmt.Errorf("send relay_hello: %w", err)
 	}

@@ -199,7 +199,7 @@ func RegisterConnection(hostname string, conn *AgentConnection, connSeq int) {
 	if seq > 1 {
 		name = "host.reconnect"
 	}
-	emitEvent(hooks.Event{Name: name, Hostname: hostname, Status: "connected", Detail: hooks.Detail{ConnSeq: seq}})
+	emitEvent(hooks.Event{Name: name, Hostname: hostname, Status: "connected", Detail: hooks.Detail{ConnSeq: hooks.Seq(seq)}})
 }
 
 // UnregisterConnection removes a hostname from active connections

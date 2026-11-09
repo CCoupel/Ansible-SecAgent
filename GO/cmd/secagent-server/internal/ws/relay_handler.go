@@ -997,7 +997,7 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 			}
 		}
 		conn.helloDone = true
-		conn.connSeq = normConnSeq(msg.ConnSeq)
+		conn.connSeq = normConnSeq(int(msg.ConnSeq))
 		if msg.GroupVars != nil {
 			if err := storeGroupVars(conn, conn.RelayID, []string{conn.RelayID}, msg.GroupVars); err != nil {
 				reject(conn, "invalid group_vars")
@@ -1506,7 +1506,7 @@ func serveParentLink(ctx context.Context, conn *websocket.Conn, parentID, jti st
 		// conn_seq: how many parent links this PROCESS has accepted (this one included); the parent
 		// reads it from the ack to tell relay.up (1) from relay.reconnect (> 1).
 		ackMsg := RelayMessage{Type: "relay_ack", RelayID: self, Status: "ok", Timestamp: time.Now().UTC().Format(time.RFC3339)}
-		ackMsg.ConnSeq = int(min(parentLinkSeq.Add(1), maxConnSeq))
+		ackMsg.ConnSeq = hooks.Seq(min(parentLinkSeq.Add(1), maxConnSeq))
 		return conn.WriteJSON(ackMsg)
 	}
 	if err := conn.SetReadDeadline(time.Time{}); err != nil {
@@ -1794,7 +1794,7 @@ func emitRelayUp(conn *RelayConnection, msg RelayMessage) {
 		ids = ids[:maxRelaysBelowIDs]
 	}
 	emitEvent(hooks.Event{Name: name, RelayID: conn.RelayID, RelayChain: []string{conn.RelayID}, Detail: hooks.Detail{
-		Mode: mode, ConnSeq: normConnSeq(conn.connSeq), HostsRouted: len(msg.Agents), RelaysBelow: len(msg.Relays), RelaysBelowIDs: ids}})
+		Mode: mode, ConnSeq: hooks.Seq(normConnSeq(conn.connSeq)), HostsRouted: len(msg.Agents), RelaysBelow: len(msg.Relays), RelaysBelowIDs: ids}})
 }
 
 // handleEventForward validates an ascending event (HAUT-1) and propagates it upstream.

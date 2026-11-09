@@ -4,6 +4,7 @@
 package ws
 
 import (
+	"encoding/json"
 	"errors"
 	"net"
 	"strconv"
@@ -213,4 +214,18 @@ func TestRelayDown_CarriesTheHostsRoutedOfTheLastSnapshot(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("no relay.down")
+}
+
+func TestConnSeqDecodingIsFailSafe(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]int{`3`: 3, `"3"`: 0, `1.5`: 0, `null`: 0, `true`: 0, `99999999999999999999`: 0, `-2`: -2} {
+		var m RelayMessage
+		if err := json.Unmarshal([]byte(`{"type":"relay_hello","conn_seq":`+in+`}`), &m); err != nil {
+			t.Errorf("conn_seq %s must not fail the frame: %v", in, err)
+			continue
+		}
+		if int(m.ConnSeq) != want {
+			t.Errorf("conn_seq %s decoded to %d, want %d", in, m.ConnSeq, want)
+		}
+	}
 }

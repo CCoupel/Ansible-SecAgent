@@ -4,6 +4,7 @@
 package hooks
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 )
@@ -18,7 +19,7 @@ type Detail struct {
 	Reason                     string   `json:"reason,omitempty"`
 	InstanceID                 string   `json:"instance_id,omitempty"`
 	PreviousInstanceID         string   `json:"previous_instance_id,omitempty"`
-	ConnSeq                    int      `json:"conn_seq,omitempty"`
+	ConnSeq                    Seq      `json:"conn_seq,omitempty"`
 	HostsRouted                int      `json:"hosts_routed,omitempty"`
 	RelaysBelow                int      `json:"relays_below,omitempty"`
 	RelaysBelowIDs             []string `json:"relays_below_ids,omitempty"`
@@ -29,6 +30,22 @@ type Detail struct {
 	HostsDirect                int      `json:"hosts_direct,omitempty"`
 	UpstreamDroppedEventsTotal int64    `json:"upstream_dropped_events_total,omitempty"`
 	FirstSeenAt                string   `json:"first_seen_at,omitempty"`
+}
+
+// Seq is a conn_seq on the wire. Decoding is fail-safe: anything that is not a JSON integer (a
+// string, a float, a boolean, null, an integer too large for int64) decodes to 0, i.e. "absent",
+// which every consumer treats as 1 (host.up / relay.up) instead of failing the whole frame.
+type Seq int
+
+// UnmarshalJSON never fails.
+func (s *Seq) UnmarshalJSON(b []byte) error {
+	var n int64
+	if err := json.Unmarshal(b, &n); err != nil {
+		*s = 0
+		return nil
+	}
+	*s = Seq(n)
+	return nil
 }
 
 // Event is an event of this node for the dispatcher: Name + the subject (Hostname for host.*,
@@ -79,7 +96,7 @@ func (dt Detail) vars(event, relayID string) map[string]string {
 	set("relays_below_ids", strings.Join(dt.RelaysBelowIDs, ","))
 	set("old_chain", strings.Join(dt.OldChain, ","))
 	set("new_chain", strings.Join(dt.NewChain, ","))
-	num("conn_seq", dt.ConnSeq, false)
+	num("conn_seq", int(dt.ConnSeq), false)
 	num("hosts_routed", dt.HostsRouted, rel && event != "relay.failover" && event != "relay.removed")
 	num("relays_below", dt.RelaysBelow, event == "relay.up" || event == "relay.reconnect")
 	num("relays_connected", dt.RelaysConnected, event == "relay.converged")

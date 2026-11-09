@@ -243,7 +243,7 @@ func (d *Dialer) session(ctx context.Context) (established bool, err error) {
 	}
 	d.tr.set(LinkConnected, "")
 	log.Printf("[REPEATER] linked to child relay_id=%q (push)", d.target.RelayID)
-	if err := d.opts.Serve(ctx, conn, d.target.RelayID, ack.ConnSeq); err != nil {
+	if err := d.opts.Serve(ctx, conn, d.target.RelayID, int(ack.ConnSeq)); err != nil {
 		// A close frame received on the served link carries the peer's decision: 4010 is a
 		// permanent refusal (revoked token, identity...), 4012 a correctable one (#148, #153).
 		return true, wrapRead("served link", err)
