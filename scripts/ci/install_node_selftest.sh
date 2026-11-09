@@ -16,6 +16,17 @@ T="$(mktemp -d)"; trap 'chmod -R u+rwx "$T" 2>/dev/null; rm -rf "$T"' EXIT
 bad=0
 ok() { echo "ok   $*"; }
 ko() { echo "KO   $*"; bad=1; }
+# PATH HERMETIQUE : stubs de l'essai + liens vers une liste FERMEE d'utilitaires de base. Aucun autre binaire reel (podman,
+# pasta, slirp4netns, mfsmount, docker, ssh... presents sur un runner) n'est visible : le resultat ne depend pas de la machine.
+mksys() {
+  mkdir -p "$T/sys"; local c p
+  for c in bash sh env cat cp mv rm mkdir rmdir chmod install ln ls stat find awk sed grep sort head tail tr cut wc printf \
+           mktemp timeout test dirname basename id uname sha256sum xargs diff date sleep cmp true false tee; do
+    p="$(type -P "$c" 2>/dev/null)" || continue   # type -P : binaire reel (test, printf, true... sont aussi des builtins)
+    case "$p" in /*) ln -sf "$p" "$T/sys/$c" ;; esac
+  done
+}
+mksys
 ME="$(id -un)"; MYUID="$(id -u)"; REAL_ID="$(command -v id)"
 FST="$(stat -f -c %T "$T")"   # type reel du systeme de fichiers de l'essai (accepte par la garde via SECAGENT_PRIVATE_FSTYPES)
 
@@ -48,7 +59,7 @@ run() { # $@ arguments
   [ -z "${XPRIV:-}" ] || extra+=("PRIVATE_ROOT=$XPRIV")
   [ -z "${XCG:-}" ] || extra+=("CGROUP_ROOT=$XCG")
   [ -z "${XFREE:-}" ] || extra+=("MIN_FREE_GB=$XFREE")
-  env -i PATH="$T/bin:/usr/bin:/bin" NODE_USER="${XUSER:-$ME}" NODE_UID="${XUID:-$MYUID}" HOME_BASE="${XHOME:-$T/home}" \
+  env -i PATH="$T/bin:$T/sys" NODE_USER="${XUSER:-$ME}" NODE_UID="${XUID:-$MYUID}" HOME_BASE="${XHOME:-$T/home}" \
     SUBID_DIR="$T/etc" CGROUP_ROOT="$T/cg" PRIVATE_ROOT="$T/private" TMPDIR="$T/tmp" FAKE_EUID="${FAKE_EUID:-0}" \
     FAKE_DF="${FAKE_DF:-41943040 58%}" SECAGENT_PRIVATE_FSTYPES="${XFST:-$FST}" NODE_NAME="${XNODE:-srv3}" "${extra[@]}" bash "$S" "$@"
 }
@@ -134,7 +145,7 @@ guard_refus "garde : dossier du noeud srv3 manquant" 'chmod -R u+rwx "$T/private
 
 # garde executee seule (comme ExecStartPre) : couple, noeud courant, dossiers du noeud
 reset_env
-gd() { env -i PATH=/usr/bin:/bin SECAGENT_PRIVATE_ROOT="$T/private" SECAGENT_NODE_UID="$MYUID" SECAGENT_PRIVATE_FSTYPES="${XFST:-$FST}" "$@"; }
+gd() { env -i PATH="$T/sys" SECAGENT_PRIVATE_ROOT="$T/private" SECAGENT_NODE_UID="$MYUID" SECAGENT_PRIVATE_FSTYPES="${XFST:-$FST}" "$@"; }
 out="$(gd SECAGENT_NODE_NAME=srv3 bash "$G" qualif srv3 2>&1)"; rc=$?
 [ "$rc" = 0 ] && ok "garde seule : qualif srv3 conforme" || ko "garde seule qualif srv3 rc=$rc : $out"
 out="$(gd SECAGENT_NODE_NAME=srv3.lan bash "$G" qualif srv3 2>&1)"; rc=$?
@@ -153,7 +164,7 @@ out="$(gd SECAGENT_NODE_NAME=srv3 bash "$G" qualif srv3 2>&1)"; rc=$?
 chmod 700 "$T/private/QUALIF/srv3/cyril/secagent"
 out="$(gd SECAGENT_PRIVATE_ROOT=relatif SECAGENT_NODE_NAME=srv3 bash "$G" qualif srv3 2>&1)"; rc=$?
 [ "$rc" = 2 ] && ok "garde seule : SECAGENT_PRIVATE_ROOT relatif refuse" || ko "garde racine relative rc=$rc : $out"
-out="$(env -i PATH=/usr/bin:/bin SECAGENT_PRIVATE_ROOT="$T/private" SECAGENT_NODE_UID="$MYUID" SECAGENT_NODE_NAME=srv3 bash "$G" qualif srv3 2>&1)"; rc=$?
+out="$(env -i PATH="$T/sys" SECAGENT_PRIVATE_ROOT="$T/private" SECAGENT_NODE_UID="$MYUID" SECAGENT_NODE_NAME=srv3 bash "$G" qualif srv3 2>&1)"; rc=$?
 [ "$rc" = 2 ] && ok "garde seule, types par defaut (fuseblk fuse) : $FST refuse" || ko "garde types par defaut rc=$rc : $out"
 
 # --- prepare-node-files.sh (poste) --------------------------------------------------------------------------------
@@ -207,11 +218,7 @@ mkstubs 4.2.1 1.5.0 pasta; expect_rc 2 "podman 4.2.1 < 4.3" "podman 4.2.1 < 4.3"
 mkstubs 4.3.0 1.5.0 pasta; expect_rc 0 "podman 4.3.0 accepte (borne)" "" qualif srv3; reset_env
 mkstubs 5.7.0 1.1.0 pasta; expect_rc 2 "podman-compose 1.1.0 < 1.2" "podman-compose 1.1.0 < 1.2" qualif srv3
 mkstubs 5.7.0 1.5.0 pasta; rm "$T/bin/podman"; expect_rc 2 "podman absent" "jamais par ce script" qualif srv3
-if command -v pasta >/dev/null 2>&1 || command -v slirp4netns >/dev/null 2>&1; then
-  echo "skip reseau rootless absent : pasta/slirp4netns present sur ce poste"
-else
-  mkstubs 5.7.0 1.5.0 none; expect_rc 2 "ni pasta ni slirp4netns" "reseau rootless" qualif srv3
-fi
+mkstubs 5.7.0 1.5.0 none; expect_rc 2 "ni pasta ni slirp4netns" "reseau rootless" qualif srv3
 reset_env; mkstubs 5.7.0 1.5.0 pasta; rm -f "$T/calls.log"
 FAKE_EUID=1000 run qualif srv3 >/dev/null 2>&1
 [ ! -e "$T/calls.log" ] && [ ! -e "$H/secagent" ] && ok "refus avant toute action (aucun appel, rien cree)" || ko "action executee malgre le refus"

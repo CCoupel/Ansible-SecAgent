@@ -13,6 +13,17 @@ T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 bad=0
 ok() { echo "ok   $*"; }
 ko() { echo "KO   $*"; bad=1; }
+# PATH HERMETIQUE : stubs de l'essai + liens vers une liste FERMEE d'utilitaires de base. Aucun autre binaire reel (podman,
+# pasta, slirp4netns, mfsmount, docker, ssh... presents sur un runner) n'est visible : le resultat ne depend pas de la machine.
+mksys() {
+  mkdir -p "$T/sys"; local c p
+  for c in bash sh env cat cp mv rm mkdir rmdir chmod install ln ls stat find awk sed grep sort head tail tr cut wc printf \
+           mktemp timeout test dirname basename id uname sha256sum xargs diff date sleep cmp true false tee; do
+    p="$(type -P "$c" 2>/dev/null)" || continue   # type -P : binaire reel (test, printf, true... sont aussi des builtins)
+    case "$p" in /*) ln -sf "$p" "$T/sys/$c" ;; esac
+  done
+}
+mksys
 mkdir -p "$T/bin" "$T/k"; : > "$T/k/id"; : > "$T/k/kh"
 # faux ssh : une ligne par appel = "<cible> | <commande distante> | stdin=<oui|non>"
 cat > "$T/bin/ssh" <<EOF
@@ -23,7 +34,7 @@ echo "\$tgt | \$cmd | stdin=\$n" >> "$T/ssh.log"
 EOF
 chmod +x "$T/bin/ssh"
 P=/share/MFS/ROOT/essai/PRIVATE
-ENVV=(PATH="$T/bin:/usr/bin:/bin" CONTAINER_CLI=podman SECAGENT_PRIVATE_DIR="$P" CONTAINER_SSHKEY="$T/k/id"
+ENVV=(PATH="$T/bin:$T/sys" CONTAINER_CLI=podman SECAGENT_PRIVATE_DIR="$P" CONTAINER_SSHKEY="$T/k/id"
       CONTAINER_KNOWN_HOSTS="$T/k/kh" TMPDIR="$T" C_A=secagent-qualif-a C_B=secagent-qualif-b C_CHILD=secagent-qualif-child)
 run() { : > "$T/ssh.log"; env -i "${ENVV[@]}" "$@" bash -c 'source "$1"; set +e; eval "$CMD"' _ "$F" >/dev/null 2>&1; }
 last() { cat "$T/ssh.log"; }
@@ -76,7 +87,7 @@ g "cle SSH absente refusee" 2 "cle SSH" CONTAINER_SSHKEY="$T/k/absente"
 g "SECRETS_DIR different du partage refuse" 2 "SECRETS_DIR doit etre" SECRETS_DIR=/tmp/s
 out="$(env -i "${ENVV[@]}" bash -c 'source "$1"; echo "$SECRET_OWNER_UID $QUALIF_TLS_DIR"' _ "$F" 2>&1)"
 [ "$out" = "1000 $P/QUALIF/pki" ] && ok "Podman : SECRET_OWNER_UID=1000, TLS = PRIVATE/QUALIF/pki" || ko "defauts Podman : $out"
-out="$(env -i PATH="$T/bin:/usr/bin:/bin" SECAGENT_PRIVATE_DIR="$P" bash -c 'source "$1"; echo "$CONTAINER_CLI $SECRET_OWNER_UID"; docker() { echo "DOCKER $*"; }; ctr ps -a' _ "$F" 2>&1)"
+out="$(env -i PATH="$T/bin:$T/sys" SECAGENT_PRIVATE_DIR="$P" bash -c 'source "$1"; echo "$CONTAINER_CLI $SECRET_OWNER_UID"; docker() { echo "DOCKER $*"; }; ctr ps -a' _ "$F" 2>&1)"
 [ "$out" = $'docker 10001\nDOCKER ps -a' ] && ok "Docker (defaut) : ctr = docker, SECRET_OWNER_UID=10001" || ko "mode docker : $out"
 out="$(env -i "${ENVV[@]}" bash -c 'source "$1"; teardown_ok=0; guard_project' _ "$F" 2>&1)"; rc=$?
 [ "$rc" = 0 ] && ok "guard_project : secagent-qualif accepte sous Podman" || ko "guard_project : $out"
