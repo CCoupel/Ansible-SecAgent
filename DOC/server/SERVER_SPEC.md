@@ -484,7 +484,7 @@ Après handshake établi, tous les changements (hôtes, relays) sont notifiés v
 }
 ```
 
-**Événements de cycle de vie des relais (v3.0.6, #225 #245 #265)** — kinds `relay.*` : **sans `hostname`** (le champ doit être vide), clé d'ordre (FIFO) = `relay_id`, `relay_chain` origine en premier comme `relay.updated` (`relay_chain[0] == relay_id`). Le nom d'hôte n'apparaît **jamais** dans un `relay.*` ; les compteurs sont des entiers `≥ 0`. Un champ non listé pour un kind est ignoré à la réception (additif).
+**Événements de cycle de vie des relais (v3.0.6, #225 #245 #265)** — kinds `relay.*` : **sans `hostname`** (le champ doit être vide), clé d'ordre (FIFO) = `relay_id`, `relay_chain` origine en premier comme `relay.updated` (`relay_chain[0] == relay_id`). Le nom d'hôte n'apparaît **jamais** dans un `relay.*` ; les compteurs sont des entiers `≥ 0`. **Liste blanche par kind** : un champ non vide qui n'est pas listé pour le kind (ex. `reason` sur `relay.up`, `cause` sur `host.up`, `conn_seq` sur `host.down`) fait **refuser** l'événement (`[SECURITY WARNING]`, lien ouvert) ; les valeurs libres sont bornées (`mode` ∈ pull|push, `cause`/`reason`/ids par liste ou regex) car elles alimentent les modèles et variables de hooks. Ordre : l'émission locale est synchrone, la file d'un worker (clé hostname ou `relay_id`) reflète l'ordre d'émission.
 
 | Kind | Champs propres (en plus de `type`, `event`, `relay_id`, `relay_chain`, `timestamp`) | Émis par |
 |---|---|---|

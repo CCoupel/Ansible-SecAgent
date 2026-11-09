@@ -6,8 +6,11 @@ package ws
 import (
 	"errors"
 	"net"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -117,4 +120,97 @@ func TestDownReason(t *testing.T) {
 			t.Errorf("%s: %q does not match the wire shape", name, c.want)
 		}
 	}
+}
+
+func TestEventShape_FieldWhitelistPerKind(t *testing.T) {
+	t.Parallel()
+	chain := []string{"x", "p"}
+	free := "-rf ../../etc\nFAKE"
+	// a free string on a kind that does not carry it is refused, whatever the kind
+	cases := []RelayMessage{
+		{Event: "relay.up", RelayID: "x", RelayChain: chain, Detail: hooks.Detail{Reason: free}},
+		{Event: "relay.up", RelayID: "x", RelayChain: chain, Detail: hooks.Detail{Cause: "takeover"}},
+		{Event: "relay.up", RelayID: "x", RelayChain: chain, Detail: hooks.Detail{InstanceID: "abc"}},
+		{Event: "relay.down", RelayID: "x", RelayChain: chain, Detail: hooks.Detail{Reason: "revoked", Cause: free}},
+		{Event: "relay.down", RelayID: "x", RelayChain: chain, Mode: "pull", Detail: hooks.Detail{Reason: "revoked"}},
+		{Event: "relay.failover", RelayID: "x", RelayChain: chain, Detail: hooks.Detail{Cause: "start", InstanceID: "a", Reason: free}},
+		{Event: "relay.failover", RelayID: "x", RelayChain: chain, Detail: hooks.Detail{Cause: "start", InstanceID: "a", ConnSeq: 2}},
+		{Event: "host.up", Hostname: "h", Status: "connected", RelayChain: chain, Detail: hooks.Detail{Reason: free}},
+		{Event: "host.up", Hostname: "h", Status: "connected", RelayChain: chain, Detail: hooks.Detail{InstanceID: "a"}},
+		{Event: "host.down", Hostname: "h", Status: "disconnected", RelayChain: chain, Detail: hooks.Detail{ConnSeq: 3}},
+		{Event: "host.reconnect", Hostname: "h", Status: "connected", RelayChain: chain, Mode: free},
+		{Event: "host.reconnect", Hostname: "h", Status: "connected", RelayChain: chain, Detail: hooks.Detail{Cause: free}},
+		{Event: "host.new", Hostname: "h", Status: "disconnected", RelayChain: chain, Detail: hooks.Detail{PreviousInstanceID: "a"}},
+	}
+	for i, m := range cases {
+		if r := eventShapeError(m); r == "" {
+			t.Errorf("case %d (%s): must be refused", i, m.Event)
+		}
+	}
+	// invalid values on the kinds that do carry the field
+	if r := eventShapeError(RelayMessage{Event: "host.rerouted", Hostname: "h", OldRelay: "a", NewRelay: "b", RelayChain: chain, Detail: hooks.Detail{Cause: free}}); r == "" {
+		t.Error("host.rerouted cause must be moved|direct|indirect")
+	}
+	if r := eventShapeError(RelayMessage{Event: "host.removed", Hostname: "h", RelayChain: chain, Detail: hooks.Detail{Cause: "other"}}); r == "" {
+		t.Error("host.removed cause must be deleted")
+	}
+	if r := eventShapeError(RelayMessage{Event: "relay.removed", RelayID: "x", RelayChain: chain, Mode: free}); r == "" {
+		t.Error("relay.removed mode must be pull|push")
+	}
+}
+
+// relay.down after a REPLACING snapshot carries the hosts_routed of the last accepted snapshot.
+func TestRelayDown_CarriesTheHostsRoutedOfTheLastSnapshot(t *testing.T) {
+	var mu sync.Mutex
+	var got []hooks.Event
+	SetEventFunc(func(ev hooks.Event) {
+		mu.Lock()
+		got = append(got, ev)
+		mu.Unlock()
+	})
+	t.Cleanup(func() { SetEventFunc(nil) })
+	setTreeHooks(t, "central", nil, nil, nil)
+	srv := setupRelayTestServer(t)
+	t.Cleanup(srv.Close)
+	conn := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
+	handshake(t, conn, "dmz1")
+	agents := func(n int) []RelayAgentInfo {
+		out := make([]RelayAgentInfo, 0, n)
+		for i := 0; i < n; i++ {
+			out = append(out, RelayAgentInfo{Hostname: "h" + strconv.Itoa(i), RelayID: "dmz1", RelayChain: []string{"dmz1"}})
+		}
+		return out
+	}
+	sendSnapshot(t, conn, nil, agents(2))
+	readMsg(t, conn)
+	sendSnapshot(t, conn, nil, agents(5)) // replacing snapshot
+	readMsg(t, conn)
+	_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "bye"), time.Now().Add(time.Second))
+	_ = conn.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		var up, down *hooks.Event
+		for i := range got {
+			switch got[i].Name {
+			case "relay.up":
+				up = &got[i]
+			case "relay.down":
+				down = &got[i]
+			}
+		}
+		mu.Unlock()
+		if down != nil {
+			if up == nil || up.Detail.HostsRouted != 2 {
+				t.Errorf("relay.up = %+v, want hosts_routed 2 (one relay.up only, from the first snapshot)", up)
+			}
+			if down.Detail.HostsRouted != 5 || down.RelayID != "dmz1" || down.Detail.Reason != "peer_closed:1000" {
+				t.Errorf("relay.down = %+v, want hosts_routed 5, reason peer_closed:1000", down)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("no relay.down")
 }

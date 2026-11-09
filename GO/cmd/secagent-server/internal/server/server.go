@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"regexp"
 	"runtime/debug"
 	"secagent-server/cmd/secagent-server/internal/tlsca"
 	"sync"
@@ -779,9 +778,6 @@ func (n *Node) SetInstance(role, id string) {
 	n.instMu.Unlock()
 }
 
-// failoverIDShape is what a relay.failover may carry as instance ids (the parents refuse any other form).
-var failoverIDShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
-
 // AnnounceFailover emits relay.failover (#225): this instance has just become the master, before any
 // port is opened. cause is "takeover" when it removed the stale lock of a master that vanished, "start"
 // when the lock was free (first start, clean stop of the previous master; previous_instance_id is then
@@ -795,11 +791,12 @@ func (n *Node) AnnounceFailover(st lock.Status) {
 	d := hooks.Detail{Cause: "start", InstanceID: st.InstanceID}
 	if st.Takeover {
 		d.Cause = "takeover"
-		if failoverIDShape.MatchString(st.PreviousInstanceID) {
+		if ws.InstanceIDShape.MatchString(st.PreviousInstanceID) {
 			d.PreviousInstanceID = st.PreviousInstanceID
 		}
 	}
-	if !failoverIDShape.MatchString(d.InstanceID) {
+	if !ws.InstanceIDShape.MatchString(d.InstanceID) {
+		log.Printf("[WARN] relay.failover not announced: this instance's id %q is not a valid instance id", d.InstanceID)
 		return
 	}
 	n.dispatcher.DispatchEvent(hooks.Event{Name: "relay.failover", RelayID: id, Detail: d})

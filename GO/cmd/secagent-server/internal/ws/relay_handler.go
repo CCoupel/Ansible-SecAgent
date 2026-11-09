@@ -1899,7 +1899,8 @@ const maxEventCount = 10_000_000
 const maxRelaysBelowIDs = 256
 
 var (
-	instanceIDShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
+	// InstanceIDShape is the form of an instance id in relay.failover (the one definition, also used by the emitter).
+	InstanceIDShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
 	downReasonShape = regexp.MustCompile(`^(revoked|read_error|idle_timeout|(peer_closed|rejected):[0-9]{1,4})$`)
 )
 
@@ -1915,20 +1916,15 @@ func relayEventShapeError(m RelayMessage) string {
 	if len(m.RelayChain) == 0 || m.RelayChain[0] != m.RelayID {
 		return m.Event + " chain must start with the relay it describes"
 	}
-	switch m.Mode {
-	case "", "pull", "push":
-	default:
-		return "invalid mode"
-	}
 	switch m.Event {
 	case "relay.failover":
 		if m.Cause != "takeover" && m.Cause != "start" {
 			return "invalid cause"
 		}
-		if !instanceIDShape.MatchString(m.InstanceID) {
+		if !InstanceIDShape.MatchString(m.InstanceID) {
 			return "invalid instance_id"
 		}
-		if m.PreviousInstanceID != "" && !instanceIDShape.MatchString(m.PreviousInstanceID) {
+		if m.PreviousInstanceID != "" && !InstanceIDShape.MatchString(m.PreviousInstanceID) {
 			return "invalid previous_instance_id"
 		}
 	case "relay.down":
@@ -1943,8 +1939,55 @@ func relayEventShapeError(m RelayMessage) string {
 	return detailShapeError(m)
 }
 
+// eventDetailFields lists, per kind, the Detail fields it may carry; a non-empty field outside
+// this list refuses the event (free strings reach hook templates: nothing is accepted by default).
+var eventDetailFields = map[string]string{
+	"relay.failover":  "cause instance_id previous_instance_id",
+	"relay.up":        "mode conn_seq hosts_routed relays_below relays_below_ids",
+	"relay.reconnect": "mode conn_seq hosts_routed relays_below relays_below_ids",
+	"relay.down":      "reason hosts_routed",
+	"relay.discover":  "mode hosts_routed first_seen_at",
+	"relay.rerouted":  "old_chain new_chain hosts_routed",
+	"relay.removed":   "mode cause",
+	"relay.converged": "hosts_routed relays_connected relays_missing hosts_direct upstream_dropped_events_total",
+	"host.up":         "conn_seq",
+	"host.reconnect":  "conn_seq",
+	"host.discover":   "first_seen_at",
+	"host.rerouted":   "cause old_chain new_chain",
+	"host.removed":    "cause first_seen_at",
+}
+
+// unexpectedDetailField returns the name of a Detail field set on a kind that does not carry it.
+func unexpectedDetailField(m RelayMessage) string {
+	allowed := " " + eventDetailFields[m.Event] + " "
+	for name, set := range map[string]bool{
+		"mode": m.Mode != "", "cause": m.Cause != "", "reason": m.Reason != "", "instance_id": m.InstanceID != "",
+		"previous_instance_id": m.PreviousInstanceID != "", "conn_seq": m.ConnSeq != 0, "hosts_routed": m.HostsRouted != 0,
+		"relays_below": m.RelaysBelow != 0, "relays_below_ids": len(m.RelaysBelowIDs) != 0,
+		"old_chain": len(m.OldChain) != 0, "new_chain": len(m.NewChain) != 0, "relays_connected": m.RelaysConnected != 0,
+		"relays_missing": m.RelaysMissing != 0, "hosts_direct": m.HostsDirect != 0,
+		"upstream_dropped_events_total": m.UpstreamDroppedEventsTotal != 0, "first_seen_at": m.FirstSeenAt != "",
+	} {
+		if set && !strings.Contains(allowed, " "+name+" ") {
+			return name
+		}
+	}
+	return ""
+}
+
+// hostCauseShape: host.rerouted causes (#244).
+var hostCauseShape = map[string]bool{"": true, "moved": true, "direct": true, "indirect": true}
+
 // detailShapeError bounds the fields of Detail shared by the v3.0.6 kinds.
 func detailShapeError(m RelayMessage) string {
+	if f := unexpectedDetailField(m); f != "" {
+		return m.Event + " does not carry " + f
+	}
+	switch m.Mode {
+	case "", "pull", "push":
+	default:
+		return "invalid mode"
+	}
 	if m.ConnSeq < 0 || m.ConnSeq > maxConnSeq {
 		return "invalid conn_seq"
 	}
@@ -2027,12 +2070,18 @@ func eventShapeError(m RelayMessage) string {
 			}
 		}
 	case "host.discover", "host.removed":
+		if m.Event == "host.removed" && m.Cause != "" && m.Cause != "deleted" {
+			return "invalid cause"
+		}
 		if m.EnrolledAt != "" {
 			if _, err := time.Parse(time.RFC3339, m.EnrolledAt); err != nil {
 				return "invalid enrolled_at"
 			}
 		}
 	case "host.rerouted":
+		if !hostCauseShape[m.Cause] {
+			return "invalid cause"
+		}
 		for _, id := range []string{m.OldRelay, m.NewRelay} {
 			if id != LocalOwner && !relayIDShape.MatchString(id) {
 				return "invalid relay id in host.rerouted"
