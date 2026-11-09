@@ -76,11 +76,11 @@ func TestEventShape_HostReconnectAndConnSeq(t *testing.T) {
 	if r := eventShapeError(good); r != "" {
 		t.Fatalf("host.reconnect refused: %s", r)
 	}
-	good.Detail.ConnSeq = -1
+	good.ConnSeq = -1
 	if r := eventShapeError(good); !strings.Contains(r, "conn_seq") {
 		t.Errorf("a negative conn_seq must be refused, got %q", r)
 	}
-	good.Detail.ConnSeq = 1
+	good.ConnSeq = 1
 	good.Status = "weird"
 	if r := eventShapeError(good); r == "" {
 		t.Error("an invalid status must be refused")

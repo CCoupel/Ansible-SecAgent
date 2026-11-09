@@ -472,7 +472,7 @@ func Build(cfg Config) (node *Node, err error) {
 		// relay.failover is emitted at promotion, before any link exists): the uplink sends them
 		// once connected. Host events keep the old rule: a link that is down drops them, the next
 		// snapshot re-synchronizes the parent.
-		if !n.uplink.Active() && !(hooks.IsRelayEvent(ev.Name) && nonRoot) {
+		if !n.uplink.Active() && (!hooks.IsRelayEvent(ev.Name) || !nonRoot) {
 			return
 		}
 		ts := ev.Timestamp

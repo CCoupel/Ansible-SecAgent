@@ -74,7 +74,7 @@ func TestRelayEvents_CutAndSameProcessReturnsIsRelayDownThenReconnect(t *testing
 		}
 		return -1
 	}
-	if !(idx("relay.up") < idx("relay.down") && idx("relay.down") < idx("relay.reconnect")) {
+	if idx("relay.up") >= idx("relay.down") || idx("relay.down") >= idx("relay.reconnect") {
 		t.Errorf("order must be up < down < reconnect, got:\n%s", strings.Join(root.hookLines(), "\n"))
 	}
 }
