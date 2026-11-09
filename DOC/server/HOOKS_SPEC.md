@@ -62,6 +62,12 @@ kill -HUP $(pidof secagent-server)
 }
 ```
 
+### Un seul hook s'exécute par événement
+
+Pour un événement donné, **seul le premier hook de la liste `hooks` qui correspond s'exécute** (même nom d'événement et, s'il y en a un, `filter` satisfait) ; ses actions tournent l'une après l'autre, puis la recherche s'arrête (`hooks/dispatcher.go:569-580`, `// first matching HookDef wins`). Les hooks suivants visant le même événement sont **ignorés en silence à l'exécution** : pour plusieurs actions sur un événement, les mettre dans la liste `actions` d'**un seul** hook. Deux hooks du même événement ne coexistent que s'ils ont des `filter` différents qui ne se recouvrent pas (`relay_chain_contains`).
+
+Au chargement de la configuration, le serveur journalise un `[WARN]` quand plusieurs hooks visent le même événement (ajout v3.0.6). *(À confirmer à la livraison : ce contrôle n'est pas dans le code de `hooks/config.go` à la date de rédaction.)* **L'exécution de tous les hooks correspondants est prévue en v3.0.7** ; d'ici là, regrouper les actions.
+
 ### Événements disponibles
 
 **Événements d'hôte** (clé d'ordre : le hostname)
@@ -525,6 +531,7 @@ Ordre : clé FIFO = `relay_id` pour les `relay.*` ; l'émission locale est synch
 | Fichier absent | Démarrage normal, log info `hooks config not found`, 0 hook actif |
 | JSON invalide au chargement | Log error, config précédente conservée (ou vide si premier chargement) |
 | Queue pleine (`RELAY_HOOKS_QUEUE_SIZE`, 10 000 par défaut) | Événement rejeté et compté (`hooks_dropped_events`), un `[WARN]` agrégé par minute + entrée `dropped` dans le journal (§9b) |
+| Plusieurs hooks pour le même événement | Seul le premier correspondant s'exécute, les autres sont ignorés ; `[WARN]` au chargement (v3.0.6) ; tous exécutés en v3.0.7 (§2) |
 | Type d'action inconnu | Log `WARN unknown action type`, action ignorée |
 | `shell` : commande introuvable | success=false, erreur dans action_log |
 | `file` : permissions insuffisantes | success=false, erreur OS dans action_log |
