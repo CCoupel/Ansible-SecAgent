@@ -7,11 +7,12 @@
 # Les minions (minion-root, minion-child, minion-negca) n'ont PAS de keep-id : leur entrypoint demarre en root du
 # conteneur (cles, chown) puis passe a `relay` par su-exec ; en rootless, root du conteneur = cyril sur l'hote, et ils
 # n'utilisent que des volumes nommes (aucun fichier du partage) : le mapping par defaut suffit (verifie en T48).
+# Limites memoire : tous les services de docker-compose.chain.yml portent deja mem_limit (controle --require-memory-limit).
 x-podman:
   host_uid: 1000
   secret_owner_uid: 1000
   container_host: ssh://cyril@<ip>/run/user/1000/podman/podman.sock
-  host_prefix: /home/cyril/secagent/qualif
+  host_prefix: /share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/QUALIF
 
 services:
   secagent-server-a:

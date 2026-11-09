@@ -10,8 +10,8 @@ est interdit contre un demon Docker DISTANT (le chemin serait resolu sur l'hote 
     sont ignores) utilise par un service ;
   - un `build:` (le contexte est un repertoire du client).
 
-Option `--allow-prefix <chemin absolu>` (Podman rootless, #267 : SECAGENT_HOST_PREFIX, ex. /home/cyril/secagent/prod,
-racine du montage MooseFS de PRIVATE/<ENV>/ sur le NOEUD) : un bind mount ou un secret/config `file:` est accepte
+Option `--allow-prefix <chemin absolu>` (Podman rootless, #267 : SECAGENT_HOST_PREFIX, ex.
+/share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/PROD, PRIVATE/<ENV>/ vu par le montage autofs du NOEUD) : un bind mount ou un secret/config `file:` est accepte
 UNIQUEMENT si sa source, normalisee, designe un des sous-chemins permis de ce prefixe :
   repertoires (eux-memes ou dessous) : state/root, state/child, secrets ;
   fichiers (exacts)                 : pki/tls.crt, pki/tls.key, pki/ca.crt.

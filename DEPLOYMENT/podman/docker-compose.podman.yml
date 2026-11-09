@@ -8,15 +8,20 @@
 #
 # Mapping uid : `keep-id:uid=10001,gid=10001` => l'uid 10001 DU CONTENEUR (USER de l'image, `user: "10001:10001"`
 # inchange) est l'uid 1000 (`cyril`) DE L'HOTE. Les fichiers crees par le serveur dans /data (STATE_DIR) et les secrets lus
-# dans /run/secrets appartiennent donc a l'uid 1000 sur le partage MooseFS (PRIVATE/PROD/ monte par cyril, sans
-# allow_other). read_only, cap_drop, tmpfs, healthcheck : inchanges (Compose de base).
+# dans /run/secrets appartiennent donc a l'uid 1000 sur le partage MooseFS : PRIVATE/PROD/ est le montage autofs root
+# EXISTANT du noeud (/share/MFS/ROOT/...), lie (bind) dans le conteneur ; garde fail-closed avant demarrage :
+# ~/secagent/bin/check-private.sh prod (install-node.sh). read_only, cap_drop, tmpfs, healthcheck : inchanges.
+# Limite memoire OBLIGATOIRE (noeuds partages avec RKE2 et des chunkservers) : celle du Compose de base
+# (deploy.resources.limits.memory, controlee par check_compose.py --require-memory-limit sur le rendu Podman en CI),
+# transmise en --memory par podman-compose ; effective car install-node.sh exige la delegation cgroup `memory`.
+# A constater au deploiement : podman inspect -f '{{.HostConfig.Memory}}' <conteneur> != 0.
 # Exige Podman >= 4.3 (keep-id:uid=) et podman-compose >= 1.2 (transmet userns_mode) : controle par install-node.sh.
 # Secrets : `SECRET_OWNER_UID=1000 ./preflight-secrets.sh` (et non 10001) avant `up`.
 x-podman:
   host_uid: 1000                 # cyril sur srv1-srv4 = proprietaire des fichiers de PRIVATE/<ENV>/
   secret_owner_uid: 1000         # valeur de SECRET_OWNER_UID pour preflight-secrets.sh
   container_host: ssh://cyril@<ip>/run/user/1000/podman/podman.sock
-  host_prefix: /home/cyril/secagent/prod   # SECAGENT_HOST_PREFIX : seuls binds autorises (check_no_binds.py --allow-prefix)
+  host_prefix: /share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/PROD   # SECAGENT_HOST_PREFIX (check_no_binds.py --allow-prefix)
 
 services:
   secagent-server:

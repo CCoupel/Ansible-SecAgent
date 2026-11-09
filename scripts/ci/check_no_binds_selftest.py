@@ -47,7 +47,7 @@ expect("build", svc(build={"context": "."}), 1)
 expect("env_file inline (rendu)", svc(environment={"A": "b"}), 0)
 
 # --allow-prefix (#267, Podman rootless : chemins du NOEUD sous SECAGENT_HOST_PREFIX, sous-chemins permis seulement)
-R = "/home/cyril/secagent/prod"
+R = "/share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/PROD"
 P = ("--allow-prefix", R)
 
 
@@ -78,7 +78,7 @@ expect("prefixe : secret file: poste-cyril refuse", secret(R + "/poste-cyril/id_
 expect("prefixe : faux sous-chemin state/rootx refuse", bind(R + "/state/rootx"), 1, P)
 expect("prefixe : faux fichier pki/tls.crt.bak refuse", bind(R + "/pki/tls.crt.bak"), 1, P)
 expect("prefixe : bind hors prefixe refuse", bind("/home/cyril/autre"), 1, P)
-expect("prefixe : prefixe frere refuse (prod2)", bind("/home/cyril/secagent/prod2/state/root"), 1, P)
+expect("prefixe : prefixe frere refuse (prod2)", bind(R + "2/state/root"), 1, P)
 expect("prefixe : evasion par .. refusee", bind(R + "/state/root/../../../qualif/state/root"), 1, P)
 expect("prefixe : retour par .. vers ca.key refuse", bind(R + "/secrets/../pki/ca.key"), 1, P)
 expect("prefixe : source relative refusee", bind("secagent/prod/state/root"), 1, P)
@@ -89,7 +89,7 @@ expect("prefixe : '/' refuse (code 2)", {}, 2, ("--allow-prefix", "/"))
 expect("prefixe : '/etc' refuse (code 2, < 4 composants)", {}, 2, ("--allow-prefix", "/etc"))
 expect("prefixe : '/home/cyril' refuse (code 2)", {}, 2, ("--allow-prefix", "/home/cyril"))
 expect("prefixe : '/home/cyril/secagent' refuse (code 2, 3 composants)", {}, 2, ("--allow-prefix", "/home/cyril/secagent"))
-expect("prefixe : relatif refuse (code 2)", {}, 2, ("--allow-prefix", "home/cyril/secagent/prod"))
+expect("prefixe : relatif refuse (code 2)", {}, 2, ("--allow-prefix", R.lstrip("/")))
 expect("prefixe : '..' refuse (code 2)", {}, 2, ("--allow-prefix", "/home/cyril/../root/x/y"))
 expect("prefixe : option sans valeur refusee (code 2)", {}, 2, ("--allow-prefix",))
 sys.exit(1 if failures else 0)
