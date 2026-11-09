@@ -10,10 +10,16 @@ est interdit contre un demon Docker DISTANT (le chemin serait resolu sur l'hote 
     sont ignores) utilise par un service ;
   - un `build:` (le contexte est un repertoire du client).
 
-Option `--allow-prefix <chemin absolu>` (Podman rootless, #267 : SECAGENT_HOST_PREFIX, ex. /home/cyril/secagent/prod) :
-un bind mount ou un secret/config `file:` dont la source, normalisee, est ce prefixe ou se trouve SOUS lui est accepte
-(c'est un chemin DU NOEUD, le montage MooseFS de PRIVATE/<ENV>/, pas du poste). Prefixe relatif, `/`, ou contenant `..`
-refuse (code 2). Une source relative ou qui sort du prefixe par `..` reste refusee ; `build:` reste toujours refuse.
+Option `--allow-prefix <chemin absolu>` (Podman rootless, #267 : SECAGENT_HOST_PREFIX, ex. /home/cyril/secagent/prod,
+racine du montage MooseFS de PRIVATE/<ENV>/ sur le NOEUD) : un bind mount ou un secret/config `file:` est accepte
+UNIQUEMENT si sa source, normalisee, designe un des sous-chemins permis de ce prefixe :
+  repertoires (eux-memes ou dessous) : state/root, state/child, secrets ;
+  fichiers (exacts)                 : pki/tls.crt, pki/tls.key, pki/ca.crt.
+Tout le reste du prefixe est refuse, notamment le prefixe lui-meme, state/, pki/ en entier (il contient ca.key),
+pki/ca.key et poste-cyril/ (cle SSH d'acces aux noeuds). Prefixe relatif, avec `..`, ou de moins de 4 composants
+(`/`, `/etc`, `/home/cyril`...) : refuse (code 2). Une source relative ou qui sort du prefixe par `..` reste refusee ;
+`build:` reste toujours refuse. Les liens symboliques ne sont PAS resolus (normpath seul) : le noeud est maitrise par
+l'utilisateur rootless, un lien pose sous le prefixe est hors du modele de menace de ce controle statique.
 
 Acceptes : volumes nommes (type volume, y compris `external`), tmpfs, `env_file:` (lu cote CLIENT et injecte dans
 l'environnement : le rendu l'inline dans `environment`, il n'y a donc rien a refuser), secrets/configs a source
@@ -28,12 +34,19 @@ def source_of(entry):
     return entry if isinstance(entry, str) else entry.get("source")
 
 
+ALLOWED_DIRS = ("state/root", "state/child", "secrets")
+ALLOWED_FILES = ("pki/tls.crt", "pki/tls.key", "pki/ca.crt")
+MIN_PREFIX_PARTS = 4
+
+
 def under(src, prefix) -> bool:
-    """True si `src` (chemin absolu, normalise) est `prefix` ou sous `prefix` ; jamais pour un chemin relatif."""
+    """True si `src` (chemin absolu, normalise) est un sous-chemin PERMIS de `prefix` ; jamais pour un chemin relatif."""
     if not prefix or not isinstance(src, str) or not src.startswith("/"):
         return False
     norm = os.path.normpath(src)
-    return norm == prefix or norm.startswith(prefix + "/")
+    if any(norm == f"{prefix}/{d}" or norm.startswith(f"{prefix}/{d}/") for d in ALLOWED_DIRS):
+        return True
+    return any(norm == f"{prefix}/{f}" for f in ALLOWED_FILES)
 
 
 def find_client_paths(doc: dict, prefix: str = "") -> list:
@@ -63,9 +76,13 @@ def parse_prefix(argv: list) -> str:
     if len(argv) != 2 or argv[0] != "--allow-prefix":
         raise ValueError("usage : check_no_binds.py [--allow-prefix <chemin absolu>] < rendu.json")
     p = argv[1]
-    if not p.startswith("/") or ".." in p.split("/") or os.path.normpath(p) == "/":
-        raise ValueError(f"--allow-prefix {p!r} : chemin absolu attendu, ni '/' ni '..'")
-    return os.path.normpath(p)
+    if not p.startswith("/") or ".." in p.split("/"):
+        raise ValueError(f"--allow-prefix {p!r} : chemin absolu attendu, sans '..'")
+    norm = os.path.normpath(p)
+    if len([c for c in norm.split("/") if c]) < MIN_PREFIX_PARTS:
+        raise ValueError(f"--allow-prefix {p!r} : au moins {MIN_PREFIX_PARTS} composants attendus "
+                         "(ex. /home/cyril/secagent/<env>)")
+    return norm
 
 
 def main(argv=None) -> int:
