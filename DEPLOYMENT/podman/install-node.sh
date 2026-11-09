@@ -3,10 +3,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 # Preparation REDUITE d'un noeud Podman rootless (LOT-4 v3.0.6, #267) : compte `cyril` existant, AUCUN paquet installe.
-# Execute depuis le poste, jamais copie sur le noeud :
+# Execute depuis le poste, jamais copie sur le noeud, APRES `prepare-node-files.sh <env> <srvX>` (poste) :
 #
 #   ssh -i PRIVATE/<ENV>/poste-cyril/id_ed25519 -o UserKnownHostsFile=PRIVATE/<ENV>/poste-cyril/known_hosts \
-#       -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes cyril@<ip> sudo bash -s -- <qualif|prod> < DEPLOYMENT/podman/install-node.sh
+#       -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes cyril@<ip> sudo bash -s -- <qualif|prod> <srvX> < DEPLOYMENT/podman/install-node.sh
+#
+# Fichiers de deploiement du noeud CENTRALISES sur le partage (decision utilisateur) : PRIVATE/<ENV>/<srvX>/cyril/secagent/
+# (bin/check-private.sh, release/, systemd/), crees depuis le poste. Sur le noeud ne restent que le linger et
+# ~/.config/systemd/user, ou les unites --user des conteneurs sont LIEES (`systemctl --user link`, T44/T45) vers
+# PRIVATE/<ENV>/<srvX>/cyril/secagent/systemd/ : partage absent = lien casse = unite non chargee (fail-closed), et
+# ExecStartPre=check-private.sh refuse aussi un partage inaccessible.
 #
 # Noeuds COLOCALISES (decision utilisateur T42) : srv1-srv4 portent aussi RKE2 et des chunkservers MooseFS ; rien n'est
 # touche cote k8s ni MooseFS. Acces au partage : BIND du montage autofs root EXISTANT
@@ -23,10 +29,11 @@
 #   3. controleur cgroup v2 `memory` delegue a cyril (sinon les limites memoire des conteneurs rootless sont IGNOREES) :
 #      REFUS sinon — les limites memoire de TOUS les conteneurs (Compose) sont obligatoires sur ces noeuds partages ;
 #   4. EN cyril (runuser, jamais d'ecriture root dans son home ; repertoires existants jamais modifies, liens refuses) :
-#      ~/secagent/<env> (Compose de la release), ~/secagent/bin, ~/.config/systemd/user ;
-#   5. ecrit ~/secagent/bin/check-private.sh (garde FAIL-CLOSED, a mettre en ExecStartPre des unites de conteneurs en
-#      T44/T45) puis l'EXECUTE en cyril : REFUS si PRIVATE/<ENV> n'est pas accessible (autofs non monte, chemin absent,
-#      systeme de fichiers non FUSE, proprietaire ou modes inattendus, sous-dossiers manquants).
+#      ~/.config/systemd/user SEULEMENT (aucun ~/secagent sur le noeud) ;
+#   5. EXECUTE en cyril la garde du partage PRIVATE/<ENV>/<srvX>/cyril/secagent/bin/check-private.sh <env> <srvX> :
+#      REFUS si PRIVATE/<ENV> ou les fichiers du noeud sont inaccessibles (autofs non monte, chemin absent, non FUSE,
+#      proprietaire ou modes inattendus, sous-dossiers manquants) ou si la garde n'est pas 0700 / uid 1000.
+#   Le noeud courant (`uname -n` sans domaine) doit etre <srvX> : refus sinon (fichiers d'un autre noeud).
 #
 # INTERDITS CODES (act() refuse toute commande qui les vise, code 3) : paquets (apt, apt-get, dpkg, snap) ; docker,
 #   nerdctl, buildah, kubectl, k3s, rke2, containerd, crictl, ctr, helm, rancher ; MooseFS (mfsmount, mfsmaster,
@@ -35,13 +42,13 @@
 #   podman stop|rm|kill|rmi|reset|prune|pod) ; pare-feu (iptables, ip6tables, nft, ufw, firewall-cmd) ; comptes
 #   (useradd/usermod/userdel/groupadd/groupmod, visudo, sudoers, sshd_config) ; interpreteur avec -c (sh/bash/dash/zsh/ksh)
 #   et eval. act() est un GARDE-FOU TEXTUEL, PAS UN SANDBOX : la garantie repose sur le texte FIXE de ce script (aucune
-#   entree externe n'atteint act() : seul l'argument <env> est lu, borne a qualif|prod) et sur l'analyse statique de son
+#   entree externe n'atteint act() : seuls <env> <srvX> sont lus, bornes a qualif srv3|srv4 / prod srv1|srv2) et sur l'analyse statique de son
 #   selftest.
 #
 # Codes : 0 OK ; 2 refus d'une precondition (REFUS:) ; 3 commande interdite (INTERDIT:) ; 1 echec d'execution (ECHEC:).
 # Variables (essais seulement, validees : refus si forme invalide) : NODE_USER (cyril), NODE_UID (1000), HOME_BASE (/home),
 #   SUBID_DIR (/etc), CGROUP_ROOT (/sys/fs/cgroup), PRIVATE_ROOT (/share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE),
-#   MIN_FREE_GB (5), WARN_PCT (70). Via `sudo` (env_reset), aucune n'est transmise depuis le poste.
+#   MIN_FREE_GB (5), WARN_PCT (70), NODE_NAME (`uname -n` sans domaine). Via `sudo` (env_reset), aucune n'est transmise depuis le poste.
 set -euo pipefail
 
 NODE_USER="${NODE_USER:-cyril}"
@@ -55,7 +62,6 @@ WARN_PCT="${WARN_PCT:-70}"
 PODMAN_MIN=4.3
 PODMAN_COMPOSE_MIN=1.2
 SUBID_MIN=65536
-TMP_GUARD=""
 
 refuse() { echo "REFUS: $*" >&2; exit 2; }
 fail() { echo "ECHEC: $*" >&2; exit 1; }
@@ -105,6 +111,7 @@ validate_vars() {
   done
   [[ $MIN_FREE_GB =~ ^[0-9]{1,6}$ ]] || refuse "MIN_FREE_GB='$MIN_FREE_GB' invalide"
   [[ $WARN_PCT =~ ^[0-9]{1,3}$ ]] || refuse "WARN_PCT='$WARN_PCT' invalide"
+  [ -z "${NODE_NAME:-}" ] || [[ $NODE_NAME =~ ^[a-z0-9][a-z0-9.-]{0,62}$ ]] || refuse "NODE_NAME='$NODE_NAME' invalide"
 }
 
 check_preconditions() {
@@ -157,56 +164,31 @@ user_dir() { # $1 chemin
   as_user install -d -m 700 "$1"
 }
 
-# Garde FAIL-CLOSED ecrite sur le noeud (ExecStartPre des unites de conteneurs, T44/T45) : `check-private.sh <env>`.
-# Refuse (code 2) si PRIVATE/<ENV> n'est pas accessible : le serveur ne doit JAMAIS demarrer sur un repertoire local vide.
-write_guard() { # $1 chemin de destination
-  TMP_GUARD="$(mktemp)"; trap 'rm -f "$TMP_GUARD"' EXIT   # retire aussi sur refus/interdit (exit 2/3)
-  cat > "$TMP_GUARD" <<EOF
-#!/usr/bin/env bash
-# Genere par DEPLOYMENT/podman/install-node.sh (#267). Garde FAIL-CLOSED avant le demarrage d'un conteneur secagent :
-#   check-private.sh <qualif|prod>  -> 0 si $PRIVATE_ROOT/<ENV> est accessible et conforme, 2 (REFUS:) sinon.
-# A utiliser en ExecStartPre= des unites --user des conteneurs. Lit uniquement des metadonnees (stat), aucun contenu.
-set -u
-refuse() { echo "REFUS: \$*" >&2; exit 2; }
-case "\${1:-}" in qualif) E=QUALIF; SUBS="state/root state/child secrets pki" ;; prod) E=PROD; SUBS="state/root secrets pki" ;;
-  *) refuse "environnement '\${1:-}' : attendu qualif|prod" ;; esac
-P="$PRIVATE_ROOT/\$E"
-# acces = declenchement de l'autofs ; borne a 30 s (master MooseFS injoignable : refus plutot qu'attente infinie)
-timeout 30 test -d "\$P" || refuse "\$P inaccessible (autofs /share/MFS/ROOT non monte ou MooseFS injoignable)"
-[ ! -L "\$P" ] || refuse "\$P est un lien symbolique"
-t="\$(stat -f -c %T "\$P")"
-case " \${SECAGENT_PRIVATE_FSTYPES:-fuseblk fuse} " in *" \$t "*) ;; *) refuse "\$P sur un systeme de fichiers '\$t' (attendu MooseFS/FUSE) : repertoire local ?" ;; esac
-for d in "" \$SUBS; do
-  p="\$P\${d:+/\$d}"
-  [ -d "\$p" ] && [ ! -L "\$p" ] || refuse "\$p absent, non repertoire ou lien"
-  [ "\$(stat -c %u "\$p")" = $NODE_UID ] || refuse "\$p n'appartient pas a l'uid $NODE_UID"
-  [ "\$(stat -c %a "\$p")" = 700 ] || refuse "\$p en \$(stat -c %a "\$p"), attendu 0700"
-done
-echo "PRIVATE/\$E accessible (\$t, uid $NODE_UID, 0700)"
-EOF
-  chmod 644 "$TMP_GUARD"   # lu par cyril (runuser) ; aucun secret
-  as_user install -m 700 "$TMP_GUARD" "$1"
-  rm -f "$TMP_GUARD"
-}
-
 main() {
-  local env="${1:-}" home guard
-  case "$env" in qualif|prod) ;; *) refuse "environnement '$env' : attendu qualif|prod" ;; esac
+  local env="${1:-}" node="${2:-}" ENV home here guard
+  case "$env:$node" in
+    qualif:srv3|qualif:srv4) ENV=QUALIF ;;
+    prod:srv1|prod:srv2) ENV=PROD ;;
+    *) refuse "couple '$env $node' : attendu qualif srv3|srv4 ou prod srv1|srv2" ;;
+  esac
   validate_vars
+  here="${NODE_NAME:-$(uname -n)}"; here="${here%%.*}"
+  [ "$here" = "$node" ] || refuse "noeud courant '$here' different de '$node' : refus (fichiers d'un autre noeud)"
   check_preconditions
   home="$HOME_BASE/$NODE_USER"
   [ -d "$home" ] && [ ! -L "$home" ] || refuse "home $home absent ou lien symbolique"
   check_disk "$home"
   act loginctl enable-linger "$NODE_USER" || fail "loginctl enable-linger $NODE_USER"
   check_cgroup_memory
-  user_dir "$home/secagent"; user_dir "$home/secagent/$env"; user_dir "$home/secagent/bin"
   user_dir "$home/.config"; user_dir "$home/.config/systemd"; user_dir "$home/.config/systemd/user"
-  guard="$home/secagent/bin/check-private.sh"
+  guard="$PRIVATE_ROOT/$ENV/$node/cyril/secagent/bin/check-private.sh"
+  timeout 30 test -f "$guard" || refuse "$guard absent ou partage inaccessible : lancer d'abord prepare-node-files.sh $env $node sur le poste"
   [ ! -L "$guard" ] || refuse "$guard est un lien symbolique : refus"
-  write_guard "$guard"
-  as_user "$guard" "$env" || refuse "garde PRIVATE en echec pour $env (voir message ci-dessus) : aucun conteneur ne doit demarrer"
-  echo "install-node OK ($env) : linger, repertoires, garde $guard."
-  echo "Etape suivante, en $NODE_USER SANS sudo : systemctl --user enable --now podman.socket ; unites de conteneurs (T44/T45) avec ExecStartPre=$guard $env"
+  [ "$(stat -c '%u %a' "$guard")" = "$NODE_UID 700" ] || refuse "$guard : $(stat -c '%u %a' "$guard"), attendu uid $NODE_UID mode 700"
+  as_user env SECAGENT_PRIVATE_ROOT="$PRIVATE_ROOT" SECAGENT_NODE_UID="$NODE_UID" SECAGENT_NODE_NAME="$here" "$guard" "$env" "$node" \
+    || refuse "garde PRIVATE en echec pour $env $node (voir message ci-dessus) : aucun conteneur ne doit demarrer"
+  echo "install-node OK ($env $node) : linger, ~/.config/systemd/user, garde du partage conforme. Rien d'autre sur le noeud."
+  echo "Etape suivante, en $NODE_USER SANS sudo : systemctl --user enable --now podman.socket ; unites (T44/T45) : systemctl --user link $PRIVATE_ROOT/$ENV/$node/cyril/secagent/systemd/<unite>.service, avec ExecStartPre=$guard $env $node"
 }
 
 [ "${INSTALL_NODE_SOURCED:-0}" = 1 ] || main "$@"
