@@ -16,7 +16,7 @@ UNIQUEMENT si sa source, normalisee, designe un des sous-chemins permis de ce pr
   repertoires (eux-memes ou dessous) : state/root, state/child, secrets ;
   fichiers (exacts)                 : pki/tls.crt, pki/tls.key, pki/ca.crt.
 Tout le reste du prefixe est refuse, notamment le prefixe lui-meme, state/, pki/ en entier (il contient ca.key),
-pki/ca.key et poste-cyril/ (cle SSH d'acces aux noeuds). Prefixe relatif, avec `..`, ou de moins de 4 composants
+pki/ca.key, pki-ca/ (emplacement propose pour ca.key, T47) et poste-cyril/ (cle SSH d'acces aux noeuds). Prefixe relatif, avec `..`, ou de moins de 4 composants
 (`/`, `/etc`, `/home/cyril`...) : refuse (code 2). Une source relative ou qui sort du prefixe par `..` reste refusee ;
 `build:` reste toujours refuse. Les liens symboliques ne sont PAS resolus (normpath seul) : le noeud est maitrise par
 l'utilisateur rootless, un lien pose sous le prefixe est hors du modele de menace de ce controle statique.

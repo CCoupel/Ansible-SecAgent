@@ -11,6 +11,9 @@
 # Noeuds COLOCALISES (decision utilisateur T42) : srv1-srv4 portent aussi RKE2 et des chunkservers MooseFS ; rien n'est
 # touche cote k8s ni MooseFS. Acces au partage : BIND du montage autofs root EXISTANT
 # /share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/<ENV> (aucun mfsmount, aucun moosefs-client, aucun apt).
+# CLOISONNEMENT QUALIF/PROD (risque ACCEPTE par l'utilisateur, a documenter en T53) : l'autofs monte la racine MooseFS
+# entiere ; un noeud QUALIF voit donc aussi PRIVATE/PROD (et inversement), protege seulement par les modes 0700 et
+# l'uid 1000 commun. Rien dans ce script ne l'empeche ; la garde verifie seulement l'ENV demande.
 #
 # Fait, dans cet ordre (idempotent, s'arrete au premier refus) :
 #   1. controles (lecture seule) : root, compte cyril (uid 1000), plage /etc/subuid et /etc/subgid >= 65536, newuidmap,
