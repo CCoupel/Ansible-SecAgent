@@ -66,7 +66,7 @@ kill -HUP $(pidof secagent-server)
 
 Pour un événement donné, **seul le premier hook de la liste `hooks` qui correspond s'exécute** (même nom d'événement et, s'il y en a un, `filter` satisfait) ; ses actions tournent l'une après l'autre, puis la recherche s'arrête (`hooks/dispatcher.go:569-580`, `// first matching HookDef wins`). Les hooks suivants visant le même événement sont **ignorés en silence à l'exécution** : pour plusieurs actions sur un événement, les mettre dans la liste `actions` d'**un seul** hook. Deux hooks du même événement ne coexistent que s'ils ont des `filter` différents qui ne se recouvrent pas (`relay_chain_contains`).
 
-Au chargement de la configuration, le serveur journalise un `[WARN]` quand plusieurs hooks visent le même événement (ajout v3.0.6). *(À confirmer à la livraison : ce contrôle n'est pas dans le code de `hooks/config.go` à la date de rédaction.)* **L'exécution de tous les hooks correspondants est prévue en v3.0.7** ; d'ici là, regrouper les actions.
+Au chargement de la configuration (démarrage et `SIGHUP`), le serveur journalise, pour chaque événement visé par plusieurs hooks : `[WARN] hooks: N hooks listen to event "<événement>": only the first matching one runs, the others never do` (`hooks/config.go:86-95`, v3.0.6). Le compte est fait sur le nom d'événement seul, **sans tenir compte des `filter`** : deux hooks aux filtres disjoints déclenchent donc aussi cet avertissement, sans conséquence. Le fichier reste accepté. **L'exécution de tous les hooks correspondants est prévue en v3.0.7** ; d'ici là, regrouper les actions.
 
 ### Événements disponibles
 
