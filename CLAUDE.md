@@ -257,19 +257,49 @@ accès aux environnements (kubeconfig, tokens Kubernetes et de comptes de servic
 cloud, certificats `*.pem`/`*.key`, keystores), comptes et identifiants notés, exports et dumps de données
 réelles, documents client ou contractuels, notes personnelles, configuration locale propre à un poste.
 
+Rangement — un dossier par portée (le nom d'environnement est celui de `infrastructure.environments[].name`) :
+
+```
+PRIVATE/
+├── gitconfig        # lié à la structure du projet (inclus par le conteneur) — reste à la racine
+├── GLOBAL/          # données privées communes au projet (comptes, ACCES.md, dumps, documents client, notes)
+└── <ENV>/           # données privées d'un environnement précis (ex. PROD/kubeconfig, QUALIF/deploy_key)
+```
+
 | Élément | Emplacement |
 |---------|-------------|
-| Élément privé durable (voir ci-dessus) | `PRIVATE/` (ex. `PRIVATE/k8s/kubeconfig-prod`, `PRIVATE/ssh/deploy_key`) |
-| Variables lues par `/deploy` (globales, par environnement) | `.env`, `.claude/agents/environments/<env>.env` — emplacements fixes sourcés par les scripts, **pas** dans `PRIVATE/` ; une variable qui désigne un fichier d'accès pointe dans `PRIVATE/` (ex. `KUBECONFIG=PRIVATE/k8s/kubeconfig-prod`) |
+| Élément privé lié à un environnement | `PRIVATE/<ENV>/` (ex. `PRIVATE/PROD/kubeconfig`, `PRIVATE/QUALIF/deploy_key`) |
+| Élément privé commun au projet | `PRIVATE/GLOBAL/` (ex. `PRIVATE/GLOBAL/ACCES.md`, `PRIVATE/GLOBAL/dumps/`) |
+| Variables lues par `/deploy` (globales, par environnement) | `.env`, `.claude/agents/environments/<env>.env` — emplacements fixes liés à la structure du projet, **pas** dans `PRIVATE/` ; une variable qui désigne un fichier d'accès pointe dans `PRIVATE/<ENV>/` (ex. `KUBECONFIG=PRIVATE/PROD/kubeconfig`) |
 | Fichier temporaire de travail | `_work/tmp/` (purgé, pas un stockage durable) |
 
+- **`PRIVATE/` est partagé** : un seul exemplaire, à la racine du checkout principal, utilisé par tous les
+  teammates — jamais copié (copier un secret le multiplie). Depuis un worktree :
+  `PRIVATE_DIR="$(git rev-parse --path-format=absolute --git-common-dir)/../PRIVATE"`, ou un lien symbolique
+  `ln -s <checkout principal>/PRIVATE <worktree>/PRIVATE` (ignoré par la ligne `/PRIVATE` du `.gitignore`).
+- **Qui range quoi** : `infra` tient la structure et le contenu attendu (crée `GLOBAL/` et un dossier par
+  environnement, y range les accès qu'il établit) ; `deployer` lit seulement ; tout teammate qui produit une
+  donnée privée la range lui-même dans `GLOBAL/` ou `<ENV>/`. Un nouveau sous-dossier hors de cette structure :
+  demander au teamleader. Aucune valeur secrète n'est inventée par un agent — elle est fournie par l'utilisateur.
 - Avant de créer un fichier contenant une donnée privée : le placer dans `PRIVATE/` ; le code et la config trackés
   ne référencent `PRIVATE/` que par chemin relatif, jamais par copie de son contenu.
 - Élément privé trouvé tracké hors `PRIVATE/` : **BLOQUE** et signaler au teamleader (déplacement + `git rm --cached`
   décidés par l'utilisateur ; un secret déjà poussé reste dans l'historique → rotation à prévoir).
 - Ne jamais retirer `PRIVATE/` du `.gitignore` ni forcer son ajout (`git add -f`).
-- Le contenu attendu de `PRIVATE/` est établi par `/init-project` (Étape 10b) ; un worktree n'en hérite pas —
-  copier depuis le checkout principal ce qui est nécessaire, comme pour `.env`.
+- Le contenu attendu de `PRIVATE/` est établi par `/init-project` (Étape 10b) → `project-config.json` → `private`.
 
 ---
 
+## Outil manquant — environnement de bootstrap
+
+Un outil absent du conteneur (commande introuvable, version insuffisante) ne s'installe pas « à la main » en
+silence : il est **décrit** puis **ajouté à l'environnement de bootstrap** pour que toute session future l'ait.
+
+1. Le teammate qui le constate : `[NOM] BLOQUE outil manquant` au teamleader, avec la fiche — outil, usage dans
+   la tâche, version minimale, paquets (`apt` / `dnf` / `apk`) ou commande d'installation idempotente,
+   contournement éventuel.
+2. Le teamleader transmet la fiche à `infra` (jamais d'installation par le teamleader lui-même).
+3. `infra` l'ajoute à `.claude-launcher/env.yaml` (ajouts propres au projet — **jamais** `env-template.yaml`,
+   réécrit par `/init-project`), l'installe dans le conteneur courant si possible (débloque la session sans
+   redémarrage), vérifie si la CI / le Dockerfile en ont aussi besoin, et signale l'outil au teamleader s'il
+   vaut pour toute la stack (à proposer au template).

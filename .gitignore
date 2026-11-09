@@ -117,3 +117,4 @@ MARKETING/
 .claude/worktrees/
 # Donnees privees du poste (CLAUDE.md « Elements prives », #250) : ne jamais retirer cette ligne.
 PRIVATE/
+/PRIVATE
