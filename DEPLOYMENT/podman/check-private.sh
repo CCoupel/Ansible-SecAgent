@@ -46,4 +46,6 @@ for d in "" $SUBS "$node" "$node/cyril" "$node/cyril/secagent"; do
   [ "$(stat -c %u "$p")" = "$UIDX" ] || refuse "$p n'appartient pas a l'uid $UIDX"
   [ "$(stat -c %a "$p")" = 700 ] || refuse "$p en $(stat -c %a "$p"), attendu 0700"
 done
+# ca.key de la CA rangee a part (pki-ca/, #267) : jamais dans pki/, qui est monte dans les conteneurs (/certs)
+[ ! -e "$P/pki/ca.key" ] && [ ! -L "$P/pki/ca.key" ] || refuse "$P/pki/ca.key present : la cle de la CA doit etre dans $P/pki-ca/ (pki/ est monte dans les conteneurs)"
 echo "PRIVATE/$E accessible ($t, uid $UIDX, 0700) ; fichiers de $node presents"

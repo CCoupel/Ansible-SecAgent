@@ -8,15 +8,18 @@ est interdit contre un demon Docker DISTANT (le chemin serait resolu sur l'hote 
   - un BIND MOUNT dans `volumes` d'un service ;
   - un SECRET `file:` ou un CONFIG `file:` (hors Swarm, Compose les monte en bind mount du fichier du client ; uid/gid/mode
     sont ignores) utilise par un service ;
-  - un `build:` (le contexte est un repertoire du client).
+  - un `build:` (le contexte est un repertoire du client) ;
+  - un VOLUME NOMME local dont `driver_opts` fait un bind (`o` contient `bind`, ou `type: none`) d'un `device:` : c'est
+    un bind mount deguise (#267), soumis aux memes regles que `type: bind`.
 
 Option `--allow-prefix <chemin absolu>` (Podman rootless, #267 : SECAGENT_HOST_PREFIX, ex.
 /share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/PROD, PRIVATE/<ENV>/ vu par le montage autofs du NOEUD) : un bind mount ou un secret/config `file:` est accepte
 UNIQUEMENT si sa source, normalisee, designe un des sous-chemins permis de ce prefixe :
-  repertoires (eux-memes ou dessous) : state/root, state/child, secrets ;
+  repertoires (eux-memes ou dessous) : state/root, state/child, secrets, pki (ca.key est rangee a part dans pki-ca/,
+                                       #267 ; pki/ca.key reste refuse explicitement) ;
   fichiers (exacts)                 : pki/tls.crt, pki/tls.key, pki/ca.crt.
-Tout le reste du prefixe est refuse, notamment le prefixe lui-meme, state/, pki/ en entier (il contient ca.key),
-pki/ca.key, pki-ca/ (emplacement propose pour ca.key, T47), poste-cyril/ (cle SSH d'acces aux noeuds) et
+Tout le reste du prefixe est refuse, notamment le prefixe lui-meme, state/, pki/ca.key, pki-ca/ (cle de la CA),
+poste-cyril/ (cle SSH d'acces aux noeuds) et
 <srvX>/ (fichiers de deploiement des noeuds : Compose, garde, unites ; jamais lies dans un conteneur). Prefixe relatif, avec `..`, ou de moins de 4 composants
 (`/`, `/etc`, `/home/cyril`...) : refuse (code 2). Une source relative ou qui sort du prefixe par `..` reste refusee ;
 `build:` reste toujours refuse. Les liens symboliques ne sont PAS resolus (normpath seul) : le noeud est maitrise par
@@ -35,8 +38,9 @@ def source_of(entry):
     return entry if isinstance(entry, str) else entry.get("source")
 
 
-ALLOWED_DIRS = ("state/root", "state/child", "secrets")
+ALLOWED_DIRS = ("state/root", "state/child", "secrets", "pki")
 ALLOWED_FILES = ("pki/tls.crt", "pki/tls.key", "pki/ca.crt")
+DENIED = ("pki/ca.key",)   # refuse meme sous un repertoire permis
 MIN_PREFIX_PARTS = 4
 
 
@@ -45,18 +49,37 @@ def under(src, prefix) -> bool:
     if not prefix or not isinstance(src, str) or not src.startswith("/"):
         return False
     norm = os.path.normpath(src)
+    if any(norm == f"{prefix}/{d}" or norm.startswith(f"{prefix}/{d}/") for d in DENIED):
+        return False
     if any(norm == f"{prefix}/{d}" or norm.startswith(f"{prefix}/{d}/") for d in ALLOWED_DIRS):
         return True
     return any(norm == f"{prefix}/{f}" for f in ALLOWED_FILES)
 
 
+def bind_volumes(doc: dict) -> dict:
+    """Volumes nommes dont driver_opts realise un bind : {cle du volume: device}."""
+    out = {}
+    for key, d in (doc.get("volumes") or {}).items():
+        if not isinstance(d, dict) or d.get("external"):
+            continue
+        opts = d.get("driver_opts") or {}
+        o = str(opts.get("o", "")).replace(" ", "").split(",")
+        if "device" in opts and ("bind" in o or "rbind" in o or str(opts.get("type", "")) == "none"):
+            out[key] = str(opts["device"])
+    return out
+
+
 def find_client_paths(doc: dict, prefix: str = "") -> list:
     bad = []
     services = doc.get("services") or {}
+    bvols = bind_volumes(doc)
     for name, svc in services.items():
         for v in svc.get("volumes") or []:
             if isinstance(v, dict) and v.get("type") == "bind" and not under(v.get("source"), prefix):
                 bad.append(f"{name}: bind mount {v.get('source')} -> {v.get('target')}")
+            elif isinstance(v, dict) and v.get("type") == "volume" and v.get("source") in bvols \
+                    and not under(bvols[v["source"]], prefix):
+                bad.append(f"{name}: volume '{v['source']}' = bind de {bvols[v['source']]} (driver_opts) -> {v.get('target')}")
         if "build" in svc:
             bad.append(f"{name}: build (contexte du client)")
     for kind in ("secrets", "configs"):

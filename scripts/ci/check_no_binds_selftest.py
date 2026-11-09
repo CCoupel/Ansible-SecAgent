@@ -70,7 +70,7 @@ expect("prefixe : pki/ca.crt accepte", bind(R + "/pki/ca.crt"), 0, P)
 expect("prefixe : prefixe avec / final", bind(R + "/state/root"), 0, ("--allow-prefix", R + "/"))
 expect("prefixe : le prefixe lui-meme refuse", bind(R), 1, P)
 expect("prefixe : state/ entier refuse", bind(R + "/state"), 1, P)
-expect("prefixe : pki/ entier refuse (ca.key)", bind(R + "/pki"), 1, P)
+expect("prefixe : pki/ entier accepte (ca.key rangee dans pki-ca/)", bind(R + "/pki"), 0, P)
 expect("prefixe : pki/ca.key refuse", bind(R + "/pki/ca.key"), 1, P)
 expect("prefixe : pki-ca/ (emplacement propose pour ca.key) refuse", bind(R + "/pki-ca"), 1, P)
 expect("prefixe : pki-ca/ca.key refuse", bind(R + "/pki-ca/ca.key"), 1, P)
@@ -81,7 +81,8 @@ expect("prefixe : secret file: pki/ca.key refuse", secret(R + "/pki/ca.key"), 1,
 expect("prefixe : poste-cyril/id_ed25519 refuse", bind(R + "/poste-cyril/id_ed25519"), 1, P)
 expect("prefixe : secret file: poste-cyril refuse", secret(R + "/poste-cyril/id_ed25519"), 1, P)
 expect("prefixe : faux sous-chemin state/rootx refuse", bind(R + "/state/rootx"), 1, P)
-expect("prefixe : faux fichier pki/tls.crt.bak refuse", bind(R + "/pki/tls.crt.bak"), 1, P)
+expect("prefixe : faux voisin pkix/ refuse", bind(R + "/pkix/tls.crt"), 1, P)
+expect("prefixe : faux voisin pki-ca2/ refuse", bind(R + "/pki-ca2"), 1, P)
 expect("prefixe : bind hors prefixe refuse", bind("/home/cyril/autre"), 1, P)
 expect("prefixe : prefixe frere refuse (prod2)", bind(R + "2/state/root"), 1, P)
 expect("prefixe : evasion par .. refusee", bind(R + "/state/root/../../../qualif/state/root"), 1, P)
@@ -97,4 +98,19 @@ expect("prefixe : '/home/cyril/secagent' refuse (code 2, 3 composants)", {}, 2, 
 expect("prefixe : relatif refuse (code 2)", {}, 2, ("--allow-prefix", R.lstrip("/")))
 expect("prefixe : '..' refuse (code 2)", {}, 2, ("--allow-prefix", "/home/cyril/../root/x/y"))
 expect("prefixe : option sans valeur refusee (code 2)", {}, 2, ("--allow-prefix",))
+
+
+def bvol(device, o="bind", typ="none", external=False):
+    return {"services": {"s": {"volumes": [{"type": "volume", "source": "st", "target": "/data"}]}},
+            "volumes": {"st": {"driver": "local", "external": external, "driver_opts": {"type": typ, "o": o, "device": device}}}}
+
+
+expect("volume driver_opts bind : refuse sans prefixe (bind deguise)", bvol(R + "/state/root"), 1)
+expect("volume driver_opts bind : state/root accepte sous le prefixe", bvol(R + "/state/root"), 0, P)
+expect("volume driver_opts bind : poste-cyril refuse", bvol(R + "/poste-cyril"), 1, P)
+expect("volume driver_opts bind : pki-ca refuse", bvol(R + "/pki-ca"), 1, P)
+expect("volume driver_opts rbind,ro : hors prefixe refuse", bvol("/etc", o="rbind,ro"), 1, P)
+expect("volume driver_opts type none sans o : refuse", bvol("/etc", o=""), 1, P)
+expect("volume driver_opts nfs (pas un bind) : accepte", bvol(":/export", o="addr=1.2.3.4", typ="nfs"), 0)
+expect("volume nomme sans driver_opts : accepte", {"services": {"s": {"volumes": [{"type": "volume", "source": "v", "target": "/d"}]}}, "volumes": {"v": {}}}, 0)
 sys.exit(1 if failures else 0)

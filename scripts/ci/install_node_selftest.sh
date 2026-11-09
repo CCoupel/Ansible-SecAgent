@@ -126,6 +126,7 @@ guard_refus "garde : PRIVATE/QUALIF absent (autofs non monte)" 'rm -rf "$T/priva
 guard_refus "garde : state/child manquant" 'rmdir "$T/private/QUALIF/state/child"' "state/child absent"
 guard_refus "garde : secrets en 0755" 'chmod 755 "$T/private/QUALIF/secrets"' "secrets en 755, attendu 0700"
 guard_refus "garde : racine QUALIF en 0755" 'chmod 755 "$T/private/QUALIF"' "QUALIF en 755"
+guard_refus "garde : ca.key dans pki/ (doit etre dans pki-ca/)" ': > "$T/private/QUALIF/pki/ca.key"' "pki/ca.key present"
 guard_refus "garde : pki lien symbolique" 'rmdir "$T/private/QUALIF/pki"; mkdir -m 700 "$T/autre"; ln -s "$T/autre" "$T/private/QUALIF/pki"' "pki absent, non repertoire ou lien"
 reset_env; mkstubs 5.7.0 1.5.0 pasta
 XFST=fuseblk expect_rc 2 "garde : systeme de fichiers non FUSE (repertoire local)" "attendu MooseFS/FUSE" qualif srv3
