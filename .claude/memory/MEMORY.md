@@ -41,6 +41,7 @@
 
 ## Règles / pièges (leçons)
 - **Questions à l'utilisateur** : toujours via AskUserQuestion. **Pas de push sans feu vert explicite** ; push délégué à `deployer` (SHA complet, jamais `HEAD`, jamais de force, jamais main sauf PR validée) ; un tag publie : confirmation dédiée.
+- **`main` protégée par ruleset sans contournement admin : tout passe par PR** (ni push direct, ni force-push, ni suppression), y compris `/init-project`, `/end-session` (branche `docs/session-<date>` + PR) et la release (`gh pr create` + `gh pr merge --merge` par `deployer`, rollback = PR de revert) ; tag soumis à l'Environment `release` (reviewer requis) — #254.
 - **Tâches et retours par fichier** : tout ordre > 3 lignes dans `_work/tasks/<agent>-<YYYYMMDD-HHmmss>.md` ; retour des agents en UNE ligne (SHA, rapport dans `_work/reports/`).
 - **Trailer de commit EXACT** : `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` ; contrôler tous les commits non poussés avant un push. **Jamais `git commit --amend` en arbre partagé**. Règle : `git commit -- <chemins>` après `git diff --cached --stat` (incident `166638e`).
 - **Vérifier, ne pas croire** : les « vérifié à 100 % » des agents contiennent des erreurs ; les budgets de jetons annoncés sont inventés ; agents de documentation en `model: sonnet`. Les tests d'intrusion réels de QA trouvent ce que les revues ne voient pas.

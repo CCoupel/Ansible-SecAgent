@@ -20,6 +20,26 @@
   (`/init-project` d6), la ligne générée `DEV_VERSION=$(cat )` du template est à remplacer par `cat VERSION`.
 - Push et tag : jamais sans feu vert explicite de l'utilisateur, tag = confirmation dédiée (CLAUDE.md).
 
+## Merge sur `main` par PR (surcharge, #254)
+
+`main` est protégée par un ruleset **sans contournement admin** (PR obligatoire, ni force-push ni suppression) :
+les étapes du template qui font `merge --no-ff` puis `git push origin HEAD:main` sont **remplacées** par :
+
+```bash
+git push origin milestone/vX.Y.Z    # état exact de la branche (inchangé)
+gh pr create --base main --head milestone/vX.Y.Z --title "Release v$VERSION" --body "<résumé du milestone>"
+# attendre la CI verte et la validation de la PR, puis :
+gh pr merge <n> --merge --delete-branch=false    # commit de merge (pas de squash/rebase) ; branche supprimée plus tard par /end-session
+git fetch origin main                            # le tag se pose sur le commit de merge de la PR
+git tag -a "v$VERSION" "origin/main" -m "Release v$VERSION"   # après contrôle que origin/main = commit de merge
+git push origin "v$VERSION"                      # tag = confirmation dédiée ; Environment `release` : reviewer requis
+```
+
+- Plus de worktree de release ni de `push origin HEAD:main`.
+- **Rollback** : PR de revert (branche `revert/vX.Y.Z` depuis `origin/main`, `git revert -m 1 <merge>`, `gh pr create`,
+  `gh pr merge --merge`), jamais de push direct ni de force ; le tag erroné est supprimé localement et à distance
+  seulement sur décision de l'utilisateur.
+
 ## Poste (Linux natif depuis 2026-11-09)
 
 - `gh` du poste en **2.46.0**, authentifié par `GH_TOKEN` : suffisant pour la barrière (`gh run list`, `gh workflow run`,
