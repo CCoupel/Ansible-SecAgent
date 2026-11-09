@@ -19,3 +19,9 @@
   Les binaires prennent toujours leur version du tag (`-ldflags -X`). Tant que le template n'est pas resynchronisé
   (`/init-project` d6), la ligne générée `DEV_VERSION=$(cat )` du template est à remplacer par `cat VERSION`.
 - Push et tag : jamais sans feu vert explicite de l'utilisateur, tag = confirmation dédiée (CLAUDE.md).
+
+## Poste (Linux natif depuis 2026-11-09)
+
+- `gh` du poste en **2.46.0**, authentifié par `GH_TOKEN` : suffisant pour la barrière (`gh run list`, `gh workflow run`,
+  `gh run view`) et pour le tag ; `gh attestation verify` exige `gh` ≥ 2.49 téléchargé dans le scratchpad (`deploy.qualif.md`).
+- Pas de client Docker ni de `ssh` sur le poste : PUBLISH PROD n'en a pas besoin (merge + tag, rebuild par `release.yml`).

@@ -50,7 +50,7 @@
           "port": 2375,
           "docker_host": "tcp://192.168.1.218:2375",
           "runtime": "docker",
-          "compose_cli": "docker.exe compose (Windows ; pas de docker CLI dans WSL)",
+          "compose_cli": "docker compose (CLI Linux + plugin Compose extraits des paquets signes dans le scratchpad, DOCKER_HOST=tcp://192.168.1.218:2375 ; poste Linux sans client Docker installe, depuis 2026-11-09)",
           "registry": "ghcr.io/ccoupel",
           "credentials_env": [],
           "verified": {
@@ -87,7 +87,7 @@
           "port": 2375,
           "docker_host": "tcp://192.168.1.218:2375",
           "runtime": "docker",
-          "compose_cli": "Compose execute sur l'hote dans un conteneur docker:29-cli (Compose v5.7.0) epingle par digest docker@sha256:4d742ab934c2149b628bf26369ac3ec51cb91e2e28fe6722a0e86a6d6efc4bd5 (voie 1, DEPLOYMENT/prod/README.md) ; poste : docker.exe sans DOCKER_HOST",
+          "compose_cli": "Compose execute sur l'hote dans un conteneur docker:29-cli (Compose v5.7.0) epingle par digest docker@sha256:4d742ab934c2149b628bf26369ac3ec51cb91e2e28fe6722a0e86a6d6efc4bd5 (voie 1, DEPLOYMENT/prod/README.md) ; poste Linux : CLI Docker du scratchpad avec DOCKER_HOST (pas de client Docker installe)",
           "registry": "ghcr.io/ccoupel",
           "credentials_env": [],
           "verified": {
@@ -433,7 +433,7 @@
   "private": {
     "reviewed": "2026-11-05",
     "root_env": "SECAGENT_PRIVATE_DIR",
-    "outside_repo": "reference des secrets et de la PKI PROD : ~/secagent-private/prod/ (ext4 du poste, 0700, hors depot ; ca.key n'en sort jamais ; sauvegarde chiffree hors poste par l'utilisateur) - jamais sous PRIVATE/ (NTFS)",
+    "outside_repo": "aucun depuis 2026-11-09 : la reference des secrets et de la PKI PROD est PRIVATE/prod/ (decision utilisateur, poste Linux, depot sur MooseFS ; fichiers 0600, dossiers 0700, proprietaire = utilisateur du poste ; ca.key ne sort jamais de PRIVATE/prod/pki/ ; sauvegarde chiffree hors poste par l'utilisateur ; risque residuel : lisible en root depuis tout client MooseFS). Ancienne reference ~/secagent-private/prod/ (ext4 WSL) abandonnee",
     "volatile_outside": "jetons de la chaine de qualif (CHAIN_DIR) : volatils, hors PRIVATE/, defaut ${TMPDIR:-/tmp}/secagent-qualif-chain-<uid> (0700), regeneres par chain-test.sh bootstrap",
     "items": [
       {
@@ -455,10 +455,22 @@
         "from": "DEPLOYMENT/qualif/.ci-tls/"
       },
       {
+        "path": "PRIVATE/prod/secrets/",
+        "kind": "REFERENCE des secrets serveur PROD (jwt_secret_key, admin_token, rsa_master_key ; + repeater_upstream_token pour un enfant) - fichiers 0600, dossier 0700, proprietaire = utilisateur du poste ; jamais commites ; deposes sur l'hote dans ./secrets (10001, 0400)",
+        "origin": "expected",
+        "from": "a restaurer par l'utilisateur depuis sa sauvegarde hors poste (ancienne reference ~/secagent-private/prod/secrets/, poste WSL)"
+      },
+      {
+        "path": "PRIVATE/prod/pki/ca.key",
+        "kind": "cle PRIVEE de la CA PROD (+ tls.key de la feuille) - 0600, dossier pki/ 0700 ; ca.key ne sort JAMAIS de PRIVATE/prod/pki/ (sauvegarde chiffree hors poste par l'utilisateur)",
+        "origin": "expected",
+        "from": "a restaurer par l'utilisateur depuis sa sauvegarde hors poste (ancienne reference ~/secagent-private/prod/pki/, poste WSL)"
+      },
+      {
         "path": "PRIVATE/prod/pki/ca.crt",
-        "kind": "certificat PUBLIC de la CA PROD (bundle de confiance des clients) - aucune cle ici",
+        "kind": "certificat PUBLIC de la CA PROD (bundle de confiance des clients)",
         "origin": "generated",
-        "from": "~/secagent-private/prod/pki/ca.crt"
+        "from": "~/secagent-private/prod/pki/ca.crt (ancien poste WSL, avant 2026-11-09)"
       },
       {
         "path": "PRIVATE/prod/.env",
@@ -468,7 +480,7 @@
       },
       {
         "path": "PRIVATE/prod/README.txt",
-        "kind": "renvoi vers la reference des secrets PROD (PRIVATE/prod = public uniquement)",
+        "kind": "consignes de PRIVATE/prod (reference des secrets et de la PKI PROD depuis 2026-11-09 : modes, ca.key, risque MooseFS)",
         "origin": "generated",
         "from": ""
       }

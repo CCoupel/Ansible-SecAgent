@@ -19,7 +19,7 @@ bash chain-test.sh smoke        # relais, minions, inventaire hierarchique, ansi
 bash chain-test.sh failover     # arret propre du maitre de la racine puis smoke ; kill : failover-test.sh run kill
 bash chain-test.sh down
 ```
-Les données privées de la qualif (`secrets/`, `pki/`, `ci-tls/`) vivent sous `PRIVATE/qualif/` (dossier gitignoré ; racine = `SECAGENT_PRIVATE_DIR`, défaut `<dépôt>/PRIVATE`), jamais à côté des scripts : voir « Données privées du poste » dans `DEPLOYMENT/README.md`. Les scripts refusent de générer des secrets si cette racine n'existe pas. Chemins par défaut : `SECRETS_DIR`, `QUALIF_TLS_DIR` (PKI) ; une valeur explicite prime. **`CHAIN_DIR` fait exception** : les jetons de chaîne sont volatils et vont par défaut dans `${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>` (système de fichiers qui honore les permissions : un répertoire NTFS en 0777 est refusé par le plugin). `chain-test.sh` refuse (fail-closed) un `CHAIN_DIR` non absolu, lien symbolique, non répertoire, appartenant à un autre uid ou plus large que 0700 ; il le crée en 0700. Les trois secrets du serveur (`jwt_secret_key`, `admin_token`, `rsa_master_key`) sont des **fichiers** déposés dans le volume `${PROJECT}_secrets` (propriétaire 10001, mode 0400) et lus via `JWT_SECRET_KEY_FILE`, `ADMIN_TOKEN_FILE`, `RSA_MASTER_KEY_FILE` : `docker inspect` n'en montre aucun (#197 item 6, v3.0.5 ; `qualif.env` et `qualif.env.example` sont supprimés). En CI, le job « Chaîne en conteneurs » rejoue ce scénario à chaque push.
+Les données privées de la qualif (`secrets/`, `pki/`, `ci-tls/`) vivent sous `PRIVATE/qualif/` (dossier gitignoré ; racine = `SECAGENT_PRIVATE_DIR`, défaut `<dépôt>/PRIVATE`), jamais à côté des scripts : voir « Données privées du poste » dans `DEPLOYMENT/README.md`. Les scripts refusent de générer des secrets si cette racine n'existe pas. Chemins par défaut : `SECRETS_DIR`, `QUALIF_TLS_DIR` (PKI) ; une valeur explicite prime. **`CHAIN_DIR` fait exception** : les jetons de chaîne sont volatils et vont par défaut dans `${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>` (système de fichiers local du poste, hors partage réseau : le plugin refuse un répertoire plus large que 0700). `chain-test.sh` refuse (fail-closed) un `CHAIN_DIR` non absolu, lien symbolique, non répertoire, appartenant à un autre uid ou plus large que 0700 ; il le crée en 0700. Les trois secrets du serveur (`jwt_secret_key`, `admin_token`, `rsa_master_key`) sont des **fichiers** déposés dans le volume `${PROJECT}_secrets` (propriétaire 10001, mode 0400) et lus via `JWT_SECRET_KEY_FILE`, `ADMIN_TOKEN_FILE`, `RSA_MASTER_KEY_FILE` : `docker inspect` n'en montre aucun (#197 item 6, v3.0.5 ; `qualif.env` et `qualif.env.example` sont supprimés). En CI, le job « Chaîne en conteneurs » rejoue ce scénario à chaque push.
 
 ### Hôte Docker distant (qualif réelle 192.168.1.218), sans tunnel ni copie de certificats par scp
 
@@ -71,10 +71,10 @@ Les opérations destructives (`down`, `teardown`, `backup-restore`) sont refusé
 
 **Un seul projet `secagent-qualif`** pour la chaîne ET les tests de basculement (mêmes noms de conteneurs `secagent-qualif-a/-b`) : lancer `chain-test.sh` et `failover-test.sh` **l'un après l'autre**, jamais en parallèle. `backup-restore` passe par des volumes nommés (`<projet>_backup`), donc fonctionne avec un démon distant ; `CONTROL_HOST` (alias de `SECAGENT_ENDPOINT_HOST`) désigne l'hôte joint par le poste de contrôle.
 
-### Pièges du mode distant (incident E2) et du poste WSL
+### Pièges du mode distant (incident E2) et du poste
 
 - **Ne jamais lancer `failover-test.sh` isolément contre un démon distant** : sans les variables du mode volume (`COMPOSE_FILE`, `COMPOSE_OVERRIDES`, `SECAGENT_TLS_VOLUME`) que `chain-test.sh` exporte, Compose recréait les conteneurs avec un bind mount d'un chemin **du poste**, créant des répertoires vides sur l'hôte distant. Le script **refuse** désormais en mode distant (`DOCKER_HOST` non local ou `SECAGENT_ENDPOINT_HOST`/`CONTROL_HOST` non local) sans `TLS_MODE=volume`, reprend lui-même le mode volume sinon, et refuse tout bind mount dans le rendu. Point d'entrée : `chain-test.sh failover`.
-- **`chmod 600` n'est pas honoré sur `/mnt/c` (NTFS)** : le plugin refuse un fichier de jeton qui n'est pas 0600. Lancer les scripts depuis une copie **hors `/mnt/c`** : `git archive HEAD | tar -x -C ~/qualif-run` (puis `cd ~/qualif-run/DEPLOYMENT/qualif`), jamais depuis le dépôt monté.
+- **Système de fichiers du dépôt** (poste Linux depuis 2026-11-09) : le dépôt est sur le partage réseau MooseFS, qui conserve les modes POSIX (`chmod 600`/`700` constatés) : les scripts se lancent directement depuis le checkout (`cd DEPLOYMENT/qualif`). Le plugin refuse toujours un fichier de jeton qui n'est pas 0600 : un autre emplacement (montage qui n'honore pas les modes, comme l'ancien `/mnt/c` NTFS du poste WSL) impose une copie `git archive HEAD | tar -x -C <répertoire local>` avec `SECAGENT_PRIVATE_DIR` absolu vers le checkout.
 
 ## Compléments de qualif v3.0.4 (#197) : hooks, CA négative, jeton plugin frais, CLI Docker épinglé
 
@@ -87,7 +87,7 @@ Les opérations destructives (`down`, `teardown`, `backup-restore`) sont refusé
 
 ### CLI Docker : paquet signé `docker-ce-cli`, extrait sans installation (#240)
 
-Pour un poste sans Docker (WSL sans intégration Docker Desktop, runner), le CLI Linux et le plugin Compose v2 viennent des **paquets signés du dépôt APT Docker**, extraits dans un répertoire de travail : **aucune installation système** (ni `apt install`, ni `sudo`). La chaîne de confiance est celle d'APT : clé GPG Docker → `InRelease` signé → `Packages` (empreinte listée dans `InRelease`) → `.deb` (empreinte listée dans `Packages`).
+Pour un poste sans client Docker (poste Linux de l'équipe depuis 2026-11-09, runner), le CLI Linux et le plugin Compose v2 viennent des **paquets signés du dépôt APT Docker**, extraits dans un répertoire de travail : **aucune installation système** (ni `apt install`, ni `sudo`). La chaîne de confiance est celle d'APT : clé GPG Docker → `InRelease` signé → `Packages` (empreinte listée dans `InRelease`) → `.deb` (empreinte listée dans `Packages`).
 
 | Élément | Valeur épinglée (Ubuntu `noble`, amd64, relevé le 2026-11-03) |
 |---|---|
@@ -136,9 +136,9 @@ Recoupement (2026-11-03) : le binaire `docker` du paquet signé et celui de l'an
 | Client | Supporté | Remarque |
 |---|---|---|
 | CLI **Linux** (paquet signé extrait ci-dessus, ou paquet de la distribution) + plugin Compose v2 | **oui** (seul cas utilisé en qualif v3.0.4) | `docker version` et `docker compose version` doivent répondre ; `DOCKER_HOST=tcp://192.168.1.218:2375` exporté dans le shell qui lance le script |
-| `docker.exe` (Docker Desktop Windows) appelé depuis WSL | **non** pour les scripts | voir ci-dessous |
+| `docker.exe` (Docker Desktop Windows) appelé depuis WSL (ancien poste) | **non** pour les scripts | voir ci-dessous |
 
-**`docker.exe` ignore `DOCKER_HOST` exporté dans WSL** : un processus Windows ne reçoit pas les variables du shell WSL (sauf déclaration dans `WSLENV`). Sans option, `docker.exe` vise donc le démon **local** de Docker Desktop — arrêté sur ce poste, et qu'aucun agent ne démarre — et échoue, ou pire agit sur un autre démon s'il tourne. Pour une commande ponctuelle depuis WSL, passer l'hôte explicitement à **chaque** appel : `docker.exe -H tcp://192.168.1.218:2375 ps`. Les scripts, eux, s'appuient sur `DOCKER_HOST` et sur des chemins Linux (fichiers temporaires, volumes alimentés par conteneur éphémère) : ne pas les faire tourner avec `docker.exe` (ni par alias `docker=docker.exe`). Contrôle avant tout lancement : `command -v docker` doit désigner un binaire Linux (pas `/mnt/c/...`) et `docker info --format '{{.Name}}'` doit renvoyer le nom de l'hôte de qualif.
+**Contrôle avant tout lancement** : `command -v docker` doit désigner le CLI Linux voulu (celui du scratchpad sur le poste, qui n'a aucun client Docker installé ni démon local) et `docker info --format '{{.Name}}'` doit renvoyer le nom de l'hôte de qualif. Historique (ancien poste WSL) : `docker.exe` ignorait `DOCKER_HOST` exporté dans WSL et visait le démon local de Docker Desktop ; il n'était utilisable qu'en commande ponctuelle avec `-H` explicite, jamais pour les scripts.
 
 ## Prérequis
 

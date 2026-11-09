@@ -23,7 +23,7 @@ openssl req -x509 -newkey rsa:2048 -keyout tls/tls.key -out tls/tls.crt \
   -days 365 -nodes -subj "/CN=localhost" \
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
 # Le conteneur tourne en UID 10001 : la clef lui appartient, lecture seule, et n'est lisible par personne d'autre.
-# (à lancer hors /mnt/c : NTFS ignore chown/chmod)
+# (à lancer sur un système de fichiers qui honore chown/chmod : vérifier `ls -ln tls/tls.key` ; ex. un montage NTFS `/mnt/c` sous WSL les ignore)
 sudo chown 10001:10001 tls/tls.key && sudo chmod 0400 tls/tls.key
 # (sans sudo, essai local UNIQUEMENT : `chmod 0644 tls/tls.key` rend la clé privée lisible par tous, ne jamais le reproduire ailleurs)
 
@@ -90,7 +90,7 @@ srv() {
 
 # Jeton d'enrôlement (1 h). Jeton opaque `secagent_enr_` + 64 hex (77 car.), pas un JWT.
 # Le jeton va directement dans un fichier 0600 (umask 077) : jamais affiché, jamais en variable d'environnement
-# (à lancer hors /mnt/c : NTFS n'honore ni umask ni chmod, le fichier y serait lisible par tous ; vérifier `ls -l enrollment.token`)
+# (à lancer sur un système de fichiers qui honore umask et chmod — ex. pas un montage NTFS `/mnt/c` sous WSL, où le fichier serait lisible par tous ; vérifier `ls -l enrollment.token`)
 (umask 077; srv tokens create --role enrollment --hostname-pattern 'qualif-host-.*' --expires 1h \
       | grep -oE 'secagent_enr_[0-9a-f]{64}' | tail -1 > enrollment.token)
 ```
