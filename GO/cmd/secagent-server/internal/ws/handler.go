@@ -113,18 +113,20 @@ func SetEventFunc(fn func(ev hooks.Event)) {
 	eventFn.Store(&fn)
 }
 
-// emitEvent hands an event to the sink; asynchronous like the historical dispatch (the caller may
-// hold a registry lock). Without an event sink a host event still reaches the legacy dispatch.
+// emitEvent hands an event to the sink SYNCHRONOUSLY, in the order of the calls, so that the FIFO of
+// a worker (per hostname / per relay_id) reflects the order of emission. The sink never blocks (the
+// dispatcher's queues are bounded and full means dropped and counted), but it must not be called
+// with a registry lock held. Without an event sink a host event still reaches the legacy dispatch.
 func emitEvent(ev hooks.Event) {
 	if fn := eventFn.Load(); fn != nil {
-		go (*fn)(ev)
+		(*fn)(ev)
 		return
 	}
 	if hooks.IsRelayEvent(ev.Name) {
 		return
 	}
 	if fn := dispatchFn.Load(); fn != nil {
-		go (*fn)(ev.Name, ev.Hostname, ev.Status, ev.EnrolledAt)
+		(*fn)(ev.Name, ev.Hostname, ev.Status, ev.EnrolledAt)
 	}
 }
 
@@ -183,15 +185,13 @@ func nowISO() string {
 // first one of a process gives host.up, the following ones host.reconnect, never both.
 func RegisterConnection(hostname string, conn *AgentConnection, connSeq int) {
 	connectionsMu.Lock()
-	defer connectionsMu.Unlock()
-
 	// Close any existing connection for this hostname
 	if oldConn, exists := wsConnections[hostname]; exists {
 		log.Printf("Replacing stale WS for hostname: %q", hostname)
 		_ = oldConn.Conn.Close()
 	}
-
 	wsConnections[hostname] = conn
+	connectionsMu.Unlock()
 	log.Printf("Agent connected: hostname=%q", hostname)
 
 	name := "host.up"
@@ -205,14 +205,11 @@ func RegisterConnection(hostname string, conn *AgentConnection, connSeq int) {
 // UnregisterConnection removes a hostname from active connections
 func UnregisterConnection(hostname string) {
 	connectionsMu.Lock()
-	defer connectionsMu.Unlock()
-
 	delete(wsConnections, hostname)
+	connectionsMu.Unlock()
 	log.Printf("Agent disconnected: hostname=%q", hostname)
 
-	if fn := dispatchFn.Load(); fn != nil {
-		go (*fn)("host.down", hostname, "disconnected", "")
-	}
+	emitEvent(hooks.Event{Name: "host.down", Hostname: hostname, Status: "disconnected"})
 
 	// Resolve all pending futures with error
 	ResolveFuturesForHostname(hostname, "agent_disconnected")
@@ -232,9 +229,7 @@ func unregisterIfCurrent(hostname string, conn *AgentConnection) {
 	connectionsMu.Unlock()
 	log.Printf("Agent disconnected: hostname=%q", hostname)
 
-	if fn := dispatchFn.Load(); fn != nil {
-		go (*fn)("host.down", hostname, "disconnected", "")
-	}
+	emitEvent(hooks.Event{Name: "host.down", Hostname: hostname, Status: "disconnected"})
 	ResolveFuturesForHostname(hostname, "agent_disconnected")
 }
 
