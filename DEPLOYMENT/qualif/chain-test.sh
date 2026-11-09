@@ -76,20 +76,20 @@ adm() { # $1 conteneur, puis la commande secagent-server : CLI admin en TLS (CA 
   docker exec -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/ca.crt "$c" /app/secagent-server "$@"
 }
 master() { is_master "$C_A" && echo "$C_A" || { is_master "$C_B" && echo "$C_B"; }; }
-# Garde de $CHAIN_DIR (repertoire potentiellement partage comme /tmp) : refus FAIL-CLOSED d'un lien symbolique, d'un non
+# Garde de $CHAIN_DIR (repertoire potentiellement partage comme /tmp) : refus FAIL-CLOSED (refuse : REFUS:, code 2) d'un lien symbolique, d'un non
 # repertoire, d'un autre proprietaire que l'utilisateur courant ou de droits plus larges que 0700. Jamais de chmod correctif
 # sur un repertoire existant (il a pu etre lu entre-temps) : le supprimer et relancer.
 chain_dir_check() {
   local d="$CHAIN_DIR" uid mode
   # chemin ABSOLU exige : un chemin relatif serait resolu par Compose depuis le repertoire du fichier compose, pas d'ici
-  case "$d" in /?*) ;; *) fail "CHAIN_DIR='$d' n'est pas un chemin absolu (ni la racine) : refus" ;; esac
-  [ ! -L "$d" ] || fail "CHAIN_DIR=$d est un lien symbolique : refus (jetons de la chaine)"
+  case "$d" in /?*) ;; *) refuse "CHAIN_DIR='$d' n'est pas un chemin absolu (ni la racine) : refus" ;; esac
+  [ ! -L "$d" ] || refuse "CHAIN_DIR=$d est un lien symbolique : refus (jetons de la chaine)"
   [ -e "$d" ] || return 0
-  [ -d "$d" ] || fail "CHAIN_DIR=$d existe et n'est pas un repertoire : refus"
+  [ -d "$d" ] || refuse "CHAIN_DIR=$d existe et n'est pas un repertoire : refus"
   uid="$(stat -c %u -- "$d")"
-  [ "$uid" = "$(id -u)" ] || fail "CHAIN_DIR=$d appartient a l'uid $uid (utilisateur courant : $(id -u)) : refus"
+  [ "$uid" = "$(id -u)" ] || refuse "CHAIN_DIR=$d appartient a l'uid $uid (utilisateur courant : $(id -u)) : refus"
   mode="$(stat -c %a -- "$d")"
-  [ $(( 8#$mode & 8#077 )) -eq 0 ] || fail "CHAIN_DIR=$d a les droits $mode, plus larges que 0700 : refus (supprimer le repertoire puis relancer)"
+  [ $(( 8#$mode & 8#077 )) -eq 0 ] || refuse "CHAIN_DIR=$d a les droits $mode, plus larges que 0700 : refus (supprimer le repertoire puis relancer)"
 }
 # Suppression des jetons volatils (down) : UNIQUEMENT apres chain_dir_check (jamais de rm -rf sur un chemin relatif, `/`,
 # un lien, un non repertoire, un repertoire d'un autre uid ou trop ouvert : refus fail-closed, rien n'est supprime).
@@ -113,7 +113,7 @@ write_secret() { # $1 fichier relatif a chain/, valeur lue sur stdin : jamais af
   chmod 600 "$CHAIN_DIR/$1"
 }
 extract() { grep -oE "$1" | tail -1; }   # extrait un jeton de la sortie du CLI sans l'afficher
-need() { [ -n "${!1:-}" ] || fail "variable $1 obligatoire"; }
+need() { [ -n "${!1:-}" ] || refuse "variable $1 obligatoire"; }
 
 # Diagnostic des conteneurs du projet qui ne sont pas sains (appele par fail() : la CI montre la vraie cause d'un
 # healthcheck qui ne passe jamais). UNIQUEMENT l'etat (jamais `docker inspect` complet : Config.Env contient
@@ -127,7 +127,8 @@ diag_unhealthy() {
     case "$st" in *"health=healthy"*) ;; *) docker logs --tail=40 "$c" 2>&1 | sed 's/^/   | /' >&2 ;; esac
   done
 }
-# Sourcer failover-test.sh a defini fail() ; on l'enrichit sans changer son contrat (message + exit 1).
+# Sourcer failover-test.sh a defini fail() et refuse() ; on enrichit fail() sans changer son contrat (message + exit 1).
+# refuse() (gardes : REFUS:, exit 2) n'est PAS enrichi : une garde refuse avant toute action, sans DIAGNOSTIC (#256).
 fail() { echo "ECHEC: $*" >&2; diag_unhealthy || true; exit 1; }
 
 # Pousse tls.crt/tls.key/ca.crt de QUALIF_TLS_DIR dans le volume `$SECAGENT_TLS_VOLUME` de l'hote Docker (distant ou
@@ -163,14 +164,14 @@ image_fp() { docker image inspect --format '{{json .RootFS.Layers}}' "$1" 2>/dev
 verify_images() {
   [ "${SECAGENT_PULL_POLICY:-missing}" = never ] || return 0
   local f="$CHAIN_DIR/image-ids" var ref want id
-  [ -f "$f" ] || fail "SECAGENT_PULL_POLICY=never mais $f est absent : lancer d'abord 'chain-test.sh load-images <repertoire-de-l-artefact>'"
+  [ -f "$f" ] || refuse "SECAGENT_PULL_POLICY=never mais $f est absent : lancer d'abord 'chain-test.sh load-images <repertoire-de-l-artefact>'"
   for var in SECAGENT_IMAGE SECAGENT_MINION_IMAGE; do
-    ref="${!var:-}"; [ -n "$ref" ] || fail "$var non defini"
+    ref="${!var:-}"; [ -n "$ref" ] || refuse "$var non defini"
     want="$(awk -v r="$ref" '$1==r {print $2}' "$f")"
-    [ -n "$want" ] || fail "$ref ne figure pas dans $f (images non chargees par load-images)"
-    docker image inspect "$ref" >/dev/null 2>&1 || fail "image $ref absente du demon Docker"
+    [ -n "$want" ] || refuse "$ref ne figure pas dans $f (images non chargees par load-images)"
+    docker image inspect "$ref" >/dev/null 2>&1 || refuse "image $ref absente du demon Docker"
     id="$(image_fp "$ref")"
-    [ "$id" = "$want" ] || fail "empreinte des couches de $ref differente de l'artefact charge (demon: $id, attendu: $want) : un tag local preexistant ? relancer load-images"
+    [ "$id" = "$want" ] || refuse "empreinte des couches de $ref differente de l'artefact charge (demon: $id, attendu: $want) : un tag local preexistant ? relancer load-images"
   done
 }
 

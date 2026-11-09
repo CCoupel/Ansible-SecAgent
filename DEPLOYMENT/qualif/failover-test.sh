@@ -18,11 +18,17 @@
 #   (minion reconnecte sans re-enrolement ; secagent-inventory avec la liste des 2 adresses).
 #   Donnees privees (#250) : racine SECAGENT_PRIVATE_DIR (defaut <depot>/PRIVATE, jamais creee par ce script) ;
 #   SECRETS_DIR (defaut $SECAGENT_PRIVATE_DIR/QUALIF/secrets), QUALIF_TLS_DIR (defaut .../QUALIF/ci-tls, CI).
-# Ne demarre rien a l'import ; exige docker et docker compose. Exit 0 = OK, 1 = echec.
+# Ne demarre rien a l'import ; exige docker et docker compose. Exit 0 = OK, 1 = echec d'execution (ECHEC:),
+#   2 = refus d'une garde avant toute action (REFUS:, sans diagnostic : certificat absent, chemin prive, projet...).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 fail() { echo "ECHEC: $*" >&2; exit 1; }
+# Refus d'une GARDE (#256) : precondition non remplie (chemin, projet, variable, image, certificat...), constatee AVANT
+# toute action. Message `REFUS: ...`, code 2, et JAMAIS de diagnostic des conteneurs (chain-test.sh enrichit fail()
+# avec diag_unhealthy, pas refuse()) : rien n'a ete lance, il n'y a rien a diagnostiquer. fail() reste reserve aux
+# echecs d'execution (code 1).
+refuse() { echo "REFUS: $*" >&2; exit 2; }
 # Racine UNIQUE des donnees privees du poste (#250) : secrets, PKI de test, jetons de la chaine. Depuis une copie du
 # depot (worktree, scratchpad), exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE (chemin absolu).
 PRIVATE_DIR="${SECAGENT_PRIVATE_DIR:-$REPO/PRIVATE}"
@@ -33,11 +39,11 @@ PRIVATE_DIR="${PRIVATE_DIR%/}"
 require_private_dir() { # $@ chemins qui vont etre ecrits
   local p
   # Racine RELATIVE refusee : elle dependrait du repertoire courant et contournerait la comparaison des chemins.
-  case "$PRIVATE_DIR" in /*) ;; *) fail "SECAGENT_PRIVATE_DIR=$PRIVATE_DIR n'est pas un chemin absolu : refus (exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE en chemin absolu)" ;; esac
+  case "$PRIVATE_DIR" in /*) ;; *) refuse "SECAGENT_PRIVATE_DIR=$PRIVATE_DIR n'est pas un chemin absolu : refus (exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE en chemin absolu)" ;; esac
   for p in "$@"; do
     case "$p" in
       "$PRIVATE_DIR"|"$PRIVATE_DIR"/*)
-        [ -d "$PRIVATE_DIR" ] || fail "racine des donnees privees introuvable (SECAGENT_PRIVATE_DIR=$PRIVATE_DIR) : refus d'ecrire $p dans un emplacement ephemere. Creer la racine ou exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE (chemin absolu)" ;;
+        [ -d "$PRIVATE_DIR" ] || refuse "racine des donnees privees introuvable (SECAGENT_PRIVATE_DIR=$PRIVATE_DIR) : refus d'ecrire $p dans un emplacement ephemere. Creer la racine ou exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE (chemin absolu)" ;;
     esac
   done
 }
@@ -52,8 +58,8 @@ is_remote() {
 # volume TLS. En mode distant : TLS_MODE=volume est OBLIGATOIRE (sinon refus) et le script reprend lui-meme le mode volume
 # (Compose de chaine + surcharge remote-tls + volume) ; le point d'entree normal est `chain-test.sh failover`.
 if is_remote; then
-  [ "${TLS_MODE:-}" = volume ] || fail "hote Docker distant (DOCKER_HOST=${DOCKER_HOST:-} / point d'acces=${CONTROL_HOST:-${SECAGENT_ENDPOINT_HOST:-}}) : TLS_MODE=volume est obligatoire. Lancer 'chain-test.sh failover' (point d'entree, il prepare le mode volume) ; jamais ce script isole sans le mode volume."
-  case "${COMPOSE_FILE:-}" in ""|*/docker-compose.chain.yml) ;; *) fail "hote distant : COMPOSE_FILE=${COMPOSE_FILE} incompatible avec le mode volume (attendu docker-compose.chain.yml) : lancer 'chain-test.sh failover'" ;; esac
+  [ "${TLS_MODE:-}" = volume ] || refuse "hote Docker distant (DOCKER_HOST=${DOCKER_HOST:-} / point d'acces=${CONTROL_HOST:-${SECAGENT_ENDPOINT_HOST:-}}) : TLS_MODE=volume est obligatoire. Lancer 'chain-test.sh failover' (point d'entree, il prepare le mode volume) ; jamais ce script isole sans le mode volume."
+  case "${COMPOSE_FILE:-}" in ""|*/docker-compose.chain.yml) ;; *) refuse "hote distant : COMPOSE_FILE=${COMPOSE_FILE} incompatible avec le mode volume (attendu docker-compose.chain.yml) : lancer 'chain-test.sh failover'" ;; esac
   COMPOSE_FILE="${COMPOSE_FILE:-$HERE/docker-compose.chain.yml}"
   COMPOSE_OVERRIDES="${COMPOSE_OVERRIDES:-$HERE/docker-compose.remote-tls.yml}"
   SECAGENT_TLS_VOLUME="${SECAGENT_TLS_VOLUME:-${PROJECT:-${COMPOSE_PROJECT_NAME:-secagent-qualif}}_tls}"
@@ -91,24 +97,24 @@ guard_project() {
   local remote=0
   case "${DOCKER_HOST:-}" in ""|unix://*|npipe://*) ;; *) remote=1 ;; esac
   if [ "$remote" = 1 ]; then
-    [ "$PROJECT" = secagent-qualif ] || fail "operation destructive refusee : hote Docker distant (${DOCKER_HOST}) et projet '$PROJECT' != secagent-qualif"
+    [ "$PROJECT" = secagent-qualif ] || refuse "operation destructive refusee : hote Docker distant (${DOCKER_HOST}) et projet '$PROJECT' != secagent-qualif"
   else
     case " ${ALLOWED_PROJECTS:-secagent-qualif secagent-chain secagent-failover} " in
       *" $PROJECT "*) ;;
-      *) fail "operation destructive refusee : projet '$PROJECT' hors de la liste (${ALLOWED_PROJECTS:-secagent-qualif secagent-chain secagent-failover})" ;;
+      *) refuse "operation destructive refusee : projet '$PROJECT' hors de la liste (${ALLOWED_PROJECTS:-secagent-qualif secagent-chain secagent-failover})" ;;
     esac
   fi
   if [ -n "${COMPOSE_PROJECT_NAME:-}" ] && [ "$COMPOSE_PROJECT_NAME" != "$PROJECT" ]; then
-    fail "COMPOSE_PROJECT_NAME ($COMPOSE_PROJECT_NAME) differe de PROJECT ($PROJECT) : refus"
+    refuse "COMPOSE_PROJECT_NAME ($COMPOSE_PROJECT_NAME) differe de PROJECT ($PROJECT) : refus"
   fi
 }
 
 # Mode distant : AUCUN bind mount (resolu sur l'hote distant, pas sur le poste) dans le rendu Compose ; refuse sinon.
 guard_remote_binds() {
   is_remote || return 0
-  local json; json="$("${DC[@]}" config --format json 2>/dev/null)" || fail "rendu Compose impossible (variables obligatoires ?) : verification des bind mounts refusee"
+  local json; json="$("${DC[@]}" config --format json 2>/dev/null)" || refuse "rendu Compose impossible (variables obligatoires ?) : verification des bind mounts refusee"
   printf '%s' "$json" | python3 "$HERE/../../scripts/ci/check_no_binds.py" \
-    || fail "mode distant : bind mount d'un chemin du poste vers le demon distant refuse (utiliser TLS_MODE=volume + chain-test.sh push-tls)"
+    || refuse "mode distant : bind mount d'un chemin du poste vers le demon distant refuse (utiliser TLS_MODE=volume + chain-test.sh push-tls)"
 }
 
 wait_for() { # $1 description, $2 delai max, $3... commande
@@ -186,8 +192,27 @@ hooks() {
   [ -z "${INSPECT_MINION_CMD:-}" ] || wait_for "minion reconnecte" 120 bash -c "$INSPECT_MINION_CMD" >/dev/null
 }
 
+# Garde (#256) : certificat serveur present AVANT tout `docker` de run(). Sans lui, `up -d` recreait les conteneurs sur
+# un repertoire vide (bind mount) ou un volume absent : ils ne deviennent jamais healthy et l'echec ressemblait a une
+# panne de bascule. Bind (defaut) : tls.crt et tls.key dans ${QUALIF_TLS_DIR:-$CI_TLS_DIR} (ca.crt non exige : setup-ci
+# ne le produit pas). TLS_MODE=volume : le volume $SECAGENT_TLS_VOLUME doit exister (chain-test.sh push-tls).
+require_run_tls() {
+  local d="${QUALIF_TLS_DIR:-$CI_TLS_DIR}" f
+  if [ "${TLS_MODE:-bind}" = volume ]; then
+    [ -n "${SECAGENT_TLS_VOLUME:-}" ] || refuse "TLS_MODE=volume mais SECAGENT_TLS_VOLUME est vide : lancer 'chain-test.sh failover' (point d'entree du mode volume)"
+    docker volume inspect "$SECAGENT_TLS_VOLUME" >/dev/null 2>&1 \
+      || refuse "TLS_MODE=volume : volume $SECAGENT_TLS_VOLUME absent du demon Docker (lancer 'chain-test.sh push-tls')"
+    return 0
+  fi
+  for f in tls.crt tls.key; do
+    [ -f "$d/$f" ] || refuse "certificat serveur absent : $d/$f (QUALIF_TLS_DIR=$d) ; lancer 'failover-test.sh setup-ci' (CI) ou 'chain-test.sh ci-prepare' (chaine) avant 'run'"
+  done
+}
+
 run() {
   local mode="$1" t max
+  case "$mode" in stop|kill|freeze) ;; *) refuse "mode inconnu: $mode (attendu stop|kill|freeze)" ;; esac
+  require_run_tls   # avant toute commande docker (#256)
   up_and_identify
   hooks
   if [ "$mode" = freeze ]; then
@@ -205,7 +230,6 @@ run() {
   case "$mode" in
     stop) docker stop -t 30 "$MASTER" >/dev/null; max=$STOP_MAX_S ;;
     kill) docker kill "$MASTER" >/dev/null; max=$KILL_MAX_S ;;
-    *) fail "mode inconnu: $mode" ;;
   esac
   t=$(wait_for "reprise par $SECOND" "$max" is_master "$SECOND")
   echo "reprise par $SECOND en ${t}s (mode $mode, limite ${max}s)"
