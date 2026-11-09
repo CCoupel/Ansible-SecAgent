@@ -108,6 +108,10 @@ type Lock struct {
 	// for Status
 	lastCheck time.Time
 	phase     string
+	// takeover: the lock this instance replaced was STALE (a master that vanished) rather than
+	// absent (clean stop, first start); prevInstance is that master's id when readable (#225).
+	takeover     bool
+	prevInstance string
 }
 
 // ErrNotMaster is returned by CheckOwnership when this instance does not hold the lock.
@@ -260,8 +264,14 @@ func (l *Lock) step(ctx context.Context) (bool, error) {
 		if rerr := l.cfg.FS.Remove(l.path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
 			return false, fmt.Errorf("remove stale lock: %w", rerr)
 		}
+		l.mu.Lock()
+		l.takeover, l.prevInstance = true, owner.InstanceID
+		l.mu.Unlock()
 	case errors.Is(err, os.ErrNotExist):
-		// free
+		// free: first start or clean stop of the previous master
+		l.mu.Lock()
+		l.takeover, l.prevInstance = false, ""
+		l.mu.Unlock()
 	default:
 		return false, fmt.Errorf("read lock: %w", err)
 	}
@@ -572,6 +582,10 @@ type Status struct {
 	LostReason string
 	MinSeq     uint64
 	Params     Params
+	// Takeover is true when this instance became master by removing a stale lock (the previous master
+	// vanished); PreviousInstanceID is its id (empty when unknown, and after a clean stop).
+	Takeover           bool
+	PreviousInstanceID string
 }
 
 // Status returns a consistent copy.
@@ -582,7 +596,8 @@ func (l *Lock) Status() Status {
 	if phase == "" {
 		phase = PhaseSecondary
 	}
-	st := Status{Phase: phase, InstanceID: l.id, Beat: l.beat, LastBeatOK: l.lastBeatOK, LastCheck: l.lastCheck, MinSeq: l.minSeq, Params: l.p}
+	st := Status{Phase: phase, InstanceID: l.id, Beat: l.beat, LastBeatOK: l.lastBeatOK, LastCheck: l.lastCheck, MinSeq: l.minSeq, Params: l.p,
+		Takeover: l.takeover, PreviousInstanceID: l.prevInstance}
 	if l.lost && l.lostErr != nil {
 		st.LostReason = l.lostErr.Error()
 	}
