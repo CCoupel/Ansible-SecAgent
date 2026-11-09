@@ -9,6 +9,7 @@ package hooks
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"strings"
@@ -56,6 +57,9 @@ func (c *HooksConfig) Validate() error {
 	for i, h := range c.Hooks {
 		if h.Event == "" {
 			return fmt.Errorf("hook[%d]: missing event", i)
+		}
+		if !KnownEvent(h.Event) {
+			log.Printf("[WARN] hooks: hook[%d] listens to %q, which this server never emits (typo, or an event of a later version)", i, h.Event)
 		}
 		if h.Filter != nil {
 			if h.Filter.RelayChainContains == "" {
