@@ -1,0 +1,21 @@
+# Généré par le template (/init-project) — NE PAS MODIFIER : réécrit à chaque passage.
+# Ajouts propres au projet : .claude-launcher/env.yaml (fusionné par Claude-Launcher ≥ v5.5.0).
+image: docker.io/library/debian:12
+packages: [jq, python3]
+packages_by_manager:
+  apt: [gh, python3-pip, python3-venv]
+  dnf: [gh, python3-pip]
+  apk: [github-cli, py3-pip]
+setup:
+  - git config --global --get-all include.path | grep -qxF "$PWD/PRIVATE/gitconfig" || git config --global --add include.path "$PWD/PRIVATE/gitconfig"
+  - |
+    V=1.27.3; A=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+    [ "$(~/.local/go/bin/go env GOVERSION 2>/dev/null)" = "go$V" ] || { rm -rf ~/.local/go; curl -fsSL https://go.dev/dl/go$V.linux-$A.tar.gz | tar -xz -C ~/.local; }
+    ln -sf ~/.local/go/bin/go ~/.local/go/bin/gofmt ~/.local/bin/
+  - |
+    [ -d .github/ci/.venv/bin ] || python3 -m venv .github/ci/.venv
+    .github/ci/.venv/bin/pip install -r .github/ci/requirements-ansible.txt
+    .github/ci/.venv/bin/pip install --require-hashes --only-binary=:all: -r .github/ci/requirements-guard.txt
+  - (cd GO && go mod download)
+watch: [.github/ci/requirements-ansible.txt, .github/ci/requirements-guard.txt, GO/go.sum]
+local: [.github/ci/.venv]
