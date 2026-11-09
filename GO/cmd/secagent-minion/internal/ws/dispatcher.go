@@ -34,6 +34,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -243,6 +244,10 @@ type Dispatcher struct {
 	connected atomic.Bool
 	// rekeyCount compte les JWT renouvelés par rekey depuis le démarrage (journal : jamais le jeton).
 	rekeyCount atomic.Uint64
+	// connSeq compte les handshakes WS réussis depuis le démarrage du process (jamais persisté :
+	// un redémarrage repart à 0). dialOne envoie connSeq+1 dans X-SecAgent-Conn-Seq ; les
+	// tentatives échouées n'incrémentent pas (contrat WEBSOCKET.md).
+	connSeq atomic.Uint64
 
 	// Relance de persistance du JWT (M4 #217) : une seule goroutine à la fois, arrêtée par un
 	// nouveau rekey, la fermeture de la connexion ou l'arrêt du processus.
@@ -713,6 +718,7 @@ func (d *Dispatcher) dialOne(ctx context.Context, u *url.URL, tlsCfg *tls.Config
 	}
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+jwt)
+	headers.Set("X-SecAgent-Conn-Seq", strconv.FormatUint(d.connSeq.Load()+1, 10))
 	conn, resp, err := dialer.DialContext(ctx, u.String(), headers)
 	if err != nil {
 		// Détecter le 401/403 HTTP lors du handshake WS
@@ -724,6 +730,7 @@ func (d *Dispatcher) dialOne(ctx context.Context, u *url.URL, tlsCfg *tls.Config
 		}
 		return nil, fmt.Errorf("ws: dial %s: %w", u.Host, err)
 	}
+	d.connSeq.Add(1) // upgrade réussi : la prochaine connexion portera n+1
 	return conn, nil
 }
 

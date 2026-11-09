@@ -67,6 +67,8 @@ Il n'y a pas de fichier de log : le minion journalise sur la sortie d'erreur (`l
 7. Ouvre WSS /ws/agent avec Authorization: Bearer <JWT>
 ```
 
+**En-tête `X-SecAgent-Conn-Seq` (v3.0.6, #265) :** à l'upgrade `/ws/agent`, le minion pose, à côté de `Authorization`, `X-SecAgent-Conn-Seq: <n>` — le numéro de la connexion en cours pour **ce process** (1 = première connexion réussie depuis le démarrage). Compteur en mémoire (`Dispatcher.connSeq`), jamais persisté : un redémarrage du process repart à 1. Seuls les handshakes **réussis** comptent : la valeur envoyée est « succès précédents + 1 », incrémentée après un upgrade réussi ; une tentative échouée (401, réseau, autre adresse du rotor) n'incrémente pas, donc 1 reste la première connexion réussie même après N échecs. Sémantique côté serveur : `1` ⇒ `host.up`, `> 1` ⇒ `host.reconnect` (contrat : `DOC/contracts/WEBSOCKET.md`). Compat : un serveur v3.0.5 ignore l'en-tête ; un minion v3.0.5 ne l'envoie pas (le serveur le traite comme 1).
+
 **Sur 403 :** token invalide, expiré ou déjà consommé → refus permanent, aucun retry, sortie avec le code 78.
 **Sur 401 à l'upgrade WebSocket (JWT rejeté, par ex. après rotation des clefs) :** ré-enrollment automatique. Autre échec (réseau, 5xx) : retry avec backoff.
 
