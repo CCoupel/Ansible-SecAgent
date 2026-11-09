@@ -63,3 +63,31 @@ Bash : commandes docker vers l'hôte distant, `DOCKER_HOST=tcp://192.168.1.218:2
 
 ## Comportement au démarrage — OBLIGATOIRE
 Au lancement, tu dois rester en IDLE. N'engage AUCUNE action autonome. N'exécute aucune commande docker, n'envoie aucun message spontanément. Attends qu'une tâche te soit assignée par le teamleader avant de commencer tout travail.
+
+## Plateforme Podman rootless (LOT-4, v3.0.6) — remplace .218 après T50
+
+> L'ancienne plateforme Docker `192.168.1.218` (ci-dessus) reste en service jusqu'à son arrêt sur ordre (T50). Nouvelle
+> cible : **srv3 `192.168.1.213` (racine a)** et **srv4 `192.168.1.214` (racine b, enfant `dmz1`, `minion-root`,
+> `minion-child`)**, compte `cyril` (uid 1000), Podman 5.7.0 + podman-compose 1.5.0. Scripts : `CONTAINER_CLI=podman`
+> (`chain-test.sh`, `failover-test.sh`) ; `CONTAINER_HOST_A`/`CONTAINER_HOST_B` (défauts srv3/srv4) ; jetons volatils dans
+> `PRIVATE/QUALIF/srv4/cyril/secagent/run/` ; endpoints `https://192.168.1.213:7770,https://192.168.1.214:8770` ;
+> `push-tls` et `backup-restore` refusés sous Podman. PKI QUALIF (T47) : SAN `IP:192.168.1.213`, `IP:192.168.1.214`.
+
+### Interdits (nœuds colocalisés avec RKE2 et des chunkservers MooseFS)
+- Jamais `docker`, `kubectl`, `k3s`/`rke2`, `crictl`, ni rien sous `/opt/MFS` ; jamais arrêter/redémarrer un service système ni un conteneur qui n'est pas `secagent-*` ; aucune installation de paquet (Podman est installé par l'utilisateur). Le conteneur `mfschunk-S` arrêté sur srv3/srv4 l'était avant le LOT-4 : hors périmètre, ne pas y toucher.
+- Ne jamais lire `PRIVATE/<ENV>/{state,secrets,pki,pki-ca}/` (`stat -c '%a %u'` seulement) ; jamais `down -v` sous Podman (état et secrets sont des volumes liés au partage) ; jamais copier un fichier sur un nœud : tout passe par `PRIVATE/<ENV>/<srvX>/cyril/secagent/` sur le partage.
+
+### Accès
+- `ssh -i PRIVATE/<ENV>/poste-cyril/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=PRIVATE/<ENV>/poste-cyril/known_hosts cyril@<ip>` (empreintes ed25519 confirmées par l'utilisateur ; `StrictHostKeyChecking=no` interdit). `CONTAINER_HOST=ssh://cyril@<ip>/run/user/1000/podman/podman.sock`, `CONTAINER_SSHKEY=PRIVATE/<ENV>/poste-cyril/id_ed25519`. Pas de client Podman sur le poste : les commandes `podman` / `podman-compose` s'exécutent **sur le nœud** par SSH.
+- `PRIVATE/<ENV>` est vu par le nœud au **même chemin** que le poste (`/share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/<ENV>`, autofs root existant) ; cloisonnement QUALIF/PROD non garanti par l'autofs (risque accepté).
+- Secrets : propriétaire **`SECRET_OWNER_UID=1000`** (cyril ; uid 10001 du conteneur par `keep-id:uid=10001,gid=10001`), mode 0400 : `SECRET_OWNER_UID=1000 DEPLOYMENT/prod/preflight-secrets.sh` (sur le poste, même partage). `ca.key` dans `PRIVATE/<ENV>/pki-ca/` (jamais montée) ; `pki/` ne contient que `ca.crt`, `tls.crt`, `tls.key`.
+
+### Déploiement d'un nœud (ordre imposé)
+1. Nœud préparé une fois par `infra` (`install-node.sh`, `prepare-node-files.sh`).
+2. **Dépôt** (poste) : `SECAGENT_IMAGE=… [SECAGENT_MINION_IMAGE=… SECAGENT_VERSION=…] DEPLOYMENT/podman/stage-node-files.sh <env> <srvX>` (`NODE_SOURCE_DIR=<archive de release extraite>` en PROD).
+3. **Intégrité, AVANT tout `daemon-reload` / démarrage** : `DEPLOYMENT/podman/verify-node-files.sh <env> <srvX>` avec les mêmes variables : attendu recalculé depuis le dépôt (ou l'archive), réel lu sur le nœud ; code ≠ 0 ⇒ **BLOQUE**, ne rien recharger.
+4. Sur le nœud, en `cyril`, sans sudo : `systemctl --user enable --now podman.socket` (une fois) ; `systemctl --user link PRIVATE/<ENV>/<srvX>/cyril/secagent/systemd/secagent-<env>-<srvX>.service` ; `systemctl --user daemon-reload` ; `systemctl --user start secagent-<env>-<srvX>.service` (ExecStartPre = `check-private.sh <env> <srvX>` : refus si le partage est inaccessible) ; `systemctl --user enable` pour le démarrage au boot (linger actif).
+5. Contrôles : `podman ps` (sur le nœud), `podman inspect -f '{{.HostConfig.Memory}}' <conteneur>` ≠ 0 (limite mémoire effective), un seul maître, `/health`.
+
+### Unité non chargée après une indisponibilité du partage
+Au boot, si l'autofs n'était pas joignable, le lien de l'unité est cassé et l'unité n'est pas chargée (fail-closed, pas de nouvel essai automatique). Après retour du partage : `ssh … cyril@<ip> 'systemctl --user daemon-reload && systemctl --user start secagent-<env>-<srvX>.service'`, puis `systemctl --user status` ; un conteneur démarré avant un remontage de l'autofs garde l'ancien montage : `systemctl --user restart secagent-<env>-<srvX>.service`.

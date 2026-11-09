@@ -98,6 +98,16 @@ cd <copie>/DEPLOYMENT/qualif
 bash chain-test.sh ci-prepare
 ```
 
+## Plateforme Podman rootless (v3.0.6, LOT-4)
+
+Les environnements migrent de l'hôte Docker `192.168.1.218` vers des nœuds **Podman rootless** (compte `cyril`) :
+QUALIF srv3 (`192.168.1.213`, racine a) / srv4 (`192.168.1.214`, racine b + enfant + minions), PROD srv1
+(`192.168.1.211`) / srv2 (`192.168.1.212`). Accès par SSH uniquement (clé et `known_hosts` par environnement dans
+`PRIVATE/<ENV>/poste-cyril/`), fichiers de déploiement centralisés dans `PRIVATE/<ENV>/<srvX>/cyril/secagent/`, état et
+secrets liés depuis le partage, `ca.key` dans `PRIVATE/<ENV>/pki-ca/`, vérification d'intégrité contre le dépôt avant tout
+démarrage. Procédure complète : [`DEPLOYMENT/podman/README.md`](podman/README.md). Les sections ci-dessous décrivent la
+plateforme Docker, en service jusqu'à son arrêt sur ordre.
+
 ## Déploiement Qualif (Single-host Compose)
 
 Version pas à pas : [DOC/project/QUICKSTART.md](../DOC/project/QUICKSTART.md). Résumé :

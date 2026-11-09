@@ -194,3 +194,18 @@ Le plugin de connexion lit l'adresse du serveur (`ansible_secagent_server`) et l
 - **Durcissement des minions (#238)** : `minion-root`, `minion-child` et `minion-negca` tournent avec `cap_drop: [ALL]`, `cap_add: [CHOWN, SETUID, SETGID]` et `no-new-privileges:true`. L'entrypoint de l'image démarre en root (création des répertoires, clé RSA, `chown`) puis passe à `relay` par `su-exec` : **mesuré sur 192.168.1.218** (image minion, volume neuf puis redémarrage sur volume existant) : ces trois capacités suffisent, le minion tourne en `relay` ; `DAC_OVERRIDE` n'est pas nécessaire. `check_compose.py` refuse un minion de qualif sans `cap_drop: ALL` ou sans `no-new-privileges`.
 - **`minion-negca` avec les deux adresses (#229)** : `RELAY_SERVER_URL` / `RELAY_WS_URL` listent `secagent-server-a` **et** `-b`. Le refus TLS est donc constaté quel que soit le maître, y compris après `failover` (où `a` est secondaire et n'écoute pas). Séquence rejouée : `failover` puis `negative-ca`. **Dépendance au maître par scénario** : `smoke`, `hooks`, `negative-ca`, `link-rotation`, `link-revoke` et `admission-503` interrogent le **maître courant** (`master()`), quel qu'il soit ; `failover` change de maître ; `backup-restore` redémarre a et b sur un état restauré (le maître peut changer).
 - **`admission-503` (#241)** : `bash chain-test.sh admission-503` abaisse `MAX_STDOUT_BUFFER_TOTAL` des deux nœuds de la racine à `52428800` (surcharge Compose écrite dans `$CHAIN_DIR`, rien dans le dépôt) : 10 tâches simultanées admises (5 Mio réservés par tâche), la 11ᵉ reçoit `503 memory_budget_exhausted` avec `Retry-After`, rien n'atteint le minion, `[SECURITY WARNING] task refused at admission` est journalisé par le maître ; libération, puis le plugin réel (12 forks) remonte un `UNREACHABLE` explicite sans rejeu (critère de l'étape 5 : au moins un `UNREACHABLE` avec `memory_budget_exhausted` et `Retry-After`, **inchangé** depuis #249 : la version d'ansible-core est imposée par la garde ci-dessus, un `FAILED` n'est pas accepté car il masquerait une régression du plugin) ; retour au plafond par défaut. Variables : `ADM503_BUDGET` (défaut `52428800`), `ADM503_HOLD` (durée des `sleep`, défaut 45 s). Durée ≈ 4-5 minutes.
+
+## Qualif sur Podman rootless (v3.0.6, LOT-4, #267)
+
+`CONTAINER_CLI=podman bash chain-test.sh <étape>` exécute chaque commande **sur le nœud** (`ssh cyril@<ip> podman …`,
+clé et `known_hosts` de `PRIVATE/QUALIF/poste-cyril/`, `StrictHostKeyChecking=yes`) : racine a sur srv3
+(`CONTAINER_HOST_A`, défaut `ssh://cyril@192.168.1.213/…`), b, enfant et minions sur srv4 (`CONTAINER_HOST_B`).
+`podman-compose` est lancé sur le nœud depuis `PRIVATE/QUALIF/<srvX>/cyril/secagent/release/` (déposé par
+`DEPLOYMENT/podman/stage-node-files.sh`, vérifié par `verify-node-files.sh`, appelé aussi par `guard_remote_binds`), avec la
+surcharge `DEPLOYMENT/podman/docker-compose.podman.qualif.yml` (état `PRIVATE/QUALIF/state/{root,child}` et secrets
+`PRIVATE/QUALIF/secrets` liés au partage, `keep-id:uid=10001,gid=10001`). Différences avec Docker :
+`SECRET_OWNER_UID=1000` ; jetons volatils dans `PRIVATE/QUALIF/srv4/cyril/secagent/run/` ; poste de contrôle sur
+`https://192.168.1.213:7770,https://192.168.1.214:8770` ; `push-tls` et `backup-restore` refusés (TLS et état sont sur le
+partage) ; `down` sans `-v`. PKI : `pki/gen.sh` écrit `ca.key` dans `pki-ca/` (jamais monté) ; SAN à ajouter pour la
+chaîne répartie : `PKI_EXTRA_SAN=IP:192.168.1.213,IP:192.168.1.214`. Procédure de la plateforme :
+`DEPLOYMENT/podman/README.md`.

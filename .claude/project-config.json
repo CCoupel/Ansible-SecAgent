@@ -38,13 +38,66 @@
           "target": "ghcr.io/ccoupel/secagent-{server,minion}:sha-<commit>@sha256:<digest> (linux/amd64)"
         },
         "deploy": {
-          "mechanism": "docker-compose",
+          "mechanism": "podman-compose",
           "target": "DEPLOYMENT/qualif/docker-compose.server.yml",
           "chain": "DEPLOYMENT/qualif/docker-compose.chain.yml",
           "script": "DEPLOYMENT/qualif/chain-test.sh",
-          "host": "192.168.1.218"
+          "host": "srv3 192.168.1.213 (a) / srv4 192.168.1.214 (b, enfant, minions) ; ancien : 192.168.1.218",
+          "mechanism_legacy": "docker-compose (.218, jusqu'a T50/T51)",
+          "node_files_scripts": [
+            "DEPLOYMENT/podman/prepare-node-files.sh",
+            "DEPLOYMENT/podman/stage-node-files.sh",
+            "DEPLOYMENT/podman/verify-node-files.sh"
+          ],
+          "override": "DEPLOYMENT/podman/docker-compose.podman.qualif.yml",
+          "unit": "secagent-qualif-<srvX>.service (systemctl --user link depuis PRIVATE/QUALIF/<srvX>/cyril/secagent/systemd/)",
+          "cli": "CONTAINER_CLI=podman chain-test.sh <etape> (DEPLOYMENT/qualif)"
         },
         "access": {
+          "method": "podman-ssh",
+          "runtime": "podman rootless 5.7.0 + podman-compose 1.5.0 (compte cyril, uid 1000)",
+          "nodes": [
+            {
+              "name": "srv3",
+              "ip": "192.168.1.213",
+              "role": "racine a",
+              "container_host": "ssh://cyril@192.168.1.213/run/user/1000/podman/podman.sock"
+            },
+            {
+              "name": "srv4",
+              "ip": "192.168.1.214",
+              "role": "racine b + enfant dmz1 + minion-root + minion-child",
+              "container_host": "ssh://cyril@192.168.1.214/run/user/1000/podman/podman.sock"
+            }
+          ],
+          "container_host": "ssh://cyril@192.168.1.213/run/user/1000/podman/podman.sock",
+          "credentials_env": [
+            "CONTAINER_SSHKEY"
+          ],
+          "ssh_key": "PRIVATE/QUALIF/poste-cyril/id_ed25519",
+          "known_hosts": "PRIVATE/QUALIF/poste-cyril/known_hosts (ed25519, empreintes confirmees par l'utilisateur 2026-11-09)",
+          "secret_owner_uid": 1000,
+          "private_on_node": "/share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/QUALIF (autofs root existant, meme chemin que le poste)",
+          "node_files": "PRIVATE/QUALIF/<srvX>/cyril/secagent/{bin/check-private.sh,release/,systemd/,run/} (prepare-node-files.sh, stage-node-files.sh ; verify-node-files.sh avant daemon-reload)",
+          "colocation": "noeuds partages avec RKE2 et des chunkservers MooseFS : interdits (docker, kubectl, k3s/rke2, /opt/MFS, arret de service ou de conteneur hors secagent) ; limites memoire obligatoires (cgroup memory delegue)",
+          "registry": "ghcr.io/ccoupel",
+          "verified": {
+            "status": "ok",
+            "at": "2026-11-09",
+            "checks": [
+              "ssh-strict-hostkey",
+              "podman-5.7.0",
+              "podman-compose-1.5.0",
+              "subuid-65536",
+              "cgroup-memory-delegated",
+              "linger",
+              "check-private",
+              "docker-unchanged"
+            ],
+            "note": "T42 sondes + T43 install-node.sh sur srv3/srv4 (rc 0, Docker identique avant/apres, Linger=yes, RKE2 inchange) ; srv3 disque 72 %"
+          }
+        },
+        "access_legacy": {
           "method": "docker-tcp",
           "host": "192.168.1.218",
           "port": 2375,
@@ -66,7 +119,8 @@
               "gh-attestation-verify"
             ],
             "note": "API Docker tcp:2375 sans TLS ni authentification ; docker 29.2.1 ; projet secagent-qualif running(5), maitre = instance b ; paquets GHCR PUBLICS (pull anonyme 200) ; gh local 2.45 < 2.49 : attestation verifiee avec gh 2.103.3 du scratchpad (GH_BIN)"
-          }
+          },
+          "note_legacy": "ancienne plateforme Docker .218 (tcp:2375) : conservee jusqu'a son arret sur ordre (T50 QUALIF, T51 PROD), puis retiree"
         }
       },
       {
@@ -78,10 +132,58 @@
           "pipeline": ".github/workflows/release.yml"
         },
         "deploy": {
-          "mechanism": "docker-compose",
-          "target": "DEPLOYMENT/prod/docker-compose.server.yml"
+          "mechanism": "podman-compose",
+          "target": "DEPLOYMENT/prod/docker-compose.server.yml",
+          "mechanism_legacy": "docker-compose (.218, jusqu'a T50/T51)",
+          "node_files_scripts": [
+            "DEPLOYMENT/podman/prepare-node-files.sh",
+            "DEPLOYMENT/podman/stage-node-files.sh",
+            "DEPLOYMENT/podman/verify-node-files.sh"
+          ],
+          "override": "DEPLOYMENT/podman/docker-compose.podman.yml",
+          "unit": "secagent-prod-<srvX>.service (systemctl --user link depuis PRIVATE/PROD/<srvX>/cyril/secagent/systemd/)"
         },
         "access": {
+          "method": "podman-ssh",
+          "runtime": "podman rootless 5.7.0 + podman-compose 1.5.0 (compte cyril, uid 1000)",
+          "nodes": [
+            {
+              "name": "srv1",
+              "ip": "192.168.1.211",
+              "role": "racine a",
+              "container_host": "ssh://cyril@192.168.1.211/run/user/1000/podman/podman.sock"
+            },
+            {
+              "name": "srv2",
+              "ip": "192.168.1.212",
+              "role": "racine b",
+              "container_host": "ssh://cyril@192.168.1.212/run/user/1000/podman/podman.sock"
+            }
+          ],
+          "container_host": "ssh://cyril@192.168.1.211/run/user/1000/podman/podman.sock",
+          "credentials_env": [
+            "CONTAINER_SSHKEY"
+          ],
+          "ssh_key": "PRIVATE/PROD/poste-cyril/id_ed25519",
+          "known_hosts": "PRIVATE/PROD/poste-cyril/known_hosts (ed25519, empreintes confirmees par l'utilisateur 2026-11-09)",
+          "secret_owner_uid": 1000,
+          "private_on_node": "/share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/PROD (autofs root existant, meme chemin que le poste)",
+          "node_files": "PRIVATE/PROD/<srvX>/cyril/secagent/{bin/check-private.sh,release/,systemd/,run/} (prepare-node-files.sh, stage-node-files.sh ; verify-node-files.sh avant daemon-reload)",
+          "colocation": "noeuds partages avec RKE2 et des chunkservers MooseFS : interdits (docker, kubectl, k3s/rke2, /opt/MFS, arret de service ou de conteneur hors secagent) ; limites memoire obligatoires (cgroup memory delegue)",
+          "registry": "ghcr.io/ccoupel",
+          "verified": {
+            "status": "unknown",
+            "at": "2026-11-09",
+            "checks": [
+              "ssh-strict-hostkey",
+              "podman-5.7.0",
+              "podman-compose-1.5.0",
+              "subuid-65536"
+            ],
+            "note": "T42 sondes OK ; T43 (install-node.sh) NON fait sur srv1/srv2 (feu vert QUALIF seulement)"
+          }
+        },
+        "access_legacy": {
           "method": "docker-tcp",
           "host": "192.168.1.218",
           "port": 2375,
@@ -103,7 +205,8 @@
               "check-compose"
             ],
             "note": "D-P2 v3.0.5 : PKI PROD generee sur ext4 (~/secagent-private/prod, ca.key jamais transferee) ; scaffold /etc/secagent/prod + /var/lib/secagent/prod/state (vide) sur .218, sans up ni state init ; Compose execute sur l'hote dans docker:29-cli@sha256:4d742ab9 (voie 1) ; API Docker tcp:2375 sans TLS ni auth : risque accepte (Q6), durcissement v3.0.6 ; compose de branche (sans digest) a remplacer par l'archive de release au DEPLOY"
-          }
+          },
+          "note_legacy": "ancienne plateforme Docker .218 (tcp:2375) : conservee jusqu'a son arret sur ordre (T50 QUALIF, T51 PROD), puis retiree"
         }
       }
     ]
@@ -434,11 +537,11 @@
     "reviewed": "2026-11-09",
     "root_env": "SECAGENT_PRIVATE_DIR",
     "outside_repo": "aucun depuis 2026-11-09 : la reference des secrets et de la PKI PROD est PRIVATE/PROD/ (decision utilisateur, poste Linux, depot sur MooseFS ; fichiers 0600, dossiers 0700, proprietaire = utilisateur du poste ; ca.key ne sort jamais de PRIVATE/PROD/pki/ ; sauvegarde chiffree hors poste par l'utilisateur ; risque residuel : lisible en root depuis tout client MooseFS). Ancienne reference ~/secagent-private/prod/ (ext4 WSL) abandonnee",
-    "volatile_outside": "jetons de la chaine de qualif (CHAIN_DIR) : volatils, hors PRIVATE/, defaut ${TMPDIR:-/tmp}/secagent-qualif-chain-<uid> (0700), regeneres par chain-test.sh bootstrap",
+    "volatile_outside": "jetons de la chaine de qualif (CHAIN_DIR) : volatils, hors PRIVATE/, defaut ${TMPDIR:-/tmp}/secagent-qualif-chain-<uid> (0700), regeneres par chain-test.sh bootstrap ; sous Podman (#267) : PRIVATE/QUALIF/srv4/cyril/secagent/run/ (lu par podman-compose sur le noeud b)",
     "items": [
       {
         "path": "PRIVATE/QUALIF/pki/",
-        "kind": "PKI de test de la qualif (ca.key, ca.crt, tls.key, tls.crt ; SAN qualif) - QUALIF_TLS_DIR",
+        "kind": "PKI de test de la qualif : ca.crt, tls.key, tls.crt (SAN qualif) - QUALIF_TLS_DIR, monte sur /certs ; ca.key rangee a part dans pki-ca/ (#267)",
         "origin": "moved",
         "from": "DEPLOYMENT/qualif/pki/out/"
       },
@@ -461,12 +564,6 @@
         "from": "a restaurer par l'utilisateur depuis sa sauvegarde hors poste (ancienne reference ~/secagent-private/prod/secrets/, poste WSL)"
       },
       {
-        "path": "PRIVATE/PROD/pki/ca.key",
-        "kind": "cle PRIVEE de la CA PROD (+ tls.key de la feuille) - 0600, dossier pki/ 0700 ; ca.key ne sort JAMAIS de PRIVATE/PROD/pki/ (sauvegarde chiffree hors poste par l'utilisateur)",
-        "origin": "expected",
-        "from": "a restaurer par l'utilisateur depuis sa sauvegarde hors poste (ancienne reference ~/secagent-private/prod/pki/, poste WSL)"
-      },
-      {
         "path": "PRIVATE/PROD/pki/ca.crt",
         "kind": "certificat PUBLIC de la CA PROD (bundle de confiance des clients)",
         "origin": "generated",
@@ -483,6 +580,48 @@
         "kind": "consignes de PRIVATE/PROD (reference des secrets et de la PKI PROD depuis 2026-11-09 : modes, ca.key, risque MooseFS)",
         "origin": "generated",
         "from": ""
+      },
+      {
+        "path": "PRIVATE/QUALIF/pki-ca/",
+        "kind": "cle de la CA de test de la qualif (ca.key 0600) : jamais montee (check_no_binds, check-private.sh)",
+        "origin": "moved",
+        "from": "PRIVATE/QUALIF/pki/ca.key (2026-11-09, #267)"
+      },
+      {
+        "path": "PRIVATE/PROD/pki-ca/",
+        "kind": "cle de la CA PROD (ca.key 0600, a generer en T47) : jamais montee",
+        "origin": "generated",
+        "from": "T47 (PKI PROD sur le poste)"
+      },
+      {
+        "path": "PRIVATE/QUALIF/poste-cyril/",
+        "kind": "acces SSH du poste aux noeuds QUALIF srv3/srv4 : id_ed25519(.pub), known_hosts (0700/0600) - CONTAINER_SSHKEY",
+        "origin": "generated",
+        "from": "T40 (ssh-keygen, ssh-keyscan)"
+      },
+      {
+        "path": "PRIVATE/PROD/poste-cyril/",
+        "kind": "acces SSH du poste aux noeuds PROD srv1/srv2 : id_ed25519(.pub), known_hosts (0700/0600) - CONTAINER_SSHKEY",
+        "origin": "generated",
+        "from": "T40"
+      },
+      {
+        "path": "PRIVATE/QUALIF/state/",
+        "kind": "etat VIVANT de la qualif (state/root partage par a et b, state/child) : jamais lu ni copie par un agent (stat seulement)",
+        "origin": "generated",
+        "from": "T40 (install -d 0700)"
+      },
+      {
+        "path": "PRIVATE/PROD/state/",
+        "kind": "etat VIVANT de la PROD (state/root) : jamais lu ni copie par un agent (stat seulement)",
+        "origin": "generated",
+        "from": "T40"
+      },
+      {
+        "path": "PRIVATE/<ENV>/<srvX>/cyril/secagent/",
+        "kind": "fichiers de deploiement d'un noeud (bin/check-private.sh, release/ + SHA256SUMS, systemd/ + SHA256SUMS, run/ volatil) ; jamais lies dans un conteneur",
+        "origin": "generated",
+        "from": "prepare-node-files.sh / stage-node-files.sh (#267)"
       }
     ],
     "layout": "PRIVATE/GLOBAL/ + PRIVATE/<ENV>/ (QUALIF, PROD) depuis le template v5.3.0 ; anciens prod/ et qualif/ renommes le 2026-11-09"
