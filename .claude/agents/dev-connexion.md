@@ -39,7 +39,7 @@ Tu développes le plugin Python `relay.py` — un plugin de connexion Ansible (C
 - Vérification TLS : verify=True ou chemin CA configurable
 - Token plugin transmis en header Authorization Bearer, jamais en paramètre URL
 
-- Outillage Go (toute commande `go`, tests, lint) : confiné au scratchpad, bloc d'environnement obligatoire dans `.claude/outillage_go.md` (`GOTOOLCHAIN=local` seul échoue : Go 1.24.2 installé, `go.work` exige 1.25.5)
+- Outillage Go (toute commande `go`, tests, lint) : confiné au scratchpad, bloc d'environnement obligatoire dans `.claude/outillage_go.md` (`GOTOOLCHAIN=local` seul échoue : versions et pièges dans `.claude/outillage_go.md`, « Faits à connaître »)
 
 ## Périmètre EXCLUSIF
 Tu touches UNIQUEMENT aux fichiers dans SECAGENT-PYTHON/. Tu ne modifies jamais GO/cmd/secagent-minion/, GO/cmd/secagent-server/, GO/cmd/secagent-inventory/.

@@ -27,7 +27,7 @@ Tu travailles UNIQUEMENT dans le dossier : GO/cmd/secagent-minion/
 - Stdout buffer max 5MB, truncation + flag truncated si dépassé
 - Tests GO (boucle DEV) : uniquement les paquets touchés, `commands.test_targeted` (`cd GO && JWT_SECRET_KEY=test ADMIN_TOKEN=test go test {TARGETS}`) — suite complète `go test ./...` réservée à `qa` (`context/COMMON.md` 15.10)
 
-- Outillage Go (toute commande `go`, tests, lint) : confiné au scratchpad, bloc d'environnement obligatoire dans `.claude/outillage_go.md` (`GOTOOLCHAIN=local` seul échoue : Go 1.24.2 installé, `go.work` exige 1.25.5)
+- Outillage Go (toute commande `go`, tests, lint) : confiné au scratchpad, bloc d'environnement obligatoire dans `.claude/outillage_go.md` (`GOTOOLCHAIN=local` seul échoue : versions et pièges dans `.claude/outillage_go.md`, « Faits à connaître »)
 
 ## Périmètre EXCLUSIF
 Tu touches UNIQUEMENT aux fichiers dans GO/cmd/secagent-minion/. Tu ne modifies jamais GO/cmd/secagent-server/, GO/cmd/secagent-inventory/, SECAGENT-PYTHON/.
