@@ -20,12 +20,15 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -33,6 +36,7 @@ import (
 
 	"secagent-server/cmd/secagent-server/internal/auth"
 	"secagent-server/cmd/secagent-server/internal/config"
+	"secagent-server/cmd/secagent-server/internal/hooks"
 )
 
 // Relay-specific WebSocket close codes.
@@ -61,6 +65,12 @@ type RelayConnection struct {
 	snapshotDone bool
 	reject       *relayRejection   // set by a handler to make the read loop close the link
 	reported     map[string]string // hostname → "old->new" already reported as host.conflict (no event storm)
+
+	// v3.0.6 (relay.* events)
+	connSeq     int                    // connection counter of the child process (hello / ack), 1 when unknown
+	hostsRouted int                    // hosts of the last accepted snapshot: hosts_routed of relay.down
+	closedByUs  atomic.Bool            // this node is shutting the link itself (CloseAllLinks, dialer stopped): no relay.down
+	closeCause  atomic.Pointer[string] // set by CloseRelay: why this node cut the link (revoked | rejected:<code>)
 }
 
 // relayRejection asks the read loop to close the link with a WS close code.
@@ -110,6 +120,9 @@ type RelayMessage struct {
 	// host.conflict: previous and new owner of a hostname route
 	OldRelay string `json:"old_relay,omitempty"`
 	NewRelay string `json:"new_relay,omitempty"`
+	// v3.0.6: relay.* lifecycle kinds, host.reconnect and the conn_seq of relay_hello / relay_ack.
+	// Mode (above, file permissions in task messages) doubles as pull | push for relay.* events.
+	hooks.Detail
 
 	// agent_list / agent_list_ack
 	Agents []RelayAgentInfo `json:"agents,omitempty"`
@@ -223,7 +236,7 @@ var (
 	relayRouteUpsertFn  func(hostname, relayID string, chain []string) error
 	relayRouteChainsFn  func(entries []RouteChainEntry) error
 	relayConflictFn     func(c HostConflict, fromBelow bool)
-	relayEventLocalFn   func(event, hostname, status, enrolledAt string, relayChain []string)
+	relayEventLocalFn   func(ev hooks.Event)
 	relayGroupVarsFn    func(relayID, groupVarsJSON string) error
 )
 
@@ -453,7 +466,7 @@ func storeGroupVars(conn *RelayConnection, relayID string, chainToPeer []string,
 // SetRelayEventLocalFunc sets the local dispatch of an event received from a child (hooks run
 // here with the received relay_chain, origin first). It is called for validated host.up / host.down /
 // host.new only, and never forwards: the handler forwards the event upstream itself.
-func SetRelayEventLocalFunc(fn func(event, hostname, status, enrolledAt string, relayChain []string)) {
+func SetRelayEventLocalFunc(fn func(ev hooks.Event)) {
 	treeHooksMu.Lock()
 	relayEventLocalFn = fn
 	treeHooksMu.Unlock()
@@ -464,8 +477,23 @@ func dispatchEventLocal(m RelayMessage) {
 	fn := relayEventLocalFn
 	treeHooksMu.RUnlock()
 	if fn != nil {
-		fn(m.Event, m.Hostname, m.Status, m.EnrolledAt, append([]string(nil), m.RelayChain...))
+		fn(m.hookEvent())
 	}
+}
+
+// hookEvent is the event of an event_forward as the dispatcher takes it. relay.* kinds are about
+// m.RelayID and have no hostname; for the host kinds the relay_id of the message (where the host
+// lives) stays out of the hook variables, as before.
+func (m RelayMessage) hookEvent() hooks.Event {
+	d := m.Detail
+	d.Mode = m.Mode
+	ev := hooks.Event{Name: m.Event, Hostname: m.Hostname, Status: m.Status, EnrolledAt: m.EnrolledAt,
+		RelayChain: append([]string(nil), m.RelayChain...), Detail: d}
+	if hooks.IsRelayEvent(m.Event) {
+		ev.RelayID = m.RelayID
+		ev.Hostname = ""
+	}
+	return ev
 }
 
 // SetRelayConflictFunc sets the host.conflict sink. fromBelow is true when the conflict was
@@ -969,6 +997,7 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 			}
 		}
 		conn.helloDone = true
+		conn.connSeq = normConnSeq(msg.ConnSeq)
 		if msg.GroupVars != nil {
 			if err := storeGroupVars(conn, conn.RelayID, []string{conn.RelayID}, msg.GroupVars); err != nil {
 				reject(conn, "invalid group_vars")
@@ -1194,7 +1223,14 @@ func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) error {
 		sendLinkSync(relayConn)
 	}
 
+	var loopErr error
 	defer func() {
+		// relay.down BEFORE the routes go: hosts_routed is what the link was carrying. Not for a link
+		// this node closes itself on its way out (the next master announces itself with relay.failover).
+		if relayConn.snapshotDone && !relayConn.closedByUs.Load() {
+			emitEvent(hooks.Event{Name: "relay.down", RelayID: relayID, RelayChain: []string{relayID},
+				Detail: hooks.Detail{Reason: downReason(relayConn, loopErr), HostsRouted: relayConn.hostsRouted}})
+		}
 		// Descendants declared by this relay are unreachable once it is gone.
 		if RelayRoutingBulkUpsertFunc != nil {
 			for id := range relayConn.descendants {
@@ -1220,7 +1256,6 @@ func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) error {
 		return conn.SetReadDeadline(time.Now().Add(120 * time.Second))
 	})
 
-	var loopErr error
 	for {
 		var msg RelayMessage
 		if err := readRelayMessage(conn, &msg); err != nil {
@@ -1251,6 +1286,31 @@ func serveRelayConn(conn *websocket.Conn, relayConn *RelayConnection) error {
 	return loopErr
 }
 
+// downReason says why a link whose snapshot was established ended (the reason of relay.down):
+// revoked (cut by this node, token revoked or relay deleted), rejected:<code> (this node closed it
+// with a code), peer_closed:<code> (the peer sent a close frame), idle_timeout (nothing read for
+// 120 s) or read_error.
+func downReason(rc *RelayConnection, loopErr error) string {
+	if c := rc.closeCause.Load(); c != nil {
+		return *c
+	}
+	if rc.reject != nil {
+		return "rejected:" + strconv.Itoa(rc.reject.code)
+	}
+	if errors.Is(loopErr, errLinkFrameTooLarge) {
+		return "rejected:" + strconv.Itoa(WSRelayCloseRetry)
+	}
+	var ce *websocket.CloseError
+	if errors.As(loopErr, &ce) && ce.Code >= 1000 && ce.Code <= 4999 {
+		return "peer_closed:" + strconv.Itoa(ce.Code)
+	}
+	var ne net.Error
+	if errors.As(loopErr, &ne) && ne.Timeout() {
+		return "idle_timeout"
+	}
+	return "read_error"
+}
+
 // ── Push mode (#140) ─────────────────────────────────────────────────────────
 
 // RelayIdentity returns this node's own relay id and its ancestors (parent first).
@@ -1270,6 +1330,11 @@ func CloseRelay(relayID string, code int, reason string) bool {
 		return false
 	}
 	log.Printf("Relay force-closed: relay_id=%q code=%d reason=%q", relayID, code, reason)
+	cause := "rejected:" + strconv.Itoa(code)
+	if code == WSRelayCloseRevoked {
+		cause = "revoked"
+	}
+	rc.closeCause.Store(&cause)
 	closeWithRejection(rc.wsConn, &relayRejection{code: code, reason: reason})
 	_ = rc.wsConn.Close()
 	return true
@@ -1300,17 +1365,18 @@ var ErrRelayAlreadyConnected = errors.New("relay already connected")
 // topology_snapshot, then agent_list / event_forward / task_result, exactly as in pull mode.
 // It blocks until the link ends and always closes conn. When the peer ended the link with a close
 // frame, the returned error is its *websocket.CloseError (code 4010 = permanent refusal, #148).
-func ServeDialedRelay(ctx context.Context, conn *websocket.Conn, peerID string) error {
+func ServeDialedRelay(ctx context.Context, conn *websocket.Conn, peerID string, connSeq int) error {
 	if IsRelayConnected(peerID) {
 		_ = conn.Close()
 		return ErrRelayAlreadyConnected
 	}
-	relayConn := &RelayConnection{RelayID: peerID, Conn: conn, helloDone: true}
+	relayConn := &RelayConnection{RelayID: peerID, Conn: conn, helloDone: true, connSeq: normConnSeq(connSeq)}
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		select {
 		case <-ctx.Done():
+			relayConn.closedByUs.Store(true) // the dialer is stopped (shutdown, relay removed): not a peer event
 			_ = conn.Close()
 		case <-done:
 		}
@@ -1321,6 +1387,9 @@ func ServeDialedRelay(ctx context.Context, conn *websocket.Conn, peerID string) 
 	}
 	return err
 }
+
+// parentLinkSeq counts the parent links accepted by this process (conn_seq of the push relay_ack).
+var parentLinkSeq atomic.Int64
 
 var (
 	// parentLinkFn serves an accepted parent link (bound by main to repeater.Uplink.ServeAccepted).
@@ -1434,8 +1503,11 @@ func serveParentLink(ctx context.Context, conn *websocket.Conn, parentID, jti st
 	acked := false
 	ack := func() error {
 		acked = true
-		return conn.WriteJSON(RelayMessage{Type: "relay_ack", RelayID: self, Status: "ok",
-			Timestamp: time.Now().UTC().Format(time.RFC3339)})
+		// conn_seq: how many parent links this PROCESS has accepted (this one included); the parent
+		// reads it from the ack to tell relay.up (1) from relay.reconnect (> 1).
+		ackMsg := RelayMessage{Type: "relay_ack", RelayID: self, Status: "ok", Timestamp: time.Now().UTC().Format(time.RFC3339)}
+		ackMsg.ConnSeq = int(min(parentLinkSeq.Add(1), maxConnSeq))
+		return conn.WriteJSON(ackMsg)
 	}
 	if err := conn.SetReadDeadline(time.Time{}); err != nil {
 		return
@@ -1685,6 +1757,7 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	}
 	conn.descendants = relays
 	conn.snapshotDone = true
+	conn.hostsRouted = len(msg.Agents)
 	applySnapshotGroupVars(conn, msg)
 	ack := RelayMessage{Type: "topology_ack", RelayID: localRelayID(), Status: "ok", Count: len(msg.Agents),
 		Timestamp: time.Now().UTC().Format(time.RFC3339)}
@@ -1694,7 +1767,34 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	}
 	conn.mu.Unlock()
 	log.Printf("topology_snapshot: relay_id=%q relays=%d agents=%d replaced=%t", conn.RelayID, len(msg.Relays), len(msg.Agents), replacing)
+	if !replacing {
+		emitRelayUp(conn, msg)
+	}
 	notifyTopologyChanged()
+}
+
+// emitRelayUp announces the first accepted snapshot of a link: relay.up when the child process
+// announced its first connection (conn_seq <= 1 or unknown), relay.reconnect when it announced a
+// later one (same process back after a cut, a failover of this node, a keepalive). Exclusive.
+func emitRelayUp(conn *RelayConnection, msg RelayMessage) {
+	name := "relay.up"
+	if conn.connSeq > 1 {
+		name = "relay.reconnect"
+	}
+	mode := "push"
+	if conn.JTI != "" {
+		mode = "pull"
+	}
+	ids := make([]string, 0, len(msg.Relays))
+	for _, r := range msg.Relays {
+		ids = append(ids, r.RelayID)
+	}
+	sort.Strings(ids)
+	if len(ids) > maxRelaysBelowIDs {
+		ids = ids[:maxRelaysBelowIDs]
+	}
+	emitEvent(hooks.Event{Name: name, RelayID: conn.RelayID, RelayChain: []string{conn.RelayID}, Detail: hooks.Detail{
+		Mode: mode, ConnSeq: normConnSeq(conn.connSeq), HostsRouted: len(msg.Agents), RelaysBelow: len(msg.Relays), RelaysBelowIDs: ids}})
 }
 
 // handleEventForward validates an ascending event (HAUT-1) and propagates it upstream.
@@ -1741,7 +1841,9 @@ func handleEventForward(conn *RelayConnection, msg RelayMessage) {
 	// then forwarded to our own parent (the uplink appends our id). A received event is never
 	// handed back to the sender.
 	switch msg.Event {
-	case "host.up", "host.down", "host.new", "host.suspended", "host.resumed":
+	case "host.conflict", "relay.updated":
+		// host.conflict fires its hooks in applyEventRouting (emitConflict); relay.updated has no hook
+	default:
 		dispatchEventLocal(msg)
 	}
 	forwardEventUpstream(msg)
@@ -1786,10 +1888,105 @@ func applySnapshotGroupVars(conn *RelayConnection, msg RelayMessage) {
 // hook templates, environment variables and webhook bodies.
 var hostnameShape = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$`)
 
+// maxConnSeq is the upper bound of a conn_seq (a connection counter of one process).
+const maxConnSeq = 1 << 31
+
+// maxEventCount bounds the counters of an event (hosts_routed, relays_below…): they end up in hook
+// variables and webhook bodies.
+const maxEventCount = 10_000_000
+
+// maxRelaysBelowIDs bounds relays_below_ids.
+const maxRelaysBelowIDs = 256
+
+var (
+	instanceIDShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
+	downReasonShape = regexp.MustCompile(`^(revoked|read_error|idle_timeout|(peer_closed|rejected):[0-9]{1,4})$`)
+)
+
+// relayEventShapeError checks a relay.* event_forward (no hostname; the relay it describes first in
+// the chain) and the bounded fields it may carry.
+func relayEventShapeError(m RelayMessage) string {
+	if !relayIDShape.MatchString(m.RelayID) {
+		return "invalid relay id"
+	}
+	if m.Hostname != "" {
+		return m.Event + " has no hostname"
+	}
+	if len(m.RelayChain) == 0 || m.RelayChain[0] != m.RelayID {
+		return m.Event + " chain must start with the relay it describes"
+	}
+	switch m.Mode {
+	case "", "pull", "push":
+	default:
+		return "invalid mode"
+	}
+	switch m.Event {
+	case "relay.failover":
+		if m.Cause != "takeover" && m.Cause != "start" {
+			return "invalid cause"
+		}
+		if !instanceIDShape.MatchString(m.InstanceID) {
+			return "invalid instance_id"
+		}
+		if m.PreviousInstanceID != "" && !instanceIDShape.MatchString(m.PreviousInstanceID) {
+			return "invalid previous_instance_id"
+		}
+	case "relay.down":
+		if !downReasonShape.MatchString(m.Reason) {
+			return "invalid reason"
+		}
+	case "relay.removed":
+		if m.Cause != "" && m.Cause != "deleted" {
+			return "invalid cause"
+		}
+	}
+	return detailShapeError(m)
+}
+
+// detailShapeError bounds the fields of Detail shared by the v3.0.6 kinds.
+func detailShapeError(m RelayMessage) string {
+	if m.ConnSeq < 0 || m.ConnSeq > maxConnSeq {
+		return "invalid conn_seq"
+	}
+	for _, n := range []int{m.HostsRouted, m.RelaysBelow, m.RelaysConnected, m.RelaysMissing, m.HostsDirect} {
+		if n < 0 || n > maxEventCount {
+			return "invalid counter"
+		}
+	}
+	if m.UpstreamDroppedEventsTotal < 0 {
+		return "invalid counter"
+	}
+	if len(m.RelaysBelowIDs) > maxRelaysBelowIDs {
+		return "relays_below_ids too long"
+	}
+	for _, id := range m.RelaysBelowIDs {
+		if !relayIDShape.MatchString(id) {
+			return "invalid id in relays_below_ids"
+		}
+	}
+	for _, ch := range [][]string{m.OldChain, m.NewChain} {
+		if len(ch) > maxRelayChainLen {
+			return "chain too long"
+		}
+		for _, id := range ch {
+			if !relayIDShape.MatchString(id) {
+				return "invalid id in chain"
+			}
+		}
+	}
+	if m.FirstSeenAt != "" {
+		if _, err := time.Parse(time.RFC3339, m.FirstSeenAt); err != nil {
+			return "invalid first_seen_at"
+		}
+	}
+	return ""
+}
+
 // eventShapeError returns why an event_forward must be refused, "" when well formed.
 func eventShapeError(m RelayMessage) string {
 	switch m.Event {
-	case "host.up", "host.down", "host.new", "host.conflict", "host.suspended", "host.resumed":
+	case "host.up", "host.down", "host.new", "host.conflict", "host.suspended", "host.resumed",
+		"host.reconnect", "host.discover", "host.rerouted", "host.removed":
 	case "relay.updated":
 		// a relay announces its Ansible group vars (#139): relay id + origin-first chain + vars
 		if !relayIDShape.MatchString(m.RelayID) {
@@ -1804,14 +2001,20 @@ func eventShapeError(m RelayMessage) string {
 			}
 		}
 		return ""
+	case "relay.failover", "relay.discover", "relay.up", "relay.reconnect", "relay.down",
+		"relay.rerouted", "relay.removed", "relay.converged":
+		return relayEventShapeError(m)
 	default:
 		return "unsupported event kind"
 	}
 	if !hostnameShape.MatchString(m.Hostname) {
 		return "invalid hostname"
 	}
+	if reason := detailShapeError(m); reason != "" {
+		return reason
+	}
 	switch m.Event {
-	case "host.up", "host.down", "host.new":
+	case "host.up", "host.down", "host.new", "host.reconnect":
 		if m.Status != "connected" && m.Status != "disconnected" {
 			return "invalid status"
 		}
@@ -1821,6 +2024,18 @@ func eventShapeError(m RelayMessage) string {
 			}
 			if _, err := time.Parse(time.RFC3339, m.EnrolledAt); err != nil {
 				return "invalid enrolled_at"
+			}
+		}
+	case "host.discover", "host.removed":
+		if m.EnrolledAt != "" {
+			if _, err := time.Parse(time.RFC3339, m.EnrolledAt); err != nil {
+				return "invalid enrolled_at"
+			}
+		}
+	case "host.rerouted":
+		for _, id := range []string{m.OldRelay, m.NewRelay} {
+			if id != LocalOwner && !relayIDShape.MatchString(id) {
+				return "invalid relay id in host.rerouted"
 			}
 		}
 	case "host.suspended", "host.resumed":
@@ -1848,7 +2063,7 @@ var relayIDShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
 func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 	chain := msg.RelayChain // origin first, authenticated peer last
 	switch msg.Event {
-	case "host.up", "host.new":
+	case "host.up", "host.new", "host.reconnect":
 		origin := chain[0]
 		topDown := make([]string, len(chain))
 		for i, id := range chain {
@@ -1876,7 +2091,7 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 			}
 		}
 		return true
-	case "host.down":
+	case "host.down", "host.discover", "host.removed", "host.rerouted":
 		// A child may only report the going down of a host of its own subtree: never of a host
 		// connected here nor routed through another peer (no alert spam / no spoofing).
 		if _, err := GetConnection(msg.Hostname); err == nil {
@@ -1913,6 +2128,16 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 		return true
 	case "host.conflict":
 		emitConflict(HostConflict{Hostname: msg.Hostname, OldRelay: msg.OldRelay, NewRelay: msg.NewRelay, RelayChain: chain}, true)
+		return true
+	case "relay.failover", "relay.discover", "relay.up", "relay.reconnect", "relay.down",
+		"relay.rerouted", "relay.removed", "relay.converged":
+		// Only the sender or a relay it declared may speak about a relay (no spoofing of another subtree).
+		if msg.RelayID != conn.RelayID {
+			if _, mine := conn.descendants[msg.RelayID]; !mine {
+				log.Printf("[SECURITY WARNING] %s refused: relay_id=%q describes %q which is not in its subtree", msg.Event, conn.RelayID, msg.RelayID)
+				return false
+			}
+		}
 		return true
 	case "relay.updated":
 		// Only the sender or a relay it declared may have its group vars set through it.

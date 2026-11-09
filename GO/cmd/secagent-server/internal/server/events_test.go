@@ -74,7 +74,7 @@ func TestEvents_LocalAgentEventsAreForwardedToTheParent(t *testing.T) {
 		}
 	}
 
-	ws.RegisterConnection("host-A", &ws.AgentConnection{Hostname: "host-A"}) // an agent connects here
+	ws.RegisterConnection("host-A", &ws.AgentConnection{Hostname: "host-A"}, 1) // an agent connects here
 	up := readEvent(t, c)
 	if up["event"] != "host.up" || up["hostname"] != "host-A" || up["status"] != "connected" || chainOf(up) != "dmz1" {
 		t.Errorf("host.up event = %v", up)

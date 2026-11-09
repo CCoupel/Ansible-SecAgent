@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"secagent-server/cmd/secagent-server/internal/hooks"
 )
 
 var upgrader = websocket.Upgrader{
@@ -93,7 +96,56 @@ var (
 	// SetDispatchFunc. Atomic: handler goroutines of a node that is going away read it while a new
 	// node is built.
 	dispatchFn atomic.Pointer[func(event string, hostname string, status string, enrolledAt string)]
+
+	// eventFn receives the v3.0.6 events (host.up / host.reconnect with conn_seq, relay.*); see
+	// SetEventFunc. It takes precedence over dispatchFn for the events it carries.
+	eventFn atomic.Pointer[func(ev hooks.Event)]
 )
+
+// SetEventFunc injects the sink of the events that carry more than (event, hostname, status):
+// host.up / host.reconnect (conn_seq) and the relay.* lifecycle kinds. nil = fall back to the
+// function of SetDispatchFunc for host events, drop relay.* events.
+func SetEventFunc(fn func(ev hooks.Event)) {
+	if fn == nil {
+		eventFn.Store(nil)
+		return
+	}
+	eventFn.Store(&fn)
+}
+
+// emitEvent hands an event to the sink; asynchronous like the historical dispatch (the caller may
+// hold a registry lock). Without an event sink a host event still reaches the legacy dispatch.
+func emitEvent(ev hooks.Event) {
+	if fn := eventFn.Load(); fn != nil {
+		go (*fn)(ev)
+		return
+	}
+	if hooks.IsRelayEvent(ev.Name) {
+		return
+	}
+	if fn := dispatchFn.Load(); fn != nil {
+		go (*fn)(ev.Name, ev.Hostname, ev.Status, ev.EnrolledAt)
+	}
+}
+
+// ParseConnSeq reads a conn_seq: a decimal integer 1..2^31. Anything else (absent, empty, zero,
+// negative, not decimal, out of range) is 1: fail-safe, it announces a new process (host.up /
+// relay.up) rather than a reconnection.
+func ParseConnSeq(raw string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n < 1 || n > maxConnSeq {
+		return 1
+	}
+	return n
+}
+
+// normConnSeq is ParseConnSeq for a number already decoded from JSON.
+func normConnSeq(n int) int {
+	if n < 1 || n > maxConnSeq {
+		return 1
+	}
+	return n
+}
 
 // SetDispatchFunc injects the function called when an agent connects (host.up) or disconnects
 // (host.down), from the server wiring, to avoid an import cycle between ws and hooks.
@@ -105,6 +157,10 @@ func SetDispatchFunc(fn func(event string, hostname string, status string, enrol
 	}
 	dispatchFn.Store(&fn)
 }
+
+// ConnSeqHeader is the request header of /ws/agent that carries the connection counter of the
+// agent process (v3.0.6).
+const ConnSeqHeader = "X-SecAgent-Conn-Seq"
 
 // SetRekeyFunc injects the function used to issue a new encrypted token to an agent.
 // Called at startup by main.go after handlers are initialized.
@@ -122,8 +178,10 @@ func nowISO() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
-// RegisterConnection registers a WebSocket connection for a hostname
-func RegisterConnection(hostname string, conn *AgentConnection) {
+// RegisterConnection registers a WebSocket connection for a hostname. connSeq is the number of
+// connections the agent process announced (X-SecAgent-Conn-Seq, 1 when absent or invalid): the
+// first one of a process gives host.up, the following ones host.reconnect, never both.
+func RegisterConnection(hostname string, conn *AgentConnection, connSeq int) {
 	connectionsMu.Lock()
 	defer connectionsMu.Unlock()
 
@@ -136,9 +194,12 @@ func RegisterConnection(hostname string, conn *AgentConnection) {
 	wsConnections[hostname] = conn
 	log.Printf("Agent connected: hostname=%q", hostname)
 
-	if fn := dispatchFn.Load(); fn != nil {
-		go (*fn)("host.up", hostname, "connected", "")
+	name := "host.up"
+	seq := normConnSeq(connSeq)
+	if seq > 1 {
+		name = "host.reconnect"
 	}
+	emitEvent(hooks.Event{Name: name, Hostname: hostname, Status: "connected", Detail: hooks.Detail{ConnSeq: seq}})
 }
 
 // UnregisterConnection removes a hostname from active connections
@@ -526,7 +587,7 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 		Hostname: hostname,
 		Conn:     conn,
 	}
-	RegisterConnection(hostname, agentConn)
+	RegisterConnection(hostname, agentConn, ParseConnSeq(r.Header.Get(ConnSeqHeader)))
 
 	// B55: replay the revocation check now that a revocation would find this connection to close.
 	if rerr := replayRevokedCheck(hostname, id.JTI); rerr != nil {

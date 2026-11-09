@@ -570,7 +570,7 @@ func TestRotateKeys_SendsRekeyToConnectedAgents(t *testing.T) {
 
 	// Register mock WS connections (Conn=nil is accepted by RegisterConnection in tests)
 	for _, h := range hostnames {
-		ws.RegisterConnection(h, &ws.AgentConnection{Hostname: h, Conn: nil})
+		ws.RegisterConnection(h, &ws.AgentConnection{Hostname: h, Conn: nil}, 1)
 	}
 	t.Cleanup(func() {
 		for _, h := range hostnames {

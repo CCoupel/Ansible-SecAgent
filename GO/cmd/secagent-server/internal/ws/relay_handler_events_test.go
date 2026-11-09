@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"secagent-server/cmd/secagent-server/internal/hooks"
 )
 
 // ── event_forward: local dispatch, validation and subtree rules (#126) ───────
@@ -31,9 +33,9 @@ func (s *localSink) list() []localEvent {
 func recordLocalEvents(t *testing.T) *localSink {
 	t.Helper()
 	s := &localSink{}
-	SetRelayEventLocalFunc(func(event, hostname, status, enrolledAt string, chain []string) {
+	SetRelayEventLocalFunc(func(ev hooks.Event) {
 		s.mu.Lock()
-		s.got = append(s.got, localEvent{event, hostname, status, enrolledAt, chain})
+		s.got = append(s.got, localEvent{ev.Name, ev.Hostname, ev.Status, ev.EnrolledAt, ev.RelayChain})
 		s.mu.Unlock()
 	})
 	t.Cleanup(func() { SetRelayEventLocalFunc(nil) })
@@ -143,7 +145,7 @@ func TestEvents_RejectedEventsAreNeitherDispatchedNorForwarded(t *testing.T) {
 // A child can only report the going down of a host of its own subtree.
 func TestEvents_HostDownOutsideTheSenderSubtreeIsDropped(t *testing.T) {
 	r := newEventRig(t, map[string]string{"mine": "dmz1", "deep": "zone-a", "theirs": "relay-other", "unrouted": ""})
-	RegisterConnection("local-host", &AgentConnection{Hostname: "local-host"})
+	RegisterConnection("local-host", &AgentConnection{Hostname: "local-host"}, 1)
 	t.Cleanup(func() { UnregisterConnection("local-host") })
 
 	for _, h := range []string{"mine", "deep", "unrouted"} { // allowed: own host, declared descendant's host, unknown host
@@ -168,7 +170,7 @@ func TestEvents_HostDownOutsideTheSenderSubtreeIsDropped(t *testing.T) {
 // A child claiming host.up for a host connected here neither gets a route nor is announced.
 func TestEvents_HostUpForALocalAgentIsNotDispatchedNorForwarded(t *testing.T) {
 	r := newEventRig(t, map[string]string{})
-	RegisterConnection("local-host", &AgentConnection{Hostname: "local-host"})
+	RegisterConnection("local-host", &AgentConnection{Hostname: "local-host"}, 1)
 	t.Cleanup(func() { UnregisterConnection("local-host") })
 	r.send(RelayMessage{Event: "host.up", Hostname: "local-host", Status: "connected", RelayChain: []string{"dmz1"}})
 	r.ready()

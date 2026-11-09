@@ -109,7 +109,7 @@ func connectAgent(t *testing.T, hostname string, rc int, stdout, data string) *l
 		if err != nil {
 			return
 		}
-		ws.RegisterConnection(hostname, &ws.AgentConnection{Hostname: hostname, Conn: c})
+		ws.RegisterConnection(hostname, &ws.AgentConnection{Hostname: hostname, Conn: c}, 1)
 		select {} // keep the handler (and the hijacked conn) alive until the test ends
 	}))
 	client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)

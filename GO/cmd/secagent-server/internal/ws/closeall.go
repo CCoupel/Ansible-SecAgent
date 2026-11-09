@@ -40,6 +40,7 @@ func CloseAllLinks(code int, reason string) int {
 	relayConnsMu.RLock()
 	for _, rc := range relayConnections {
 		if rc != nil && rc.wsConn != nil {
+			rc.closedByUs.Store(true) // this node leaves: no relay.down for what it closes itself
 			conns = append(conns, rc.wsConn)
 		}
 	}

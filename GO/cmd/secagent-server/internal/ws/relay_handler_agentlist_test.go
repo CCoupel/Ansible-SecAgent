@@ -111,7 +111,7 @@ func TestAgentList_ClaimOnLocalAgentCreatesNoRoute(t *testing.T) {
 		return nil
 	})
 	setTreeHooks(t, "central", nil, nil, nil)
-	RegisterConnection("local-host", &AgentConnection{Hostname: "local-host"})
+	RegisterConnection("local-host", &AgentConnection{Hostname: "local-host"}, 1)
 	t.Cleanup(func() { UnregisterConnection("local-host") })
 	srv := setupRelayTestServer(t)
 	defer srv.Close()
@@ -137,7 +137,7 @@ func TestEvent_HostUpOnLocalAgentCreatesNoRoute(t *testing.T) {
 	cl := recordConflicts(t)
 	events := make(chan RelayMessage, 4)
 	setTreeHooks(t, "central", nil, nil, func(m RelayMessage) { events <- m })
-	RegisterConnection("local-host", &AgentConnection{Hostname: "local-host"})
+	RegisterConnection("local-host", &AgentConnection{Hostname: "local-host"}, 1)
 	t.Cleanup(func() { UnregisterConnection("local-host") })
 	srv := setupRelayTestServer(t)
 	defer srv.Close()

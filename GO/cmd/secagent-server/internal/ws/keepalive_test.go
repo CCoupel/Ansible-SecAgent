@@ -25,7 +25,7 @@ func keepaliveServer(t *testing.T, host string) (url string, closed chan struct{
 			return
 		}
 		ac := &AgentConnection{Hostname: host, Conn: conn}
-		RegisterConnection(host, ac)
+		RegisterConnection(host, ac, 1)
 		stop := startKeepalive(ac)
 		defer func() { stop(); unregisterIfCurrent(host, ac); _ = conn.Close(); close(closed) }()
 		for {
@@ -210,7 +210,7 @@ func TestAgentHandler_ReplaysTheRevocationCheckAfterRegistering(t *testing.T) {
 			return
 		}
 		ac := &AgentConnection{Hostname: "b55", Conn: conn}
-		RegisterConnection("b55", ac)
+		RegisterConnection("b55", ac, 1)
 		if rerr := replayRevokedCheck("b55", "jti"); rerr != nil {
 			ac.mu.Lock()
 			_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(WSCloseRevoked, "token_revoked"), time.Now().Add(time.Second))

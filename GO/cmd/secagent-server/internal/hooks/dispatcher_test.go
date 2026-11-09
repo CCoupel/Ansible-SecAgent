@@ -396,3 +396,48 @@ func TestDispatcher_WaitReturnsAfterTheReporterLoggedItsLastLine(t *testing.T) {
 func TestDispatcher_WaitOnANeverStartedDispatcherReturns(t *testing.T) {
 	NewDispatcher(nil, 10).Wait()
 }
+
+// v3.0.6: a relay.* event is keyed by its relay_id (FIFO per relay), its variables carry the
+// detail, and the webhook body has a relay object and no host object.
+func TestRelayEvent_VarsKeyAndWebhookBody(t *testing.T) {
+	job := dispatchJob{event: "relay.up", relayID: "zone-a", relayChain: []string{"zone-a"}, timestamp: "ts",
+		detail: Detail{Mode: "pull", ConnSeq: 3, HostsRouted: 0, RelaysBelow: 2, RelaysBelowIDs: []string{"b", "c"}}}
+	if job.key() != "zone-a" {
+		t.Errorf("key = %q, want the relay_id", job.key())
+	}
+	v := job.vars()
+	for k, want := range map[string]string{"event": "relay.up", "relay_id": "zone-a", "mode": "pull", "conn_seq": "3",
+		"hosts_routed": "0", "relays_below": "2", "relays_below_ids": "b,c", "hostname": ""} {
+		if v[k] != want {
+			t.Errorf("vars[%q] = %q, want %q", k, v[k], want)
+		}
+	}
+	env := strings.Join(shellEnvironment(nil, nil, v), "\n")
+	for _, want := range []string{"SECAGENT_RELAY_ID=zone-a", "SECAGENT_CONN_SEQ=3", "SECAGENT_HOSTS_ROUTED=0", "SECAGENT_MODE=pull"} {
+		if !strings.Contains(env, want) {
+			t.Errorf("shell environment lacks %s:\n%s", want, env)
+		}
+	}
+	o := relayObjOf(v)
+	if o == nil || o.RelayID != "zone-a" || o.ConnSeq == nil || *o.ConnSeq != 3 || o.HostsRouted == nil || *o.HostsRouted != 0 {
+		t.Errorf("relay object = %+v", o)
+	}
+	hostJob := dispatchJob{event: "host.up", hostname: "h", status: "connected", detail: Detail{ConnSeq: 2}}
+	if hostJob.key() != "h" || relayObjOf(hostJob.vars()) != nil {
+		t.Error("a host event is keyed by hostname and has no relay object")
+	}
+}
+
+func TestPropagatedCoversTheNewKinds(t *testing.T) {
+	for _, k := range []string{"relay.failover", "relay.up", "relay.reconnect", "relay.down", "relay.discover", "relay.rerouted",
+		"relay.removed", "relay.converged", "host.reconnect", "host.discover", "host.rerouted", "host.removed", "host.up"} {
+		if !Propagated(k) {
+			t.Errorf("%s must be propagated", k)
+		}
+	}
+	for _, k := range []string{"relay.updated", "host.deleted", "host.revoked", "host.conflict"} {
+		if Propagated(k) {
+			t.Errorf("%s must not be propagated by the dispatcher", k)
+		}
+	}
+}

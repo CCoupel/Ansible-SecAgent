@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"runtime/debug"
 	"secagent-server/cmd/secagent-server/internal/tlsca"
 	"sync"
@@ -272,6 +273,7 @@ func Build(cfg Config) (node *Node, err error) {
 	ws.SetDispatchFunc(func(event, hostname, status, enrolledAt string) {
 		dispatcher.Dispatch(event, hostname, status, enrolledAt)
 	})
+	ws.SetEventFunc(dispatcher.DispatchEvent) // host.up / host.reconnect with conn_seq, relay.* (v3.0.6)
 	log.Println("[OK] Hooks dispatcher started")
 
 	// Wire relay routing/status update functions into ws package (avoids import cycle ws→storage)
@@ -451,9 +453,11 @@ func Build(cfg Config) (node *Node, err error) {
 		if repeaterCfg == nil && !n.uplink.Active() {
 			return
 		}
+		d := m.Detail
+		d.Mode = m.Mode
 		queueUpstream(upEvents, repeater.Event{Event: m.Event, Hostname: m.Hostname, RelayID: m.RelayID, Status: m.Status,
 			RelayChain: m.RelayChain, GroupVars: m.GroupVars, Timestamp: m.Timestamp, OldRelay: m.OldRelay, NewRelay: m.NewRelay,
-			EnrolledAt: m.EnrolledAt})
+			EnrolledAt: m.EnrolledAt, Mode: m.Mode, Detail: d})
 	})
 
 	// link_state frames of the relays below travel UP to the root through our parent link (informative).
@@ -464,16 +468,24 @@ func Build(cfg Config) (node *Node, err error) {
 	// Event propagation (#126). Local events of this node (agent connect / disconnect, enrollment)
 	// go up to the parent; the uplink appends this node's id to relay_chain. A link that is not
 	// established drops them: the snapshot sent at the next connection re-synchronizes the parent.
-	dispatcher.SetUpstream(func(event, hostname, status, enrolledAt string) {
-		if !n.uplink.Active() {
+	dispatcher.SetUpstreamEvent(func(ev hooks.Event) {
+		// relay.* events of a non-root node are queued even before the parent link is up (a
+		// relay.failover is emitted at promotion, before any link exists): the uplink sends them
+		// once connected. Host events keep the old rule: a link that is down drops them, the next
+		// snapshot re-synchronizes the parent.
+		if !n.uplink.Active() && !(hooks.IsRelayEvent(ev.Name) && nonRoot) {
 			return
 		}
-		queueUpstream(upEvents, repeater.Event{Event: event, Hostname: hostname, Status: status,
-			EnrolledAt: enrolledAt, Timestamp: time.Now().UTC().Format(time.RFC3339)})
+		ts := ev.Timestamp
+		if ts == "" {
+			ts = time.Now().UTC().Format(time.RFC3339)
+		}
+		queueUpstream(upEvents, repeater.Event{Event: ev.Name, Hostname: ev.Hostname, RelayID: ev.RelayID, Status: ev.Status,
+			EnrolledAt: ev.EnrolledAt, Timestamp: ts, RelayChain: ev.RelayChain, Mode: ev.Detail.Mode, Detail: ev.Detail})
 	})
 	// Events received from a child run THIS node's hooks with the received relay_chain.
-	ws.SetRelayEventLocalFunc(func(event, hostname, status, enrolledAt string, relayChain []string) {
-		dispatcher.DispatchChain(event, hostname, status, enrolledAt, relayChain)
+	ws.SetRelayEventLocalFunc(func(ev hooks.Event) {
+		dispatcher.DispatchEventChain(ev, ev.RelayChain)
 	})
 
 	// Hierarchical routing (#127): chains of snapshot routes, event-driven routes, host.conflict.
@@ -765,6 +777,32 @@ func (n *Node) SetInstance(role, id string) {
 	n.instMu.Lock()
 	n.instRole, n.instID = role, id
 	n.instMu.Unlock()
+}
+
+// failoverIDShape is what a relay.failover may carry as instance ids (the parents refuse any other form).
+var failoverIDShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
+
+// AnnounceFailover emits relay.failover (#225): this instance has just become the master, before any
+// port is opened. cause is "takeover" when it removed the stale lock of a master that vanished, "start"
+// when the lock was free (first start, clean stop of the previous master; previous_instance_id is then
+// empty). The event runs this node's hooks and goes up to the parent (queued even before the parent
+// link exists). The previous master's id comes from a file: it is dropped when it is not a plain id.
+func (n *Node) AnnounceFailover(st lock.Status) {
+	if n.dispatcher == nil {
+		return
+	}
+	id, _ := ws.RelayIdentity()
+	d := hooks.Detail{Cause: "start", InstanceID: st.InstanceID}
+	if st.Takeover {
+		d.Cause = "takeover"
+		if failoverIDShape.MatchString(st.PreviousInstanceID) {
+			d.PreviousInstanceID = st.PreviousInstanceID
+		}
+	}
+	if !failoverIDShape.MatchString(d.InstanceID) {
+		return
+	}
+	n.dispatcher.DispatchEvent(hooks.Event{Name: "relay.failover", RelayID: id, Detail: d})
 }
 
 func (n *Node) shutdownServers() {

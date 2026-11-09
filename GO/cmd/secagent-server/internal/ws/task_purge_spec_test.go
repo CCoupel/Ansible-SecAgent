@@ -168,7 +168,7 @@ func TestTaskPurge_EachPathReleasesExactlyTheTasksOfItsTarget(t *testing.T) {
 			resetState()
 			c := agentSession(t, "host-a")
 			// a second agent: its tasks must survive anything that happens to host-a
-			RegisterConnection("host-b", &AgentConnection{Hostname: "host-b"})
+			RegisterConnection("host-b", &AgentConnection{Hostname: "host-b"}, 1)
 			t.Cleanup(func() { UnregisterConnection("host-b") })
 
 			admit(t, "host-a", "t1", "t2")

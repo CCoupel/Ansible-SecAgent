@@ -18,12 +18,14 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 
 	"secagent-server/cmd/secagent-server/internal/config"
+	"secagent-server/cmd/secagent-server/internal/hooks"
 	"secagent-server/internal/endpoints"
 )
 
@@ -31,6 +33,7 @@ import (
 const (
 	ProtocolVersion = "3.0"
 	NodeTypeRelay   = "relay"
+	maxConnSeq      = 1 << 31 // upper bound of a conn_seq on the wire
 	ModePull        = "pull"
 
 	// CloseCodePermanent (4010): permanent refusal (revoked/unauthorized identity, loop, identity
@@ -96,6 +99,9 @@ type Event struct {
 	// host.conflict only
 	OldRelay string `json:"old_relay,omitempty"`
 	NewRelay string `json:"new_relay,omitempty"`
+	// v3.0.6: relay.* kinds, host.reconnect… (see hooks.Detail). Mode is relay.* pull | push.
+	Mode string `json:"mode,omitempty"`
+	hooks.Detail
 }
 
 // message is the generic envelope; only the fields of the given type are set.
@@ -114,6 +120,7 @@ type message struct {
 	TaskID     string         `json:"task_id,omitempty"`
 	Hostname   string         `json:"hostname,omitempty"`
 	RelayChain []string       `json:"relay_chain,omitempty"`
+	ConnSeq    int            `json:"conn_seq,omitempty"` // relay_hello / relay_ack: connections of this process (v3.0.6)
 }
 
 type snapshotMessage struct {
@@ -192,6 +199,7 @@ type Client struct {
 	done     chan struct{}
 	conn     *websocket.Conn
 	rotor    *endpoints.Rotor // the parent's addresses, last good one first
+	links    atomic.Int64     // links of this process established with a parent: conn_seq of the next relay_hello
 }
 
 // New builds a Client from the validated repeater config.
@@ -347,7 +355,8 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 
 	// 1. relay_hello
 	hello := message{Type: "relay_hello", NodeType: NodeTypeRelay, Mode: ModePull,
-		RelayID: c.cfg.ID, Ancestors: []string{}, Version: ProtocolVersion, GroupVars: c.opts.GroupVars}
+		RelayID: c.cfg.ID, Ancestors: []string{}, Version: ProtocolVersion, GroupVars: c.opts.GroupVars,
+		ConnSeq: int(min(c.links.Load()+1, maxConnSeq))}
 	if err := c.write(conn, hello); err != nil {
 		return false, fmt.Errorf("send relay_hello: %w", err)
 	}
@@ -368,6 +377,7 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 		return false, &refusedError{reason: err.Error(), permanent: true}
 	}
 
+	c.links.Add(1) // this connection counts: the next hello announces conn_seq + 1
 	c.up.SetAncestors(ack.Ancestors)
 	c.tr.set(LinkConnected, "")
 	log.Printf("[REPEATER] linked to parent relay_id=%q as %s", ack.RelayID, c.cfg.ID)

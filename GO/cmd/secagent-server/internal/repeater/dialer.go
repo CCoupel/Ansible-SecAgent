@@ -43,7 +43,7 @@ type DialerOptions struct {
 	WouldLoop func(childID string) bool
 	// Serve takes over the link once the handshake succeeded and blocks until it ends
 	// (bound to ws.ServeDialedRelay). It must close conn.
-	Serve func(ctx context.Context, conn *websocket.Conn, peerID string) error
+	Serve func(ctx context.Context, conn *websocket.Conn, peerID string, connSeq int) error
 
 	TLSConfig        *tls.Config // nil = default (see tlsOrDefault)
 	MinBackoff       time.Duration
@@ -243,7 +243,7 @@ func (d *Dialer) session(ctx context.Context) (established bool, err error) {
 	}
 	d.tr.set(LinkConnected, "")
 	log.Printf("[REPEATER] linked to child relay_id=%q (push)", d.target.RelayID)
-	if err := d.opts.Serve(ctx, conn, d.target.RelayID); err != nil {
+	if err := d.opts.Serve(ctx, conn, d.target.RelayID, ack.ConnSeq); err != nil {
 		// A close frame received on the served link carries the peer's decision: 4010 is a
 		// permanent refusal (revoked token, identity...), 4012 a correctable one (#148, #153).
 		return true, wrapRead("served link", err)

@@ -168,7 +168,7 @@ func dialedPeer(t *testing.T, peerID string, result chan<- error) *httptest.Serv
 		if err != nil {
 			return
 		}
-		err = ServeDialedRelay(context.Background(), c, peerID)
+		err = ServeDialedRelay(context.Background(), c, peerID, 1)
 		if result != nil {
 			result <- err
 		}
@@ -357,7 +357,7 @@ func TestPush_DialedContextCancelClosesLink(t *testing.T) {
 		if err != nil {
 			return
 		}
-		result <- ServeDialedRelay(ctx, c, "dmz1")
+		result <- ServeDialedRelay(ctx, c, "dmz1", 1)
 	}))
 	defer srv.Close()
 	dialPlain(t, srv)
