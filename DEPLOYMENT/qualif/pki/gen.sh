@@ -9,6 +9,8 @@
 #
 #   bash pki/gen.sh [repertoire_de_sortie]
 # Produit : ca.crt (bundle de confiance : REPEATER_CA_FILE, RELAY_CA_BUNDLE), tls.crt + tls.key (TLS_CERT/TLS_KEY).
+# ca.key (cle de la CA, #267) est ecrite A PART dans $PKI_CA_OUT (defaut : repertoire frere `pki-ca` de la sortie,
+# ex. PRIVATE/QUALIF/pki-ca) : le repertoire de sortie ne contient que ce qui est monte dans les conteneurs (/certs).
 # SAN : localhost, 127.0.0.1, secagent-server-a/-b, secagent-child (noms DNS du reseau Compose).
 # SAN supplementaires (hote distant, ex. la qualif reelle) : PKI_EXTRA_SAN="IP:192.168.1.218,DNS:qualif.lan"
 # (liste separee par des virgules ; defaut vide = comportement inchange, utilise par la CI).
@@ -30,15 +32,19 @@ case "$OUT" in
 esac
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
+CA_OUT="${PKI_CA_OUT:-$(dirname "$OUT")/pki-ca}"
+case "$CA_OUT" in /*) ;; *) echo "ERREUR : PKI_CA_OUT=$CA_OUT n'est pas un chemin absolu : refus." >&2; exit 1 ;; esac
+[ "$CA_OUT" != "$OUT" ] || { echo "ERREUR : PKI_CA_OUT ne doit pas etre le repertoire de sortie (ca.key serait montee dans /certs)." >&2; exit 1; }
+( umask 077; mkdir -p "$CA_OUT" ); chmod 700 "$CA_OUT"
 # Garde : refuse d'ecrire des cles dans un depot git hors d'un chemin IGNORE (une cle ne doit jamais etre versionnee).
-if git -C "$OUT" rev-parse --is-inside-work-tree >/dev/null 2>&1 && ! { git -C "$OUT" check-ignore -q "$OUT/tls.key" && git -C "$OUT" check-ignore -q "$OUT/ca.key"; }; then
+if git -C "$OUT" rev-parse --is-inside-work-tree >/dev/null 2>&1 && ! { git -C "$OUT" check-ignore -q "$OUT/tls.key" && git -C "$OUT" check-ignore -q "$CA_OUT/ca.key"; }; then
   echo "ERREUR : $OUT est dans un depot git et n'est pas ignore : refus de generer des cles (utiliser PRIVATE/QUALIF/pki ou un repertoire hors depot)." >&2
   exit 1
 fi
 cd "$OUT"
 umask 077
 openssl req -x509 -newkey rsa:2048 -nodes -days "$DAYS" -subj "/CN=secagent-test-ca" \
-  -keyout ca.key -out ca.crt 2>/dev/null
+  -keyout "$CA_OUT/ca.key" -out ca.crt 2>/dev/null
 openssl req -newkey rsa:2048 -nodes -subj "/CN=secagent-chain" -keyout tls.key -out tls.csr 2>/dev/null
 SAN="DNS:localhost,IP:127.0.0.1,DNS:secagent-server-a,DNS:secagent-server-b,DNS:secagent-child"
 if [ -n "${PKI_EXTRA_SAN:-}" ]; then
@@ -54,11 +60,12 @@ extendedKeyUsage=serverAuth
 keyUsage=digitalSignature,keyEncipherment
 basicConstraints=CA:FALSE
 EXT
-openssl x509 -req -in tls.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days "$DAYS" -extfile san.ext -out tls.crt 2>/dev/null
+openssl x509 -req -in tls.csr -CA ca.crt -CAkey "$CA_OUT/ca.key" -CAcreateserial -days "$DAYS" -extfile san.ext -out tls.crt 2>/dev/null
 rm -f tls.csr san.ext ca.srl
 # CLE DE TEST JETABLE, generee dans le runner/poste de test, jamais versionnee (garde ci-dessus), JAMAIS POUR LA
 # PRODUCTION. 0644 car le conteneur tourne en UID 10001 (autre proprietaire que l'utilisateur du runner) : pas
 # d'alternative simple (chown impossible sans root, group_add dependrait du GID du runner) pour une cle de 30 jours.
 chmod 644 tls.key tls.crt ca.crt
-chmod 600 ca.key   # la cle de la CA ne sort jamais du repertoire et n'est montee nulle part
-echo "PKI de test ecrite dans $OUT (ca.crt, tls.crt, tls.key ; ca.key conservee en 0600)"
+chmod 600 "$CA_OUT/ca.key"   # la cle de la CA reste dans pki-ca/ et n'est montee nulle part
+rm -f ca.key                   # ancienne disposition (< v3.0.6) : plus jamais a cote des fichiers montes
+echo "PKI de test ecrite dans $OUT (ca.crt, tls.crt, tls.key) ; ca.key dans $CA_OUT (0600)"
