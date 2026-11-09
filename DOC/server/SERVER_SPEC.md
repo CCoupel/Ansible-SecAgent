@@ -384,7 +384,7 @@ Le client envoie son identité avec JWT(sub = son REPEATER_ID) :
 {"type":"relay_hello", "relay_id":"<client_id>", "ancestors":["parent","grandparent"], "version":"3.1", "conn_seq":3}
 ```
 
-`conn_seq` (v3.0.6, additif) : nombre de connexions que **ce process** de l'enfant a ouvertes vers son parent depuis son démarrage, entier décimal `1..2³¹` (1 = première connexion du process). Absent, nul, négatif, non entier ou hors borne ⇒ **traité comme 1** (fail-safe : `relay.up`). Le serveur ne garde rien : la valeur sert seulement à choisir `relay.up` (≤ 1) ou `relay.reconnect` (> 1) au premier `topology_snapshot` du lien. Un parent v3.0.5 ignore le champ (décodeur non strict).
+`conn_seq` (v3.0.6, additif) : nombre de connexions que **ce process** de l'enfant a ouvertes vers son parent depuis son démarrage, entier décimal `1..2³¹` (1 = première connexion du process). Règle : **seuls les handshakes RÉUSSIS comptent** : la valeur annoncée au dial est le nombre de handshakes réussis du process + 1 ; une tentative échouée (dial, upgrade refusé, ack refusé) n'incrémente pas, donc `1` = première connexion réussie depuis le démarrage, même après N échecs. Même règle pour le `relay_ack` du mode push (compteur de l'enfant : liens parent acceptés avec succès). Absent, nul, négatif, non entier ou hors borne ⇒ **traité comme 1** (fail-safe : `relay.up`). Le serveur ne garde rien : la valeur sert seulement à choisir `relay.up` (≤ 1) ou `relay.reconnect` (> 1) au premier `topology_snapshot` du lien. Un parent v3.0.5 ignore le champ (décodeur non strict).
 
 Serveur (récepteur) valide :
 - ✅ `relay_hello.relay_id` présent ET `relay_hello.relay_id == jwt.sub` (identité du client)
