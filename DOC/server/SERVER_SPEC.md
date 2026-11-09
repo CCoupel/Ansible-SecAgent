@@ -492,7 +492,29 @@ Après handshake établi, tous les changements (hôtes, relays) sont notifiés v
 | `relay.up` | `mode` (`pull`\|`push`), `hosts_routed`, `relays_below`, `relays_below_ids` (≤ 256 ids valides), `conn_seq` | le parent, au premier `topology_snapshot` d'un lien dont `conn_seq ≤ 1` ou absent |
 | `relay.reconnect` | idem `relay.up` (`conn_seq > 1`) | le parent ; exclusif avec `relay.up` |
 | `relay.down` | `reason` = `revoked` (lien coupé par ce nœud : jeton révoqué ou relais supprimé) \| `rejected:<code>` (ce nœud a fermé le lien avec un code, 4010/4012) \| `peer_closed:<code>` (le pair a envoyé une trame de fermeture, code WS 1000..4999) \| `idle_timeout` (rien lu pendant 120 s) \| `read_error`, `hosts_routed` (hôtes du dernier `topology_snapshot` accepté) | le parent, à la fermeture d'un lien dont le snapshot était établi, avant l'effacement des routes ; **aucun** pour les fermetures propres du parent sortant (`CloseAllLinks` 1001) |
-| `relay.discover` / `relay.rerouted` / `relay.removed` / `relay.converged` | réservés (formes acceptées, émis à partir de LOT-3.2/3.3) : `mode`, `hosts_routed` / `old_chain`, `new_chain`, `hosts_routed` / `mode`, `cause=deleted` / `relays_connected`, `relays_missing`, `hosts_direct`, `hosts_routed`, `upstream_dropped_events_total` | — |
+| `relay.discover` / `relay.rerouted` / `relay.removed` / `relay.converged` | réservés (formes acceptées, émis à partir de LOT-3.2/3.3) : `mode`, `hosts_routed`, `first_seen_at` (RFC3339) / `old_chain`, `new_chain`, `hosts_routed` / `mode`, `cause=deleted` / `relays_connected`, `relays_missing`, `hosts_direct`, `hosts_routed`, `upstream_dropped_events_total` | — |
+
+**Liste blanche des champs par kind** (`eventDetailFields`, `ws/relay_handler.go:1944`) : les champs de détail ci-dessous sont les **seuls** qu'un kind accepte ; tout champ de détail non vide hors de sa ligne (ex. `reason` sur `relay.up`, `conn_seq` sur `host.down`) fait refuser l'événement (`<kind> does not carry <champ>`). Un kind absent du tableau (`host.down`, `host.new`, `host.suspended`, `host.resumed`, `host.conflict`) n'accepte **aucun** champ de détail. Les clés JSON inconnues restent ignorées par le décodage (compatibilité vers l'avenir) ; seul un champ **connu sur le mauvais kind** est refusé.
+
+| Kind | Champs de détail acceptés | Bornes |
+|---|---|---|
+| `relay.failover` | `cause`, `instance_id`, `previous_instance_id` | `cause` ∈ `takeover`\|`start` ; ids : `^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$` (`previous_instance_id` facultatif) |
+| `relay.up`, `relay.reconnect` | `mode`, `conn_seq`, `hosts_routed`, `relays_below`, `relays_below_ids` | voir ci-dessous |
+| `relay.down` | `reason`, `hosts_routed` | `reason` : `^(revoked\|read_error\|idle_timeout\|(peer_closed\|rejected):[0-9]{1,4})$` |
+| `relay.discover` | `mode`, `hosts_routed`, `first_seen_at` | |
+| `relay.rerouted` | `old_chain`, `new_chain`, `hosts_routed` | chaînes ≤ 32 ids valides |
+| `relay.removed` | `mode`, `cause` | `cause` ∈ `""`\|`deleted` |
+| `relay.converged` | `hosts_routed`, `relays_connected`, `relays_missing`, `hosts_direct`, `upstream_dropped_events_total` | |
+| `host.up`, `host.reconnect` | `conn_seq` | |
+| `host.discover` | `first_seen_at` | |
+| `host.rerouted` | `cause`, `old_chain`, `new_chain` | `cause` ∈ `""`\|`moved`\|`direct`\|`indirect` ; `old_relay` / `new_relay` valides |
+| `host.removed` | `cause`, `first_seen_at` | `cause` ∈ `""`\|`deleted` |
+
+Bornes communes (`detailShapeError`, `ws/relay_handler.go:1982`) : `mode` ∈ `""`\|`pull`\|`push` (sur les kinds qui le portent) ; `conn_seq` entier **0 à 2³¹** ; compteurs (`hosts_routed`, `relays_below`, `relays_connected`, `relays_missing`, `hosts_direct`) **0 à 10 000 000** ; `upstream_dropped_events_total` ≥ 0 ; `relays_below_ids` ≤ 256 ids `relayIDShape` ; chaînes ≤ 32 ids `relayIDShape` ; `first_seen_at` RFC3339.
+
+**`conn_seq` : tolérant sur l'en-tête, le `relay_hello` et le `relay_ack`, strict dans un `event_forward`.** Sur l'en-tête `X-SecAgent-Conn-Seq`, le `relay_hello` et le `relay_ack`, une valeur absente, non entière (chaîne, flottant, booléen, `null`, entier trop grand pour 64 bits), négative ou > 2³¹ vaut 1 (`ParseConnSeq`, `normConnSeq`, `hooks.Seq.UnmarshalJSON`) : la trame n'échoue jamais pour cette raison. Dans un `event_forward`, un `conn_seq` **négatif ou > 2³¹ est refusé** (`invalid conn_seq`, `[SECURITY WARNING]`, événement abandonné, lien ouvert) au lieu d'être ramené à 1 ; un non-entier y vaut 0 (absent). Écart assumé (sans impact de sécurité : fail-closed).
+
+Kinds `host.*` ajoutés : `host.reconnect` (`status=connected`, `conn_seq`), `host.discover`, `host.rerouted`, `host.removed` (formes réservées, mêmes règles que `host.up` : `hostname` valide, hôte du sous-arbre du pair).
 
 Kinds `host.*` ajoutés : `host.reconnect` (`status=connected`, `conn_seq`), `host.discover`, `host.rerouted`, `host.removed` (formes réservées, mêmes règles que `host.up` : `hostname` valide, hôte du sous-arbre du pair). `host.up` et `host.reconnect` portent `conn_seq` (additif). **`host.up` n'est émis que pour la première connexion d'un process minion (≥ 3.0.6) ; les reconnexions du même process donnent `host.reconnect`** ([CHANGED] ; un minion v3.0.5 n'envoie pas l'en-tête `X-SecAgent-Conn-Seq` ⇒ toujours `host.up`).
 
@@ -838,13 +860,14 @@ le routage (`relay_routing` : clé simple `hostname`, `relay_id`, `hop_type` age
 
 | Type | Déclencheur | Chaîne | Remarques |
 |---|---|---|---|
-| `host.up` | Agent se connecte via `/ws/agent` | `[relay_id]` (l'agent direct) | Propagé au parent par l'uplink (et exécute les hooks locaux) ; reçu d'un enfant, il met à jour la route sauf si l'hôte est connecté localement |
+| `host.up` | **Première** connexion d'un process minion via `/ws/agent` (`conn_seq` ≤ 1, absent, ou minion < 3.0.6) | `[relay_id]` (l'agent direct) | Propagé au parent par l'uplink (et exécute les hooks locaux) ; reçu d'un enfant, il met à jour la route sauf si l'hôte est connecté localement. **[CHANGED] v3.0.6** : n'est plus émis aux reconnexions du même process (voir `host.reconnect`) |
+| `host.reconnect` | Connexion suivante du même process minion ≥ 3.0.6 (`conn_seq` > 1) | `[relay_id]` | Exclusif avec `host.up` ; traité comme `host.up` pour le routage (route mise à jour, jamais pour un hôte connecté localement) |
 | `host.down` | Agent se déconnecte | `[relay_id]` | — |
 | `host.suspended` / `host.resumed` | `POST /api/admin/minions/{hostname}/suspend` / `resume` sur le relay qui détient l'agent (#180) | `[relay_id]` | `status` absent, `suspended` ou `resumed`. Remonte comme `host.up`/`host.down` (même validation, même limite de débit `maxEventsPerSecond`). Un ancêtre ne l'accepte que pour un hôte **routé par le lien émetteur** (route connue de ce sous-arbre) et jamais pour un hôte connecté localement ; sinon rejeté avec `[SECURITY WARNING]`, lien ouvert. |
 | `host.new` | Agent apparaît via `agent_list` d'un enfant | `[relay_id_origine, relay_parent, ...]` (chaîne de l'agent) | — |
 | `host.conflict` | Un relay déclare un hôte déjà routé vers un autre relay | `[relay_id_nouveau_propriétaire]` (l'hôte va au nouveau proprietaire) | Rare ; indicatif d'une mal-configuration ou d'une attaque (détournement de route). Un événement max par changement de propriétaire. |
 | `relay.updated` | `group_vars` d'un relay changeant | `[relay_id]` | Propagé aux ancêtres ; **ne déclenche aucun hook** (jamais passé au dispatcher) — correction de doc v3.0.6 |
-| `relay.failover`, `relay.up`, `relay.reconnect`, `relay.down` (+ `host.reconnect`) | voir §9.2 « Événements de cycle de vie des relais » | `[relay_id, …]` | v3.0.6 ; clé FIFO = `relay_id`, sans hostname |
+| `relay.failover`, `relay.up`, `relay.reconnect`, `relay.down` | voir §9.2 « Événements de cycle de vie des relais » ; champs acceptés par kind : liste blanche de §9.2 | `[relay_id, …]` | v3.0.6 ; clé FIFO = `relay_id`, sans hostname ; `relay.*` accepté seulement pour l'émetteur du lien ou un descendant qu'il a déclaré |
 
 **Sémantique chaîne** :
 - Chaque relay ajoute son propre ID à la chaîne lors du relayage vers le parent

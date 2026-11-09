@@ -330,6 +330,21 @@ Aucune rupture de lien ni d'agent. Trois précautions **avant** de démarrer le 
 
 **Retour arrière vers v3.0.4** : à partir du premier renouvellement ou de la première rotation, l'état contient `prev_token_jti` et un binaire v3.0.4 ne sait plus le lire (il peut même basculer en silence sur `relay.state.prev`, plus ancien : `STATE_SPEC.md`). Procédure : arrêter **tous** les nœuds du relais, `secagent-server state restore --from <sauvegarde pre-v305> --state-dir "$STATE_DIR"` (vérifie le HMAC, sauvegarde l'état courant, écriture atomique), démarrer les binaires v3.0.4 avec la **même** clé maître (ou celle de la sauvegarde si `state rekey` a eu lieu entre-temps). **Perte** : tout ce que l'état contenait de plus récent que la sauvegarde — agents enrôlés, révocations, jetons créés, clés de signature de lien. Les agents dont le JWT a été renouvelé depuis ont un JTI inconnu de l'état restauré : ils reçoivent 401 et se ré-enrôlent (jeton réutilisable indispensable, sinon code 78). Noter avant le retour arrière les révocations à ré-appliquer.
 
+## Montée de version v3.0.5 → v3.0.6 : monter les parents d'abord (événements de relais, #225 #245 #265)
+
+La v3.0.6 ne change ni le format de `relay.state` ni les liens (aucune rupture, aucun champ d'état ajouté dans le code de ce lot ; retour arrière = binaires v3.0.5), mais elle ajoute des **événements** que seule la v3.0.6 comprend (SERVER_SPEC §9.2, HOOKS_SPEC §2) : `relay.failover`, `relay.up`, `relay.reconnect`, `relay.down`, `host.reconnect`. Un nœud v3.0.5 qui les reçoit d'un enfant v3.0.6 **jette tout kind inconnu** : un `[SECURITY WARNING] event_forward rejected … unsupported event kind` **par événement**, lien conservé (rien ne ferme un lien mixte), et chacun consomme le quota de 200 `event_forward` par seconde du `relay_id` (#216).
+
+**Règle : monter les parents d'abord**, niveau par niveau, de la racine vers les feuilles (même ordre passif/actif pour une paire), pour qu'aucun enfant v3.0.6 ne parle à un parent v3.0.5.
+
+Ce qui se passe si un enfant est monté avant son parent :
+
+- **Bruit de logs et quota** : un WARNING par `relay.*` / `host.reconnect` reçu, quota consommé ; sans danger, mais bruyant à chaque reconnexion d'agent de l'enfant.
+- **`host.reconnect` ignoré** : le parent v3.0.5 ne met pas la route de l'hôte à jour sur cet événement ; elle n'est corrigée qu'au prochain `topology_snapshot` de l'enfant (pas d'impact sur les tâches locales de l'enfant).
+- **Propagation interrompue** : un relais v3.0.5 **intermédiaire** arrête la remontée des nouveaux événements vers la racine v3.0.6 ; les hooks de la racine ne les voient pas tant qu'il n'est pas monté. `host.up` n'est pas affecté.
+- **Sens inverse** (parent v3.0.6, enfant ou minion v3.0.5) : sans danger. Un minion ou un relais v3.0.5 n'annonce pas de `conn_seq` : le parent le compte comme 1 et émet `host.up` / `relay.up` à **chaque** connexion, jamais `*.reconnect`.
+
+**Hooks existants, à relire avant la montée** : `host.up` n'est plus émis aux reconnexions d'un même process minion ≥ 3.0.6. Un hook qui doit s'exécuter à toute connexion s'abonne à `host.up` **et** `host.reconnect` (HOOKS_SPEC §2). Un hook sur un nom d'événement que le serveur n'émet jamais (`relay.updated`, faute de frappe) est signalé par un `[WARN]` au chargement.
+
 ## Gestion des Tokens Relay (v3.0.4)
 
 ### Créer un jeton de lien (sur la racine uniquement)

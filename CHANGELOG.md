@@ -6,6 +6,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v3.0.6] — en cours (milestone n° 20, non publiée)
+
+LOT-1 (stabilité et scripts de qualif), LOT-2 (gouvernance GitHub) et LOT-3.1 (événements de relais, `conn_seq`) ; les lots suivants complètent cette section. **Aucune rupture de lien ni de format d'état** ; une action avant la montée : **monter les parents d'abord** (voir « Changed » et `DOC/project/DEPLOYMENT.md`, « Montée de version v3.0.5 → v3.0.6 »).
+
+### Added
+- **Événements de relais pour les hooks (#225, #245)** : `relay.failover` (le nouveau maître, avant l'ouverture de tout port ; `cause` = `takeover` ou `start`, `instance_id`, `previous_instance_id`), `relay.up`, `relay.reconnect` (premier `topology_snapshot` d'un lien ; `mode`, `conn_seq`, `hosts_routed`, `relays_below`, `relays_below_ids`) et `relay.down` (`reason` = `revoked`, `rejected:<code>`, `peer_closed:<code>`, `idle_timeout` ou `read_error`, `hosts_routed`). Un `relay.*` n'a **pas de hostname** : clé d'ordre = `relay_id`, objet `host` absent du webhook et objet `relay` à la place, nouvelles variables `{{relay_id}}`, `{{reason}}`, `{{cause}}`, `{{mode}}`, `{{hosts_routed}}`, `{{conn_seq}}`… et `SECAGENT_RELAY_ID`, `SECAGENT_REASON`, `SECAGENT_CAUSE`, `SECAGENT_MODE`, `SECAGENT_HOSTS_ROUTED`, `SECAGENT_CONN_SEQ`, `SECAGENT_INSTANCE_ID`, `SECAGENT_PREVIOUS_INSTANCE_ID`… Ils remontent aux ancêtres par `event_forward`. Aucun `relay.down` quand un nœud ferme lui-même ses liens en s'arrêtant. Contrat : `DOC/server/SERVER_SPEC.md` §9.2, `DOC/contracts/WEBSOCKET.md` ; usage : `DOC/server/HOOKS_SPEC.md`.
+- **`host.reconnect` et `conn_seq` (#265)** : le client annonce le nombre de connexions de son process (en-tête `X-SecAgent-Conn-Seq` du minion, champ `conn_seq` du `relay_hello` / `relay_ack`) ; `1` = premier démarrage ⇒ `*.up`, au-delà ⇒ `*.reconnect`, exclusifs, sans mémoire côté serveur (la bascule actif/passif donne `*.reconnect`). Un minion ou un relais v3.0.5 n'annonce rien ⇒ `*.up`.
+- **Bascule actif/passif observable (#225)** : après une bascule, `relay.failover` puis `host.reconnect` des agents directs et `relay.reconnect` des relais enfants ; les hôtes derrière un enfant sont re-routés **sans événement `host.*`** (HOOKS_SPEC, « Bascule actif/passif »).
+- **Avertissement de configuration des hooks** : un hook sur un nom d'événement que le serveur n'émet jamais (`relay.updated`, faute de frappe) est accepté mais journalise un `[WARN]` au chargement ; les noms réservés des lots suivants sont acceptés sans avertissement.
+- **Qualif (#249, #256)** : `chain-test.sh` refuse (`REFUS:`, code 2) de lancer `smoke`, `failover` et `admission-503` si `ansible-core` n'est pas à la version épinglée de `.github/ci/requirements-ansible.txt` ; `failover-test.sh` exige le certificat TLS avant toute commande Docker et distingue ses refus de garde (code 2, sans diagnostic) de ses échecs d'exécution (code 1).
+
+### Changed
+- **[CHANGED] `host.up` n'est plus émis à la reconnexion d'un même process minion ≥ 3.0.6** (#265) : il ne l'est qu'à la première connexion du process (démarrage ou redémarrage du service ou de l'hôte) ; une reconnexion (coupure réseau, bascule du relais, keepalive) donne `host.reconnect`. **Pour agir à toute connexion, s'abonner à `host.up` _et_ `host.reconnect`.** Un minion v3.0.5 reste en `host.up` à chaque connexion.
+- **Montée de version : monter les parents d'abord (#225, #245)** : un parent v3.0.5 jette les nouveaux kinds d'un enfant v3.0.6 (`[SECURITY WARNING] … unsupported event kind` par événement, lien conservé, quota d'`event_forward` consommé), ignore `host.reconnect` jusqu'au prochain snapshot de l'enfant et un relais v3.0.5 intermédiaire interrompt leur remontée.
+- **Politique de `main` (#254)** : plus aucun push direct, y compris pour les commits de `/init-project` (branche `chore/init-sync-<date>` + PR) et la release (PR puis tag sur le commit de merge, rollback par PR de revert) ; procédures `CLAUDE.md` et `publish.prod.md` alignées.
+
+### Security
+- **Liste blanche des champs par kind d'événement (#225, #245)** : un événement `event_forward` n'accepte que les champs de détail de son kind (un champ connu sur le mauvais kind fait refuser l'événement) et ses valeurs libres (`reason`, `cause`, `mode`, `instance_id`) sont bornées par liste ou regex, car elles alimentent les variables de hooks et les webhooks. `conn_seq` est borné (0..2³¹, hors borne refusé dans un `event_forward`, ramené à 1 ailleurs) et **déclaratif** : un `reconnect` n'est pas une preuve d'instabilité (`DOC/security/SECURITY.md` §10).
+- **Protection de `main` et des tags (#254)** : ruleset `main` **sans contournement admin** (PR obligatoire, méthode de merge `merge` seule, checks « Build + tests Go », « Lint Go », « CLA signe » requis, ni force-push ni suppression), ruleset des tags `v*` (ni mise à jour ni suppression) et Environment `release` avec relecteur obligatoire, limité aux tags `v*.*.*` ; la suppression exceptionnelle d'un tag suit une procédure dédiée avec confirmation de l'utilisateur.
+
+### Fixed
+- **Connexion révoquée retirée avant le close 4001 (#255)** : le pair qui voit la trame de fermeture ne trouve plus le lien enregistré (fenêtre de quelques µs, sans défaut de sécurité).
+- **Data race `TestSpec214_MasterKeyIsNeverLoggedAtStart` (#263)** : le rapporteur de pertes du dispatcher et la purge sont attendus à la fermeture du nœud (`Dispatcher.Wait`, `Node.Close`) ; les logs de tests sont capturés dans un tampon verrouillé.
+- **Ordre des événements (#245, #265)** : l'émission locale est synchrone, la file d'un worker reflète l'ordre d'émission (`relay.failover` puis `relay.reconnect`) ; un `conn_seq` qui n'est pas un entier JSON vaut 1 au lieu de faire échouer la trame.
+
 ## [v3.0.5] — 2026-11-05 — Durcissement, renouvellement des JWT d'agent, licence AGPL
 
 **Pas de rupture de lien ni d'agent depuis la v3.0.4.** Deux points demandent une action avant la montée : `RSA_MASTER_KEY` d'au moins 32 octets non prévisible (#214) et sauvegarde de `STATE_DIR` ; retour arrière vers v3.0.4 possible seulement par `state restore` (voir `DOC/project/DEPLOYMENT.md`, « Montée de version v3.0.4 → v3.0.5 »). **Changement de licence : AGPL-3.0-or-later à la place de MIT** (voir « Licence »).

@@ -572,6 +572,14 @@ Lors de la remontée d'un événement par un relay enfant, la chaîne d'événem
 
 **Fail-closed** : les événements invalides sont silencieusement ignorés (ne bloquent pas le lien).
 
+### Événements de relais et `conn_seq` (v3.0.6, #225 #245 #265)
+
+**`conn_seq` est déclaratif.** Le compteur de connexions qui distingue `*.up` de `*.reconnect` est annoncé par le **client** (en-tête `X-SecAgent-Conn-Seq` d'un minion, `conn_seq` du `relay_hello` / `relay_ack` d'un relais) : un pair authentifié peut toujours annoncer 1 (donc `host.up` / `relay.up`) ou un grand nombre. Il ne parle que de lui-même (l'identité vient du JWT ou du jeton de lien, jamais de cette valeur) : aucune élévation de droits. Conséquence pour l'exploitation : **un `reconnect` n'est pas une preuve d'instabilité** et un `up` n'est pas une preuve de redémarrage ; ne pas déclencher d'action de sécurité sur la seule foi de ce compteur. La valeur est toujours bornée : absente, non entière, négative ou hors de 1..2³¹ ⇒ 1 sur l'en-tête, le hello et l'ack ; refusée (`invalid conn_seq`) dans un `event_forward` (`ws/handler.go` `ParseConnSeq`, `ws/relay_handler.go` `detailShapeError`). Aucun index, allocation ni boucle n'en dépend.
+
+**Formes bornées, liste blanche par kind.** Les champs de détail d'un événement venu d'un relais enfant (`reason`, `cause`, `instance_id`, `mode`, `old_chain`…) deviennent des variables de hooks (`{{reason}}`, `SECAGENT_*`) et le corps d'un webhook : ils ne sont donc jamais libres. Chaque kind n'accepte que sa liste de champs (SERVER_SPEC §9.2, `eventDetailFields`) ; un champ non vide hors de cette liste fait **refuser** l'événement (`[SECURITY WARNING]`, lien ouvert), et les valeurs admises sont bornées par liste ou regex (`reason`, `cause`, `mode`), par forme (`relay_id` : `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`, `instance_id` : `^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`) ou par taille (compteurs ≤ 10 000 000, `relays_below_ids` ≤ 256, chaînes ≤ 32). Un `relay.*` n'est accepté que pour l'émetteur du lien ou un descendant qu'il a déclaré (pas d'usurpation d'un autre sous-arbre) et ne porte jamais de hostname. Ces contrôles ferment un défaut relevé à l'audit du lot : avant la liste blanche, un enfant authentifié pouvait injecter des chaînes arbitraires dans `{{reason}}` / `{{cause}}` ; aucune variable de ces kinds n'alimentait un hook par défaut, et les hooks `shell` n'ont jamais de `sh -c` (exécution directe). Reste la règle d'exploitation : **ne pas placer une variable d'événement en tête d'un argument ou dans un chemin sans la contrôler** (HOOKS_SPEC §2).
+
+**Compatibilité** : un parent v3.0.5 jette les kinds inconnus (WARNING, lien ouvert, quota consommé) ; monter les parents d'abord (DEPLOYMENT.md).
+
 ### Filtrage des hooks — relay_chain_contains (v3.0.2)
 
 Les hooks configurés via `RELAY_HOOKS_CONFIG` JSON peuvent filtrer sur la chaîne d'événement :
