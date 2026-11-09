@@ -92,6 +92,7 @@ type Dispatcher struct {
 	droppedActions atomic.Int64 // actions lost with queued events at an abrupt stop
 	started        atomic.Bool
 	wg             sync.WaitGroup
+	reporterDone   chan struct{} // closed when the drop reporter has returned (after its last log line)
 
 	// upstream, when set, receives every LOCAL event of a propagated kind (see Propagated) so that
 	// it can be forwarded to the parent. Events received from a child (DispatchChain) are never
@@ -274,7 +275,9 @@ func (d *Dispatcher) Start(ctx context.Context) {
 			}
 		}()
 	}
-	go func() { // not part of wg: it waits for the workers on stop
+	d.reporterDone = make(chan struct{})
+	go func() { // not part of wg: it waits for the workers on stop; Wait waits for it
+		defer close(d.reporterDone)
 		tick := time.NewTicker(d.reportEvery)
 		defer tick.Stop()
 		for {
@@ -287,6 +290,16 @@ func (d *Dispatcher) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// Wait blocks until the workers and the drop reporter have returned, i.e. until the dispatcher
+// has logged its last line. Call it after cancelling the context given to Start; a dispatcher
+// never started returns at once.
+func (d *Dispatcher) Wait() {
+	d.wg.Wait()
+	if d.started.Load() && d.reporterDone != nil {
+		<-d.reporterDone
+	}
 }
 
 // abandon keeps a job a worker took out of its queue just as the dispatcher was stopping: it is

@@ -46,6 +46,7 @@ type Node struct {
 
 	store       *storage.Store
 	dispatcher  *hooks.Dispatcher
+	purgeWG     sync.WaitGroup // the periodic blacklist purge goroutine
 	journal     *actionlog.Journal
 	hooksPath   string
 	dispatchCtx context.Context
@@ -554,6 +555,12 @@ func (n *Node) Close() {
 		if n.cancel != nil {
 			n.cancel()
 		}
+		// Wait for the background goroutines that log (dispatcher + its reporter, purge) so that
+		// nothing writes to the log after Close returns (#263).
+		if n.dispatcher != nil {
+			n.dispatcher.Wait()
+		}
+		n.purgeWG.Wait()
 		if n.journal != nil {
 			if err := n.journal.Close(); err != nil {
 				log.Printf("action journal close: %v", err)
@@ -784,7 +791,9 @@ func (n *Node) startPurge(every time.Duration) {
 	if ctx == nil {
 		return
 	}
+	n.purgeWG.Add(1)
 	go func() {
+		defer n.purgeWG.Done()
 		t := time.NewTicker(every)
 		defer t.Stop()
 		for {

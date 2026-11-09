@@ -10,7 +10,6 @@ package server
 
 import (
 	"bytes"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,9 +27,7 @@ func startWithMasterKey(t *testing.T, stateDir, key string) (string, error) {
 	t.Setenv("STATE_DIR", stateDir)
 	t.Setenv("RELAY_HOOKS_CONFIG", t.TempDir()+"/absent.json")
 	t.Setenv("RELAY_ACTION_LOG", t.TempDir()+"/actions.log")
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	defer log.SetOutput(os.Stderr)
+	buf := captureLogs(t)
 
 	cfg, err := ConfigFromEnv()
 	if err != nil {
