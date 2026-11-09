@@ -531,10 +531,11 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 	// B55: replay the revocation check now that a revocation would find this connection to close.
 	if rerr := replayRevokedCheck(hostname, id.JTI); rerr != nil {
 		log.Printf("[SECURITY WARNING] agent connection closed right after registration: hostname=%q jti=%q: %v", hostname, truncateJTI(id.JTI), rerr)
+		// Unregister BEFORE the close frame: once the peer has seen 4001 the link is already gone (#255).
+		unregisterIfCurrent(hostname, agentConn)
 		agentConn.mu.Lock()
 		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(WSCloseRevoked, "token_revoked"), time.Now().Add(time.Second))
 		agentConn.mu.Unlock()
-		unregisterIfCurrent(hostname, agentConn)
 		_ = conn.Close()
 		return
 	}
