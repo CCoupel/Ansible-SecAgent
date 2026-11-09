@@ -60,9 +60,22 @@ func TestRelayEvents_3000HostsBehindAChildGiveOneRelayEvent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("an agent could not connect to the child: %v", err)
 	}
-	waitFor(t, "the root ran a host.up per indirect host", func() bool { return root.hookCount("host.up ") >= agents })
+	// The per-host host.up events of a burst are NOT all expected at the root: the parent accepts 200 event_forward per
+	// second per relay (maxEventsPerSecond) and drops the rest (journalised), until the paced upstream queue of #246
+	// (LOT-3.2) exists. Measured on this rig: ~500 of 3 000 reach the root. What this test pins is the relay events and
+	// the absence of per-host events caused by the SNAPSHOT: wait for the host.up count to settle, then take the baseline.
 	waitFor(t, "relay.up", func() bool { return len(root.relayLines("relay.up", "relay1")) == 1 })
-	hostUps := root.hookCount("host.up ")
+	hostUps := -1
+	waitFor(t, "the host.up of the connection burst have settled", func() bool {
+		n := root.hookCount("host.up ")
+		settled := n == hostUps
+		hostUps = n
+		time.Sleep(3 * time.Second)
+		return settled
+	})
+	if hostUps == 0 {
+		t.Fatal("no host.up at all reached the root")
+	}
 
 	root.closeRelay("relay1", 1011)
 	waitFor(t, "relay.reconnect after the cut", func() bool { return len(root.relayLines("relay.reconnect", "relay1")) == 1 })
