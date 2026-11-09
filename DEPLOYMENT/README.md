@@ -74,29 +74,27 @@ PRIVATE/
 │   ├── secrets/   # SECRETS_DIR : jwt_secret_key, admin_token, rsa_master_key (0400)
 │   ├── pki/       # QUALIF_TLS_DIR / PKI_OUT : ca.crt, ca.key, tls.crt, tls.key (CA de test)
 │   └── ci-tls/    # certificat jetable de `failover-test.sh setup-ci`
-└── prod/          # PUBLIC UNIQUEMENT, jamais lue par les scripts
-    ├── pki/ca.crt # certificat de la CA PROD (bundle de confiance des clients)
+└── prod/          # RÉFÉRENCE des secrets et de la PKI PROD (depuis 2026-11-09), jamais lue par les scripts
+    ├── pki/       # ca.key (ne sort JAMAIS de ce répertoire), ca.crt, tls.key, tls.crt
+    ├── secrets/   # jwt_secret_key, admin_token, rsa_master_key (+ repeater_upstream_token)
     ├── .env       # variables non secrètes de l'hôte (copie)
-    └── README.txt # renvoie vers la référence des secrets (ci-dessous)
-
-~/secagent-private/prod/   # RÉFÉRENCE des secrets et de la PKI PROD : ext4 du poste, 0700, hors dépôt
-├── pki/           # ca.key (ne sort JAMAIS de ce répertoire), ca.crt, tls.key, tls.crt
-├── secrets/       # jwt_secret_key, admin_token, rsa_master_key (+ repeater_upstream_token)
-└── .env
+    └── README.txt # consignes (modes, ca.key, risque partage)
 ```
 
 - **Racine** : variable `SECAGENT_PRIVATE_DIR` (défaut `<dépôt>/PRIVATE`). Les défauts `SECRETS_DIR`, `QUALIF_TLS_DIR` et `PKI_OUT` en dérivent ; une variable explicite prime.
-- **Exception `CHAIN_DIR`** : les jetons de chaîne (enrôlement, plugin, `child.env`, `image-ids`) sont volatils et ne sont **pas** sous `PRIVATE/` : défaut `${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>` (0700, fichiers 0600), car un répertoire NTFS en 0777 est refusé par le plugin. `chain-test.sh` refuse un `CHAIN_DIR` non absolu, lien symbolique, non répertoire, d'un autre uid ou plus large que 0700.
+- **Exception `CHAIN_DIR`** : les jetons de chaîne (enrôlement, plugin, `child.env`, `image-ids`) sont volatils et ne sont **pas** sous `PRIVATE/` : défaut `${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>` (0700, fichiers 0600), sur le système de fichiers local du poste (hors partage réseau ; le plugin refuse un répertoire plus large que 0700). `chain-test.sh` refuse un `CHAIN_DIR` non absolu, lien symbolique, non répertoire, d'un autre uid ou plus large que 0700.
 - **Chemin absolu obligatoire** : `SECAGENT_PRIVATE_DIR` doit être un chemin absolu ; un chemin relatif est refusé par les scripts.
-- **Risque NTFS** : un `PRIVATE/` situé sur `/mnt/c` (NTFS) est lisible par tout processus du poste (`chmod`/`chown` sans effet, modes 0400/0600 non appliqués). Risque accepté pour la qualif (secrets jetables, de test) ; **`PRIVATE/prod/` ne contient donc que du public** (`pki/ca.crt`, `.env`, `README.txt`) : aucun secret ni clé PROD sur NTFS. La référence des secrets et de la PKI PROD est `~/secagent-private/prod/` (système de fichiers qui honore les permissions), avec sauvegarde chiffrée hors poste par l'utilisateur.
+- **Poste et système de fichiers** (depuis 2026-11-09) : poste Linux, dépôt sur le partage réseau **MooseFS** (`/share/MFS/...`). Les modes POSIX y sont conservés (`chmod 600`/`700` constatés) : les scripts se lancent directement depuis le checkout. L'ancien poste WSL (dépôt sur `/mnt/c`, NTFS, `chmod` sans effet, copie `git archive` obligatoire) n'est plus utilisé.
+- **Secrets PROD dans `PRIVATE/prod/`** (décision utilisateur du 2026-11-09 ; l'ancienne référence `~/secagent-private/prod/`, ext4 du poste WSL, est abandonnée) : fichiers **0600**, dossiers **0700**, propriétaire = utilisateur du poste ; `ca.key` ne sort **jamais** de `PRIVATE/prod/pki/` ; sauvegarde chiffrée **hors poste et hors partage** (`ca.key`, `rsa_master_key`, `relay.state`) par l'utilisateur. Secrets PROD propres à PROD, jamais ceux de qualif.
+- **Risque résiduel (partage réseau)** : tout client MooseFS monté en root lit `PRIVATE/` quels que soient les modes. Risque accepté par l'utilisateur pour la qualif (secrets jetables) et pour la PROD (décision du 2026-11-09).
 - **Fail-closed** : si la racine n'existe pas, les scripts de qualif refusent de générer des secrets (message nommant `SECAGENT_PRIVATE_DIR`) ; ils ne créent que les sous-répertoires.
-- **Jamais sur l'hôte, jamais dans l'archive** : `PRIVATE/` ne voyage ni vers un hôte, ni dans l'archive de release `secagent-compose-<version>.tar.gz`. Sur un hôte PROD la disposition reste `./secrets` + `.env` à côté du Compose ; `PRIVATE/prod/` (public) et `~/secagent-private/prod/` (référence) restent sur le poste. Les secrets de qualif arrivent sur l'hôte distant uniquement via les volumes (`push-secrets`, `push-tls`).
+- **Jamais sur l'hôte, jamais dans l'archive** : `PRIVATE/` ne voyage ni vers un hôte, ni dans l'archive de release `secagent-compose-<version>.tar.gz`. Sur un hôte PROD la disposition reste `./secrets` + `.env` à côté du Compose (déposés par flux depuis `PRIVATE/prod/`) ; `PRIVATE/prod/` reste sur le poste. Les secrets de qualif arrivent sur l'hôte distant uniquement via les volumes (`push-secrets`, `push-tls`).
 - **Pourquoi** : le 2026-11-03, les secrets de la qualif n'avaient pour seule source qu'une copie de travail éphémère (scratchpad), perdue ensuite : aucune source durable. `PRIVATE/` est cette source durable, hors des copies de travail.
-- **Lancer depuis une copie hors `/mnt/c`** (NTFS ignore `chmod`/`chown`, nécessaire pour les modes 0400/0600) : l'exécution depuis la copie ne doit jamais écrire de secret dans la copie. Passer la racine du checkout en chemin **absolu** :
+- **Lancer depuis une autre copie** (worktree, scratchpad) : l'exécution depuis la copie ne doit jamais écrire de secret dans la copie. Passer la racine du checkout en chemin **absolu** :
 
 ```bash
-export SECAGENT_PRIVATE_DIR=/mnt/c/<chemin>/Ansible_SecAgent/PRIVATE   # absolu, jamais relatif
-cd <copie-hors-/mnt/c>/DEPLOYMENT/qualif
+export SECAGENT_PRIVATE_DIR=/share/MFS/<chemin>/Ansible_SecAgent/PRIVATE   # absolu, jamais relatif
+cd <copie>/DEPLOYMENT/qualif
 bash chain-test.sh ci-prepare
 ```
 

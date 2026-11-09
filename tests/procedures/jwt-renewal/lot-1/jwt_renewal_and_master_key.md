@@ -8,7 +8,7 @@
 
 - [ ] Environnement : QUALIF (192.168.1.218), chaîne `DEPLOYMENT/qualif/docker-compose.server.yml` (racine actif/passif a/b) + au moins 2 minions
 - [ ] Donnees : `AGENT_JWT_TTL=10m` et `AGENT_JWT_RENEW_INTERVAL=3m` sur les relays (durées courtes pour la qualif) ; les minions déjà enrôlés **sans** jeton d'enrôlement réutilisable actif (jetons consommés)
-- [ ] Acces : `ADMIN_TOKEN`, accès `docker.exe compose` sur l'hôte de qualif
+- [ ] Acces : `ADMIN_TOKEN`, accès `docker compose` (CLI Linux, `DOCKER_HOST=tcp://192.168.1.218:2375`) sur l'hôte de qualif
 - [ ] Verifier **avant** la montée de version que les `RSA_MASTER_KEY` de la qualif font ≥ 32 octets (`printf %s "$RSA_MASTER_KEY" | wc -c`) ; sinon `state rekey` d'abord (risque du plan)
 
 ## Scenarios

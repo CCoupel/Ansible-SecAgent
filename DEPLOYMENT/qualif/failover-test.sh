@@ -24,7 +24,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 fail() { echo "ECHEC: $*" >&2; exit 1; }
 # Racine UNIQUE des donnees privees du poste (#250) : secrets, PKI de test, jetons de la chaine. Depuis une copie du
-# depot (scratchpad hors /mnt/c), exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE (chemin absolu).
+# depot (worktree, scratchpad), exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE (chemin absolu).
 PRIVATE_DIR="${SECAGENT_PRIVATE_DIR:-$REPO/PRIVATE}"
 PRIVATE_DIR="${PRIVATE_DIR%/}"
 # Garde FAIL-CLOSED (incident du 2026-11-03 : secrets generes dans une copie ephemere puis perdus) : un chemin situe

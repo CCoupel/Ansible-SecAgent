@@ -60,8 +60,8 @@ C_A="secagent-qualif-a"; C_B="secagent-qualif-b"; C_CHILD="secagent-qualif-child
 export C_A C_B
 TOKEN_TTL="${TOKEN_TTL:-2h}"
 LINK_TTL="${LINK_TTL:-$TOKEN_TTL}"
-# Jetons de la chaine : VOLATILS (regeneres par bootstrap), donc hors PRIVATE/ ; defaut sur /tmp (ext4 sous WSL : les modes
-# 0700/0600 exiges par le plugin y sont honores, contrairement a NTFS). Exporte : docker-compose.chain.yml lit les env_file
+# Jetons de la chaine : VOLATILS (regeneres par bootstrap), donc hors PRIVATE/ ; defaut sur /tmp (systeme de fichiers local
+# du poste, hors partage reseau : les modes 0700/0600 exiges par le plugin y sont honores). Exporte : docker-compose.chain.yml lit les env_file
 # des minions et de l'enfant dans ${CHAIN_DIR:-./chain}.
 _tmp="${TMPDIR:-/tmp}"; CHAIN_DIR="${CHAIN_DIR:-${_tmp%/}/secagent-qualif-chain-$(id -u)}"; unset _tmp
 case "$CHAIN_DIR" in ?*/) CHAIN_DIR="${CHAIN_DIR%/}" ;; esac   # slash final retire, sauf `/` (refuse tel quel par la garde)

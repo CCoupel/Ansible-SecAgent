@@ -10,7 +10,8 @@ Le nettoyage des caches existants de l'utilisateur ne regarde pas les agents.
 Poste de travail depuis 2026-11-09 : **Linux natif** (Ubuntu 26.04, conteneur ; plus de WSL ni de `/mnt/c`). Le
 `$HOME` (`/home/cyril`, overlay du conteneur) est **recréé au démarrage du poste** : ne rien y considérer comme durable.
 
-- Le Go du poste est **`~/.local/go`** (Go **1.27.3**, distribution officielle), **dans le PATH** via `~/.local/bin/go`.
+- Le Go du poste est **`~/.local/go`** (Go **1.27.3**, distribution officielle), **dans le PATH** via `~/.local/bin/go` ;
+  il est installé par le bootstrap du conteneur (`.claude-launcher/env-template.yaml`, étape `setup`), pas par un agent.
   C'est la version exigée par `GO/go.work` (`go 1.27.3`, alignée sur l'image de build `golang:1.27-alpine` ;
   `GO/go.mod` : `go 1.24.0`, version minimale du langage). On l'**utilise en lecture seule** avec `GOTOOLCHAIN=local`.
   L'ancien `/usr/local/go` (1.24.2) et les toolchains de `~/go/pkg/mod/golang.org/` n'existent plus.
@@ -18,16 +19,18 @@ Poste de travail depuis 2026-11-09 : **Linux natif** (Ubuntu 26.04, conteneur ; 
   si un jour `~/.local/go` n'est plus en 1.27.3, `GOTOOLCHAIN=auto` téléchargerait le toolchain dans `~/go` : c'est
   la cause de l'écriture hors scratchpad constatée en v3.0.4. Le bloc le télécharge alors **dans le scratchpad**
   (`GOTOOLCHAIN=go1.27.3`, amorce = le `go` du PATH, base de sommes ACTIVE : toolchain vérifié par sum.golang.org).
-- **Pas de compilateur C sur le poste** (`gcc`/`cc` absents, `go env CGO_ENABLED` = 0) : **`go test -race` est
-  impossible en local**. Le détecteur de course n'est rejoué que par la CI (`.github/workflows/ci.yml`) ; un rapport
-  local le dit explicitement (« `-race` non rejoué localement »), jamais « vert ». Aucune installation de `gcc`.
+- **CGO / `-race`** : `go test -race` exige un compilateur C. Le 2026-11-09 le poste n'en avait pas (`gcc` absent,
+  `go env CGO_ENABLED` = 0) ; `gcc` et les en-têtes libc (`libc6-dev` sous apt) sont désormais **déclarés dans
+  `.claude-launcher/env.yaml`** (`packages`, `packages_by_manager`). **`-race` local disponible une fois le poste
+  reconstruit avec ce bootstrap.** Vérifier avant de lancer : `command -v gcc && go env CGO_ENABLED` (→ `1`). Sans gcc,
+  le rapport dit « `-race` non rejoué localement » (la CI le lance toujours), jamais « vert ». Aucun agent n'installe gcc.
 - Le cache de modules de l'utilisateur (`~/go/pkg/mod/cache/download`) ne contient que quelques modules : il reste
   exposé en premier comme proxy fichier, `proxy.golang.org` sert le reste. `go` ne copie que les modules nécessaires
   dans le scratchpad et `go.sum` vérifie chaque module. `GOFLAGS=-mod=mod` est refusé en mode workspace (`go.work`) :
   ne pas l'ajouter.
 - Autres outils du poste : `jq` 1.8.1, `gh` **2.46.0** (< 2.49 : `gh attestation verify` exige un `gh` récent
-  téléchargé dans le scratchpad, voir `deploy.qualif.md`), `python3` 3.14 **sans `yaml`** (`scripts/ci/check_actions_pinned.py`
-  et `check_compose_selftest.py` l'importent : venv du scratchpad avec `pip install pyyaml`), **ni client Docker ni `ssh`**.
+  téléchargé dans le scratchpad, voir `deploy.qualif.md`), `python3` 3.14 système **sans `yaml`** (`scripts/ci/check_actions_pinned.py`
+  et `check_compose_selftest.py` l'importent : utiliser le venv du projet `.github/ci/.venv`, construit par le bootstrap, qui l'a), **ni client Docker ni `ssh`**.
 
 ## Bloc d'environnement (à copier tel quel avant toute commande `go`)
 
@@ -59,8 +62,8 @@ module absent de `go.sum` ; pour les modules du dépôt, `go.sum` suffit (aucune
 
 ## Commandes
 
-- Tests, depuis `GO/` : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test ./... -timeout 900s` (sans `-race` en local :
-  pas de CGO sur le poste, voir « Faits à connaître » ; la CI, elle, lance `-race`).
+- Tests, depuis `GO/` : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test -race ./... -timeout 900s` si `gcc` est présent
+  (`CGO_ENABLED=1`), sinon sans `-race` en le signalant (voir « Faits à connaître ») ; la CI lance toujours `-race`.
   Écart de timeout : 900 s est la valeur consignée dans la mémoire projet (`MEMORY.md`, « CI GitHub et outils »),
   prévue comme marge pour un poste d'agent (dépôt sur partage réseau MooseFS, CPU partagé) ; `scripts/ci.sh`,
   `GO/Makefile` et le job `build-test` de la CI utilisent 300 s. Un dépassement à 300 s sur un poste d'agent ne
@@ -98,8 +101,8 @@ la recontrôler lors d'une montée de version). Même principe pour tout autre o
 Le dépôt est sur `/share/MFS/...`, un **partage réseau MooseFS** (FUSE, maître 192.168.1.231, `allow_other`). Les
 modes POSIX y sont conservés (`chmod 600`/`700` constatés le 2026-11-09) : le contournement `git archive` hors `/mnt/c`
 n'est plus nécessaire pour les permissions. Mais c'est un partage : tout client MooseFS monté en root peut lire les
-fichiers, quels que soient leurs modes. Conséquences : aucun secret PROD sous le dépôt (`PRIVATE/prod/` = public
-seulement), jetons volatils toujours dans `${TMPDIR:-/tmp}` (local au poste), et des E/S plus lentes que sur un disque
+fichiers, quels que soient leurs modes. Conséquences : les secrets PROD de `PRIVATE/prod/` (référence depuis le
+2026-11-09, décision utilisateur) sont exposés à ce risque résiduel, jetons volatils toujours dans `${TMPDIR:-/tmp}` (local au poste), et des E/S plus lentes que sur un disque
 local (d'où la marge de 900 s).
 
 ## Vérification (qa)
