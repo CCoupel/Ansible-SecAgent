@@ -54,6 +54,7 @@ func (f *HookFilter) Matches(relayChain []string) bool {
 // Validate checks the configuration. LoadConfig calls it: a configuration that does not validate
 // is rejected as a whole (fail closed: the previous configuration, or none, stays in force).
 func (c *HooksConfig) Validate() error {
+	c.warnDuplicateEvents()
 	for i, h := range c.Hooks {
 		if h.Event == "" {
 			return fmt.Errorf("hook[%d]: missing event", i)
@@ -76,6 +77,22 @@ func (c *HooksConfig) Validate() error {
 		}
 	}
 	return nil
+}
+
+// warnDuplicateEvents logs one WARNING per event that several hooks listen to: the dispatcher runs
+// the FIRST matching hook only (a later one for the same event never runs; use several actions in
+// one hook, or distinct filters).
+func (c *HooksConfig) warnDuplicateEvents() {
+	count := map[string]int{}
+	var order []string
+	for _, h := range c.Hooks {
+		if count[h.Event]++; count[h.Event] == 2 {
+			order = append(order, h.Event)
+		}
+	}
+	for _, ev := range order {
+		log.Printf("[WARN] hooks: %d hooks listen to event %q: only the first matching one runs, the others never do", count[ev], ev)
+	}
 }
 
 // ActionDef configures a single hook action.

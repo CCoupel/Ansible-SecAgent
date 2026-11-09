@@ -441,3 +441,25 @@ func TestPropagatedCoversTheNewKinds(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigWarnsWhenSeveralHooksListenToTheSameEvent(t *testing.T) {
+	var mu sync.Mutex
+	var out strings.Builder
+	prev := log.Writer()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) { mu.Lock(); defer mu.Unlock(); return out.Write(p) }))
+	defer log.SetOutput(prev)
+
+	cfg := &HooksConfig{Hooks: []HookDef{{Event: "host.up"}, {Event: "host.down"}, {Event: "host.up"}, {Event: "host.up"}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got := out.String()
+	mu.Unlock()
+	if n := strings.Count(got, `3 hooks listen to event "host.up": only the first matching one runs`); n != 1 {
+		t.Errorf("want one warning for host.up, got %d:\n%s", n, got)
+	}
+	if strings.Contains(got, `"host.down"`) {
+		t.Errorf("host.down has a single hook, no warning expected:\n%s", got)
+	}
+}
