@@ -30,15 +30,26 @@ git push origin milestone/vX.Y.Z    # état exact de la branche (inchangé)
 gh pr create --base main --head milestone/vX.Y.Z --title "Release v$VERSION" --body "<résumé du milestone>"
 # attendre la CI verte et la validation de la PR, puis :
 gh pr merge <n> --merge --delete-branch=false    # commit de merge (pas de squash/rebase) ; branche supprimée plus tard par /end-session
-git fetch origin main                            # le tag se pose sur le commit de merge de la PR
-git tag -a "v$VERSION" "origin/main" -m "Release v$VERSION"   # après contrôle que origin/main = commit de merge
+git fetch origin main
+SHA=$(gh pr view <n> --json mergeCommit -q .mergeCommit.oid)   # commit de merge de la PR
+[ -n "$SHA" ] && [ "$(git rev-parse origin/main)" = "$SHA" ] || { echo "REFUS : origin/main != commit de merge de la PR"; exit 1; }
+git tag -a "v$VERSION" "$SHA" -m "Release v$VERSION"
 git push origin "v$VERSION"                      # tag = confirmation dédiée ; Environment `release` : reviewer requis
 ```
 
 - Plus de worktree de release ni de `push origin HEAD:main`.
+- Les PR vers `main` n'acceptent que la méthode **merge** (`--merge`) : ni squash ni rebase.
 - **Rollback** : PR de revert (branche `revert/vX.Y.Z` depuis `origin/main`, `git revert -m 1 <merge>`, `gh pr create`,
-  `gh pr merge --merge`), jamais de push direct ni de force ; le tag erroné est supprimé localement et à distance
-  seulement sur décision de l'utilisateur.
+  `gh pr merge --merge`), jamais de push direct ni de force.
+- **Suppression exceptionnelle d'un tag erroné** (les tags sont protégés par le ruleset 26864482) : uniquement après
+  **confirmation utilisateur dédiée** (`AskUserQuestion`), puis :
+  ```bash
+  gh api -X PUT repos/CCoupel/Ansible-SecAgent/rulesets/26864482 -f enforcement=disabled
+  git push origin --delete "v$VERSION" && git tag -d "v$VERSION"
+  gh api -X PUT repos/CCoupel/Ansible-SecAgent/rulesets/26864482 -f enforcement=active
+  gh api repos/CCoupel/Ansible-SecAgent/rulesets/26864482 -q .enforcement   # doit afficher « active »
+  ```
+  La réactivation est obligatoire même si la suppression échoue ; sa vérification fait partie du compte rendu.
 
 ## Poste (Linux natif depuis 2026-11-09)
 
