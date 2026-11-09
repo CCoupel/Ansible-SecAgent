@@ -33,6 +33,115 @@ refuse() { echo "REFUS: $*" >&2; exit 2; }
 # depot (worktree, scratchpad), exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE (chemin absolu).
 PRIVATE_DIR="${SECAGENT_PRIVATE_DIR:-$REPO/PRIVATE}"
 PRIVATE_DIR="${PRIVATE_DIR%/}"
+# --- CLI de conteneurs (#267, LOT-4) ---------------------------------------------------------------------------------
+# CONTAINER_CLI=docker (defaut : CI, ancienne qualif .218 par DOCKER_HOST) | podman (noeuds rootless srv3/srv4 : chaque
+# commande est executee SUR LE NOEUD par `ssh cyril@<ip> podman ...`, podman-compose lance sur le noeud depuis
+# PRIVATE/QUALIF/<srvX>/cyril/secagent/release/ ; aucun demon ni client Podman sur le poste).
+#   CONTAINER_HOST_A / CONTAINER_HOST_B : ssh://cyril@<ip>/run/user/1000/podman/podman.sock (racine a / noeud b+enfant+minions)
+#   QUALIF_NODE_A / QUALIF_NODE_B (srv3 / srv4), CONTAINER_SSHKEY, CONTAINER_KNOWN_HOSTS (PRIVATE/QUALIF/poste-cyril/)
+#   SECRET_OWNER_UID : proprietaire des fichiers de secrets (10001 sous Docker, 1000 = cyril sous Podman keep-id)
+CONTAINER_CLI="${CONTAINER_CLI:-docker}"
+case "$CONTAINER_CLI" in docker|podman) ;; *) refuse "CONTAINER_CLI='$CONTAINER_CLI' : attendu docker ou podman" ;; esac
+if [ "$CONTAINER_CLI" = podman ]; then
+  QUALIF_NODE_A="${QUALIF_NODE_A:-srv3}"; QUALIF_NODE_B="${QUALIF_NODE_B:-srv4}"
+  CONTAINER_HOST_A="${CONTAINER_HOST_A:-ssh://cyril@192.168.1.213/run/user/1000/podman/podman.sock}"
+  CONTAINER_HOST_B="${CONTAINER_HOST_B:-ssh://cyril@192.168.1.214/run/user/1000/podman/podman.sock}"
+  CONTAINER_SSHKEY="${CONTAINER_SSHKEY:-$PRIVATE_DIR/QUALIF/poste-cyril/id_ed25519}"
+  CONTAINER_KNOWN_HOSTS="${CONTAINER_KNOWN_HOSTS:-$PRIVATE_DIR/QUALIF/poste-cyril/known_hosts}"
+  SECRET_OWNER_UID="${SECRET_OWNER_UID:-1000}"
+  # Les noeuds voient PRIVATE/ au MEME chemin absolu que le poste (autofs /share/MFS/ROOT) : sinon les chemins passes a
+  # podman-compose (CHAIN_DIR, QUALIF_TLS_DIR, etat) designeraient autre chose sur le noeud.
+  case "$PRIVATE_DIR" in /share/MFS/ROOT/*) ;; *) refuse "CONTAINER_CLI=podman : SECAGENT_PRIVATE_DIR=$PRIVATE_DIR hors de /share/MFS/ROOT (chemin vu par les noeuds)" ;; esac
+  export QUALIF_NODE_A QUALIF_NODE_B CONTAINER_HOST_A CONTAINER_HOST_B CONTAINER_SSHKEY CONTAINER_KNOWN_HOSTS SECRET_OWNER_UID
+else
+  SECRET_OWNER_UID="${SECRET_OWNER_UID:-10001}"
+fi
+export CONTAINER_CLI SECRET_OWNER_UID
+
+ssh_target() { # $1 ssh://user@hote[:port]/socket -> "user@hote" (port ignore : 22) ; refus si la forme est inattendue
+  local u="${1#ssh://}"; u="${u%%/*}"; u="${u%%:*}"
+  [[ $1 == ssh://* && $u =~ ^[a-z_][a-z0-9_-]*@[A-Za-z0-9.-]+$ ]] || refuse "CONTAINER_HOST='$1' : attendu ssh://<user>@<hote>/run/user/<uid>/podman/podman.sock"
+  printf '%s' "$u"
+}
+node_addr() { local t; t="$(ssh_target "$(node_url "$1")")"; printf '%s' "${t#*@}"; }   # $1 A|B -> adresse IP/nom
+node_url() { case "$1" in A) printf '%s' "$CONTAINER_HOST_A" ;; B) printf '%s' "$CONTAINER_HOST_B" ;; *) refuse "noeud '$1' : attendu A|B" ;; esac; }
+node_name() { case "$1" in A) printf '%s' "$QUALIF_NODE_A" ;; B) printf '%s' "$QUALIF_NODE_B" ;; esac; }
+nodes() { if [ "$CONTAINER_CLI" = podman ]; then echo A B; else echo local; fi; }
+# SSH vers un noeud : cle et known_hosts de l'environnement, verification STRICTE de l'hote, connexion multiplexee
+# (les attentes de sante interrogent le noeud toutes les 0,2 s). $1 A|B, $2 stdin|nostdin, puis la commande distante,
+# passee mot a mot (printf %q : aucun mot n'est reinterprete par le shell distant).
+node_ssh() {
+  local n="$1" in="$2" t cp; shift 2
+  t="$(ssh_target "$(node_url "$n")")"
+  [ -f "$CONTAINER_SSHKEY" ] && [ -f "$CONTAINER_KNOWN_HOSTS" ] || refuse "cle SSH ($CONTAINER_SSHKEY) ou known_hosts ($CONTAINER_KNOWN_HOSTS) absents"
+  cp="${TMPDIR:-/tmp}"; cp="${cp%/}/secagent-ssh-$(id -u)"
+  [ -d "$cp" ] || ( umask 077; mkdir -p "$cp" )
+  local opts=(-i "$CONTAINER_SSHKEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes
+              -o UserKnownHostsFile="$CONTAINER_KNOWN_HOSTS" -o ConnectTimeout=10
+              -o ControlMaster=auto -o ControlPath="$cp/%C" -o ControlPersist=120)
+  [ "$in" = stdin ] || opts+=(-n)
+  ssh "${opts[@]}" "$t" "$(printf '%q ' "$@")"
+}
+node_of() { # $1 nom de conteneur ou de service -> A|B (vide si inconnu)
+  case "$1" in
+    "$C_A"|secagent-server-a) echo A ;;
+    "$C_B"|secagent-server-b|"${C_CHILD:-secagent-qualif-child}"|secagent-child|minion-*|*_minion-*|*-minion-*) echo B ;;
+  esac
+}
+# Remplace `docker` : docker local/DOCKER_HOST, ou `podman` SUR le noeud du conteneur vise (sinon $CTR_NODE, defaut B).
+ctr() {
+  if [ "$CONTAINER_CLI" = docker ]; then docker "$@"; return; fi
+  local a n="" in=nostdin
+  for a in "$@"; do [ -n "$n" ] || n="$(node_of "$a")"; [ "$a" = -i ] && in=stdin; done
+  [ "${1:-}" = load ] && in=stdin
+  node_ssh "${n:-${CTR_NODE:-B}}" "$in" podman "$@"
+}
+# Variables transmises a podman-compose sur le noeud (Compose interpole cote noeud) : liste FERMEE, valeurs non secretes.
+DC_ENV_VARS="SECAGENT_IMAGE SECAGENT_MINION_IMAGE SECAGENT_PULL_POLICY SECAGENT_MEM_LIMIT LOG_LEVEL GOMEMLIMIT QUALIF_TLS_DIR CHAIN_DIR SECAGENT_HOOKS_VOLUME SECAGENT_LINK_VOLUME SECAGENT_SECRETS_VOLUME SECAGENT_TLS_VOLUME QUALIF_PRIVATE_DIR QUALIF_NODE_A_ADDR"
+release_dir() { printf '%s' "$PRIVATE_DIR/QUALIF/$(node_name "$1")/cyril/secagent/release"; }
+dc_on() { # $1 A|B, puis les arguments podman-compose
+  local n="$1" v env=(); shift
+  # shellcheck disable=SC2034   # lues par indirection (${!v}) ci-dessous
+  QUALIF_PRIVATE_DIR="$PRIVATE_DIR/QUALIF"
+  # shellcheck disable=SC2034
+  QUALIF_NODE_A_ADDR="$(node_addr A)"
+  for v in $DC_ENV_VARS; do [ -z "${!v:-}" ] || env+=("$v=${!v}"); done
+  node_ssh "$n" nostdin env -C "$(release_dir "$n")" "${env[@]}" podman-compose -p "$PROJECT" \
+    -f docker-compose.chain.yml -f docker-compose.hooks.yml -f docker-compose.podman.qualif.yml "$@"
+}
+# Remplace "${DC[@]}" : sous Podman, les services sont repartis par noeud (a -> A ; b, enfant, minions -> B).
+#   run/exec : sur le noeud du premier service ; avec services : chaque noeud recoit les siens ; sans service : `up`
+#   demarre la racine de chaque noeud (a sur A, b sur B), les autres commandes (down, logs, ps...) visent les deux noeuds.
+dc() {
+  if [ "$CONTAINER_CLI" = docker ]; then "${DC[@]}" "$@"; return; fi
+  local pre=() sub="" rest=() a i=0
+  local args=("$@")
+  while [ $i -lt ${#args[@]} ]; do
+    a="${args[$i]}"
+    if [ -z "$sub" ]; then
+      case "$a" in -f|-p|--profile|--env-file) pre+=("$a" "${args[$((i+1))]}"); i=$((i+2)); continue ;; -*) pre+=("$a") ;; *) sub="$a" ;; esac
+    else rest+=("$a"); fi
+    i=$((i+1))
+  done
+  [ -n "$sub" ] || refuse "dc : sous-commande absente"
+  local n
+  case "$sub" in
+    run|exec)
+      for a in "${rest[@]}"; do n="$(node_of "$a")"; [ -z "$n" ] || break; done
+      [ -n "$n" ] || refuse "dc $sub : service inconnu (${rest[*]})"
+      dc_on "$n" "${pre[@]}" "$sub" "${rest[@]}"; return ;;
+  esac
+  local svcA=() svcB=() opts=()
+  for a in "${rest[@]}"; do
+    case "$(node_of "$a")" in A) svcA+=("$a") ;; B) svcB+=("$a") ;; *) opts+=("$a") ;; esac
+  done
+  if [ ${#svcA[@]} -eq 0 ] && [ ${#svcB[@]} -eq 0 ]; then
+    if [ "$sub" = up ]; then svcA=(secagent-server-a); svcB=(secagent-server-b); fi
+    if [ "$sub" != up ]; then dc_on A "${pre[@]}" "$sub" "${opts[@]}"; dc_on B "${pre[@]}" "$sub" "${opts[@]}"; return; fi
+  fi
+  [ ${#svcA[@]} -eq 0 ] || dc_on A "${pre[@]}" "$sub" "${opts[@]}" "${svcA[@]}"
+  [ ${#svcB[@]} -eq 0 ] || dc_on B "${pre[@]}" "$sub" "${opts[@]}" "${svcB[@]}"
+}
 # Garde FAIL-CLOSED (incident du 2026-11-03 : secrets generes dans une copie ephemere puis perdus) : un chemin situe
 # sous $PRIVATE_DIR n'est jamais ecrit si la racine n'existe pas ; la racine n'est JAMAIS creee par les scripts.
 # Un chemin explicite hors de $PRIVATE_DIR (ex. SECRETS_DIR=/autre) n'est pas concerne ; une racine relative est refusee.
@@ -57,7 +166,7 @@ is_remote() {
 # recreait les conteneurs avec un BIND MOUNT d'un chemin du POSTE (repertoires vides crees sur l'hote distant) au lieu du
 # volume TLS. En mode distant : TLS_MODE=volume est OBLIGATOIRE (sinon refus) et le script reprend lui-meme le mode volume
 # (Compose de chaine + surcharge remote-tls + volume) ; le point d'entree normal est `chain-test.sh failover`.
-if is_remote; then
+if [ "$CONTAINER_CLI" = docker ] && is_remote; then
   [ "${TLS_MODE:-}" = volume ] || refuse "hote Docker distant (DOCKER_HOST=${DOCKER_HOST:-} / point d'acces=${CONTROL_HOST:-${SECAGENT_ENDPOINT_HOST:-}}) : TLS_MODE=volume est obligatoire. Lancer 'chain-test.sh failover' (point d'entree, il prepare le mode volume) ; jamais ce script isole sans le mode volume."
   case "${COMPOSE_FILE:-}" in ""|*/docker-compose.chain.yml) ;; *) refuse "hote distant : COMPOSE_FILE=${COMPOSE_FILE} incompatible avec le mode volume (attendu docker-compose.chain.yml) : lancer 'chain-test.sh failover'" ;; esac
   COMPOSE_FILE="${COMPOSE_FILE:-$HERE/docker-compose.chain.yml}"
@@ -73,6 +182,12 @@ C_A="${C_A:-secagent-qualif-a}"; C_B="${C_B:-secagent-qualif-b}"
 export SECAGENT_SECRETS_VOLUME="${SECAGENT_SECRETS_VOLUME:-${PROJECT}_secrets}"
 SECRETS_DIR="${SECRETS_DIR:-$PRIVATE_DIR/QUALIF/secrets}"   # cote client, sous PRIVATE/ (ignore par git), fichiers 0400
 CI_TLS_DIR="$PRIVATE_DIR/QUALIF/ci-tls"   # certificat jetable de setup-ci (defaut de QUALIF_TLS_DIR dans ce script)
+# Podman : TLS lie depuis le partage (pki/ ne contient que ca.crt, tls.crt, tls.key ; ca.key est dans pki-ca/), et la
+# chaine de qualif (a sur A, b sur B) est le seul Compose supporte.
+if [ "$CONTAINER_CLI" = podman ]; then
+  export QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$PRIVATE_DIR/QUALIF/pki}"
+  [ "$SECRETS_DIR" = "$PRIVATE_DIR/QUALIF/secrets" ] || refuse "CONTAINER_CLI=podman : SECRETS_DIR doit etre $PRIVATE_DIR/QUALIF/secrets (lie dans les conteneurs par docker-compose.podman.qualif.yml)"
+fi
 STOP_MAX_S="${STOP_MAX_S:-10}"; KILL_MAX_S="${KILL_MAX_S:-600}"
 DC=(docker compose -p "$PROJECT" -f "$COMPOSE_FILE")
 # Fichiers de surcharge optionnels (ex. docker-compose.remote-tls.yml pour un hote Docker distant) : liste separee par des espaces.
@@ -82,12 +197,16 @@ now() { date +%s.%N; }
 listening() { # $1 conteneur, $2 port : 0 si le conteneur ecoute sur le port (lecture de /proc/net/tcp{,6} :
   # aucune dependance a netstat/ss ; etat 0A = LISTEN, port en hexadecimal sur 4 chiffres)
   local hex; hex=$(printf '%04X' "$2")
-  docker exec "$1" sh -c "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk -v p=':$hex' '\$4==\"0A\" && index(\$2,p) && substr(\$2,length(\$2)-3)==substr(p,2) {f=1} END{exit !f}'"
+  ctr exec "$1" sh -c "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk -v p=':$hex' '\$4==\"0A\" && index(\$2,p) && substr(\$2,length(\$2)-3)==substr(p,2) {f=1} END{exit !f}'"
 }
 is_master() { listening "$1" 7770 && listening "$1" 7772; }
 is_silent() { ! listening "$1" 7770 && ! listening "$1" 7772 && ! listening "$1" 7771; }
-lock_count() { docker exec "$1" sh -c 'ls /data | grep -c "^relay\.lock" || true'; }
-health() { docker inspect -f '{{.State.Health.Status}}' "$1" 2>/dev/null || echo none; }
+lock_count() { ctr exec "$1" sh -c 'ls /data | grep -c "^relay\.lock" || true'; }
+health() { ctr inspect -f '{{.State.Health.Status}}' "$1" 2>/dev/null || echo none; }
+all_health() { # $1 etat attendu (healthy|unhealthy), puis les conteneurs : 0 si TOUS sont dans cet etat
+  local want="$1" c; shift
+  for c in "$@"; do [ "$(health "$c")" = "$want" ] || return 1; done
+}
 
 # Garde-fou des operations DESTRUCTIVES (down -v, teardown, backup-restore) : jamais hors des projets de test.
 # Hote Docker DISTANT (DOCKER_HOST non local) : uniquement le projet `secagent-qualif`. Local/CI : les projets de
@@ -96,8 +215,9 @@ health() { docker inspect -f '{{.State.Health.Status}}' "$1" 2>/dev/null || echo
 guard_project() {
   local remote=0
   case "${DOCKER_HOST:-}" in ""|unix://*|npipe://*) ;; *) remote=1 ;; esac
+  [ "$CONTAINER_CLI" = docker ] || remote=1   # noeuds Podman = hotes reels : projet secagent-qualif seulement
   if [ "$remote" = 1 ]; then
-    [ "$PROJECT" = secagent-qualif ] || refuse "operation destructive refusee : hote Docker distant (${DOCKER_HOST}) et projet '$PROJECT' != secagent-qualif"
+    [ "$PROJECT" = secagent-qualif ] || refuse "operation destructive refusee : hote distant (${DOCKER_HOST:-noeuds $CONTAINER_CLI}) et projet '$PROJECT' != secagent-qualif"
   else
     case " ${ALLOWED_PROJECTS:-secagent-qualif secagent-chain secagent-failover} " in
       *" $PROJECT "*) ;;
@@ -111,8 +231,17 @@ guard_project() {
 
 # Mode distant : AUCUN bind mount (resolu sur l'hote distant, pas sur le poste) dans le rendu Compose ; refuse sinon.
 guard_remote_binds() {
+  if [ "$CONTAINER_CLI" = podman ]; then
+    # Les Compose lus par les noeuds sont ceux du depot, deposes avec leurs empreintes : verification d'integrite (le rendu
+    # Podman des binds sous PRIVATE/QUALIF est controle en CI par check_no_binds.py --allow-prefix).
+    local n; for n in A B; do
+      bash "$REPO/DEPLOYMENT/podman/verify-node-files.sh" qualif "$(node_name "$n")" \
+        || refuse "fichiers de deploiement de $(node_name "$n") non conformes au depot : verify-node-files.sh"
+    done
+    return 0
+  fi
   is_remote || return 0
-  local json; json="$("${DC[@]}" config --format json 2>/dev/null)" || refuse "rendu Compose impossible (variables obligatoires ?) : verification des bind mounts refusee"
+  local json; json="$(dc config --format json 2>/dev/null)" || refuse "rendu Compose impossible (variables obligatoires ?) : verification des bind mounts refusee"
   printf '%s' "$json" | python3 "$HERE/../../scripts/ci/check_no_binds.py" \
     || refuse "mode distant : bind mount d'un chemin du poste vers le demon distant refuse (utiliser TLS_MODE=volume + chain-test.sh push-tls)"
 }
@@ -144,20 +273,24 @@ gen_secrets() {
 # Meme modele que les volumes tls / hooks / link : fonctionne contre un demon distant.
 # shellcheck disable=SC2120   # arguments optionnels, passes par chain-test.sh (backup-restore)
 push_secrets() {
+  if [ "$CONTAINER_CLI" = podman ]; then
+    echo "push-secrets : sans objet sous Podman (secrets lies depuis $SECRETS_DIR, proprietaire $SECRET_OWNER_UID, 0400)"; return 0
+  fi
   local d="${1:-$SECRETS_DIR}" vol="${2:-$SECAGENT_SECRETS_VOLUME}" n files=""
   for n in jwt_secret_key admin_token rsa_master_key; do
     [ -f "$d/$n" ] && files="$files $n"
   done
   [ -n "$files" ] || fail "$d : aucun secret (jwt_secret_key, admin_token, rsa_master_key) ; lancer ci-prepare"
-  docker volume create "$vol" >/dev/null
+  ctr volume create "$vol" >/dev/null
   # shellcheck disable=SC2086
-  tar -C "$d" -cf - $files | docker run --rm -i -v "$vol:/secrets" \
+  tar -C "$d" -cf - $files | ctr run --rm -i -v "$vol:/secrets" \
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'set -e; tar -xf - -C /secrets; chown 0:0 /secrets; chmod 755 /secrets; for f in /secrets/*; do chown 10001:10001 "$f"; chmod 0400 "$f"; done'
   echo "secrets deposes dans le volume $vol (10001, 0400)"
 }
 
 setup_ci() {
+  [ "$CONTAINER_CLI" = docker ] || refuse "setup-ci : CI Docker uniquement"
   local d="${QUALIF_TLS_DIR:-$CI_TLS_DIR}"
   require_private_dir "$d" "$SECRETS_DIR"
   mkdir -p "$d"
@@ -168,14 +301,14 @@ setup_ci() {
   # >= 32 octets exiges par #214), deposes dans le volume des secrets.
   gen_secrets   # conserve des secrets deja presents (la cle de l'etat ne doit pas changer apres `state init`)
   push_secrets
-  QUALIF_TLS_DIR="$d" "${DC[@]}" run --rm --no-deps secagent-server-a state init
+  QUALIF_TLS_DIR="$d" dc run --rm --no-deps secagent-server-a state init
   echo "QUALIF_TLS_DIR=$d"
 }
 
 up_and_identify() {
   guard_remote_binds
-  QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$CI_TLS_DIR}" "${DC[@]}" up -d
-  wait_for "les deux conteneurs healthy" 120 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_A)\" = healthy ] && [ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_B)\" = healthy ]" >/dev/null
+  QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$CI_TLS_DIR}" dc up -d
+  wait_for "les deux conteneurs healthy" 120 all_health healthy "$C_A" "$C_B" >/dev/null
   sleep 3
   local ma=0 mb=0
   is_master "$C_A" && ma=1; is_master "$C_B" && mb=1
@@ -200,7 +333,7 @@ require_run_tls() {
   local d="${QUALIF_TLS_DIR:-$CI_TLS_DIR}" f
   if [ "${TLS_MODE:-bind}" = volume ]; then
     [ -n "${SECAGENT_TLS_VOLUME:-}" ] || refuse "TLS_MODE=volume mais SECAGENT_TLS_VOLUME est vide : lancer 'chain-test.sh failover' (point d'entree du mode volume)"
-    docker volume inspect "$SECAGENT_TLS_VOLUME" >/dev/null 2>&1 \
+    ctr volume inspect "$SECAGENT_TLS_VOLUME" >/dev/null 2>&1 \
       || refuse "TLS_MODE=volume : volume $SECAGENT_TLS_VOLUME absent du demon Docker (lancer 'chain-test.sh push-tls')"
     return 0
   fi
@@ -216,11 +349,11 @@ run() {
   up_and_identify
   hooks
   if [ "$mode" = freeze ]; then
-    docker kill -s STOP "$MASTER" >/dev/null
-    t=$(wait_for "$MASTER unhealthy (process fige)" 180 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $MASTER)\" = unhealthy ]")
+    ctr kill -s STOP "$MASTER" >/dev/null
+    t=$(wait_for "$MASTER unhealthy (process fige)" 180 all_health unhealthy "$MASTER")
     echo "$MASTER unhealthy apres ${t}s de gel"
-    docker kill -s CONT "$MASTER" >/dev/null
-    wait_for "$MASTER de nouveau healthy" 180 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $MASTER)\" = healthy ]" >/dev/null
+    ctr kill -s CONT "$MASTER" >/dev/null
+    wait_for "$MASTER de nouveau healthy" 180 all_health healthy "$MASTER" >/dev/null
     sleep 5
     local ma=0 mb=0
     is_master "$C_A" && ma=1; is_master "$C_B" && mb=1
@@ -228,16 +361,16 @@ run() {
     echo "OK (freeze)"; return 0
   fi
   case "$mode" in
-    stop) docker stop -t 30 "$MASTER" >/dev/null; max=$STOP_MAX_S ;;
-    kill) docker kill "$MASTER" >/dev/null; max=$KILL_MAX_S ;;
+    stop) ctr stop -t 30 "$MASTER" >/dev/null; max=$STOP_MAX_S ;;
+    kill) ctr kill "$MASTER" >/dev/null; max=$KILL_MAX_S ;;
   esac
   t=$(wait_for "reprise par $SECOND" "$max" is_master "$SECOND")
   echo "reprise par $SECOND en ${t}s (mode $mode, limite ${max}s)"
   [ "$(lock_count "$SECOND")" = 1 ] || fail "plusieurs fichiers relay.lock apres la bascule"
   hooks
   # L'ancien maitre revient en secondaire : aucun port, healthy, toujours un seul verrou.
-  docker start "$MASTER" >/dev/null
-  wait_for "ancien maitre healthy" 120 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $MASTER)\" = healthy ]" >/dev/null
+  ctr start "$MASTER" >/dev/null
+  wait_for "ancien maitre healthy" 120 all_health healthy "$MASTER" >/dev/null
   is_silent "$MASTER" || fail "l'ancien maitre ecoute alors qu'il y a un maitre"
   [ "$(lock_count "$SECOND")" = 1 ] || fail "plusieurs fichiers relay.lock apres le retour"
   echo "OK ($mode)"
@@ -256,9 +389,11 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     setup-ci) setup_ci ;;
     paths) paths ;;
     run) run "${2:?mode stop|kill}" ;;
-    teardown) guard_project; "${DC[@]}" down -v
+    teardown) guard_project
+              [ "$CONTAINER_CLI" = docker ] || refuse "teardown : utiliser 'chain-test.sh down' sous Podman (jamais down -v : etat et secrets sur le partage)"
+              dc down -v
               # le volume des secrets est EXTERNE (non supprime par down -v) et contient des secrets : retrait explicite
-              docker volume rm "$SECAGENT_SECRETS_VOLUME" >/dev/null 2>&1 || true ;;
+              ctr volume rm "$SECAGENT_SECRETS_VOLUME" >/dev/null 2>&1 || true ;;
     *) sed -n '2,21p' "$0"; exit 2 ;;
   esac
 fi

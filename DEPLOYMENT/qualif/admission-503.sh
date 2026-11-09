@@ -45,7 +45,7 @@ adm503_cleanup() { # sortie de l'etape (succes ou echec) : plus de tache en fond
   ADM503_PIDS=()
   if [ -n "$ADM503_OVERRIDE" ] && [ -f "$ADM503_OVERRIDE" ]; then
     echo "== nettoyage : plafond memoire par defaut restaure" >&2
-    "${DC[@]}" up -d --no-deps --force-recreate secagent-server-a secagent-server-b >/dev/null 2>&1 || true
+    dc up -d --no-deps --force-recreate secagent-server-a secagent-server-b >/dev/null 2>&1 || true
     rm -f "$ADM503_OVERRIDE"
   fi
 }
@@ -106,7 +106,7 @@ adm503_lot_all_ok() {
   done
 }
 
-adm503_minion_logs() { "${DC[@]}" logs --no-color "$1" 2>&1; }  # $1 service minion-root | minion-child
+adm503_minion_logs() { dc logs --no-color "$1" 2>&1; }  # $1 service minion-root | minion-child
 
 # Surcharge Compose temporaire (./chain/, non versionnee) : MAX_STDOUT_BUFFER_TOTAL sur les deux noeuds racine.
 adm503_write_override() {
@@ -125,11 +125,11 @@ EOF
 # Recree les deux noeuds racine (avec la surcharge si $1 = with) et attend maitre + minions + enfant reconnectes.
 adm503_recreate_root() {
   if [ "$1" = with ]; then
-    "${DC[@]}" -f "$ADM503_OVERRIDE" up -d --no-deps --force-recreate secagent-server-a secagent-server-b
+    dc -f "$ADM503_OVERRIDE" up -d --no-deps --force-recreate secagent-server-a secagent-server-b
   else
-    "${DC[@]}" up -d --no-deps --force-recreate secagent-server-a secagent-server-b
+    dc up -d --no-deps --force-recreate secagent-server-a secagent-server-b
   fi
-  wait_for "racine healthy" 120 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_A)\" = healthy ] && [ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_B)\" = healthy ]" >/dev/null
+  wait_for "racine healthy" 120 all_health healthy "$C_A" "$C_B" >/dev/null
   sleep 3
   local m; m="$(master)" || fail "pas de maitre sur la racine apres recreation"
   connected "$m" relays dmz1 4
@@ -137,7 +137,7 @@ adm503_recreate_root() {
   connected "$C_CHILD" minions minion-child 2
 }
 
-adm503_env_of() { docker exec "$1" printenv MAX_STDOUT_BUFFER_TOTAL 2>/dev/null || true; }  # $1 conteneur : valeur ou vide
+adm503_env_of() { ctr exec "$1" printenv MAX_STDOUT_BUFFER_TOTAL 2>/dev/null || true; }  # $1 conteneur : valeur ou vide
 
 admission_503() {
   require_ansible_version   # #249 : etape 5 (plugin reel) suppose la version epinglee de la CI
@@ -163,7 +163,7 @@ admission_503() {
   local hosts=() half=$(( slots / 2 ))
   for n in $(seq 1 "$half"); do hosts+=(minion-child); done
   for n in $(seq 1 $(( slots - half ))); do hosts+=(minion-root); done
-  local refused_before; refused_before="$(docker logs "$m" 2>&1 | grep -c 'task refused at admission: reason=memory_budget_exhausted' || true)"
+  local refused_before; refused_before="$(ctr logs "$m" 2>&1 | grep -c 'task refused at admission: reason=memory_budget_exhausted' || true)"
   adm503_fill fill "$ADM503_HOLD" "${hosts[@]}"
   # sonde : exec court, repete jusqu'au refus (les premieres sondes peuvent preceder l'admission des $slots taches)
   local t0 probe_host
@@ -201,9 +201,9 @@ admission_503() {
       fail "admission-503 : la tache refusee (sonde vers minion-$svc) a ete ENVOYEE au minion"
     fi
   done
-  local refused_after; refused_after="$(docker logs "$m" 2>&1 | grep -c 'task refused at admission: reason=memory_budget_exhausted' || true)"
+  local refused_after; refused_after="$(ctr logs "$m" 2>&1 | grep -c 'task refused at admission: reason=memory_budget_exhausted' || true)"
   [ "$refused_after" -gt "$refused_before" ] || fail "admission-503 : '[SECURITY WARNING] task refused at admission: reason=memory_budget_exhausted' absent du journal de $m ($refused_before -> $refused_after)"
-  docker logs "$m" 2>&1 | grep 'task refused at admission: reason=memory_budget_exhausted' | tail -1 | sed 's/^/extrait du journal : /'
+  ctr logs "$m" 2>&1 | grep 'task refused at admission: reason=memory_budget_exhausted' | tail -1 | sed 's/^/extrait du journal : /'
 
   echo "== 4. liberation : fin des taches, puis admission a nouveau possible"
   adm503_lot_wait

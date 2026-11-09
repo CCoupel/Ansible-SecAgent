@@ -1,17 +1,31 @@
 # SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-# Surcharge PODMAN ROOTLESS (LOT-4 v3.0.6, #267) de la chaine de QUALIF (racine a/b + enfant pull) :
-#   podman-compose -f ../qualif/docker-compose.chain.yml -f docker-compose.podman.qualif.yml up -d <services du noeud>
-# Meme principe que docker-compose.podman.yml (voir son en-tete) : keep-id:uid=10001,gid=10001 sur les SERVICES SERVEUR.
-# Les minions (minion-root, minion-child, minion-negca) n'ont PAS de keep-id : leur entrypoint demarre en root du
-# conteneur (cles, chown) puis passe a `relay` par su-exec ; en rootless, root du conteneur = cyril sur l'hote, et ils
-# n'utilisent que des volumes nommes (aucun fichier du partage) : le mapping par defaut suffit (verifie en T48).
-# Limites memoire : tous les services de docker-compose.chain.yml portent deja mem_limit (controle --require-memory-limit).
+# Surcharge PODMAN ROOTLESS (LOT-4 v3.0.6, #267) de la chaine de QUALIF REPARTIE sur deux noeuds :
+#   noeud A (srv3) : secagent-server-a ;  noeud B (srv4) : secagent-server-b, secagent-child, minion-root, minion-child
+# podman-compose est lance SUR chaque noeud (chain-test.sh, CONTAINER_CLI=podman) depuis
+# PRIVATE/QUALIF/<srvX>/cyril/secagent/release/ avec SEULEMENT les services du noeud :
+#   podman-compose -p secagent-qualif -f docker-compose.chain.yml -f docker-compose.hooks.yml \
+#                  -f docker-compose.podman.qualif.yml up -d <services du noeud>
+#
+# - Mapping uid : keep-id:uid=10001,gid=10001 sur les SERVICES SERVEUR (uid 10001 du conteneur = cyril, uid 1000, de
+#   l'hote = proprietaire des fichiers du partage). Les minions (entrypoint root -> su-exec) gardent le mapping rootless
+#   par defaut : volumes nommes locaux seulement, aucun fichier du partage (a constater en T48).
+# - Etat et secrets : volumes locaux LIES (driver_opts bind) au partage vu par le noeud (autofs /share/MFS/ROOT) :
+#   a et b partagent PRIVATE/QUALIF/state/root (actif/passif inter-noeuds), l'enfant PRIVATE/QUALIF/state/child, les
+#   secrets PRIVATE/QUALIF/secrets (fichiers 0400, proprietaire 1000). Jamais `down -v` (chain-test.sh down ne le fait pas
+#   sous Podman). TLS : QUALIF_TLS_DIR = PRIVATE/QUALIF/pki (ca.crt, tls.crt, tls.key ; ca.key dans pki-ca/, jamais lie).
+#   Garde fail-closed avant demarrage : check-private.sh qualif <srvX>. Rendu controle en CI : check_no_binds.py
+#   --allow-prefix <PRIVATE/QUALIF> (binds deguises compris) et check_compose.py --require-userns-keepid.
+# - Reseau : chaque noeud a son propre reseau Compose. Depuis le noeud B, a se joint par l'IP du noeud A
+#   (QUALIF_NODE_A_ADDR, port d'hote 7770/7772) et b par son nom de service ; l'IP du noeud B lui-meme n'est PAS utilisee
+#   (pasta : l'adresse de l'hote est recopiee dans le conteneur et ne mene pas a l'hote). SAN de la PKI QUALIF (T47) :
+#   IP de A, IP de B, noms secagent-server-a/-b, secagent-child.
 x-podman:
   host_uid: 1000
   secret_owner_uid: 1000
-  container_host: ssh://cyril@<ip>/run/user/1000/podman/podman.sock
+  container_host_a: ssh://cyril@192.168.1.213/run/user/1000/podman/podman.sock
+  container_host_b: ssh://cyril@192.168.1.214/run/user/1000/podman/podman.sock
   host_prefix: /share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/QUALIF
 
 services:
@@ -21,3 +35,35 @@ services:
     userns_mode: "keep-id:uid=10001,gid=10001"
   secagent-child:
     userns_mode: "keep-id:uid=10001,gid=10001"
+    environment:
+      REPEATER_UPSTREAM_URL: wss://${QUALIF_NODE_A_ADDR:?QUALIF_NODE_A_ADDR est obligatoire (IP du noeud A)}:7772,wss://secagent-server-b:7772
+  minion-root:
+    environment:
+      RELAY_SERVER_URL: https://${QUALIF_NODE_A_ADDR:?QUALIF_NODE_A_ADDR est obligatoire}:7770,https://secagent-server-b:7770
+      RELAY_WS_URL: wss://${QUALIF_NODE_A_ADDR:?QUALIF_NODE_A_ADDR est obligatoire}:7772/ws/agent,wss://secagent-server-b:7772/ws/agent
+  minion-negca:
+    environment:
+      RELAY_SERVER_URL: https://${QUALIF_NODE_A_ADDR:?QUALIF_NODE_A_ADDR est obligatoire}:7770,https://secagent-server-b:7770
+      RELAY_WS_URL: wss://${QUALIF_NODE_A_ADDR:?QUALIF_NODE_A_ADDR est obligatoire}:7772/ws/agent,wss://secagent-server-b:7772/ws/agent
+
+volumes:
+  secagent_state:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${QUALIF_PRIVATE_DIR:?QUALIF_PRIVATE_DIR est obligatoire (PRIVATE/QUALIF vu par le noeud)}/state/root
+  child_state:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${QUALIF_PRIVATE_DIR:?QUALIF_PRIVATE_DIR est obligatoire}/state/child
+  secagent_secrets:
+    external: false
+    name: ${SECAGENT_SECRETS_VOLUME:-secagent-qualif_secrets}
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${QUALIF_PRIVATE_DIR:?QUALIF_PRIVATE_DIR est obligatoire}/secrets

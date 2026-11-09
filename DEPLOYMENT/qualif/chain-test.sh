@@ -48,7 +48,7 @@ export COMPOSE_FILE="$HERE/docker-compose.chain.yml" PROJECT="${PROJECT:-${COMPO
 # Les hooks de qualif sont TOUJOURS livres par un volume nomme (docker-compose.hooks.yml), jamais par un fichier du client.
 export SECAGENT_HOOKS_VOLUME="${SECAGENT_HOOKS_VOLUME:-${PROJECT}_hooks}"
 export COMPOSE_OVERRIDES="$HERE/docker-compose.hooks.yml"
-if [ "${TLS_MODE:-bind}" = volume ]; then
+if [ "${TLS_MODE:-bind}" = volume ] && [ "${CONTAINER_CLI:-docker}" = docker ]; then
   export SECAGENT_TLS_VOLUME="${SECAGENT_TLS_VOLUME:-${PROJECT}_tls}"
   export COMPOSE_OVERRIDES="$HERE/docker-compose.remote-tls.yml $COMPOSE_OVERRIDES"
 fi
@@ -64,7 +64,14 @@ LINK_TTL="${LINK_TTL:-$TOKEN_TTL}"
 # Jetons de la chaine : VOLATILS (regeneres par bootstrap), donc hors PRIVATE/ ; defaut sur /tmp (systeme de fichiers local
 # du poste, hors partage reseau : les modes 0700/0600 exiges par le plugin y sont honores). Exporte : docker-compose.chain.yml lit les env_file
 # des minions et de l'enfant dans ${CHAIN_DIR:-./chain}.
-_tmp="${TMPDIR:-/tmp}"; CHAIN_DIR="${CHAIN_DIR:-${_tmp%/}/secagent-qualif-chain-$(id -u)}"; unset _tmp
+# Podman (#267) : les env_file de l'enfant et des minions sont lus par podman-compose SUR le noeud b : les jetons volatils
+# vont par defaut dans PRIVATE/QUALIF/<noeud b>/cyril/secagent/run/ (meme chemin absolu sur le poste et le noeud ; partage
+# MooseFS qui honore 0700/0600), jamais dans release/ ni systemd/ (verifies par SHA256SUMS).
+if [ "${CONTAINER_CLI:-docker}" = podman ]; then
+  CHAIN_DIR="${CHAIN_DIR:-$PRIVATE_DIR/QUALIF/${QUALIF_NODE_B:-srv4}/cyril/secagent/run}"
+else
+  _tmp="${TMPDIR:-/tmp}"; CHAIN_DIR="${CHAIN_DIR:-${_tmp%/}/secagent-qualif-chain-$(id -u)}"; unset _tmp
+fi
 case "$CHAIN_DIR" in ?*/) CHAIN_DIR="${CHAIN_DIR%/}" ;; esac   # slash final retire, sauf `/` (refuse tel quel par la garde)
 export CHAIN_DIR
 # shellcheck source=failover-test.sh
@@ -74,7 +81,7 @@ source "$HERE/admission-503.sh"   # etape admission-503 (#241)
 
 adm() { # $1 conteneur, puis la commande secagent-server : CLI admin en TLS (CA de test), ADMIN_TOKEN du conteneur
   local c="$1"; shift
-  docker exec -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/ca.crt "$c" /app/secagent-server "$@"
+  ctr exec -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/ca.crt "$c" /app/secagent-server "$@"
 }
 master() { is_master "$C_A" && echo "$C_A" || { is_master "$C_B" && echo "$C_B"; }; }
 # Garde de $CHAIN_DIR (repertoire potentiellement partage comme /tmp) : refus FAIL-CLOSED (refuse : REFUS:, code 2) d'un lien symbolique, d'un non
@@ -140,10 +147,12 @@ require_ansible_version() {
 diag_unhealthy() {
   local c st
   echo "== DIAGNOSTIC (projet $PROJECT) ==" >&2
-  for c in $(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}}' 2>/dev/null); do
-    st="$(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} err={{.State.Error}}' "$c" 2>/dev/null)" || continue
+  local CTR_NODE; for CTR_NODE in $(nodes); do
+  for c in $(ctr ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}}' 2>/dev/null); do
+    st="$(ctr inspect -f '{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} err={{.State.Error}}' "$c" 2>/dev/null)" || continue
     echo "-- $c : $st" >&2
-    case "$st" in *"health=healthy"*) ;; *) docker logs --tail=40 "$c" 2>&1 | sed 's/^/   | /' >&2 ;; esac
+    case "$st" in *"health=healthy"*) ;; *) ctr logs --tail=40 "$c" 2>&1 | sed 's/^/   | /' >&2 ;; esac
+  done
   done
 }
 # Sourcer failover-test.sh a defini fail() et refuse() ; on enrichit fail() sans changer son contrat (message + exit 1).
@@ -153,10 +162,11 @@ fail() { echo "ECHEC: $*" >&2; diag_unhealthy || true; exit 1; }
 # Pousse tls.crt/tls.key/ca.crt de QUALIF_TLS_DIR dans le volume `$SECAGENT_TLS_VOLUME` de l'hote Docker (distant ou
 # non) via un conteneur ephemere (flux tar sur stdin, image alpine epinglee) : TLS_MODE=volume requis.
 push_tls() {
+  [ "$CONTAINER_CLI" = docker ] || refuse "push-tls : sans objet sous Podman (TLS lie depuis $QUALIF_TLS_DIR, partage PRIVATE)"
   [ "${TLS_MODE:-bind}" = volume ] || fail "push-tls exige TLS_MODE=volume"
   local f; for f in tls.crt tls.key ca.crt; do [ -f "$QUALIF_TLS_DIR/$f" ] || fail "$QUALIF_TLS_DIR/$f absent (lancer ci-prepare)"; done
-  docker volume create "$SECAGENT_TLS_VOLUME" >/dev/null
-  tar -C "$QUALIF_TLS_DIR" -cf - tls.crt tls.key ca.crt | docker run --rm -i -v "$SECAGENT_TLS_VOLUME:/certs" \
+  ctr volume create "$SECAGENT_TLS_VOLUME" >/dev/null
+  tar -C "$QUALIF_TLS_DIR" -cf - tls.crt tls.key ca.crt | ctr run --rm -i -v "$SECAGENT_TLS_VOLUME:/certs" \
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'tar -xf - -C /certs && chmod 755 /certs && chmod 644 /certs/tls.crt /certs/tls.key /certs/ca.crt'
   echo "certificats de test pousses dans le volume $SECAGENT_TLS_VOLUME"
@@ -164,33 +174,44 @@ push_tls() {
 
 # Depose hooks.json dans le volume `$SECAGENT_HOOKS_VOLUME` (hote Docker distant ou non) par un conteneur ephemere
 # (flux tar sur stdin, image alpine epinglee) : aucun bind mount, aucun fichier du client reference par Compose.
+# Conteneurs ephemeres de depot sous Podman : meme mapping que les serveurs (uid 10001 du conteneur = cyril de l'hote),
+# en root du conteneur pour chown ; sous Docker : rien.
+RUN_USERNS=()
+if [ "$CONTAINER_CLI" != docker ]; then
+  # shellcheck disable=SC2054   # la virgule fait partie de l'option keep-id:uid=...,gid=...
+  RUN_USERNS=(--userns=keep-id:uid=10001,gid=10001 --user 0:0)
+fi
 push_hooks() {
   [ -f "$HERE/hooks.json" ] || fail "$HERE/hooks.json absent"
-  docker volume create "$SECAGENT_HOOKS_VOLUME" >/dev/null
-  tar -C "$HERE" -cf - hooks.json | docker run --rm -i -v "$SECAGENT_HOOKS_VOLUME:/hooks" \
+  local CTR_NODE; for CTR_NODE in $(nodes); do   # Podman : racine a (A) et b + enfant (B)
+  ctr volume create "$SECAGENT_HOOKS_VOLUME" >/dev/null
+  tar -C "$HERE" -cf - hooks.json | ctr run --rm -i "${RUN_USERNS[@]}" -v "$SECAGENT_HOOKS_VOLUME:/hooks" \
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'set -e; tar -xf - -C /hooks; chown 0:0 /hooks /hooks/hooks.json; chmod 755 /hooks; chmod 644 /hooks/hooks.json'
-  echo "hooks.json depose dans le volume $SECAGENT_HOOKS_VOLUME"
+  echo "hooks.json depose dans le volume $SECAGENT_HOOKS_VOLUME${CTR_NODE:+ (noeud $CTR_NODE)}"
+  done
 }
 
 # Empreinte STABLE d'une image : sha256 de la liste des couches (RootFS.Layers). L'ID `.Id` varie selon le magasin
 # (overlay2 / containerd, Docker >= 29, Desktop) ; les couches (diff ids) sont identiques apres save/load.
 # Meme calcul dans le job `images-artifact` de ci.yml (images.ids = "<ref> <empreinte>").
-image_fp() { docker image inspect --format '{{json .RootFS.Layers}}' "$1" 2>/dev/null | sha256sum | cut -d' ' -f1; }
+image_fp() { ctr image inspect --format '{{json .RootFS.Layers}}' "$1" 2>/dev/null | sha256sum | cut -d' ' -f1; }
 
 # Garde (BAS-3) : avec SECAGENT_PULL_POLICY=never, Docker reutiliserait SILENCIEUSEMENT un tag local preexistant. Avant
 # tout demarrage, l'ID reel des images du demon doit etre celui enregistre par `load-images` (non secret).
 verify_images() {
   [ "${SECAGENT_PULL_POLICY:-missing}" = never ] || return 0
-  local f="$CHAIN_DIR/image-ids" var ref want id
+  local f="$CHAIN_DIR/image-ids" var ref want id CTR_NODE
   [ -f "$f" ] || refuse "SECAGENT_PULL_POLICY=never mais $f est absent : lancer d'abord 'chain-test.sh load-images <repertoire-de-l-artefact>'"
+  for CTR_NODE in $(nodes); do   # Podman : chaque noeud a son propre magasin d'images
   for var in SECAGENT_IMAGE SECAGENT_MINION_IMAGE; do
     ref="${!var:-}"; [ -n "$ref" ] || refuse "$var non defini"
     want="$(awk -v r="$ref" '$1==r {print $2}' "$f")"
     [ -n "$want" ] || refuse "$ref ne figure pas dans $f (images non chargees par load-images)"
-    docker image inspect "$ref" >/dev/null 2>&1 || refuse "image $ref absente du demon Docker"
+    ctr image inspect "$ref" >/dev/null 2>&1 || refuse "image $ref absente du demon Docker"
     id="$(image_fp "$ref")"
     [ "$id" = "$want" ] || refuse "empreinte des couches de $ref differente de l'artefact charge (demon: $id, attendu: $want) : un tag local preexistant ? relancer load-images"
+  done
   done
 }
 
@@ -205,18 +226,20 @@ load_images() {
   # upload-artifact perd le bit d'execution : il est restaure ici (et le binaire est obligatoire).
   [ -f "$d/secagent-inventory" ] || fail "$d/secagent-inventory absent de l'artefact (binaire du poste de controle)"
   chmod +x "$d/secagent-inventory"
-  local a; for a in "$d"/secagent-server-ci-*.tar.gz "$d"/secagent-minion-ci-*.tar.gz; do
+  local a ref want id CTR_NODE; chain_dir
+  for CTR_NODE in $(nodes); do   # Podman : chargement sur chaque noeud
+  for a in "$d"/secagent-server-ci-*.tar.gz "$d"/secagent-minion-ci-*.tar.gz; do
     [ -f "$a" ] || fail "archive d'image absente ($a)"
-    gunzip -c "$a" | docker load
+    gunzip -c "$a" | ctr load
   done
   # Empreintes reelles apres chargement == celles de l'artefact ; ils sont enregistres dans l'etat local (verify_images).
-  local ref want id; chain_dir
   while read -r ref want; do
     [ -n "$ref" ] || continue
-    docker image inspect "$ref" >/dev/null 2>&1 || fail "image $ref absente apres docker load"
-    id="$(image_fp "$ref")"
+    ctr image inspect "$ref" >/dev/null 2>&1 < /dev/null || fail "image $ref absente apres docker load"
+    id="$(image_fp "$ref" < /dev/null)"
     [ "$id" = "$want" ] || fail "empreinte de $ref apres chargement ($id) != artefact ($want)"
   done < "$d/images.ids"
+  done
   cp "$d/images.ids" "$CHAIN_DIR/image-ids"; chmod 600 "$CHAIN_DIR/image-ids"
   echo "images chargees. A exporter :"; cat "$d/images.env"
   echo "(binaire du poste de controle : $d/secagent-inventory -> INVENTORY_BIN)"
@@ -242,10 +265,10 @@ bootstrap() {
   push_hooks
   push_secrets   # secrets serveur -> volume ${PROJECT}_secrets (10001, 0400) ; lus via *_FILE
   echo "== etat initial (racine)"
-  "${DC[@]}" run --rm --no-deps secagent-server-a state init
+  dc run --rm --no-deps secagent-server-a state init
   echo "== racine : demarrage et identification du maitre"
-  "${DC[@]}" up -d secagent-server-a secagent-server-b
-  wait_for "racine healthy" 120 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_A)\" = healthy ] && [ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_B)\" = healthy ]" >/dev/null
+  dc up -d secagent-server-a secagent-server-b
+  wait_for "racine healthy" 120 all_health healthy "$C_A" "$C_B" >/dev/null
   sleep 3
   local m; m="$(master)" || fail "pas de maitre sur la racine"
   echo "maitre de la racine : $m"
@@ -254,9 +277,9 @@ bootstrap() {
   adm "$m" relays add --id dmz1 --description "chain child" >/dev/null || fail "relays add dmz1 refuse"
   link_anchor_prepare "$m"
   link_mint_child "$m"
-  "${DC[@]}" run --rm --no-deps secagent-child state init
-  "${DC[@]}" up -d secagent-child
-  wait_for "enfant healthy" 120 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_CHILD)\" = healthy ]" >/dev/null
+  dc run --rm --no-deps secagent-child state init
+  dc up -d secagent-child
+  wait_for "enfant healthy" 120 all_health healthy "$C_CHILD" >/dev/null
   echo "== jetons d'enrolement (un par minion, hostname exact) et jeton plugin (FICHIER 0600)"
   adm "$m" tokens create --role enrollment --hostname-pattern '^minion-root$' --expires "$TOKEN_TTL" 2>&1 \
     | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton minion-root non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-root.env; }
@@ -264,7 +287,7 @@ bootstrap() {
     | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton minion-child non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-child.env; }
   plugin_token
   echo "== minions"
-  "${DC[@]}" up -d minion-root minion-child
+  dc up -d minion-root minion-child
   echo "bootstrap OK (jetons dans $CHAIN_DIR, non affiches)"
 }
 
@@ -273,7 +296,7 @@ connected() { # $1 conteneur CLI, $2 commande (relays|minions), $3 nom, $4 colon
   # CONSECUTIFS espaces de 2 s : un statut perime (« connected » herite de l'ancien maitre) ne suffit pas.
   local ok=0 t0; t0=$(now)
   while [ "$ok" -lt 3 ]; do
-    if docker exec -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/ca.crt "$1" /app/secagent-server "$2" list 2>/dev/null \
+    if ctr exec -e RELAY_API_URL=https://localhost:7771 -e REPEATER_CA_FILE=/certs/ca.crt "$1" /app/secagent-server "$2" list 2>/dev/null \
        | awk -v n="$3" -v c="$4" '$1==n && $c=="connected" {f=1} END{exit !f}'; then ok=$((ok+1)); else ok=0; fi
     awk -v a="$t0" -v b="$(now)" 'BEGIN{exit !(b-a>150)}' && fail "$3 n'est pas connected (150 s) sur $1"
     sleep 2
@@ -304,7 +327,12 @@ plugin_token() {
 
 control_env() { # variables du poste de controle Ansible : listes d'adresses, CA de test, jeton en FICHIER
   plugin_token   # jeton frais a chaque appel (smoke, failover, hooks)
-  export RELAY_SERVER_URL="https://${ENDPOINT_HOST}:7770,https://${ENDPOINT_HOST}:8770" RELAY_CA_BUNDLE="$QUALIF_TLS_DIR/ca.crt"
+  if [ "$CONTAINER_CLI" = podman ]; then   # a sur le noeud A (7770), b sur le noeud B (8770)
+    local ea eb; ea="$(node_addr A)"; eb="$(node_addr B)"
+    export RELAY_SERVER_URL="https://$ea:7770,https://$eb:8770" RELAY_CA_BUNDLE="$QUALIF_TLS_DIR/ca.crt"
+  else
+    export RELAY_SERVER_URL="https://${ENDPOINT_HOST}:7770,https://${ENDPOINT_HOST}:8770" RELAY_CA_BUNDLE="$QUALIF_TLS_DIR/ca.crt"
+  fi
   export RELAY_TOKEN_FILE="$CHAIN_DIR/plugin.token"
 }
 
@@ -334,6 +362,7 @@ smoke() {
 # sans la cle, `state verify` refuse (code 6) ; avec une MAUVAISE cle il refuse (code 2) ; avec la bonne cle l'etat
 # est restaure, la racine redemarre et le minion DEJA enrole se reconnecte SANS re-enrolement (meme identite).
 backup_restore() {
+  [ "$CONTAINER_CLI" = docker ] || refuse "backup-restore : non supporte sous Podman (l'etat EST le partage PRIVATE/QUALIF/state/root : la perte simulee du volume l'effacerait)"
   guard_project
   verify_images
   local m bk key; m="$(master)" || fail "pas de maitre sur la racine"
@@ -342,10 +371,10 @@ backup_restore() {
   rm -rf "$bk" "$key"; mkdir -p "$bk" "$key"; chmod 700 "$key"
   connected "$m" minions minion-root 2    # le minion doit etre enrole et connecte avant la sauvegarde
   echo "== sauvegarde (etat) et sauvegarde distincte de RSA_MASTER_KEY"
-  docker exec "$m" /app/secagent-server state verify /data/relay.state >/dev/null || fail "etat source invalide"
-  docker cp "$m:/data/relay.state" "$bk/relay.state"; chmod 755 "$bk"; chmod 644 "$bk/relay.state"
-  docker volume create "$bkvol" >/dev/null
-  tar -C "$bk" -cf - relay.state | docker run --rm -i -v "$bkvol:/backup" \
+  ctr exec "$m" /app/secagent-server state verify /data/relay.state >/dev/null || fail "etat source invalide"
+  ctr cp "$m:/data/relay.state" "$bk/relay.state"; chmod 755 "$bk"; chmod 644 "$bk/relay.state"
+  ctr volume create "$bkvol" >/dev/null
+  tar -C "$bk" -cf - relay.state | ctr run --rm -i -v "$bkvol:/backup" \
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'tar -xf - -C /backup && chmod 755 /backup && chmod 644 /backup/relay.state'
 
@@ -353,8 +382,8 @@ backup_restore() {
   [ -s "$SECRETS_DIR/rsa_master_key" ] || fail "$SECRETS_DIR/rsa_master_key absent (secrets du poste de controle)"
   ( umask 077; cp "$SECRETS_DIR/rsa_master_key" "$key/rsa_master_key" ); chmod 400 "$key/rsa_master_key"
   echo "== sinistre : arret de la racine, perte du volume d'etat, puis cle absente et cle erronee"
-  "${DC[@]}" rm -sf secagent-server-a secagent-server-b >/dev/null
-  docker volume rm "${PROJECT}_secagent_state" >/dev/null
+  dc rm -sf secagent-server-a secagent-server-b >/dev/null
+  ctr volume rm "${PROJECT}_secagent_state" >/dev/null
   # Les secrets sont des fichiers d'un volume : « sans la cle » = RSA_MASTER_KEY_FILE vide (cle non definie, code 6) ;
   # « mauvaise cle » = volume portant une autre valeur (code 2). Les variables directes RSA_MASTER_KEY + *_FILE ensemble
   # seraient refusees au demarrage (ambiguite), et un fichier inexistant donne un code 1 (lecture impossible), d'ou ce choix.
@@ -362,29 +391,29 @@ backup_restore() {
   ( umask 077; openssl rand -hex 32 | tr -d '\n' > "$bkd/rsa_master_key" ); chmod 400 "$bkd/rsa_master_key"
   # Nettoyage garanti meme en cas d'echec (fail() quitte le script) : volume de la mauvaise cle et repertoire temporaire.
   # shellcheck disable=SC2064
-  trap "docker volume rm '$badkey' >/dev/null 2>&1 || true; rm -rf '$bkd'" EXIT
+  trap "ctr volume rm '$badkey' >/dev/null 2>&1 || true; rm -rf '$bkd'" EXIT
   push_secrets "$bkd" "$badkey"
   local rc=0
-  "${DC[@]}" run --rm --no-deps -e RSA_MASTER_KEY_FILE= -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
+  dc run --rm --no-deps -e RSA_MASTER_KEY_FILE= -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
   [ "$rc" = 6 ] || fail "sans RSA_MASTER_KEY : code 6 attendu, obtenu $rc"
   echo "sans la cle : refus (code 6) comme attendu"
   rc=0
-  "${DC[@]}" run --rm --no-deps -v "$badkey:/run/secagent-secrets:ro" -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
+  dc run --rm --no-deps -v "$badkey:/run/secagent-secrets:ro" -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null 2>&1 || rc=$?
   [ "$rc" = 2 ] || fail "avec une mauvaise cle : code 2 attendu, obtenu $rc"
   echo "mauvaise cle : refus (code 2) comme attendu"
-  docker volume rm "$badkey" >/dev/null || true
+  ctr volume rm "$badkey" >/dev/null || true
   rm -rf "$bkd"; trap - EXIT
   echo "== restauration de la cle (depuis la sauvegarde distincte) puis de l'etat sur un volume vierge"
   push_secrets "$key"   # remet la cle sauvegardee a part dans le volume de secrets (jwt/admin conserves : push partiel)
-  "${DC[@]}" run --rm --no-deps -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null || fail "etat sauvegarde refuse avec la cle restauree"
-  "${DC[@]}" run --rm --no-deps -v "$bkvol:/backup:ro" secagent-server-a state restore --from /backup/relay.state
-  "${DC[@]}" up -d secagent-server-a secagent-server-b
-  wait_for "racine healthy apres restauration" 120 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_A)\" = healthy ] && [ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_B)\" = healthy ]" >/dev/null
+  dc run --rm --no-deps -v "$bkvol:/backup:ro" secagent-server-a state verify /backup/relay.state >/dev/null || fail "etat sauvegarde refuse avec la cle restauree"
+  dc run --rm --no-deps -v "$bkvol:/backup:ro" secagent-server-a state restore --from /backup/relay.state
+  dc up -d secagent-server-a secagent-server-b
+  wait_for "racine healthy apres restauration" 120 all_health healthy "$C_A" "$C_B" >/dev/null
   sleep 3
   m="$(master)" || fail "pas de maitre apres restauration"
   echo "== le minion DEJA enrole se reconnecte sans re-enrolement (aucun nouveau jeton cree)"
   connected "$m" minions minion-root 2
-  docker volume rm "$bkvol" >/dev/null || true
+  ctr volume rm "$bkvol" >/dev/null || true
   echo "backup-restore OK (meme identite : le minion, authentifie par l'etat restaure, est reconnecte)"
 }
 
@@ -403,11 +432,11 @@ backup_restore() {
 # bind mount, aucun droit requis sur l'hote. Le jeton local est supprime apres la copie (il vit alors dans le volume).
 push_link_key() {
   [ -f "$CHAIN_DIR/root-link.pub" ] || fail "$CHAIN_DIR/root-link.pub absent (lancer bootstrap)"
-  local files="root-link.pub"
+  local files="root-link.pub" CTR_NODE=B   # Podman : volume de l'enfant, noeud B
   [ -f "$CHAIN_DIR/upstream-token" ] && files="root-link.pub upstream-token"
-  docker volume create "$SECAGENT_LINK_VOLUME" >/dev/null
+  ctr volume create "$SECAGENT_LINK_VOLUME" >/dev/null
   # shellcheck disable=SC2086
-  tar -C "$CHAIN_DIR" -cf - $files | docker run --rm -i -v "$SECAGENT_LINK_VOLUME:/link" \
+  tar -C "$CHAIN_DIR" -cf - $files | ctr run --rm -i "${RUN_USERNS[@]}" -v "$SECAGENT_LINK_VOLUME:/link" \
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'set -e; tar -xf - -C /link; chmod 755 /link; chown 0:0 /link/root-link.pub; chmod 644 /link/root-link.pub
            if [ -f /link/upstream-token ]; then chown 10001:10001 /link/upstream-token; chmod 0400 /link/upstream-token; fi'
@@ -457,8 +486,8 @@ link_field() { # $1 conteneur CLI, $2 champ de la 1re ligne de keys link-status 
   adm "$1" keys link-status 2>/dev/null | head -1 | sed -n "s/.* $2=\([^ ]*\).*/\1/p"
 }
 recreate_child() { # remplace le conteneur de l'enfant (le jeton n'est lu qu'au demarrage) et attend healthy
-  "${DC[@]}" up -d --force-recreate --no-deps secagent-child
-  wait_for "enfant healthy" 120 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_CHILD)\" = healthy ]" >/dev/null
+  dc up -d --force-recreate --no-deps secagent-child
+  wait_for "enfant healthy" 120 all_health healthy "$C_CHILD" >/dev/null
 }
 
 # Scenario link-rotation : rotation de la cle de signature -> confirmation par dmz1 (link_state) -> MISE A JOUR DU FICHIER
@@ -488,7 +517,7 @@ link_rotation() {
   prev="$(link_field "$m" previous)"
   case "$prev" in ""|"<nil>"|"-") ;; *) fail "previous encore present apres retire ($prev)" ;; esac
   echo "== le lien survit a une reconnexion de l'enfant apres le retrait"
-  "${DC[@]}" restart secagent-child >/dev/null
+  dc restart secagent-child >/dev/null
   connected "$m" relays dmz1 4
   smoke
   echo "link-rotation OK (kid $kid0 -> $kid1, previous retire, lien reconnecte)"
@@ -507,7 +536,7 @@ link_revoke() {
   echo "== pas de reconnexion avec le jeton revoque (40 s)"
   sleep 40
   ! relay_connected "$m" dmz1 || fail "dmz1 s'est reconnecte avec un jeton revoque"
-  docker logs "$C_CHILD" 2>&1 | grep -Eiq '4010|permanent|revoked' \
+  ctr logs "$C_CHILD" 2>&1 | grep -Eiq '4010|permanent|revoked' \
     && echo "journal de l'enfant : refus permanent constate" \
     || echo "info : aucune mention de refus permanent dans les logs de l'enfant (a analyser a l'execution)"
   echo "== remise en etat : nouveau jeton de lien"
@@ -520,7 +549,7 @@ link_revoke() {
 # --- Hooks en reel (#197 item 1) -----------------------------------------------------------------------------------
 # hooks.json (DEPLOYMENT/qualif/hooks.json, livre par le volume `${PROJECT}_hooks`, push-hooks) ecrit chaque host.up / host.down dans
 # /run/secagent/events.log (tmpfs) de chaque conteneur. Seul le MAITRE de la racine execute ses hooks.
-events_log() { docker exec "$1" cat /run/secagent/events.log 2>/dev/null || true; }
+events_log() { ctr exec "$1" cat /run/secagent/events.log 2>/dev/null || true; }
 # $1 conteneur, $2 hote, $3 UP|DOWN : une ligne "<horodatage> <UP|DOWN> <hote>" existe dans le journal.
 hook_seen() { events_log "$1" | awk -v h="$2" -v k="$3" '$2==k && $3==h {f=1} END{exit !f}'; }
 
@@ -548,15 +577,15 @@ negative_ca() {
   verify_images
   local m; m="$(master)" || fail "pas de maitre sur la racine"
   echo "== minion sans la CA privee (store systeme seul) : doit etre REFUSE"
-  "${DC[@]}" --profile negative up -d --no-deps minion-negca
+  dc --profile negative up -d --no-deps minion-negca
   local ok=0
   for _ in $(seq 1 30); do
-    if "${DC[@]}" --profile negative logs minion-negca 2>&1 | grep -Eiq 'x509|certificate|unknown authority'; then ok=1; break; fi
+    if dc --profile negative logs minion-negca 2>&1 | grep -Eiq 'x509|certificate|unknown authority'; then ok=1; break; fi
     sleep 2
   done
   local listed=0
   adm "$m" minions list 2>/dev/null | awk '$1=="minion-negca" {f=1} END{exit !f}' && listed=1
-  "${DC[@]}" --profile negative rm -sf minion-negca >/dev/null
+  dc --profile negative rm -sf minion-negca >/dev/null
   [ "$ok" = 1 ] || fail "negative-ca : aucune erreur de certificat dans les logs de minion-negca (60 s)"
   [ "$listed" = 0 ] || fail "negative-ca : minion-negca figure dans minions list malgre l'absence de CA"
   echo "negative-ca OK (erreur de certificat, minion absent de la liste)"
@@ -581,7 +610,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     smoke) smoke ;;
     failover) failover ;;
     backup-restore) backup_restore ;;
-    logs) "${DC[@]}" logs --tail=100 ;;
+    logs) dc logs --tail=100 ;;
     load-images) load_images "${2:-}" ;;
     push-tls) push_tls ;;
     push-hooks) push_hooks ;;
@@ -592,9 +621,16 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     hooks) check_hooks ;;
     negative-ca) negative_ca ;;
     admission-503) admission_503 ;;
-    down) guard_project; "${DC[@]}" down -v
-          # le volume du jeton de lien est EXTERNE (non supprime par down -v) et contient un secret : retrait explicite
-          docker volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" >/dev/null 2>&1 || true
+    down) guard_project
+          if [ "$CONTAINER_CLI" = podman ]; then
+            # JAMAIS `down -v` sous Podman : etat et secrets sont des volumes lies au partage PRIVATE (#267)
+            dc down
+            for CTR_NODE in A B; do ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" >/dev/null 2>&1 || true; done
+          else
+            dc down -v
+            # le volume du jeton de lien est EXTERNE (non supprime par down -v) et contient un secret : retrait explicite
+            ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" >/dev/null 2>&1 || true
+          fi
           chain_dir_clean ;;   # jetons volatils du poste (garde chain_dir_check avant tout rm)
     *) sed -n '2,36p' "$0"; exit 2 ;;
   esac
