@@ -376,6 +376,7 @@ jobs:
           bash scripts/ci/failover_guard_selftest.sh
           python3 scripts/ci/check_no_binds_selftest.py
           bash scripts/ci/admission_503_selftest.sh
+          bash scripts/ci/ansible_version_selftest.sh
           python3 -I DEPLOYMENT/qualif/tools/test_ghcr_image_archive.py
           bash scripts/ci/assert_version_selftest.sh
           bash scripts/ci/release_notes_selftest.sh
