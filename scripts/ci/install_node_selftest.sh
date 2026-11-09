@@ -52,7 +52,7 @@ reset_env; mkstubs 5.7.0 1.5.0 pasta absent
 expect_rc 0 "nominal qualif" "NON activee" qualif
 U="$T/home/$ME/.config/systemd/user/secagent-qualif-mfs.service"
 [ -f "$U" ] && ok "unite --user ecrite" || ko "unite absente ($U)"
-grep -q "^ExecStart=/usr/bin/mfsmount -f -H 192.168.1.231 -S /ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/QUALIF $T/home/$ME/secagent/qualif$" "$U" \
+grep -q "^ExecStart=/usr/bin/mfsmount -f -n -H 192.168.1.231 -S /CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/QUALIF $T/home/$ME/secagent/qualif$" "$U" \
   && ok "ExecStart : master, sous-dossier PRIVATE/QUALIF, point de montage" || ko "ExecStart inattendu : $(grep ExecStart "$U")"
 grep -qE '^ExecStart=.*(allow_other|-o)' "$U" && ko "allow_other (ou -o) dans ExecStart" || ok "pas d'allow_other dans ExecStart"
 [ "$(stat -c %a "$T/home/$ME/secagent/qualif")" = 700 ] && ok "point de montage 0700" || ko "point de montage $(stat -c %a "$T/home/$ME/secagent/qualif")"
@@ -63,7 +63,7 @@ expect_rc 0 "idempotent (2e passage)" "" qualif
 reset_env; mkstubs 5.7.0 1.5.0 pasta present
 expect_rc 0 "nominal prod, mfsmount present" "deja present" prod
 grep -q '^apt-get' "$T/calls.log" 2>/dev/null && ko "apt-get appele alors que mfsmount est present" || ok "aucun apt-get si mfsmount present"
-grep -q -- "-S /ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/PROD " "$T/home/$ME/.config/systemd/user/secagent-prod-mfs.service" \
+grep -q -- "-S /CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/PROD " "$T/home/$ME/.config/systemd/user/secagent-prod-mfs.service" \
   && ok "prod : sous-dossier PRIVATE/PROD" || ko "prod : sous-dossier inattendu"
 
 # --- refus des preconditions (code 2) -------------------------------------------------------------------------------

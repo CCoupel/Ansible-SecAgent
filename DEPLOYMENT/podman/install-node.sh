@@ -26,7 +26,7 @@
 #
 # Codes : 0 OK ; 2 refus d'une precondition (REFUS:) ; 3 commande interdite (INTERDIT:) ; 1 echec d'execution (ECHEC:).
 # Variables (essais seulement) : NODE_USER (cyril), NODE_UID (1000), HOME_BASE (/home), SUBID_DIR (/etc),
-#   MFS_MASTER (192.168.1.231), MFS_SUBDIR (/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/<ENV>).
+#   MFS_MASTER (192.168.1.231), MFS_SUBDIR (/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/<ENV>).
 set -euo pipefail
 
 NODE_USER="${NODE_USER:-cyril}"
@@ -94,7 +94,7 @@ main() {
   local env="${1:-}" ENV mnt unit_dir unit
   case "$env" in qualif|prod) ;; *) refuse "environnement '$env' : attendu qualif|prod" ;; esac
   ENV="$(printf '%s' "$env" | tr '[:lower:]' '[:upper:]')"
-  local subdir="${MFS_SUBDIR:-/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/$ENV}"
+  local subdir="${MFS_SUBDIR:-/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/$ENV}"
   check_preconditions
   if command -v mfsmount >/dev/null 2>&1; then
     echo "moosefs-client deja present ($(command -v mfsmount))"
@@ -107,8 +107,10 @@ main() {
   unit_dir="$HOME_BASE/$NODE_USER/.config/systemd/user"
   act install -d -o "$NODE_USER" -g "$NODE_USER" -m 755 "$HOME_BASE/$NODE_USER/.config" "$HOME_BASE/$NODE_USER/.config/systemd" "$unit_dir"
   unit="$unit_dir/secagent-$env-mfs.service"
-  # mfsmount -f (premier plan, suivi par systemd), sans allow_other : seuls les processus de cyril (dont les conteneurs
-  # rootless) accedent au montage. Le point de montage doit etre vide : un montage deja present n'est pas touche.
+  # mfsmount -f (premier plan, suivi par systemd) -n (PAS les options standard `allow_other,fsname=MFS` : sans -n,
+  # fusermount3 refuse le montage utilisateur faute de user_allow_other, constate en T42) : seuls les processus de cyril
+  # (dont les conteneurs rootless) accedent au montage. -S est relatif a la racine MooseFS (= /share/MFS/ROOT des
+  # clients autofs, carte /etc/auto.master.d/auto.MFS), donc sans le prefixe /ROOT. Le point de montage doit etre vide : un montage deja present n'est pas touche.
   local tmp; tmp="$(mktemp)"
   cat > "$tmp" <<EOF
 # Genere par DEPLOYMENT/podman/install-node.sh (#267) : montage utilisateur de PRIVATE/$ENV (MooseFS), sans allow_other.
@@ -118,7 +120,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/mfsmount -f -H $MFS_MASTER -S $subdir $mnt
+ExecStart=/usr/bin/mfsmount -f -n -H $MFS_MASTER -S $subdir $mnt
 ExecStop=/usr/bin/fusermount3 -u $mnt
 Restart=on-failure
 RestartSec=10
