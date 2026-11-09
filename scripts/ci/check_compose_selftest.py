@@ -262,6 +262,24 @@ with tempfile.TemporaryDirectory() as tmp:
 # (YAML + interpolation ${VAR:-defaut} -> defaut, ${VAR:?msg} -> "x") ; les regles testees ne dependent que de
 # `environment`, `env_file`, `cap_drop` et `security_opt`. Les Compose de QUALIF sont controles par le job CI
 # `docker compose config` (check_compose.py sur le rendu reel), pas ici.
+# --- #267 : --require-userns-keepid (rendus Podman rootless) ---------------------------------------------------------
+KEEP = {"userns_mode": "keep-id:uid=10001,gid=10001", "user": "10001:10001"}
+userns_cases = [
+    ("userns : sans l'option, l'absence de userns_mode est acceptee (rendus Docker)", srv(), lambda d: not why(d, "userns_mode")),
+    ("userns : keep-id:uid=10001,gid=10001 + user 10001:10001 accepte", srv(None, **KEEP), lambda d: not why(d, "userns_mode", require_userns_keepid=True) and not why(d, "user=", require_userns_keepid=True)),
+    ("userns : userns_mode absent refuse", srv(None, user="10001:10001"), lambda d: why(d, "userns_mode='absent'", require_userns_keepid=True)),
+    ("userns : keep-id simple refuse (uid 10001 de l'hote attendu ailleurs)", srv(None, userns_mode="keep-id", user="10001:10001"), lambda d: why(d, "userns_mode='keep-id'", require_userns_keepid=True)),
+    ("userns : host refuse", srv(None, userns_mode="host", user="10001:10001"), lambda d: why(d, "userns_mode='host'", require_userns_keepid=True)),
+    ("userns : mauvais uid refuse", srv(None, userns_mode="keep-id:uid=1000,gid=1000", user="10001:10001"), lambda d: why(d, "attendu 'keep-id:uid=10001,gid=10001'", require_userns_keepid=True)),
+    ("userns : user different de 10001:10001 refuse", srv(None, userns_mode="keep-id:uid=10001,gid=10001", user="0:0"), lambda d: why(d, "user='0:0'", require_userns_keepid=True)),
+    ("userns : un minion n'est pas soumis a keep-id", {"services": {"minion-root": {"image": "ghcr.io/x/secagent-minion:v1", "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"]}}},
+     lambda d: not why(d, "userns_mode", require_userns_keepid=True)),
+]
+for name, doc, pred in userns_cases:
+    good = pred(doc)
+    print(("ok  " if good else "KO  ") + name + ("" if good else "  -> " + repr(check(doc, False, require_userns_keepid=True))))
+    bad += not good
+
 try:
     import yaml
 except ImportError:  # PyYAML absent : le controle des fichiers livres est ignore (signale, jamais silencieux)

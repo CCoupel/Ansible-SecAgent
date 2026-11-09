@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Surcharge PODMAN ROOTLESS (LOT-4 v3.0.6, #267) de la chaine de QUALIF (racine a/b + enfant pull) :
+#   podman-compose -f ../qualif/docker-compose.chain.yml -f docker-compose.podman.qualif.yml up -d <services du noeud>
+# Meme principe que docker-compose.podman.yml (voir son en-tete) : keep-id:uid=10001,gid=10001 sur les SERVICES SERVEUR.
+# Les minions (minion-root, minion-child, minion-negca) n'ont PAS de keep-id : leur entrypoint demarre en root du
+# conteneur (cles, chown) puis passe a `relay` par su-exec ; en rootless, root du conteneur = cyril sur l'hote, et ils
+# n'utilisent que des volumes nommes (aucun fichier du partage) : le mapping par defaut suffit (verifie en T48).
+x-podman:
+  host_uid: 1000
+  secret_owner_uid: 1000
+  container_host: ssh://cyril@<ip>/run/user/1000/podman/podman.sock
+  host_prefix: /home/cyril/secagent/qualif
+
+services:
+  secagent-server-a:
+    userns_mode: "keep-id:uid=10001,gid=10001"
+  secagent-server-b:
+    userns_mode: "keep-id:uid=10001,gid=10001"
+  secagent-child:
+    userns_mode: "keep-id:uid=10001,gid=10001"

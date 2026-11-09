@@ -4,7 +4,8 @@
 
 """Controles de securite sur le RENDU d'un Compose (`docker compose config --format json`).
 
-Usage : check_compose.py [--allow-build] [--require-memory-limit] [--require-digest] [--require-secret-files] rendu.json [rendu2.json ...]
+Usage : check_compose.py [--allow-build] [--require-memory-limit] [--require-digest] [--require-secret-files]
+                        [--require-userns-keepid] rendu.json [rendu2.json ...]
         docker compose -f X config --format json | check_compose.py -
 
 Echec (exit 1) si, pour un service :
@@ -25,6 +26,9 @@ Echec (exit 1) si, pour un service :
   - deux services du rendu publient le meme port d'HOTE (meme protocole) sur des adresses qui se recouvrent
     (meme host_ip, ou l'une des deux en wildcard) : `up` echouerait sur l'allocation du port (v3.0.5, ports PROD
     parametrables API_PUBLISH_PORT / WS_PUBLISH_PORT / ADMIN_PUBLISH_PORT) ;
+  - --require-userns-keepid (rendus PODMAN rootless, #267) : un service serveur sans
+    `userns_mode: keep-id:uid=10001,gid=10001` (uid 10001 du conteneur = uid de l'utilisateur rootless de l'hote,
+    proprietaire des fichiers du partage), ou dont `user` n'est pas 10001:10001 ;
   - la configuration mentionne NATS / JetStream / Caddy.
 """
 import json
@@ -141,6 +145,19 @@ def check_minion_hardening(svc: dict, where: str, errs: list) -> None:
         errs.append(f"{where}: minion sans security_opt: no-new-privileges:true")
 
 
+USERNS_KEEPID = "keep-id:uid=10001,gid=10001"
+
+
+def check_userns_keepid(svc: dict, where: str, errs: list) -> None:
+    """#267 : rendu Podman rootless -> mapping explicite de l'uid 10001 du conteneur sur l'utilisateur de l'hote."""
+    mode = str(svc.get("userns_mode") or "").replace(" ", "")
+    if mode != USERNS_KEEPID:
+        errs.append(f"{where}: userns_mode={mode or 'absent'!r}, attendu {USERNS_KEEPID!r} (Podman rootless, "
+                    "DEPLOYMENT/podman/docker-compose.podman*.yml)")
+    if str(svc.get("user") or "") != "10001:10001":
+        errs.append(f"{where}: user={svc.get('user')!r}, attendu '10001:10001' (keep-id:uid=10001 suppose cet uid)")
+
+
 def is_minion(name: str, svc: dict) -> bool:
     return "secagent-minion" in svc.get("image", "") or name.startswith("minion-")
 
@@ -165,7 +182,7 @@ def host_port_collisions(doc: dict) -> list:
 
 
 def check(doc: dict, allow_build: bool, require_mem: bool = False, require_digest: bool = False,
-          require_secret_files: bool = False) -> list:
+          require_secret_files: bool = False, require_userns_keepid: bool = False) -> list:
     errs = []
     errs += host_port_collisions(doc)
     for name, svc in (doc.get("services") or {}).items():
@@ -197,6 +214,8 @@ def check(doc: dict, allow_build: bool, require_mem: bool = False, require_diges
             errs.append(f"{where}: TLS_DISABLE interdit")
         if is_server:
             check_server_secrets(svc, env, where, errs, require_secret_files)
+            if require_userns_keepid:
+                check_userns_keepid(svc, where, errs)
         elif is_minion(name, svc):
             check_minion_hardening(svc, where, errs)
         check_upstream(env, where, errs)
@@ -232,6 +251,7 @@ def main(argv):
     req = "--require-memory-limit" in argv
     reqd = "--require-digest" in argv
     reqf = "--require-secret-files" in argv
+    requ = "--require-userns-keepid" in argv
     files = [a for a in argv if not a.startswith("--")]
     if not files:
         print(__doc__)
@@ -239,7 +259,7 @@ def main(argv):
     rc = 0
     for f in files:
         doc = json.load(sys.stdin if f == "-" else open(f, encoding="utf-8"))
-        errs = check(doc, allow, req, reqd, reqf)
+        errs = check(doc, allow, req, reqd, reqf, requ)
         for e in errs:
             print(f"::error::{f}: {e}")
         print(f"{'FAIL' if errs else 'OK'} {f}")
