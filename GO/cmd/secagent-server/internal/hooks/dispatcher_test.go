@@ -24,8 +24,10 @@ package hooks
 
 import (
 	"context"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -344,4 +346,53 @@ func TestDispatcher_multiple_actions(t *testing.T) {
 			t.Errorf("missing ActionIndex %d in log entries", want)
 		}
 	}
+}
+
+// #263: Wait returns only once the drop reporter has logged its last line, so nothing writes to the
+// log after a stop (Node.Close relies on it). A write after Wait returned, or a missing
+// "Dispatcher stopped" line at that point, fails the test.
+func TestDispatcher_WaitReturnsAfterTheReporterLoggedItsLastLine(t *testing.T) {
+	var mu sync.Mutex
+	var lines []string
+	waited := false
+	late := false
+	prev := log.Writer()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if waited {
+			late = true
+		}
+		lines = append(lines, string(p))
+		return len(p), nil
+	}))
+	defer log.SetOutput(prev)
+
+	for i := 0; i < 50; i++ {
+		d := NewDispatcher(nil, 10)
+		ctx, cancel := context.WithCancel(context.Background())
+		d.Start(ctx)
+		cancel()
+		d.Wait()
+		mu.Lock()
+		waited = true
+		got := strings.Contains(strings.Join(lines, ""), "[HOOKS] Dispatcher stopped")
+		mu.Unlock()
+		if !got {
+			t.Fatalf("run %d: Wait returned before the reporter logged \"Dispatcher stopped\"", i)
+		}
+		mu.Lock()
+		waited, lines = false, nil
+		mu.Unlock()
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if late {
+		t.Error("a log line was written after Wait returned")
+	}
+}
+
+// A dispatcher that was never started has nothing to wait for.
+func TestDispatcher_WaitOnANeverStartedDispatcherReturns(t *testing.T) {
+	NewDispatcher(nil, 10).Wait()
 }
