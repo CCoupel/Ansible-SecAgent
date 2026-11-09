@@ -29,7 +29,8 @@
 #   CHAIN_DIR (jetons VOLATILS, defaut ${TMPDIR:-/tmp}/secagent-qualif-chain-<uid> : hors PRIVATE/, sur un systeme de fichiers
 #   qui honore chmod ; repertoire 0700 de l'utilisateur, refuse s'il est un lien, d'un autre proprietaire ou plus ouvert),
 #   INVENTORY_BIN (binaire secagent-inventory du poste de controle),
-#   ANSIBLE_BIN (defaut `ansible`), PROJECT (defaut secagent-chain), TOKEN_TTL (defaut 2h).
+#   ANSIBLE_BIN (defaut `ansible`, version EXACTE de ansible-core epinglee dans .github/ci/requirements-ansible.txt,
+#   sinon smoke/failover/admission-503 refusent : #249), PROJECT (defaut secagent-chain), TOKEN_TTL (defaut 2h).
 #   LINK_TTL (defaut = TOKEN_TTL) : duree du jeton de lien relay-child de l'enfant.
 # Les jetons sont ecrits UNIQUEMENT dans $CHAIN_DIR (0700, fichiers 0600, hors du depot) : jamais affiches.
 # Le poste de controle Ansible (plugin SECAGENT-PYTHON + secagent-inventory) est ici le poste qui lance ce script,
@@ -114,6 +115,24 @@ write_secret() { # $1 fichier relatif a chain/, valeur lue sur stdin : jamais af
 }
 extract() { grep -oE "$1" | tail -1; }   # extrait un jeton de la sortie du CLI sans l'afficher
 need() { [ -n "${!1:-}" ] || refuse "variable $1 obligatoire"; }
+# Garde de version ansible-core (#249) : le poste de controle doit avoir EXACTEMENT la version epinglee par la CI
+# (`ansible-core==X` de .github/ci/requirements-ansible.txt). Avec une autre version (ex. 2.17), le plugin se comporte
+# differemment (admission-503 etape 5 : `FAILED | rc=-1` au lieu de UNREACHABLE, nettoyage du tmpdir refuse) et
+# l'echec ressemblait a une regression. Lit la premiere ligne de `${ANSIBLE_BIN:-ansible} --version`
+# (`ansible [core X.Y.Z]`) ; comparaison stricte de chaine. Refus (REFUS:, code 2) avant toute action.
+ANSIBLE_REQUIREMENTS="${ANSIBLE_REQUIREMENTS:-$REPO/.github/ci/requirements-ansible.txt}"
+require_ansible_version() {
+  local bin="${ANSIBLE_BIN:-ansible}" want got
+  [ -f "$ANSIBLE_REQUIREMENTS" ] || refuse "ansible-core : $ANSIBLE_REQUIREMENTS absent (version epinglee introuvable)"
+  want="$(sed -n 's/^[[:space:]]*ansible-core[[:space:]]*==[[:space:]]*\([^[:space:];#]*\).*/\1/p' "$ANSIBLE_REQUIREMENTS" | head -n 1)"
+  [ -n "$want" ] || refuse "ansible-core : aucune ligne 'ansible-core==X' dans $ANSIBLE_REQUIREMENTS"
+  command -v "$bin" >/dev/null 2>&1 \
+    || refuse "ansible-core : ANSIBLE_BIN=$bin introuvable ; attendu ansible-core $want. Installer : python3 -m venv ~/.venv-secagent && ~/.venv-secagent/bin/pip install -r $ANSIBLE_REQUIREMENTS, puis ANSIBLE_BIN=~/.venv-secagent/bin/ansible"
+  got="$("$bin" --version 2>/dev/null | sed -n '1s/.*\[core \([^]]*\)\].*/\1/p')" || true
+  [ "$got" = "$want" ] \
+    || refuse "ansible-core ${got:-illisible} trouve ($bin), $want attendu ($ANSIBLE_REQUIREMENTS). Installer : python3 -m venv ~/.venv-secagent && ~/.venv-secagent/bin/pip install -r $ANSIBLE_REQUIREMENTS, puis ANSIBLE_BIN=~/.venv-secagent/bin/ansible"
+  echo "ansible-core $got ($bin) conforme"
+}
 
 # Diagnostic des conteneurs du projet qui ne sont pas sains (appele par fail() : la CI montre la vraie cause d'un
 # healthcheck qui ne passe jamais). UNIQUEMENT l'etat (jamais `docker inspect` complet : Config.Env contient
@@ -290,6 +309,7 @@ control_env() { # variables du poste de controle Ansible : listes d'adresses, CA
 }
 
 smoke() {
+  require_ansible_version   # #249 : avant tout appel docker / ansible
   local m; m="$(master)" || fail "pas de maitre sur la racine"
   echo "== relais et minions connectes"
   connected "$m" relays dmz1 4
@@ -543,6 +563,7 @@ negative_ca() {
 }
 
 failover() {
+  require_ansible_version   # #249 : avant l'arret du maitre (smoke le reverifie)
   verify_images
   need INVENTORY_BIN
   control_env

@@ -140,6 +140,7 @@ adm503_recreate_root() {
 adm503_env_of() { docker exec "$1" printenv MAX_STDOUT_BUFFER_TOTAL 2>/dev/null || true; }  # $1 conteneur : valeur ou vide
 
 admission_503() {
+  require_ansible_version   # #249 : etape 5 (plugin reel) suppose la version epinglee de la CI
   verify_images; need INVENTORY_BIN
   local slots=$(( ADM503_BUDGET / ADM503_TASK_BYTES )) m n code probe
   [ "$slots" -ge 2 ] || fail "ADM503_BUDGET=$ADM503_BUDGET trop bas (moins de 2 taches)"
