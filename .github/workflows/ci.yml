@@ -385,6 +385,7 @@ jobs:
           bash scripts/ci/minion_entrypoint_selftest.sh
           bash scripts/ci/preflight_secrets_selftest.sh
           bash scripts/ci/private_paths_selftest.sh
+          bash scripts/ci/qualif_pki_selftest.sh
           bash scripts/ci/install_node_selftest.sh
           bash scripts/ci/podman_cli_selftest.sh
           bash scripts/ci/podman_node_files_selftest.sh

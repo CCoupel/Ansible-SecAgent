@@ -293,14 +293,26 @@ push_secrets() {
   echo "secrets deposes dans le volume $vol (10001, 0400)"
 }
 
+# Certificat serveur JETABLE de CI (auto-signe, jamais une CA de confiance de la chaine) dans $1 : extensions X.509
+# EXPLICITES (RFC 5280, independantes de l'openssl.cnf du systeme, qui ajoute sinon CA:TRUE sans keyUsage, refuse par
+# Python >= 3.13 en VERIFY_X509_STRICT) : feuille serveur CA:FALSE, keyUsage critique, serverAuth, SAN localhost.
+gen_ci_tls() {
+  local d="$1"
+  ( umask 077
+    printf '%s\n' '[req]' 'distinguished_name = dn' 'x509_extensions = v3_leaf' 'prompt = no' '[dn]' 'CN = localhost' '[v3_leaf]' \
+      'basicConstraints = critical,CA:FALSE' 'keyUsage = critical,digitalSignature,keyEncipherment' \
+      'extendedKeyUsage = serverAuth' 'subjectKeyIdentifier = hash' 'subjectAltName = DNS:localhost,IP:127.0.0.1' > "$d/ci-tls.cnf"
+    openssl req -x509 -newkey rsa:2048 -nodes -days 30 -config "$d/ci-tls.cnf" -keyout "$d/tls.key" -out "$d/tls.crt" 2>/dev/null )
+  local rc=$?; rm -f "$d/ci-tls.cnf"; [ "$rc" = 0 ] || refuse "generation du certificat jetable de CI impossible ($d)"
+  chmod 644 "$d/tls.key" "$d/tls.crt"   # lisible par l'UID 10001 du conteneur ; certificat jetable de CI
+}
+
 setup_ci() {
   [ "$CONTAINER_CLI" = docker ] || refuse "setup-ci : CI Docker uniquement"
   local d="${QUALIF_TLS_DIR:-$CI_TLS_DIR}"
   require_private_dir "$d" "$SECRETS_DIR"
   mkdir -p "$d"
-  openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=localhost" \
-    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -keyout "$d/tls.key" -out "$d/tls.crt" 2>/dev/null
-  chmod 644 "$d/tls.key"   # lisible par l'UID 10001 du conteneur ; certificat jetable de CI
+  gen_ci_tls "$d"
   # Secrets ALEATOIRES et JETABLES de CI (jamais ceux de qualif/prod), en FICHIERS : 32 octets en hexadecimal (64 car.,
   # >= 32 octets exiges par #214), deposes dans le volume des secrets.
   gen_secrets   # conserve des secrets deja presents (la cle de l'etat ne doit pas changer apres `state init`)

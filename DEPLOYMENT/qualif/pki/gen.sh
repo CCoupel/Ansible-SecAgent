@@ -16,6 +16,12 @@
 # (liste separee par des virgules ; defaut vide = comportement inchange, utilise par la CI).
 # Choix : UN certificat pour toutes les instances (au lieu d'un par instance) : le Compose monte un seul repertoire
 # QUALIF_TLS_DIR ; une CA de test et des SAN explicites suffisent a verifier la chaine TLS sans skip-verify.
+# Extensions X.509 EXPLICITES (RFC 5280), independantes de l'openssl.cnf du systeme : Python >= 3.13 active
+# VERIFY_X509_STRICT par defaut et OpenSSL 3.5 refuse alors une CA sans keyUsage (« CA cert does not include key usage
+# extension », plugin Ansible du poste, 2026-11-11). CA : basicConstraints=critical,CA:TRUE,pathlen:0,
+# keyUsage=critical,keyCertSign,cRLSign, SKI/AKI. Feuille (serveur seulement : aucun mTLS) :
+# basicConstraints=critical,CA:FALSE, keyUsage=critical,digitalSignature,keyEncipherment, extendedKeyUsage=serverAuth,
+# SKI, AKI=keyid (selftest : scripts/ci/qualif_pki_selftest.sh, poignee de main stricte).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
@@ -43,7 +49,21 @@ if git -C "$OUT" rev-parse --is-inside-work-tree >/dev/null 2>&1 && ! { git -C "
 fi
 cd "$OUT"
 umask 077
-openssl req -x509 -newkey rsa:2048 -nodes -days "$DAYS" -subj "/CN=secagent-test-ca" \
+# config minimale propre (jamais l'openssl.cnf du systeme : ses x509_extensions par defaut varient selon la distribution)
+cat > ca.cnf <<'CNF'
+[req]
+distinguished_name = dn
+x509_extensions = v3_ca
+prompt = no
+[dn]
+CN = secagent-test-ca
+[v3_ca]
+basicConstraints = critical,CA:TRUE,pathlen:0
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+CNF
+openssl req -x509 -newkey rsa:2048 -nodes -days "$DAYS" -config ca.cnf \
   -keyout "$CA_OUT/ca.key" -out ca.crt 2>/dev/null
 openssl req -newkey rsa:2048 -nodes -subj "/CN=secagent-chain" -keyout tls.key -out tls.csr 2>/dev/null
 SAN="DNS:localhost,IP:127.0.0.1,DNS:secagent-server-a,DNS:secagent-server-b,DNS:secagent-child"
@@ -57,11 +77,13 @@ fi
 cat > san.ext <<EXT
 subjectAltName=$SAN
 extendedKeyUsage=serverAuth
-keyUsage=digitalSignature,keyEncipherment
-basicConstraints=CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+basicConstraints=critical,CA:FALSE
+subjectKeyIdentifier=hash
+authorityKeyIdentifier=keyid
 EXT
 openssl x509 -req -in tls.csr -CA ca.crt -CAkey "$CA_OUT/ca.key" -CAcreateserial -days "$DAYS" -extfile san.ext -out tls.crt 2>/dev/null
-rm -f tls.csr san.ext ca.srl
+rm -f tls.csr san.ext ca.srl ca.cnf
 # CLE DE TEST JETABLE, generee dans le runner/poste de test, jamais versionnee (garde ci-dessus), JAMAIS POUR LA
 # PRODUCTION. 0644 car le conteneur tourne en UID 10001 (autre proprietaire que l'utilisateur du runner) : pas
 # d'alternative simple (chown impossible sans root, group_add dependrait du GID du runner) pour une cle de 30 jours.
