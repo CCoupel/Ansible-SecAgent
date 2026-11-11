@@ -10,15 +10,16 @@ Le nettoyage des caches existants de l'utilisateur ne regarde pas les agents.
 Poste de travail depuis 2026-11-09 : **Linux natif** (Ubuntu 26.04, conteneur ; plus de WSL ni de `/mnt/c`). Le
 `$HOME` (`/home/cyril`, overlay du conteneur) est **recréé au démarrage du poste** : ne rien y considérer comme durable.
 
-- Le Go du poste est **`~/.local/go`** (Go **1.27.3**, distribution officielle), **dans le PATH** via `~/.local/bin/go` ;
-  il est installé par le bootstrap du conteneur (`.claude-launcher/env-template.yaml`, étape `setup`), pas par un agent.
-  C'est la version exigée par `GO/go.work` (`go 1.27.3`, alignée sur l'image de build `golang:1.27-alpine` ;
+- Le Go du poste est **`~/.local/go`** (Go **1.27.4**, distribution officielle), **dans le PATH** via `~/.local/bin/go` ;
+  il est installé par le bootstrap du conteneur (`.claude-launcher/env-template.yaml`, étape `setup`, puis relevé en 1.27.4 avec
+  vérification SHA256 par l'étape de `.claude-launcher/env.yaml` tant que le template n'est pas resynchronisé), pas par un agent.
+  C'est la version exigée par `GO/go.work` (`go 1.27.4`, alignée sur l'image de build `golang:1.27.4-alpine` épinglée par digest ;
   `GO/go.mod` : `go 1.24.0`, version minimale du langage). On l'**utilise en lecture seule** avec `GOTOOLCHAIN=local`.
   L'ancien `/usr/local/go` (1.24.2) et les toolchains de `~/go/pkg/mod/golang.org/` n'existent plus.
 - Sans le bloc ci-dessous, `go` écrit dans `~/go` et `~/.cache/go-build` de l'utilisateur (règle de fond enfreinte) ;
-  si un jour `~/.local/go` n'est plus en 1.27.3, `GOTOOLCHAIN=auto` téléchargerait le toolchain dans `~/go` : c'est
+  si un jour `~/.local/go` n'est plus en 1.27.4, `GOTOOLCHAIN=auto` téléchargerait le toolchain dans `~/go` : c'est
   la cause de l'écriture hors scratchpad constatée en v3.0.4. Le bloc le télécharge alors **dans le scratchpad**
-  (`GOTOOLCHAIN=go1.27.3`, amorce = le `go` du PATH, base de sommes ACTIVE : toolchain vérifié par sum.golang.org).
+  (`GOTOOLCHAIN=go1.27.4`, amorce = le `go` du PATH, base de sommes ACTIVE : toolchain vérifié par sum.golang.org).
 - **CGO / `-race`** : `go test -race` exige un compilateur C. Le 2026-11-09 le poste n'en avait pas (`gcc` absent,
   `go env CGO_ENABLED` = 0) ; `gcc` et les en-têtes libc (`libc6-dev` sous apt) sont désormais **déclarés dans
   `.claude-launcher/env.yaml`** (`packages`, `packages_by_manager`). **`-race` local disponible une fois le poste
@@ -37,10 +38,10 @@ Poste de travail depuis 2026-11-09 : **Linux natif** (Ubuntu 26.04, conteneur ; 
 ```bash
 S=<scratchpad de l'agent>            # chemin absolu fourni par l'environnement
 mkdir -p "$S/go"/{path,mod,cache,bin,lint}
-T=$HOME/.local/go                    # Go 1.27.3 du poste, lecture seule
-[ "$(head -1 "$T/VERSION" 2>/dev/null)" = go1.27.3 ] || T="$S/go/mod/golang.org/toolchain@v0.0.1-go1.27.3.linux-amd64"
-# 1. seulement si le Go du poste n'est pas en 1.27.3 : Go 1.27.3 dans le scratchpad (verifie par la base de sommes)
-[ -x "$T/bin/go" ] || env GOTOOLCHAIN=go1.27.3 GOPATH="$S/go/path" GOMODCACHE="$S/go/mod" GOCACHE="$S/go/cache" \
+T=$HOME/.local/go                    # Go 1.27.4 du poste, lecture seule
+[ "$(head -1 "$T/VERSION" 2>/dev/null)" = go1.27.4 ] || T="$S/go/mod/golang.org/toolchain@v0.0.1-go1.27.4.linux-amd64"
+# 1. seulement si le Go du poste n'est pas en 1.27.4 : Go 1.27.4 dans le scratchpad (verifie par la base de sommes)
+[ -x "$T/bin/go" ] || env GOTOOLCHAIN=go1.27.4 GOPATH="$S/go/path" GOMODCACHE="$S/go/mod" GOCACHE="$S/go/cache" \
   GOFLAGS=-modcacherw GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org go version
 # 2. environnement de travail
 export GOROOT="$T" GOTOOLCHAIN=local
@@ -51,7 +52,8 @@ export GOPROXY="file://$HOME/go/pkg/mod/cache/download,https://proxy.golang.org"
 ```
 
 Vérifié par infra le 2026-11-09 : `go version` → `go1.27.3 linux/amd64`, `go vet ./cmd/secagent-inventory/...` OK,
-`~/go` inchangé (`du -sb`).
+`~/go` inchangé (`du -sb`). Le 2026-11-11 (montée 1.27.4, GO-2026-6859) : repli de l'étape 1 rejoué (`go1.27.4` téléchargé
+dans le scratchpad, `toolchain@v0.0.1-go1.27.4.linux-amd64`), `go build`/`go vet`/`govulncheck ./...` OK, `~/go` inchangé.
 
 > **Avertissement** : cet environnement sert à compiler et tester. **Ajouter ou monter une dépendance** (`go get`,
 > `go mod tidy`) reste réservé à un ordre explicite (infra ou dev), base de sommes active (jamais `GOSUMDB=off` pour

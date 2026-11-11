@@ -30,7 +30,7 @@
 - Mesures : arrêt propre 3,2 à 7,2 s, `kill` ~5 min (péremption du verrou), 3 000 agents enrôlés en 11,8 s.
 
 ## CI et outils
-- **Poste Linux natif** (conteneur ubuntu:26.04, home recréé à chaque démarrage), dépôt sur MooseFS (`/share/MFS/...`) : plus de WSL/NTFS/`/mnt/c`/`docker.exe`. Le partage dépend des chunkservers de srv8. Go 1.27.3 dans `~/.local/go` (bootstrap Claude-Launcher) ; bloc d'environnement : `.claude/outillage_go.md`. Tests : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test -race ./... -timeout 900s` depuis `GO/`. `gcc` + en-têtes libc ajoutés à `env.yaml` : `go test -race` local après reconstruction du poste, d'ici là `-race` en CI seulement.
+- **Poste Linux natif** (conteneur ubuntu:26.04, home recréé à chaque démarrage), dépôt sur MooseFS (`/share/MFS/...`) : plus de WSL/NTFS/`/mnt/c`/`docker.exe`. Le partage dépend des chunkservers de srv8. Go 1.27.4 dans `~/.local/go` (bootstrap Claude-Launcher, relevé par `env.yaml`, GO-2026-6859) ; bloc d'environnement : `.claude/outillage_go.md`. Tests : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test -race ./... -timeout 900s` depuis `GO/`. `gcc` + en-têtes libc ajoutés à `env.yaml` : `go test -race` local après reconstruction du poste, d'ici là `-race` en CI seulement.
 - Pas de client Docker ni de `ssh` sur le poste : CLI Linux à dézipper dans le scratchpad, `DOCKER_HOST` / `-H tcp://192.168.1.218:2375`. Démon Docker local : ne pas le démarrer. `gh` 2.46 (< 2.49 : pas de `gh attestation verify`). `pyyaml` via `.github/ci/.venv` ; Ansible uniquement dans un venv hors `~/.local`.
 
 ## Suivis / à trancher
