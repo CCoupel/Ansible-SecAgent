@@ -43,61 +43,69 @@ func TestSnapshotDiff(t *testing.T) {
 	}
 }
 
-func TestRerouteCause(t *testing.T) {
+func TestNoteRoute(t *testing.T) {
 	setTreeHooks(t, "central", nil, nil, nil)
 	cases := []struct {
 		name      string
+		seed      *hostRoute // route known before (nil: first route)
 		local     bool
-		prev      *PrevRoute
-		newChain  []string
+		relay     string
+		chain     []string
 		wantCause string
 		wantOld   []string
 	}{
-		{"first route", false, nil, []string{"dmz1", "dmz2"}, "", nil},
-		{"same route", false, &PrevRoute{RelayID: "dmz2", Chain: []string{"dmz1", "dmz2"}}, []string{"dmz1", "dmz2"}, "", nil},
-		{"moved", false, &PrevRoute{RelayID: "dmz2", Chain: []string{"dmz1", "dmz2"}}, []string{"dmz1", "dmz3"}, "moved", []string{"dmz1", "dmz2"}},
-		{"snapshot route without chain, same owner", false, &PrevRoute{RelayID: "dmz2"}, []string{"dmz1", "dmz2"}, "", nil},
-		{"snapshot route without chain, other owner", false, &PrevRoute{RelayID: "dmz9"}, []string{"dmz1", "dmz2"}, "moved", []string{"dmz9"}},
-		{"back from local", true, nil, []string{"dmz1"}, "indirect", []string{"central"}},
-		{"back from local, stale route", true, &PrevRoute{RelayID: "dmz1", Chain: []string{"dmz1"}}, []string{"dmz1"}, "indirect", []string{"central"}},
+		{"first route", nil, false, "dmz2", []string{"dmz1", "dmz2"}, "", nil},
+		{"same route", &hostRoute{"dmz2", []string{"dmz1", "dmz2"}}, false, "dmz2", []string{"dmz1", "dmz2"}, "", nil},
+		{"moved to another relay", &hostRoute{"dmz2", []string{"dmz1", "dmz2"}}, false, "dmz3", []string{"dmz1", "dmz3"}, "moved", []string{"dmz1", "dmz2"}},
+		{"same relay, new path", &hostRoute{"dmz2", []string{"dmz1", "dmz2"}}, false, "dmz2", []string{"dmz2"}, "moved", []string{"dmz1", "dmz2"}},
+		{"snapshot route without chain, same owner", &hostRoute{"dmz2", nil}, false, "dmz2", []string{"dmz1", "dmz2"}, "", nil},
+		{"snapshot route without chain, other owner", &hostRoute{"dmz9", nil}, false, "dmz2", []string{"dmz1", "dmz2"}, "moved", []string{"dmz9"}},
+		{"back from local", nil, true, "dmz1", []string{"dmz1"}, "indirect", []string{"central"}},
+		{"back from local, stale route", &hostRoute{"dmz1", []string{"dmz1"}}, true, "dmz1", []string{"dmz1"}, "indirect", []string{"central"}},
 	}
 	for i, c := range cases {
 		host := "reroute-case-" + string(rune('a'+i))
+		if c.seed != nil {
+			noteSnapshotRoute(host, c.seed.relayID, c.seed.chain)
+		}
 		if c.local {
 			noteLocalDisconnect(host)
 		}
-		origin := c.newChain[len(c.newChain)-1]
-		cause, old := rerouteCause(host, origin, c.newChain, c.prev)
+		cause, old := noteRoute(host, c.relay, c.chain)
 		if cause != c.wantCause || !reflect.DeepEqual(old, c.wantOld) {
 			t.Errorf("%s: cause=%q old=%v, want %q %v", c.name, cause, old, c.wantCause, c.wantOld)
 		}
-		if c.local { // consumed: the next arrival is not indirect again
-			if cause2, _ := rerouteCause(host, origin, c.newChain, nil); cause2 != "" {
-				t.Errorf("%s: second arrival gave %q", c.name, cause2)
-			}
+		if cause2, _ := noteRoute(host, c.relay, c.chain); cause2 != "" { // the same arrival again: nothing
+			t.Errorf("%s: second identical arrival gave %q", c.name, cause2)
 		}
 	}
 }
 
-// A host with a route that connects here: host.rerouted direct, once per stale route.
+// The route memory is not the store: a host whose relay stopped listing it is still remembered, so
+// that its arrival behind another relay is a move, not a first route.
+func TestNoteRoute_SurvivesTheRouteRemovalFromTheStore(t *testing.T) {
+	if cause, _ := noteRoute("memo-host", "relayA", []string{"relayA"}); cause != "" {
+		t.Fatalf("first route gave %q", cause)
+	}
+	// relayA's next agent_list drops the host (the store forgets it); nothing is noted here
+	cause, old := noteRoute("memo-host", "relayB", []string{"relayB"})
+	if cause != "moved" || !reflect.DeepEqual(old, []string{"relayA"}) {
+		t.Errorf("cause=%q old=%v, want moved from relayA", cause, old)
+	}
+}
+
+// A host with a remembered relay route that connects here: host.rerouted direct, once.
 func TestNoteLocalConnect_DirectOnce(t *testing.T) {
 	setTreeHooks(t, "central", nil, nil, nil)
 	var mu sync.Mutex
 	var got []hooks.Event
 	SetEventFunc(func(ev hooks.Event) { mu.Lock(); got = append(got, ev); mu.Unlock() })
 	t.Cleanup(func() { SetEventFunc(nil) })
-	SetRelayHostRouteFunc(func(h string) (string, error) {
-		if h == "direct-host" {
-			return "dmz1", nil
-		}
-		return "", nil
-	})
-	SetRelayHostRouteChainFunc(func(string) (string, []string) { return "dmz1", []string{"dmz1", "dmz2"} })
-	t.Cleanup(func() { SetRelayHostRouteFunc(nil); SetRelayHostRouteChainFunc(nil) })
+	noteSnapshotRoute("direct-host", "dmz2", []string{"dmz1", "dmz2"})
 
 	noteLocalConnect("direct-host")
-	noteLocalConnect("direct-host") // same stale route: not reported twice
-	noteLocalConnect("plain-host")  // no route: nothing
+	noteLocalConnect("direct-host") // the route is no longer remembered: nothing more
+	noteLocalConnect("plain-host")  // never routed: nothing
 	mu.Lock()
 	defer mu.Unlock()
 	if len(got) != 1 {
@@ -108,6 +116,17 @@ func TestNoteLocalConnect_DirectOnce(t *testing.T) {
 		!reflect.DeepEqual(ev.Detail.OldChain, []string{"dmz1", "dmz2"}) || !reflect.DeepEqual(ev.Detail.NewChain, []string{"central"}) ||
 		ev.Detail.OldRelay() != "dmz2" || ev.Detail.NewRelay() != "central" {
 		t.Errorf("event = %+v", ev)
+	}
+}
+
+func TestHostsThrough(t *testing.T) {
+	got := hostsThrough([]RelayAgentInfo{
+		{Hostname: "a", RelayChain: []string{"F", "r2", "r3"}},
+		{Hostname: "b", RelayChain: []string{"F", "r2", "r3"}},
+		{Hostname: "c", RelayChain: []string{"F", "r1"}},
+	})
+	if got["F"] != 3 || got["r2"] != 2 || got["r3"] != 2 || got["r1"] != 1 {
+		t.Errorf("hostsThrough = %v", got)
 	}
 }
 
@@ -228,16 +247,6 @@ func TestEventForward_HostMovedGivesOneRerouted(t *testing.T) {
 	rec := &recEvents{}
 	SetEventFunc(rec.add)
 	t.Cleanup(func() { SetEventFunc(nil) })
-	var rmu sync.Mutex
-	routes := map[string]*PrevRoute{}
-	SetRelayRouteUpsertPrevFunc(func(h, id string, chain []string) (*PrevRoute, error) {
-		rmu.Lock()
-		defer rmu.Unlock()
-		prev := routes[h]
-		routes[h] = &PrevRoute{RelayID: id, Chain: append([]string(nil), chain...)}
-		return prev, nil
-	})
-	t.Cleanup(func() { SetRelayRouteUpsertPrevFunc(nil) })
 	setTreeHooks(t, "central", nil, nil, nil)
 	srv := setupRelayTestServer(t)
 	defer srv.Close()

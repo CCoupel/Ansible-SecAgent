@@ -505,26 +505,12 @@ func Build(cfg Config) (node *Node, err error) {
 		_, err := store.UpsertRelayRoute(hostname, relayID, chain)
 		return err
 	})
-	ws.SetRelayRouteUpsertPrevFunc(func(hostname, relayID string, chain []string) (*ws.PrevRoute, error) {
-		prev, err := store.UpsertRelayRoute(hostname, relayID, chain)
-		if err != nil || prev == nil {
-			return nil, err
-		}
-		return &ws.PrevRoute{RelayID: prev.RelayID, Chain: prev.RelayChain}, nil
-	})
 	ws.SetRelayChainsFunc(func() map[string][]string {
 		chains, err := store.ListRelayChains()
 		if err != nil {
 			return nil
 		}
 		return chains
-	})
-	ws.SetRelayHostRouteChainFunc(func(hostname string) (string, []string) {
-		r, err := store.GetRelayRoute(hostname)
-		if err != nil || r == nil {
-			return "", nil
-		}
-		return r.RelayID, r.RelayChain
 	})
 	ws.SetRelayLinkEstablishedFunc(n.linkEstablished)
 	ws.SetRelayChainFunc(func(relayID string, chain []string) error {

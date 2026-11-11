@@ -20,26 +20,10 @@ import (
 	"secagent-server/cmd/secagent-server/internal/hooks"
 )
 
-// PrevRoute is the route of a host before an upsert replaced it.
-type PrevRoute struct {
-	RelayID string
-	Chain   []string // top-down; may be empty for a route written by a snapshot that carried no chain
-}
-
 var (
-	rerouteHooksMu    sync.RWMutex
-	routeUpsertPrevFn func(hostname, relayID string, chain []string) (*PrevRoute, error)
-	relayChainsFn2    func() map[string][]string
-	hostRouteChainFn  func(hostname string) (string, []string)
+	rerouteHooksMu sync.RWMutex
+	relayChainsFn2 func() map[string][]string
 )
-
-// SetRelayRouteUpsertPrevFunc sets a route upsert that returns the previous route (nil if none). It
-// takes precedence over SetRelayRouteUpsertFunc: without the previous route nothing can be re-routed.
-func SetRelayRouteUpsertPrevFunc(fn func(hostname, relayID string, chain []string) (*PrevRoute, error)) {
-	rerouteHooksMu.Lock()
-	routeUpsertPrevFn = fn
-	rerouteHooksMu.Unlock()
-}
 
 // SetRelayChainsFunc sets the reader of the recorded top-down chains of the relays below this node,
 // read BEFORE a snapshot rewrites them (relay.rerouted).
@@ -49,23 +33,21 @@ func SetRelayChainsFunc(fn func() map[string][]string) {
 	rerouteHooksMu.Unlock()
 }
 
-// SetRelayHostRouteChainFunc sets the reader of the recorded route of a host: the relay it lives on
-// and the top-down chain ("" when unrouted). Used to describe the old route of a host.rerouted direct.
-func SetRelayHostRouteChainFunc(fn func(hostname string) (string, []string)) {
-	rerouteHooksMu.Lock()
-	hostRouteChainFn = fn
-	rerouteHooksMu.Unlock()
-}
-
-// maxRerouteMemory bounds the two in-memory sets below (hostnames come from authenticated peers and
+// maxRerouteMemory bounds the in-memory sets below (hostnames come from authenticated peers and
 // agents, but a fleet is finite: past the bound an arbitrary entry is forgotten, which can only
 // cost one event).
-const maxRerouteMemory = 65536
+const maxRerouteMemory = 100000
+
+// hostRoute is the last route this process saw for a host: the relay it lives on and the top-down chain.
+type hostRoute struct {
+	relayID string
+	chain   []string
+}
 
 var (
-	rerouteMemMu   sync.Mutex
-	recentlyLocal  = map[string]struct{}{} // hosts that were connected HERE and are not any more
-	directReported = map[string]string{}   // host -> relay of the stale route a direct was already reported for
+	rerouteMemMu  sync.Mutex
+	lastRoutes    = map[string]hostRoute{} // host -> last route seen by THIS process (survives the route's removal from the store)
+	recentlyLocal = map[string]struct{}{}  // hosts that were connected HERE and are not any more
 )
 
 func boundLocked[V any](m map[string]V) {
@@ -77,33 +59,62 @@ func boundLocked[V any](m map[string]V) {
 	}
 }
 
-// noteLocalConnect runs when an agent connects here. A host that still has a route through a relay
-// has just moved from that relay to this node: host.rerouted cause=direct (once per stale route).
-func noteLocalConnect(hostname string) {
+// The route memory is deliberately NOT the store: the store forgets a host as soon as its relay's next
+// agent_list no longer lists it (a few milliseconds after the host left), so a move could never be told
+// from a first route. The memory lives as long as the process and is empty after a restart or a
+// failover: a first route is never a re-route, so a failover (a -> b) gives no event at all.
+
+// noteSnapshotRoute records a route declared by a snapshot, silently (a snapshot never gives a
+// host.rerouted: a reparent is one relay.rerouted per relay).
+func noteSnapshotRoute(hostname, relayID string, chain []string) {
 	rerouteMemMu.Lock()
+	boundLocked(lastRoutes)
+	lastRoutes[hostname] = hostRoute{relayID: relayID, chain: append([]string(nil), chain...)}
+	rerouteMemMu.Unlock()
+}
+
+// noteRoute records the route of a host that came up (host.up/new/reconnect) or was listed by a relay
+// (agent_list) and decides whether it is a re-route: it returns the cause and the old chain, "" when
+// there is nothing to report (first route, same route). A host that was connected here and comes back
+// through a relay is "indirect" whatever the previous route.
+func noteRoute(hostname, relayID string, chain []string) (string, []string) {
+	rerouteMemMu.Lock()
+	prev, had := lastRoutes[hostname]
+	boundLocked(lastRoutes)
+	lastRoutes[hostname] = hostRoute{relayID: relayID, chain: append([]string(nil), chain...)}
+	_, wasLocal := recentlyLocal[hostname]
 	delete(recentlyLocal, hostname)
 	rerouteMemMu.Unlock()
-	rid, _ := lookupHostRoute(hostname)
-	if rid == "" {
-		return
+	if wasLocal {
+		return "indirect", []string{localRelayID()}
 	}
-	rerouteMemMu.Lock()
-	if directReported[hostname] == rid {
-		rerouteMemMu.Unlock()
-		return
+	if !had {
+		return "", nil
 	}
-	boundLocked(directReported)
-	directReported[hostname] = rid
-	rerouteMemMu.Unlock()
+	old := prev.chain
+	if len(old) == 0 {
+		old = []string{prev.relayID}
+	}
+	if prev.relayID == relayID && (len(prev.chain) == 0 || sameChain(prev.chain, chain)) {
+		return "", nil
+	}
+	return "moved", old
+}
 
-	old := []string{rid}
-	rerouteHooksMu.RLock()
-	fn := hostRouteChainFn
-	rerouteHooksMu.RUnlock()
-	if fn != nil {
-		if _, ch := fn(hostname); len(ch) > 0 {
-			old = ch
-		}
+// noteLocalConnect runs when an agent connects here. A host this process knew behind a relay has just
+// moved from that relay to this node: host.rerouted cause=direct.
+func noteLocalConnect(hostname string) {
+	rerouteMemMu.Lock()
+	prev, had := lastRoutes[hostname]
+	delete(lastRoutes, hostname)
+	delete(recentlyLocal, hostname)
+	rerouteMemMu.Unlock()
+	if !had {
+		return
+	}
+	old := prev.chain
+	if len(old) == 0 {
+		old = []string{prev.relayID}
 	}
 	emitEvent(hooks.Event{Name: "host.rerouted", Hostname: hostname, Detail: hooks.Detail{
 		Cause: "direct", OldChain: old, NewChain: []string{localRelayID()}}})
@@ -116,42 +127,6 @@ func noteLocalDisconnect(hostname string) {
 	boundLocked(recentlyLocal)
 	recentlyLocal[hostname] = struct{}{}
 	rerouteMemMu.Unlock()
-}
-
-// takeRecentlyLocal reports (and forgets) that hostname was connected here before.
-func takeRecentlyLocal(hostname string) bool {
-	rerouteMemMu.Lock()
-	defer rerouteMemMu.Unlock()
-	_, ok := recentlyLocal[hostname]
-	delete(recentlyLocal, hostname)
-	return ok
-}
-
-// rerouteCause decides the cause of the route change of a host that comes up through a relay.
-// prev is the route before the upsert (nil: none). It returns the cause and the old chain, "" when
-// there is nothing to report (first route, same route).
-func rerouteCause(hostname, origin string, newChain []string, prev *PrevRoute) (string, []string) {
-	rerouteMemMu.Lock()
-	delete(directReported, hostname) // the route is rewritten: a later direct is a new change
-	rerouteMemMu.Unlock()
-	if takeRecentlyLocal(hostname) {
-		return "indirect", []string{localRelayID()}
-	}
-	if prev == nil {
-		return "", nil
-	}
-	old := prev.Chain
-	if len(old) == 0 {
-		// route written by a snapshot without chain: only the owner is known
-		if prev.RelayID == origin {
-			return "", nil
-		}
-		old = []string{prev.RelayID}
-	}
-	if sameChain(old, newChain) {
-		return "", nil
-	}
-	return "moved", old
 }
 
 func sameChain(a, b []string) bool {
@@ -215,6 +190,18 @@ func knownRelayChains() map[string][]string {
 		return nil
 	}
 	return fn()
+}
+
+// hostsThrough counts, per relay, the hosts of a snapshot whose path goes through it (the relay is in
+// the host's chain: the hosts behind its own children count for it too).
+func hostsThrough(agents []RelayAgentInfo) map[string]int {
+	out := map[string]int{}
+	for _, a := range agents {
+		for _, id := range a.RelayChain {
+			out[id]++
+		}
+	}
+	return out
 }
 
 // emitRelayRerouted emits one relay.rerouted per moved relay. hostsRouted gives the number of hosts

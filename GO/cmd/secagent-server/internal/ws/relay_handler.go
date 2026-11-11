@@ -1071,6 +1071,11 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 			}
 		}
 		hostnames = routable
+		for _, h := range hostnames { // a relay that now lists a host another relay held: host.rerouted (after host.conflict)
+			if cause, old := noteRoute(h, conn.RelayID, []string{conn.RelayID}); cause != "" {
+				emitHostRerouted(h, cause, []string{conn.RelayID}, old, []string{conn.RelayID})
+			}
+		}
 		if RelayRoutingBulkUpsertFunc != nil {
 			if err := RelayRoutingBulkUpsertFunc(conn.RelayID, hostnames); err != nil {
 				log.Printf("agent_list routing update error: relay_id=%q err=%v", conn.RelayID, err)
@@ -1710,6 +1715,9 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	for _, r := range msg.Relays {
 		storeRelayChain(r.RelayID, r.RelayChain)
 	}
+	for _, a := range msg.Agents {
+		noteSnapshotRoute(a.Hostname, a.RelayID, a.RelayChain)
+	}
 	chainsAfter := map[string][]string{conn.RelayID: {conn.RelayID}}
 	for _, r := range msg.Relays {
 		chainsAfter[r.RelayID] = r.RelayChain
@@ -1776,7 +1784,10 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 		emitRelayUp(conn, msg)
 	}
 	// A relay already known whose path changed (reparent): ONE relay.rerouted per relay, no event per host.
-	emitRelayRerouted(snapshotDiff(chainsBefore, chainsAfter), func(id string) int { return len(byRelay[id]) })
+	if moves := snapshotDiff(chainsBefore, chainsAfter); len(moves) > 0 {
+		through := hostsThrough(msg.Agents)
+		emitRelayRerouted(moves, func(id string) int { return through[id] })
+	}
 	notifyTopologyChanged()
 }
 
@@ -2142,18 +2153,11 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 				log.Printf("event_forward: register relay %q: %v", origin, err)
 			}
 		}
-		rerouteHooksMu.RLock()
-		upsertPrev := routeUpsertPrevFn
-		rerouteHooksMu.RUnlock()
-		if upsertPrev != nil {
-			prev, err := upsertPrev(msg.Hostname, origin, topDown)
-			if err != nil {
-				log.Printf("event_forward: route update host=%q: %v", msg.Hostname, err)
-			} else if cause, old := rerouteCause(msg.Hostname, origin, topDown, prev); cause != "" {
-				// after host.conflict (reported above) on the same hostname worker: conflict, then rerouted
-				emitHostRerouted(msg.Hostname, cause, chain, old, topDown)
-			}
-		} else if fn := routeUpsertHook(); fn != nil {
+		// route memory: a re-route is told from a first route (emitted after host.conflict, same hostname worker)
+		if cause, old := noteRoute(msg.Hostname, origin, topDown); cause != "" {
+			emitHostRerouted(msg.Hostname, cause, chain, old, topDown)
+		}
+		if fn := routeUpsertHook(); fn != nil {
 			if err := fn(msg.Hostname, origin, topDown); err != nil {
 				log.Printf("event_forward: route update host=%q: %v", msg.Hostname, err)
 			}
