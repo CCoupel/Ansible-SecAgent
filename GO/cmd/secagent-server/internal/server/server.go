@@ -601,6 +601,9 @@ func (n *Node) Close() {
 		if n.cancel != nil {
 			n.cancel()
 		}
+		if n.rc != nil {
+			n.rc.WaitStopped(3 * time.Second) // the parent link says 1001 going away before the process exits
+		}
 		// Wait for the background goroutines that log (dispatcher + its reporter, purge) so that
 		// nothing writes to the log after Close returns (#263).
 		if n.dispatcher != nil {

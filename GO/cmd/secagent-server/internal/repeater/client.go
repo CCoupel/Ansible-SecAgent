@@ -204,6 +204,7 @@ type Client struct {
 	parentID string // identity learned at first successful handshake
 	terminal error  // set when a permanent refusal stopped the client
 	done     chan struct{}
+	stopped  chan struct{} // closed when the run loop has returned (after the 1001 close frame of a stop)
 	conn     *websocket.Conn
 	rotor    *endpoints.Rotor // the parent's addresses, last good one first
 	links    atomic.Int64     // links of this process established with a parent: conn_seq of the next relay_hello
@@ -215,7 +216,7 @@ func New(cfg config.RepeaterConfig, opts Options) *Client {
 		opts.OwnLinkJTI = unverifiedJTI(cfg.UpstreamToken)
 	}
 	up := NewUplink(cfg.ID, opts)
-	return &Client{cfg: cfg, opts: up.opts, up: up, tr: newLinkTracker(), done: make(chan struct{})}
+	return &Client{cfg: cfg, opts: up.opts, up: up, tr: newLinkTracker(), done: make(chan struct{}), stopped: make(chan struct{})}
 }
 
 // Uplink returns the shared uplink publisher (used to also accept a parent that dials us, #140).
@@ -288,7 +289,24 @@ func (c *Client) Start(ctx context.Context) error {
 	return nil
 }
 
+// WaitStopped blocks, at most d, until the run loop has returned: after the context was cancelled
+// the session has then sent its 1001 going-away close frame (a process that exits sooner would
+// leave the parent with a cut socket, 1006). It returns at once for a client never started.
+func (c *Client) WaitStopped(d time.Duration) {
+	c.mu.Lock()
+	started := c.started
+	c.mu.Unlock()
+	if !started {
+		return
+	}
+	select {
+	case <-c.stopped:
+	case <-time.After(d):
+	}
+}
+
 func (c *Client) run(ctx context.Context) {
+	defer close(c.stopped)
 	err := runLoopAfter(ctx, "parent", c.opts.MinBackoff, c.opts.MaxBackoff, c.tr, c.setTerminal, c.session, c.opts.after)
 	if err != nil {
 		close(c.done)
@@ -357,8 +375,16 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 
 	// Closing on ctx cancel unblocks the read loop.
 	sessCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go func() { <-sessCtx.Done(); _ = conn.Close() }()
+	closer := make(chan struct{})
+	defer func() { cancel(); <-closer }() // the close frame of a stop is written before the session returns
+	go func() {
+		defer close(closer)
+		<-sessCtx.Done()
+		if ctx.Err() != nil {
+			c.up.goingAway(conn) // orderly stop: 1001 going away before the socket closes
+		}
+		_ = conn.Close()
+	}()
 
 	// 1. relay_hello
 	hello := message{Type: "relay_hello", NodeType: NodeTypeRelay, Mode: ModePull,

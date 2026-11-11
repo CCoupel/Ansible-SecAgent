@@ -136,7 +136,13 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 	if u.opts.LinkTrust != nil {
 		u.opts.LinkTrust.ResetFrames() // the parent re-sends its full state on this link
 	}
-	go func() { <-sessCtx.Done(); _ = conn.Close() }()
+	go func() {
+		<-sessCtx.Done()
+		if ctx.Err() != nil {
+			u.goingAway(conn) // orderly stop: the parent reads 1001, not a cut socket (1006)
+		}
+		_ = conn.Close()
+	}()
 	if err := u.sendSnapshot(conn); err != nil {
 		return false, err
 	}
@@ -290,6 +296,12 @@ func (u *Uplink) events() <-chan Event {
 		return nil
 	}
 	return u.opts.Events
+}
+
+// goingAway sends the close frame 1001 of an orderly stop (best effort, 1 s at most): the parent then
+// reports relay.down reason=peer_closed:1001 and can tell a stop from a cut (peer_closed:1006).
+func (u *Uplink) goingAway(conn *websocket.Conn) {
+	u.closeWithCode(conn, websocket.CloseGoingAway, "going away")
 }
 
 func (u *Uplink) closeWithCode(conn *websocket.Conn, code int, reason string) {
