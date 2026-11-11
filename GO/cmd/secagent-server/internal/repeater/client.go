@@ -394,7 +394,7 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 		RelayID: c.cfg.ID, Ancestors: []string{}, Version: ProtocolVersion, GroupVars: c.opts.GroupVars,
 		ConnSeq: hooks.Seq(min(c.links.Load()+1, maxConnSeq))}
 	if err := c.write(conn, hello); err != nil {
-		return false, fmt.Errorf("send relay_hello: %w", err)
+		return false, c.up.earlyClose(conn, fmt.Errorf("send relay_hello: %w", err))
 	}
 
 	// 2. relay_ack

@@ -144,7 +144,7 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 		_ = conn.Close()
 	}()
 	if err := u.sendSnapshot(conn); err != nil {
-		return false, err
+		return false, u.earlyClose(conn, err)
 	}
 	u.resendLinkStates(conn)
 	lastSnap := time.Now()
@@ -152,13 +152,13 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 
 	// 4. steady state
 	if err := u.sendAgentList(conn); err != nil {
-		return true, err
+		return true, u.earlyClose(conn, err)
 	}
 
 	readDeadline := u.opts.PingInterval * readTimeoutFactor
 	extend := func() error { return conn.SetReadDeadline(time.Now().Add(readDeadline)) }
 	if err := extend(); err != nil {
-		return true, err
+		return true, u.earlyClose(conn, err)
 	}
 	conn.SetPongHandler(func(string) error { return extend() })
 
@@ -274,6 +274,9 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 // reader goroutine has delivered the frame, and the node would retry as if the link had merely broken
 // (a revoked child coming back). The close frame, when it arrives within a short delay, wins.
 func (u *Uplink) preferRead(werr error, readErr <-chan error) error {
+	if u.revoked.Load() { // already known: no wait, no retry
+		return &refusedError{reason: "link token revoked by the root (operator action required)", permanent: true}
+	}
 	select {
 	case rerr := <-readErr:
 		if u.revoked.Load() {
@@ -283,6 +286,26 @@ func (u *Uplink) preferRead(werr error, readErr <-chan error) error {
 	case <-time.After(writeFailReadGrace):
 		return werr
 	}
+}
+
+// earlyClose is preferRead for the failures BEFORE the reader goroutine exists (the first writes of a
+// session, the handshake): it reads, for at most writeFailReadGrace, the close frame the parent may have
+// sent, and gives it priority over the write error (fail closed: a 4010 is never retried).
+func (u *Uplink) earlyClose(conn *websocket.Conn, werr error) error {
+	if u.revoked.Load() {
+		return &refusedError{reason: "link token revoked by the root (operator action required)", permanent: true}
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(writeFailReadGrace))
+	for i := 0; i < 16; i++ { // data frames before the close frame are skipped
+		if _, _, err := conn.ReadMessage(); err != nil {
+			var ce *websocket.CloseError
+			if errors.As(err, &ce) {
+				return wrapRead("read", err)
+			}
+			return werr
+		}
+	}
+	return werr
 }
 
 // writeFailReadGrace is how long a failed write waits for the close frame of the parent.

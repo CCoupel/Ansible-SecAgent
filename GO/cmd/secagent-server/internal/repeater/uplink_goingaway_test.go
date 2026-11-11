@@ -132,3 +132,92 @@ func TestUplink_Close4010WinsOverAConcurrentWriteFailure(t *testing.T) {
 		srv.Close()
 	}
 }
+
+// wsPair returns the two ends of a websocket: the node side (where the uplink code runs) and the peer.
+func wsPair(t *testing.T) (node, peer *websocket.Conn) {
+	t.Helper()
+	got := make(chan *websocket.Conn, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err == nil {
+			got <- c
+		}
+	}))
+	t.Cleanup(srv.Close)
+	peer, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node = <-got
+	t.Cleanup(func() { _ = node.Close(); _ = peer.Close() })
+	return node, peer
+}
+
+func sendClose(t *testing.T, peer *websocket.Conn, code int) {
+	t.Helper()
+	if err := peer.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, "x"), time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func isPermanent(err error) bool {
+	var ref *refusedError
+	return errors.As(err, &ref) && ref.permanent
+}
+
+// Fail closed (a): a write that failed BEFORE the reader exists (first snapshot, link states, first
+// agent_list) or in the handshake (relay_hello) reads the close frame the parent sent: 4010 is permanent
+// and never retried, 4012 is a (correctable) refusal, any other close is an ordinary retried error.
+func TestUplink_EarlyWriteFailureReadsTheCloseFrame(t *testing.T) {
+	up := NewUplink("child", Options{})
+	werr := errors.New("send topology_snapshot: write: broken pipe")
+	for _, c := range []struct {
+		name      string
+		code      int
+		permanent bool
+		refused   bool
+	}{{"4010", CloseCodePermanent, true, true}, {"4012", CloseCodeRetry, false, true}, {"1001", websocket.CloseGoingAway, false, false}} {
+		node, peer := wsPair(t)
+		sendClose(t, peer, c.code)
+		got := up.earlyClose(node, werr)
+		var ref *refusedError
+		if errors.As(got, &ref) != c.refused || isPermanent(got) != c.permanent {
+			t.Errorf("%s: earlyClose = %v (refused=%v permanent=%v), want refused=%v permanent=%v", c.name, got, errors.As(got, &ref), isPermanent(got), c.refused, c.permanent)
+		}
+		if !c.refused && (got == nil || isPermanent(got)) { // any other close frame: an ordinary, retried error
+			t.Errorf("%s: want an ordinary retried error, got %v", c.name, got)
+		}
+	}
+}
+
+// No close frame at all: the write error is returned after the short grace, not before and not much later.
+func TestUplink_EarlyWriteFailureWithoutCloseFrameKeepsTheError(t *testing.T) {
+	up := NewUplink("child", Options{})
+	node, _ := wsPair(t)
+	werr := errors.New("write failed")
+	t0 := time.Now()
+	if got := up.earlyClose(node, werr); got != werr {
+		t.Errorf("got %v, want the write error", got)
+	}
+	if d := time.Since(t0); d > 2*time.Second {
+		t.Errorf("waited %v", d)
+	}
+}
+
+// Fail closed (b): a revoked link is permanent at once, before any wait for the reader (which may be
+// blocked in handleIncoming) and before any write error is returned.
+func TestUplink_RevokedIsPermanentBeforeAnyWait(t *testing.T) {
+	up := NewUplink("child", Options{})
+	up.revoked.Store(true)
+	t0 := time.Now()
+	if got := up.preferRead(errors.New("write failed"), make(chan error)); !isPermanent(got) {
+		t.Errorf("preferRead = %v, want a permanent refusal", got)
+	}
+	node, _ := wsPair(t)
+	if got := up.earlyClose(node, errors.New("write failed")); !isPermanent(got) {
+		t.Errorf("earlyClose = %v, want a permanent refusal", got)
+	}
+	if d := time.Since(t0); d > 200*time.Millisecond {
+		t.Errorf("revoked took %v: it must not wait for the reader (grace %v)", d, writeFailReadGrace)
+	}
+}
