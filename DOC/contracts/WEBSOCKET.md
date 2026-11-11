@@ -249,7 +249,7 @@ Erreur `payload_too_large` :
 | `4000` | Oui — uniquement à la suppression d'un agent (`DELETE /api/admin/minions/{hostname}`, `handlers/admin.go:644`) | Fermeture normale | Reconnexion avec backoff exponentiel : 1s → 2s → 4s → … → 60s |
 | `4001` | Oui — révocation (`POST /api/admin/revoke/{hostname}`) | Token révoqué | **Arrêt définitif — NE PAS reconnecter** ; le minion sort avec le code **77** |
 | `4002` | **Non** — constante définie (`ws/handler.go:24`) mais jamais émise | Token expiré (réservé) | Aucun traitement dédié : l'agent reconnecte comme pour tout code autre que `4001` |
-| `1001` | Oui — arrêt propre du serveur, perte du verrou maître (`server/server.go:566,602`) | Going Away | Reconnexion avec backoff exponentiel (jamais `4001`, pour ne pas interdire la reconnexion au nouveau maître) |
+| `1001` | Oui — arrêt propre du serveur, perte du verrou maître (`server/server.go:766,802`) | Going Away | Reconnexion avec backoff exponentiel (jamais `4001`, pour ne pas interdire la reconnexion au nouveau maître) |
 | réseau | — | Déconnexion réseau | Backoff exponentiel |
 
 Seul `4001` arrête l'agent (`ReconnectManager.ShouldReconnect`, `secagent-minion/internal/ws/dispatcher.go:159`). Les codes `4003` (« re-enrollment requis ») et `4004` (« conflit hostname ») **n'existent pas** : le serveur ne les émet jamais et l'agent ne les traite pas. Le ré-enrôlement est déclenché par un `401` sur l'upgrade WebSocket (JWT rejeté), pas par un code de fermeture. Les codes `4010` et `4012` appartiennent au lien relay ↔ relay (`/ws/relay`), pas à `/ws/agent`.

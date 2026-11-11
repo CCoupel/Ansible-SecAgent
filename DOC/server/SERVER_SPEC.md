@@ -554,7 +554,7 @@ Quand un relay déclare un hôte dans `topology_snapshot` ou `agent_list` alors 
 ```
 **Comportement** : pour un `agent_list` ou un `host.up`/`host.new` reçus d'un pair, le dernier arrivé gagne entre relays (reroute), **sauf** si l'hôte est un agent connecté localement : il n'est jamais re-routé.
 Un `topology_snapshot` qui contredirait une route est refusé (4012), sans `host.conflict`. L'événement est émis une seule fois par changement de propriétaire et par lien (`reportConflictOnce`) ; un `host.conflict` détecté ici est aussi
-remonté au parent, et déclenche les hooks `host.conflict` à chaque niveau (`server/server.go:343-353`). ⚠️ **Production** : configurer un hook d'alerte sur `host.conflict` pour détecter les mouvements de route suspects.
+remonté au parent, et déclenche les hooks `host.conflict` à chaque niveau (`server/server.go:501-535`). ⚠️ **Production** : configurer un hook d'alerte sur `host.conflict` pour détecter les mouvements de route suspects.
 
 #### task_forward et dispatch vers enfant
 
@@ -878,7 +878,7 @@ le routage (`relay_routing` : clé simple `hostname`, `relay_id`, `hop_type` age
 
 **Pertes à la bascule actif/passif (#247, option A, décision du 2026-11-09 : pas de registre persistant)** :
 - Arrêt **propre** : l'ancien maître émet `host.down` pour tous ses agents directs (en pratique avant le drain de 10 s ; un `host.down` tardif est rejeté et compté) ; arrêt **brutal** : tous perdus. Un hôte tombé **pendant la fenêtre** n'a aucun `host.down`, dans les deux modes.
-- Hôtes **indirects** : aucun événement `host.*` à la reprise du lien ; l'enfant rejoue ses événements dans la limite de sa file amont (`RELAY_UPSTREAM_QUEUE_SIZE`, défaut 10 000, bornes 256 à 100 000 ; cadence `RELAY_UPSTREAM_RATE`, défaut 150/s ; `relay.converged` signale la fin de la reprise, au plus tard après `RELAY_CONVERGENCE_TIMEOUT`).
+- Hôtes **indirects** : aucun événement `host.*` à la reprise du lien ; l'enfant met ses événements en file lien coupé et les rejoue après son snapshot (marqueur `late` au-delà de 10 s : historique, sans route ni conflit ni `host.rerouted`), dans la limite de sa file amont (`RELAY_UPSTREAM_QUEUE_SIZE`, défaut 10 000, bornes 256 à 100 000 ; cadence `RELAY_UPSTREAM_RATE`, défaut 150/s ; `relay.converged` signale la fin de la reprise, au plus tard après `RELAY_CONVERGENCE_TIMEOUT`).
 - Après une bascule, resynchroniser par `GET /api/inventory` (source de vérité). Tableau complet : `HOOKS_SPEC.md`, « Pertes à la bascule ».
 
 **Sémantique chaîne** :
