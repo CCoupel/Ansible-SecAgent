@@ -114,3 +114,8 @@ func (q *upstreamQueue) Stats() (dropped int64, depth, capacity int) {
 
 // Close flushes the pending drop report.
 func (q *upstreamQueue) Close() { q.agg.Stop() }
+
+// queueLocalEvent decides whether a local event of this node goes into the upstream queue: always on a
+// non-root node (a link that is down must not lose its own events, T24), only while a parent is
+// linked otherwise (a root without parent has no one to tell).
+func queueLocalEvent(nonRoot, linkActive bool) bool { return nonRoot || linkActive }

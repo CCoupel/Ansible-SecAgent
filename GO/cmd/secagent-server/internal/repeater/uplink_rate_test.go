@@ -117,3 +117,45 @@ func TestUplink_UndeliverableEventIsCounted(t *testing.T) {
 		t.Errorf("lost = %d, want 1", lost.Load())
 	}
 }
+
+// An event that sat in the queue (older than LateEventAfter) is marked late; a fresh one is not.
+func TestUplink_ReplayedEventIsMarkedLate(t *testing.T) {
+	old := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	fresh := time.Now().UTC().Format(time.RFC3339)
+	events := make(chan Event, 2)
+	events <- Event{Event: "host.up", Hostname: "old", Timestamp: old, RelayChain: []string{}}
+	events <- Event{Event: "host.up", Hostname: "fresh", Timestamp: fresh, RelayChain: []string{}}
+	up := NewUplink("child", Options{Events: events})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		_ = up.Serve(context.Background(), c)
+	}))
+	defer srv.Close()
+	c, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	late := map[string]bool{}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(late) < 2 && time.Now().Before(deadline) {
+		var m struct {
+			Type     string `json:"type"`
+			Hostname string `json:"hostname"`
+			Late     bool   `json:"late"`
+		}
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if err := c.ReadJSON(&m); err != nil {
+			t.Fatal(err)
+		}
+		if m.Type == "event_forward" {
+			late[m.Hostname] = m.Late
+		}
+	}
+	if !late["old"] || late["fresh"] {
+		t.Errorf("late flags = %v, want old=true fresh=false", late)
+	}
+}

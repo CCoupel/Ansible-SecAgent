@@ -157,6 +157,8 @@ type RelayMessage struct {
 	Status    string `json:"status,omitempty"`
 	Error     string `json:"error,omitempty"`
 	Timestamp string `json:"timestamp,omitempty"`
+	// Late: the event waited in the sender's queue (T24); history only, it never rewrites a route.
+	Late bool `json:"late,omitempty"`
 }
 
 // RelayAgentInfo describes an agent registered on a downstream relay.
@@ -2142,6 +2144,16 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 		topDown := make([]string, len(chain))
 		for i, id := range chain {
 			topDown[len(chain)-1-i] = id
+		}
+		if msg.Late {
+			// A replayed event (T24) is history: the snapshot and the agent_list the child sent first already
+			// say where the host is. It must not rewrite the route, raise a conflict or re-route anything:
+			// it is kept (hooks, propagation) only when the host is not owned by someone else now.
+			if c := detectHostConflict(conn, msg.Hostname, topDown); c != nil {
+				noteRerouteRefused(conn.RelayID, msg.Event, reasonLateElsewhere)
+				return false
+			}
+			return true
 		}
 		// The event comes from below: a conflict here is detected against OTHER owners only.
 		if c := detectHostConflict(conn, msg.Hostname, topDown); c != nil {

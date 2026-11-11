@@ -544,3 +544,53 @@ func TestReparent_OneRelayReroutedWhicheverOrder(t *testing.T) {
 		})
 	}
 }
+
+// T24: a replayed (late) host.up is history. It never rewrites a route nor raises a conflict; it is
+// kept for the hooks when the host is still the sender's, refused when someone else owns it now.
+func TestLateHostUp_IsHistoryOnly(t *testing.T) {
+	resetRerouteMemory(t)
+	rec := &recEvents{}
+	SetEventFunc(rec.add)
+	SetRelayEventLocalFunc(rec.add)
+	t.Cleanup(func() { SetEventFunc(nil); SetRelayEventLocalFunc(nil) })
+	var mu sync.Mutex
+	upserts := 0
+	SetRelayRouteUpsertFunc(func(string, string, []string) error { mu.Lock(); upserts++; mu.Unlock(); return nil })
+	SetRelayHostRouteFunc(func(h string) (string, error) {
+		if h == "owned-elsewhere" {
+			return "dmz2", nil
+		}
+		return "", nil
+	})
+	var conflicts int
+	SetRelayConflictFunc(func(HostConflict, bool) { mu.Lock(); conflicts++; mu.Unlock() })
+	t.Cleanup(func() { SetRelayRouteUpsertFunc(nil); SetRelayHostRouteFunc(nil); SetRelayConflictFunc(nil) })
+	setTreeHooks(t, "central", nil, nil, nil)
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
+	handshake(t, c, "dmz1")
+	sendSnapshot(t, c, nil, nil)
+	readMsg(t, c)
+	late := func(h string) {
+		_ = c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: h, Status: "connected", RelayChain: []string{"dmz1"},
+			Timestamp: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339), Late: true})
+	}
+	late("still-mine")
+	late("owned-elsewhere")
+	_ = c.WriteJSON(RelayMessage{Type: "heartbeat"})
+	readMsg(t, c)
+	time.Sleep(100 * time.Millisecond)
+	got := rec.named("host.up")
+	if len(got) != 1 || got[0].Hostname != "still-mine" {
+		t.Errorf("host.up dispatched = %+v, want only still-mine", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if upserts != 0 {
+		t.Errorf("%d route upserts for late events, want 0", upserts)
+	}
+	if conflicts != 0 || len(rec.named("host.rerouted")) != 0 {
+		t.Errorf("late events raised %d conflicts / %d host.rerouted, want 0 / 0", conflicts, len(rec.named("host.rerouted")))
+	}
+}

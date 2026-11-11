@@ -95,7 +95,10 @@ type Event struct {
 	RelayChain []string       `json:"relay_chain"`
 	GroupVars  map[string]any `json:"group_vars,omitempty"`
 	Timestamp  string         `json:"timestamp,omitempty"`
-	EnrolledAt string         `json:"enrolled_at,omitempty"` // host.new only
+	// Late marks an event that sat in the queue (a cut link, a backlog): the parent keeps it as history
+	// (hooks, propagation) and does not let it rewrite a route or raise a conflict (T24).
+	Late       bool   `json:"late,omitempty"`
+	EnrolledAt string `json:"enrolled_at,omitempty"` // host.new only
 	// host.conflict only
 	OldRelay string `json:"old_relay,omitempty"`
 	NewRelay string `json:"new_relay,omitempty"`

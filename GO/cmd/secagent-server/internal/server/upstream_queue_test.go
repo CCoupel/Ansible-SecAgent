@@ -119,3 +119,16 @@ func TestUpstreamRate_WarnsAboveTheParentQuota(t *testing.T) {
 		t.Errorf("rate %d, log:\n%s", got, out.String())
 	}
 }
+
+func TestQueueLocalEvent(t *testing.T) {
+	for _, c := range []struct{ nonRoot, active, want bool }{
+		{true, false, true},   // non-root, link down: queued (T24)
+		{true, true, true},    // non-root, link up
+		{false, true, true},   // linked without being flagged non-root (push parent)
+		{false, false, false}, // root without parent: nothing to forward to
+	} {
+		if got := queueLocalEvent(c.nonRoot, c.active); got != c.want {
+			t.Errorf("queueLocalEvent(nonRoot=%v, active=%v) = %v, want %v", c.nonRoot, c.active, got, c.want)
+		}
+	}
+}

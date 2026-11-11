@@ -268,6 +268,9 @@ func notifyLinkEstablished(relayID string, relays []RelayTopoEntry) {
 // reasonNoKnownRoute is the refusal of a host.rerouted about a host this node has no route for.
 const reasonNoKnownRoute = "host without known route"
 
+// reasonLateElsewhere is the refusal of a replayed (late) host event for a host another peer or this node owns now.
+const reasonLateElsewhere = "late event for a host owned elsewhere"
+
 // rerouteRefuseInterval is the period of the aggregated "re-route refused" log.
 const rerouteRefuseInterval = time.Minute
 
@@ -294,7 +297,7 @@ func flushRerouteRefusals(int64) {
 	rerouteRefuseMu.Unlock()
 	for k, n := range r {
 		prefix := "[SECURITY WARNING]"
-		if strings.HasSuffix(k, ": "+reasonNoKnownRoute) {
+		if strings.HasSuffix(k, ": "+reasonNoKnownRoute) || strings.HasSuffix(k, ": "+reasonLateElsewhere) {
 			prefix = "[RELAY]" // normal after the restart of a parent: its route memory is empty
 		}
 		log.Printf("%s re-route event refused (%s): %d event(s) in the last minute", prefix, k, n)

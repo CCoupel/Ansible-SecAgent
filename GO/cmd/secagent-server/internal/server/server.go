@@ -465,7 +465,7 @@ func Build(cfg Config) (node *Node, err error) {
 		d.Mode = m.Mode
 		upQueue.Offer(repeater.Event{Event: m.Event, Hostname: m.Hostname, RelayID: m.RelayID, Status: m.Status,
 			RelayChain: m.RelayChain, GroupVars: m.GroupVars, Timestamp: m.Timestamp, OldRelay: m.OldRelay, NewRelay: m.NewRelay,
-			EnrolledAt: m.EnrolledAt, Mode: m.Mode, Detail: d})
+			EnrolledAt: m.EnrolledAt, Mode: m.Mode, Detail: d, Late: m.Late})
 	})
 
 	// link_state frames of the relays below travel UP to the root through our parent link (informative).
@@ -474,14 +474,12 @@ func Build(cfg Config) (node *Node, err error) {
 	})
 
 	// Event propagation (#126). Local events of this node (agent connect / disconnect, enrollment)
-	// go up to the parent; the uplink appends this node's id to relay_chain. A link that is not
-	// established drops them: the snapshot sent at the next connection re-synchronizes the parent.
+	// go up to the parent; the uplink appends this node's id to relay_chain. A NON-ROOT node puts every
+	// local event, host.* included, in the bounded upstream queue (#246) even when its link is down (or
+	// not established yet): the uplink sends the snapshot first, then replays the queue, paced, each
+	// event keeping its own timestamp (T24). A root without parent has nothing to forward to.
 	dispatcher.SetUpstreamEvent(func(ev hooks.Event) {
-		// relay.* events of a non-root node are queued even before the parent link is up (a
-		// relay.failover is emitted at promotion, before any link exists): the uplink sends them
-		// once connected. Host events keep the old rule: a link that is down drops them, the next
-		// snapshot re-synchronizes the parent.
-		if !n.uplink.Active() && (!hooks.IsRelayEvent(ev.Name) || !nonRoot) {
+		if !queueLocalEvent(nonRoot, n.uplink.Active()) {
 			return
 		}
 		ts := ev.Timestamp
