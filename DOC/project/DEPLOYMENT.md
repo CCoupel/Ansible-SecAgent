@@ -345,6 +345,15 @@ Ce qui se passe si un enfant est monté avant son parent :
 
 **Hooks existants, à relire avant la montée** : `host.up` n'est plus émis aux reconnexions d'un même process minion ≥ 3.0.6. Un hook qui doit s'exécuter à toute connexion s'abonne à `host.up` **et** `host.reconnect` (HOOKS_SPEC §2). Un hook sur un nom d'événement que le serveur n'émet jamais (`relay.updated`, faute de frappe) est signalé par un `[WARN]` au chargement.
 
+### Après une bascule actif/passif : resynchroniser l'état des hôtes (#247)
+
+Le relais ne garde pas de registre persistant des hôtes connectés (option A, décision du 2026-11-09). Après une bascule, les hooks `host.*` peuvent donc **manquer** des changements survenus pendant la fenêtre sans maître :
+
+- **arrêt brutal** (perte du verrou) : aucun `host.down` pour les agents directs tombés pendant la fenêtre ; **arrêt propre** : `host.down` drainés 10 s au plus ;
+- **hôtes derrière un relais enfant** : aucun événement `host.*` à la reprise du lien ; l'enfant rejoue ses événements dans la limite de `RELAY_UPSTREAM_QUEUE_SIZE` (voir aussi `RELAY_UPSTREAM_RATE`, `RELAY_CONVERGENCE_TIMEOUT`).
+
+À faire : sur `relay.failover`, puis quand les enfants attendus sont revenus (`relay.up` / `relay.reconnect`, ou `relay.converged` quand il sera émis — LOT-3.2), relire `GET /api/inventory` (jeton plugin) et réconcilier l'outil aval. Détail : `DOC/server/HOOKS_SPEC.md`, « Pertes à la bascule ».
+
 ## Gestion des Tokens Relay (v3.0.4)
 
 ### Créer un jeton de lien (sur la racine uniquement)

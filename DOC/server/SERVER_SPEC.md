@@ -869,6 +869,11 @@ le routage (`relay_routing` : clé simple `hostname`, `relay_id`, `hop_type` age
 | `relay.updated` | `group_vars` d'un relay changeant | `[relay_id]` | Propagé aux ancêtres ; **ne déclenche aucun hook** (jamais passé au dispatcher) — correction de doc v3.0.6 |
 | `relay.failover`, `relay.up`, `relay.reconnect`, `relay.down` | voir §9.2 « Événements de cycle de vie des relais » ; champs acceptés par kind : liste blanche de §9.2 | `[relay_id, …]` | v3.0.6 ; clé FIFO = `relay_id`, sans hostname ; `relay.*` accepté seulement pour l'émetteur du lien ou un descendant qu'il a déclaré |
 
+**Pertes à la bascule actif/passif (#247, option A, décision du 2026-11-09 : pas de registre persistant)** :
+- Arrêt **brutal** : aucun `host.down` pour les agents directs tombés pendant la fenêtre (file de hooks perdue) ; arrêt **propre** : `host.down` drainé 10 s au plus.
+- Hôtes **indirects** : aucun événement `host.*` à la reprise du lien ; l'enfant rejoue ses événements dans la limite de `RELAY_UPSTREAM_QUEUE_SIZE` (voir aussi `RELAY_UPSTREAM_RATE`, `RELAY_CONVERGENCE_TIMEOUT`).
+- Après une bascule, resynchroniser par `GET /api/inventory` (source de vérité). Tableau complet : `HOOKS_SPEC.md`, « Pertes à la bascule ».
+
 **Sémantique chaîne** :
 - Chaque relay ajoute son propre ID à la chaîne lors du relayage vers le parent
 - Un `event_forward` reçu du parent n'est jamais renvoyé vers le haut (`repeater/uplink.go:310`)

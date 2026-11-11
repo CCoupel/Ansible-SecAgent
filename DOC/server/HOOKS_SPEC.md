@@ -505,7 +505,7 @@ Un événement est confié au worker désigné par un **hachage du hostname** ; 
 - **Dimensionnement** : la file contient `RELAY_HOOKS_QUEUE_SIZE` événements (défaut 10 000, réparti sur les workers : `ceil(taille/workers)` chacun, au moins 1) pour absorber plusieurs événements par hôte d'un parc de plus de 3 000 hôtes qui se reconnecte (bascule actif/passif, redémarrage). Mémoire : environ 200 octets + chaînes par événement, soit quelques Mo au défaut. Budget de débit : avec 64 workers et le pire timeout (10 s), 3 000 actions lentes se rattrapent en environ 470 s, toutes conservées.
 - **Au-delà de la file** : l'événement est rejeté et **compté** (`hooks_dropped_events`) ; un seul `[WARN] hooks: N event(s) …` agrégé par minute, et une entrée **`dropped`** agrégée dans le journal des actions (`action_type:"dropped"`, `event:"*"`, le message donne les comptes). Jamais une ligne par événement.
 - **Compteurs** (`GET /api/admin/status`, `secagent-server server status`) : `hooks_queue_depth` (+ `hooks_queue_capacity`), `hooks_inflight`, `hooks_dropped_events`, `hooks_dropped_actions` (actions perdues avec des événements en file lors d'un arrêt brutal : doit rester 0 en marche).
-- **Arrêt propre** (signal d'arrêt) : les serveurs HTTP s'arrêtent, puis la file est vidée pendant 10 s au plus ; le reste est compté et loggué (`[SHUTDOWN] hooks: N event(s) still pending`). **Arrêt brutal** (perte du verrou actif/passif, #163) : sortie immédiate, les événements en file sont perdus, comptés et loggués (`Dispatcher stopped: N queued event(s) not processed`). Voir « Bascule actif/passif » ci-dessous pour ce que voit le nouveau maître.
+- **Arrêt propre** (signal d'arrêt) : les serveurs HTTP s'arrêtent, puis la file est vidée pendant 10 s au plus ; le reste est compté et loggué (`[SHUTDOWN] hooks: N event(s) still pending`). **Arrêt brutal** (perte du verrou actif/passif, #163) : sortie immédiate, les événements en file sont perdus, comptés et loggués (`Dispatcher stopped: N queued event(s) not processed`). Aucun `host.down` n'est émis pour les agents qui se déconnectent pendant un arrêt brutal (le dispatcher est annulé avant : `server.go:751-762`). Voir « Bascule actif/passif » ci-dessous, tableau « Pertes à la bascule », pour ce que voit le nouveau maître.
 - **Budgets séparés avec #179** : les actions de hook ne consomment pas de slot de tâche `exec` ; une action `api` qui appellerait l'API exec du serveur serait soumise à #179 comme n'importe quel client.
 
 
@@ -519,6 +519,18 @@ Dans l'ordre :
 4. **Hôtes derrière un relais enfant** : ils sont re-routés par le `topology_snapshot` **sans aucun événement `host.*`** (`ws/relay_handler.go`, `handleTopologySnapshot` n'émet que `relay.up|reconnect` ; test `TestFailoverChildHosts_NewMasterRoutesTheLeafWithoutAnEvent`). Pour savoir que leurs routes ont changé, s'abonner à `relay.failover` puis `relay.up|reconnect` ; l'inventaire reste la source de vérité de l'état.
 
 Un snapshot de **remplacement** sur un lien déjà établi (changement de topologie) n'émet ni `relay.up` ni `relay.reconnect`.
+
+#### Pertes à la bascule, par type d'hôte et d'arrêt (#247, option A)
+
+**Décision du 2026-11-09 : option A, sans registre persistant.** Le relais ne garde aucune liste des hôtes connectés d'un process à l'autre : le nouveau maître ne peut donc pas déduire ce qui s'est passé pendant la fenêtre sans maître. Les pertes ci-dessous sont **connues et documentées**, pas corrigées.
+
+| Hôtes | Arrêt **propre** du maître sortant | Arrêt **brutal** (perte du verrou, #163) |
+|---|---|---|
+| Agents directs, **vivants** à la bascule | Ils se reconnectent au nouveau maître : `host.reconnect` (`host.up` si le minion est < 3.0.6, `ws/handler.go:197-203`). | Idem. |
+| Agents directs, **tombés pendant la fenêtre** (jamais revenus) | `host.down` émis à la fermeture de leur WebSocket (`ws/handler.go:212,232`), puis drainé par le maître sortant, **10 s au plus** (`server.go:733-746`) ; le reste est perdu et loggué. | **Aucun `host.down`** : les événements en file sont perdus (`server.go:751-762`) et le nouveau maître n'a jamais vu l'hôte se connecter. L'hôte n'apparaît simplement pas parmi les connectés. |
+| Hôtes **indirects** (derrière un relais enfant) | Le premier `topology_snapshot` du lien rétabli les re-route **sans aucun événement `host.*`** (`ws/relay_handler.go`, `handleTopologySnapshot`). Leurs connexions et déconnexions survenues pendant la fenêtre sont rejouées par l'enfant **dans la limite de sa file amont** (`RELAY_UPSTREAM_QUEUE_SIZE`, débit `RELAY_UPSTREAM_RATE`) ; au-delà, elles sont perdues. | Idem. |
+
+**Recommandation** : ne pas déduire l'état du parc des seuls événements `host.*` après une bascule. Sur `relay.failover`, puis une fois les liens rétablis (`relay.up` / `relay.reconnect` de chaque enfant attendu, et `relay.converged` dès qu'il est émis : à venir, LOT-3.2, délai `RELAY_CONVERGENCE_TIMEOUT`), **resynchroniser par `GET /api/inventory`**, qui reste la source de vérité. Les trois variables `RELAY_UPSTREAM_QUEUE_SIZE`, `RELAY_UPSTREAM_RATE` et `RELAY_CONVERGENCE_TIMEOUT` sont documentées en détail avec le LOT-3.2 (file amont, §9b).
 
 Ordre : clé FIFO = `relay_id` pour les `relay.*` ; l'émission locale est synchrone, donc `relay.failover` puis `relay.reconnect` d'un même nœud gardent leur ordre dans la file. Pas d'ordre entre clés différentes.
 
