@@ -16,7 +16,7 @@
 #   chain-test.sh push-link-key  # cle publique racine (+ jeton de lien s'il existe) -> volume ${PROJECT}_link
 #   chain-test.sh link-rotation  # rotation de la cle de lien, confirmation, nouveau jeton, retire-link-previous (v3.0.4)
 #   chain-test.sh link-revoke    # revocation du lien d'un enfant : fermeture 4010, pas de reconnexion, puis remise en etat
-#   chain-test.sh hooks        # journal des hooks (host.up/host.down) de la racine et de l'enfant (#197, hooks.json)
+#   chain-test.sh hooks        # journal des hooks (host.up/host.reconnect/host.down) de la racine et de l'enfant (#197, hooks.json)
 #   chain-test.sh negative-ca  # essai CA negatif (profil Compose `negative`) : un minion sans la CA est refuse (#197)
 #   chain-test.sh admission-503  # refus 503 memory_budget_exhausted en reel (#241) : plafond abaisse, voir admission-503.sh
 #   chain-test.sh paths        # chemins prives resolus (sans docker) ; echec si la racine PRIVATE/ manque
@@ -547,10 +547,13 @@ link_revoke() {
 }
 
 # --- Hooks en reel (#197 item 1) -----------------------------------------------------------------------------------
-# hooks.json (DEPLOYMENT/qualif/hooks.json, livre par le volume `${PROJECT}_hooks`, push-hooks) ecrit chaque host.up / host.down dans
-# /run/secagent/events.log (tmpfs) de chaque conteneur. Seul le MAITRE de la racine execute ses hooks.
+# hooks.json (DEPLOYMENT/qualif/hooks.json, livre par le volume `${PROJECT}_hooks`, push-hooks) ecrit chaque host.up,
+# host.reconnect et host.down dans /run/secagent/events.log (tmpfs) de chaque conteneur (un hook distinct par evenement :
+# seul le premier hook correspondant s'execute, c9ae9e7/#271). Seul le MAITRE de la racine execute ses hooks.
+# Depuis #265 (v3.0.6) : 1re connexion d'un processus minion (conn_seq 1) = host.up ; reconnexion du meme processus
+# (conn_seq > 1, ex. apres une bascule) = host.reconnect, jamais les deux.
 events_log() { ctr exec "$1" cat /run/secagent/events.log 2>/dev/null || true; }
-# $1 conteneur, $2 hote, $3 UP|DOWN : une ligne "<horodatage> <UP|DOWN> <hote>" existe dans le journal.
+# $1 conteneur, $2 hote, $3 UP|RECONNECT|DOWN : une ligne "<horodatage> <UP|RECONNECT|DOWN> <hote>" existe dans le journal.
 hook_seen() { events_log "$1" | awk -v h="$2" -v k="$3" '$2==k && $3==h {f=1} END{exit !f}'; }
 
 check_hooks() {
@@ -561,14 +564,19 @@ check_hooks() {
   echo "hooks OK (journaux : docker exec <conteneur> cat /run/secagent/events.log)"
 }
 
-# Bascule avec hooks : apres l'arret propre du maitre, le NOUVEAU maitre doit journaliser host.up de minion-root
-# (reconnexion du minion). minion-child : informatif (il reste connecte a l'enfant, qui ne redemarre pas ; l'evenement
-# remonte-t-il a la nouvelle racine ? TODO a confirmer a l'execution, pas de verdict ici).
+# Bascule avec hooks : apres l'arret propre du maitre, le NOUVEAU maitre doit journaliser host.reconnect de minion-root
+# (meme processus minion qui se reconnecte : conn_seq > 1, #265 ; host.up n'est PAS emis). minion-child : informatif (il
+# reste connecte a l'enfant, qui ne redemarre pas ; l'evenement remonte-t-il a la nouvelle racine ? TODO a confirmer a
+# l'execution, pas de verdict ici).
 check_hooks_after_failover() {
   local m; m="$(master)" || fail "pas de maitre apres la bascule"
   echo "== hooks apres bascule : nouveau maitre $m"
-  wait_for "host.up minion-root journalise par le nouveau maitre $m" 150 hook_seen "$m" minion-root UP >/dev/null
-  if hook_seen "$m" minion-child UP; then echo "info : host.up minion-child aussi journalise par $m"; else echo "info : host.up minion-child absent du journal de $m (a analyser a l'execution)"; fi
+  wait_for "host.reconnect minion-root journalise par le nouveau maitre $m" 150 hook_seen "$m" minion-root RECONNECT >/dev/null
+  if hook_seen "$m" minion-root UP; then echo "info : host.up minion-root AUSSI journalise par $m (attendu : host.reconnect seul, #265 ; minion < v3.0.6 ?)"; fi
+  local k; for k in RECONNECT UP; do
+    if hook_seen "$m" minion-child "$k"; then echo "info : $k minion-child aussi journalise par $m"; fi
+  done
+  hook_seen "$m" minion-child RECONNECT || hook_seen "$m" minion-child UP || echo "info : aucun evenement minion-child dans le journal de $m (a analyser a l'execution)"
   echo "hooks apres bascule OK"
 }
 

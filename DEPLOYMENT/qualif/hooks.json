@@ -7,6 +7,12 @@
       ]
     },
     {
+      "event": "host.reconnect",
+      "actions": [
+        { "type": "file", "path": "/run/secagent/events.log", "append": "{{timestamp}} RECONNECT {{hostname}}\n" }
+      ]
+    },
+    {
       "event": "host.down",
       "actions": [
         { "type": "file", "path": "/run/secagent/events.log", "append": "{{timestamp}} DOWN {{hostname}}\n" }
