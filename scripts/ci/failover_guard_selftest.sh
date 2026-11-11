@@ -62,5 +62,33 @@ chk "run : tls.key seul absent => message cite tls.key" "$(printf '%s' "$out" | 
 run_guard "$TMPD/tls-ok"
 chk "run : cert present => la garde ne refuse pas (REFUS: absent)" "$(if printf '%s' "$out" | grep -q 'REFUS:'; then echo 1; else echo 0; fi)"
 chk "run : ca.crt non exige (setup_ci ne le produit pas)" "$(if printf '%s' "$out" | grep -q 'ca.crt'; then echo 1; else echo 0; fi)"
+
+# --- v3.0.6 : lecture du journal des hooks (events_log via faux `docker exec`), compteurs, surcharge des hooks ---
+LOG="$TMPD/events.log"
+cat > "$LOG" <<'EOF'
+2026-11-11T10:00:00Z FAILOVER secagent-server start instance=i-a previous={{previous_instance_id}}
+2026-11-11T10:00:02Z RELAY_UP dmz1 conn_seq=1 mode=pull hosts_routed=1
+2026-11-11T10:00:03Z UP   minion-root
+2026-11-11T10:05:00Z FAILOVER secagent-server takeover instance=i-b previous=i-a
+2026-11-11T10:05:05Z RELAY_RECONNECT dmz1 conn_seq=2 mode=pull hosts_routed=1
+2026-11-11T10:05:06Z RECONNECT minion-root
+2026-11-11T10:06:00Z RELAY_DOWN dmz1 peer_closed:1001 hosts_routed=1
+EOF
+ev() { # $1 script apres `source` (faux docker : `exec <c> cat ...` lit $LOG)
+  env -u TLS_MODE -u DOCKER_HOST -u SECAGENT_ENDPOINT_HOST -u CONTROL_HOST SECAGENT_PRIVATE_DIR="$TMPD/priv" bash -c '
+    source "'"$F"'"
+    docker() { [ "$1" = exec ] && cat "'"$LOG"'"; }
+    '"$1" 2>/dev/null
+}
+chk "hooks : hook_seen FAILOVER cause takeover" "$(ev 'hook_seen c secagent-server FAILOVER takeover' >/dev/null; echo $?)"
+chk "hooks : hook_seen FAILOVER cause inconnue refuse" "$(if ev 'hook_seen c secagent-server FAILOVER autre' >/dev/null; then echo 1; else echo 0; fi)"
+chk "hooks : hook_count FAILOVER = 2" "$([ "$(ev 'hook_count c secagent-server FAILOVER')" = 2 ]; echo $?)"
+chk "hooks : hook_seen RELAY_DOWN raison peer_closed:1001" "$(ev 'hook_seen c dmz1 RELAY_DOWN peer_closed:1001' >/dev/null; echo $?)"
+chk "hooks : RELAY_UP dmz1 ne compte pas RELAY_RECONNECT" "$([ "$(ev 'hook_count c dmz1 RELAY_UP')" = 1 ]; echo $?)"
+chk "hooks : hook_more (1 > 0) vrai, (1 > 1) faux" "$(ev 'hook_more c minion-root RECONNECT 0 && ! hook_more c minion-root RECONNECT 1' >/dev/null; echo $?)"
+chk "hooks : sujet exact (minion-root != minion-root2)" "$([ "$(ev 'hook_count c minion-root2 UP')" = 0 ]; echo $?)"
+chk "hooks : journal absent => compte 0, rien vu" "$(env -u TLS_MODE -u DOCKER_HOST SECAGENT_PRIVATE_DIR="$TMPD/priv" bash -c 'source "'"$F"'"; docker() { return 1; }; [ "$(hook_count c dmz1 RELAY_UP)" = 0 ] && ! hook_seen c dmz1 RELAY_UP' 2>/dev/null; echo $?)"
+chk "hooks : hooks_enabled si COMPOSE_OVERRIDES contient docker-compose.hooks.yml" "$(ev 'COMPOSE_OVERRIDES="/x/docker-compose.remote-tls.yml /x/docker-compose.hooks.yml"; hooks_enabled' >/dev/null; echo $?)"
+chk "hooks : hooks_enabled faux sans la surcharge" "$(if ev 'COMPOSE_OVERRIDES=/x/docker-compose.remote-tls.yml; hooks_enabled' >/dev/null; then echo 1; else echo 0; fi)"
 set +e
 exit $bad

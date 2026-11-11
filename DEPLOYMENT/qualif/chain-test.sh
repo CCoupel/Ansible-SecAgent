@@ -7,16 +7,20 @@
 #   chain-test.sh ci-prepare   # PKI de test + secrets aleatoires et jetables (SECRETS_DIR, fichiers 0400) ; ne regenere que l'absent
 #   chain-test.sh bootstrap    # state init (racine, enfant), relays add, jetons enrolement/plugin, demarrage
 #   chain-test.sh smoke        # relais connectes, minions connectes, inventaire hierarchique, ansible -m ping
-#   chain-test.sh failover     # arret propre du maitre de la racine (failover-test.sh) puis smoke
+#   chain-test.sh failover     # arret propre du maitre de la racine (failover-test.sh) puis smoke ; hooks : relay.failover,
+#                              # host.reconnect minion-root et relay.reconnect dmz1 au nouveau maitre
+#   chain-test.sh failover-kill  # idem apres un KILL du maitre (reprise a la peremption du verrou, 5 min) ; relay.failover takeover
 #   chain-test.sh backup-restore  # sauvegarde de l etat + de RSA_MASTER_KEY (a part), perte du volume, restauration
 #   chain-test.sh load-images <dir>  # docker load des images d'un artefact CI (sans registre), SECAGENT_PULL_POLICY=never
 #   chain-test.sh push-tls     # TLS_MODE=volume : copie les certificats dans le volume Docker (hote distant)
 #   chain-test.sh push-hooks    # hooks.json -> volume ${PROJECT}_hooks (fait par bootstrap)
+#   chain-test.sh push-events   # volumes du journal des hooks ${PROJECT}_events-{a,b,child} (10001, 0700 ; fait par bootstrap)
 #   chain-test.sh push-secrets  # SECRETS_DIR -> volume ${PROJECT}_secrets, 10001 0400 (fait par bootstrap)
 #   chain-test.sh push-link-key  # cle publique racine (+ jeton de lien s'il existe) -> volume ${PROJECT}_link
 #   chain-test.sh link-rotation  # rotation de la cle de lien, confirmation, nouveau jeton, retire-link-previous (v3.0.4)
 #   chain-test.sh link-revoke    # revocation du lien d'un enfant : fermeture 4010, pas de reconnexion, puis remise en etat
-#   chain-test.sh hooks        # journal des hooks (host.up/host.reconnect/host.down) de la racine et de l'enfant (#197, hooks.json)
+#   chain-test.sh hooks        # journal des hooks apres bootstrap : relay.failover, relay.up dmz1, host.up (#197, #225, #245, hooks.json)
+#   chain-test.sh relay-down   # arret puis redemarrage de l'enfant : relay.down puis relay.up de dmz1 au maitre (#245), smoke
 #   chain-test.sh negative-ca  # essai CA negatif (profil Compose `negative`) : un minion sans la CA est refuse (#197)
 #   chain-test.sh admission-503  # refus 503 memory_budget_exhausted en reel (#241) : plafond abaisse, voir admission-503.sh
 #   chain-test.sh paths        # chemins prives resolus (sans docker) ; echec si la racine PRIVATE/ manque
@@ -47,6 +51,8 @@ export COMPOSE_FILE="$HERE/docker-compose.chain.yml" PROJECT="${PROJECT:-${COMPO
 # TLS_MODE=volume : certificats dans un VOLUME Docker nomme (hote Docker distant) au lieu d'un bind mount.
 # Les hooks de qualif sont TOUJOURS livres par un volume nomme (docker-compose.hooks.yml), jamais par un fichier du client.
 export SECAGENT_HOOKS_VOLUME="${SECAGENT_HOOKS_VOLUME:-${PROJECT}_hooks}"
+# Prefixe des volumes du journal des hooks (un par instance : -a, -b, -child ; docker-compose.hooks.yml, push-events).
+export SECAGENT_EVENTS_VOLUME="${SECAGENT_EVENTS_VOLUME:-${PROJECT}_events}"
 export COMPOSE_OVERRIDES="$HERE/docker-compose.hooks.yml"
 if [ "${TLS_MODE:-bind}" = volume ] && [ "${CONTAINER_CLI:-docker}" = docker ]; then
   export SECAGENT_TLS_VOLUME="${SECAGENT_TLS_VOLUME:-${PROJECT}_tls}"
@@ -168,8 +174,9 @@ push_tls() {
   ctr volume create "$SECAGENT_TLS_VOLUME" >/dev/null
   tar -C "$QUALIF_TLS_DIR" -cf - tls.crt tls.key ca.crt | ctr run --rm -i -v "$SECAGENT_TLS_VOLUME:/certs" \
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
-    sh -c 'tar -xf - -C /certs && chmod 755 /certs && chmod 644 /certs/tls.crt /certs/tls.key /certs/ca.crt'
-  echo "certificats de test pousses dans le volume $SECAGENT_TLS_VOLUME"
+    sh -c 'set -e; tar -xf - -C /certs; chown 0:0 /certs /certs/tls.crt /certs/ca.crt; chmod 755 /certs; chmod 644 /certs/tls.crt /certs/ca.crt
+           chown 10001:10001 /certs/tls.key; chmod 0600 /certs/tls.key'
+  echo "certificats de test pousses dans le volume $SECAGENT_TLS_VOLUME (tls.key 10001 0600, tls.crt/ca.crt 0644)"
 }
 
 # Depose hooks.json dans le volume `$SECAGENT_HOOKS_VOLUME` (hote Docker distant ou non) par un conteneur ephemere
@@ -191,6 +198,22 @@ push_hooks() {
   echo "hooks.json depose dans le volume $SECAGENT_HOOKS_VOLUME${CTR_NODE:+ (noeud $CTR_NODE)}"
   done
 }
+
+# Volumes du journal des hooks, un PAR INSTANCE (docker-compose.hooks.yml) : crees s'ils manquent et rendus a l'uid 10001
+# (0700) par un conteneur ephemere, comme push-hooks ; un journal existant est CONSERVE (preuves), seul `down` le retire.
+EVENTS_SUFFIXES="a b child"
+push_events() {
+  local CTR_NODE sfx; for CTR_NODE in $(nodes); do   # Podman : les trois volumes sur chaque noeud (seuls ceux du noeud servent)
+    for sfx in $EVENTS_SUFFIXES; do
+      ctr volume create "$SECAGENT_EVENTS_VOLUME-$sfx" >/dev/null
+      ctr run --rm "${RUN_USERNS[@]}" -v "$SECAGENT_EVENTS_VOLUME-$sfx:/events" \
+        alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
+        sh -c 'set -e; chown 10001:10001 /events; chmod 0700 /events; [ ! -e /events/events.log ] || chown 10001:10001 /events/events.log'
+    done
+    echo "volumes du journal des hooks prets : $SECAGENT_EVENTS_VOLUME-{a,b,child}${CTR_NODE:+ (noeud $CTR_NODE)}"
+  done
+}
+events_volumes() { local sfx; for sfx in $EVENTS_SUFFIXES; do printf '%s ' "$SECAGENT_EVENTS_VOLUME-$sfx"; done; }
 
 # Empreinte STABLE d'une image : sha256 de la liste des couches (RootFS.Layers). L'ID `.Id` varie selon le magasin
 # (overlay2 / containerd, Docker >= 29, Desktop) ; les couches (diff ids) sont identiques apres save/load.
@@ -263,6 +286,7 @@ bootstrap() {
   verify_images
   chain_dir
   push_hooks
+  push_events    # journal des hooks persistant, un volume par instance (10001, 0700)
   push_secrets   # secrets serveur -> volume ${PROJECT}_secrets (10001, 0400) ; lus via *_FILE
   echo "== etat initial (racine)"
   dc run --rm --no-deps secagent-server-a state init
@@ -547,37 +571,76 @@ link_revoke() {
 }
 
 # --- Hooks en reel (#197 item 1) -----------------------------------------------------------------------------------
-# hooks.json (DEPLOYMENT/qualif/hooks.json, livre par le volume `${PROJECT}_hooks`, push-hooks) ecrit chaque host.up,
-# host.reconnect et host.down dans /run/secagent/events.log (tmpfs) de chaque conteneur (un hook distinct par evenement :
-# seul le premier hook correspondant s'execute, c9ae9e7/#271). Seul le MAITRE de la racine execute ses hooks.
-# Depuis #265 (v3.0.6) : 1re connexion d'un processus minion (conn_seq 1) = host.up ; reconnexion du meme processus
-# (conn_seq > 1, ex. apres une bascule) = host.reconnect, jamais les deux.
-events_log() { ctr exec "$1" cat /run/secagent/events.log 2>/dev/null || true; }
-# $1 conteneur, $2 hote, $3 UP|RECONNECT|DOWN : une ligne "<horodatage> <UP|RECONNECT|DOWN> <hote>" existe dans le journal.
-hook_seen() { events_log "$1" | awk -v h="$2" -v k="$3" '$2==k && $3==h {f=1} END{exit !f}'; }
+# hooks.json (DEPLOYMENT/qualif/hooks.json, livre par le volume `${PROJECT}_hooks`, push-hooks) ecrit une ligne par
+# evenement (host.up, host.reconnect, host.down, relay.failover, relay.up, relay.reconnect, relay.down ; un hook distinct
+# par evenement : seul le premier hook correspondant s'execute, c9ae9e7/#271) dans /var/log/secagent-events/events.log,
+# volume externe PAR INSTANCE (push-events) : le journal survit a l'arret du conteneur (preuves de l'ancien maitre).
+# Seul le MAITRE de la racine execute ses hooks. Depuis #265 (v3.0.6) : 1re connexion d'un processus (conn_seq 1) =
+# host.up / relay.up ; reconnexion du meme processus (conn_seq > 1, ex. apres une bascule) = host.reconnect /
+# relay.reconnect, jamais les deux. Fonctions events_log, hook_seen, hook_count, hook_more : failover-test.sh (source).
+# Les journaux persistent jusqu'a `down` : les controles APRES une action comptent les lignes (une de plus), jamais la
+# simple presence.
+EVENTS_LOG_HINT="docker exec <conteneur> cat /var/log/secagent-events/events.log"
 
 check_hooks() {
   local m; m="$(master)" || fail "pas de maitre sur la racine"
-  echo "== hooks : host.up de minion-root au maitre ($m), de minion-child a l'enfant ($C_CHILD)"
+  echo "== hooks : maitre $m (relay.failover, relay.up dmz1, host.up minion-root), enfant $C_CHILD (host.up minion-child)"
+  wait_for "relay.failover (start) du maitre $m" 60 hook_seen "$m" "$ROOT_RELAY_ID" FAILOVER start >/dev/null
+  wait_for "relay.up dmz1 dans le journal du maitre $m" 90 hook_seen "$m" dmz1 RELAY_UP >/dev/null
   wait_for "host.up minion-root dans le journal du maitre $m" 60 hook_seen "$m" minion-root UP >/dev/null
   wait_for "host.up minion-child dans le journal de l'enfant" 60 hook_seen "$C_CHILD" minion-child UP >/dev/null
-  echo "hooks OK (journaux : docker exec <conteneur> cat /run/secagent/events.log)"
+  echo "hooks OK (journaux : $EVENTS_LOG_HINT)"
 }
 
-# Bascule avec hooks : apres l'arret propre du maitre, le NOUVEAU maitre doit journaliser host.reconnect de minion-root
-# (meme processus minion qui se reconnecte : conn_seq > 1, #265 ; host.up n'est PAS emis). minion-child : informatif (il
-# reste connecte a l'enfant, qui ne redemarre pas ; l'evenement remonte-t-il a la nouvelle racine ? TODO a confirmer a
-# l'execution, pas de verdict ici).
-check_hooks_after_failover() {
-  local m; m="$(master)" || fail "pas de maitre apres la bascule"
+# Releve des compteurs AVANT la bascule (les deux instances : le futur maitre n'est pas encore connu).
+declare -A HOOKS_BEFORE=()
+hooks_snapshot() {
+  local c e; for c in "$C_A" "$C_B"; do
+    for e in "minion-root RECONNECT" "minion-root UP" "dmz1 RELAY_RECONNECT" "dmz1 RELAY_UP"; do
+      # shellcheck disable=SC2086   # e = "<sujet> <genre>"
+      HOOKS_BEFORE["$c $e"]="$(hook_count "$c" $e)"
+    done
+  done
+}
+
+# Bascule avec hooks (failover-test.sh run stop|kill) : le NOUVEAU maitre doit journaliser relay.failover (cause start
+# apres un arret propre, takeover apres un kill ; controle fait aussi par failover-test.sh), puis une NOUVELLE ligne
+# host.reconnect de minion-root et relay.reconnect de dmz1 (memes processus qui se reconnectent : conn_seq > 1, #265,
+# #245 ; ni host.up ni relay.up). minion-child : informatif (il reste connecte a l'enfant, qui ne redemarre pas).
+check_hooks_after_failover() { # $1 cause attendue de relay.failover (start | takeover)
+  local m cause="${1:-start}"; m="$(master)" || fail "pas de maitre apres la bascule"
   echo "== hooks apres bascule : nouveau maitre $m"
-  wait_for "host.reconnect minion-root journalise par le nouveau maitre $m" 150 hook_seen "$m" minion-root RECONNECT >/dev/null
-  if hook_seen "$m" minion-root UP; then echo "info : host.up minion-root AUSSI journalise par $m (attendu : host.reconnect seul, #265 ; minion < v3.0.6 ?)"; fi
+  hook_seen "$m" "$ROOT_RELAY_ID" FAILOVER "$cause" || fail "relay.failover ($cause) absent du journal de $m"
+  wait_for "host.reconnect minion-root journalise par le nouveau maitre $m" 150 hook_more "$m" minion-root RECONNECT "${HOOKS_BEFORE["$m minion-root RECONNECT"]:-0}" >/dev/null
+  wait_for "relay.reconnect dmz1 journalise par le nouveau maitre $m" 150 hook_more "$m" dmz1 RELAY_RECONNECT "${HOOKS_BEFORE["$m dmz1 RELAY_RECONNECT"]:-0}" >/dev/null
+  if hook_more "$m" minion-root UP "${HOOKS_BEFORE["$m minion-root UP"]:-0}"; then echo "info : host.up minion-root AUSSI journalise par $m (attendu : host.reconnect seul, #265 ; minion < v3.0.6 ?)"; fi
+  if hook_more "$m" dmz1 RELAY_UP "${HOOKS_BEFORE["$m dmz1 RELAY_UP"]:-0}"; then fail "relay.up dmz1 journalise par $m apres la bascule (attendu : relay.reconnect seul, #245)"; fi
   local k; for k in RECONNECT UP; do
     if hook_seen "$m" minion-child "$k"; then echo "info : $k minion-child aussi journalise par $m"; fi
   done
   hook_seen "$m" minion-child RECONNECT || hook_seen "$m" minion-child UP || echo "info : aucun evenement minion-child dans le journal de $m (a analyser a l'execution)"
   echo "hooks apres bascule OK"
+}
+
+# Scenario relay-down (#245) : l'enfant s'arrete (conteneur stoppe, PAS le maitre) -> le maitre journalise relay.down
+# de dmz1 (raison = fermeture par le pair ou erreur de lecture) ; puis l'enfant redemarre (nouveau processus,
+# conn_seq 1) -> relay.up dmz1, smoke. Idempotent : compte les lignes avant l'action, ne depend d'aucun etat anterieur.
+relay_down() {
+  verify_images; need INVENTORY_BIN
+  local m down0 up0; m="$(master)" || fail "pas de maitre sur la racine"
+  connected "$m" relays dmz1 4
+  down0="$(hook_count "$m" dmz1 RELAY_DOWN)"; up0="$(hook_count "$m" dmz1 RELAY_UP)"
+  echo "== arret de l'enfant ($C_CHILD) : relay.down dmz1 attendu au maitre $m"
+  dc stop secagent-child >/dev/null
+  wait_for "relay.down dmz1 journalise par le maitre $m" 60 hook_more "$m" dmz1 RELAY_DOWN "$down0" >/dev/null
+  echo "relay.down : $(events_log "$m" | awk '$2=="RELAY_DOWN" && $3=="dmz1" {l=$0} END{print l}')"
+  echo "== redemarrage de l'enfant : relay.up dmz1 (nouveau processus, conn_seq 1)"
+  dc start secagent-child >/dev/null
+  wait_for "enfant healthy" 120 all_health healthy "$C_CHILD" >/dev/null
+  connected "$m" relays dmz1 4
+  wait_for "relay.up dmz1 journalise par le maitre $m" 90 hook_more "$m" dmz1 RELAY_UP "$up0" >/dev/null
+  smoke
+  echo "relay-down OK (relay.down puis relay.up de dmz1 au maitre $m)"
 }
 
 # --- Essai CA negatif (#197 item 2) : service Compose `minion-negca`, profil `negative` -----------------------------
@@ -599,15 +662,19 @@ negative_ca() {
   echo "negative-ca OK (erreur de certificat, minion absent de la liste)"
 }
 
-failover() {
+failover() { # $1 stop (defaut : arret propre) | kill (crash : reprise apres peremption du verrou, MasterStale 5 min)
+  local mode="${1:-stop}"
   require_ansible_version   # #249 : avant l'arret du maitre (smoke le reverifie)
   verify_images
   need INVENTORY_BIN
   control_env
-  # Arret propre du maitre : l'enfant et les minions doivent se reconnecter par leurs listes, ping OK ensuite.
-  bash "$HERE/failover-test.sh" run stop
+  # L'enfant et les minions doivent se reconnecter par leurs listes, ping OK ensuite.
+  hooks_snapshot   # compteurs du journal des hooks AVANT la bascule (journaux persistants)
+  # failover-test.sh herite de COMPOSE_FILE / COMPOSE_OVERRIDES (hooks) : il verifie aussi relay.failover sur le nouveau
+  # maitre (cause start apres stop, takeover apres kill)
+  bash "$HERE/failover-test.sh" run "$mode"
   smoke
-  check_hooks_after_failover
+  check_hooks_after_failover "$([ "$mode" = kill ] && echo takeover || echo start)"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
@@ -616,30 +683,35 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     paths) chain_paths ;;
     bootstrap) bootstrap ;;
     smoke) smoke ;;
-    failover) failover ;;
+    failover) failover stop ;;
+    failover-kill) failover kill ;;
     backup-restore) backup_restore ;;
     logs) dc logs --tail=100 ;;
     load-images) load_images "${2:-}" ;;
     push-tls) push_tls ;;
     push-hooks) push_hooks ;;
+    push-events) push_events ;;
     push-secrets) push_secrets ;;
     push-link-key) push_link_key ;;
     link-rotation) link_rotation ;;
     link-revoke) link_revoke ;;
     hooks) check_hooks ;;
+    relay-down) relay_down ;;
     negative-ca) negative_ca ;;
     admission-503) admission_503 ;;
     down) guard_project
           if [ "$CONTAINER_CLI" = podman ]; then
             # JAMAIS `down -v` sous Podman : etat et secrets sont des volumes lies au partage PRIVATE (#267)
             dc down
-            for CTR_NODE in A B; do ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" >/dev/null 2>&1 || true; done
+            # shellcheck disable=SC2046   # events_volumes : noms sans espace
+            for CTR_NODE in A B; do ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" $(events_volumes) >/dev/null 2>&1 || true; done
           else
             dc down -v
             # le volume du jeton de lien est EXTERNE (non supprime par down -v) et contient un secret : retrait explicite
-            ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" >/dev/null 2>&1 || true
+            # shellcheck disable=SC2046   # events_volumes : noms sans espace
+            ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" $(events_volumes) >/dev/null 2>&1 || true
           fi
           chain_dir_clean ;;   # jetons volatils du poste (garde chain_dir_check avant tout rm)
-    *) sed -n '2,36p' "$0"; exit 2 ;;
+    *) sed -n '2,40p' "$0"; exit 2 ;;
   esac
 fi

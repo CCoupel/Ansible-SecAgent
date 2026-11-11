@@ -101,7 +101,7 @@ ctr() {
   node_ssh "${n:-${CTR_NODE:-B}}" "$in" podman "$@"
 }
 # Variables transmises a podman-compose sur le noeud (Compose interpole cote noeud) : liste FERMEE, valeurs non secretes.
-DC_ENV_VARS="SECAGENT_IMAGE SECAGENT_MINION_IMAGE SECAGENT_PULL_POLICY SECAGENT_MEM_LIMIT LOG_LEVEL GOMEMLIMIT QUALIF_TLS_DIR CHAIN_DIR SECAGENT_HOOKS_VOLUME SECAGENT_LINK_VOLUME SECAGENT_SECRETS_VOLUME SECAGENT_TLS_VOLUME QUALIF_PRIVATE_DIR QUALIF_NODE_A_ADDR"
+DC_ENV_VARS="SECAGENT_IMAGE SECAGENT_MINION_IMAGE SECAGENT_PULL_POLICY SECAGENT_MEM_LIMIT LOG_LEVEL GOMEMLIMIT QUALIF_TLS_DIR CHAIN_DIR SECAGENT_HOOKS_VOLUME SECAGENT_EVENTS_VOLUME SECAGENT_LINK_VOLUME SECAGENT_SECRETS_VOLUME SECAGENT_TLS_VOLUME QUALIF_PRIVATE_DIR QUALIF_NODE_A_ADDR"
 release_dir() { printf '%s' "$PRIVATE_DIR/QUALIF/$(node_name "$1")/cyril/secagent/release"; }
 dc_on() { # $1 A|B, puis les arguments podman-compose
   local n="$1" v env=(); shift
@@ -250,6 +250,21 @@ guard_remote_binds() {
     || refuse "mode distant : bind mount d'un chemin du poste vers le demon distant refuse (utiliser TLS_MODE=volume + chain-test.sh push-tls)"
 }
 
+# --- Journal des hooks (#197, v3.0.6) ---------------------------------------------------------------------------------
+# Present seulement avec la surcharge docker-compose.hooks.yml (chain-test.sh l'ajoute toujours) : hooks.json ecrit une
+# ligne par evenement dans /var/log/secagent-events/events.log, volume externe PAR INSTANCE (survit a l'arret du conteneur).
+# Formats (champ 2 = genre, champ 3 = sujet) : "<ts> UP|RECONNECT|DOWN <hote>", "<ts> FAILOVER <relay_id> <cause> ...",
+# "<ts> RELAY_UP|RELAY_RECONNECT <relay_id> conn_seq=.. ...", "<ts> RELAY_DOWN <relay_id> <reason> ...".
+hooks_enabled() { case " ${COMPOSE_OVERRIDES:-} " in *docker-compose.hooks.yml*) return 0 ;; esac; return 1; }
+events_log() { ctr exec "$1" cat /var/log/secagent-events/events.log 2>/dev/null || true; }
+# $1 conteneur, $2 sujet, $3 genre, $4 (optionnel) champ 4 exact (cause de FAILOVER, raison de RELAY_DOWN) : la ligne existe.
+hook_seen() { events_log "$1" | awk -v h="$2" -v k="$3" -v c="${4:-}" '$2==k && $3==h && (c=="" || $4==c) {f=1} END{exit !f}'; }
+# $1 conteneur, $2 sujet, $3 genre : nombre de lignes (scenarios idempotents : on attend une ligne DE PLUS).
+hook_count() { events_log "$1" | awk -v h="$2" -v k="$3" '$2==k && $3==h {n++} END{print n+0}'; }
+hook_more() { [ "$(hook_count "$1" "$2" "$3")" -gt "$4" ]; }   # $4 compte avant l'action
+# Sujet de relay.failover d'une racine : son relay_id local (REPEATER_ID absent = defaut du serveur).
+ROOT_RELAY_ID="${ROOT_RELAY_ID:-secagent-server}"
+
 wait_for() { # $1 description, $2 delai max, $3... commande
   local what="$1" max="$2"; shift 2; local t0; t0=$(now)
   while ! "$@" 2>/dev/null; do
@@ -364,6 +379,8 @@ run() {
   require_run_tls   # avant toute commande docker (#256)
   up_and_identify
   hooks
+  local fo_before=0
+  if hooks_enabled; then fo_before="$(hook_count "$SECOND" "$ROOT_RELAY_ID" FAILOVER)"; fi
   if [ "$mode" = freeze ]; then
     ctr kill -s STOP "$MASTER" >/dev/null
     t=$(wait_for "$MASTER unhealthy (process fige)" 180 all_health unhealthy "$MASTER")
@@ -383,6 +400,15 @@ run() {
   t=$(wait_for "reprise par $SECOND" "$max" is_master "$SECOND")
   echo "reprise par $SECOND en ${t}s (mode $mode, limite ${max}s)"
   [ "$(lock_count "$SECOND")" = 1 ] || fail "plusieurs fichiers relay.lock apres la bascule"
+  if hooks_enabled; then
+    # relay.failover (#225) emis par le NOUVEAU maitre : cause `start` apres un arret propre (verrou libere), `takeover`
+    # apres un kill (verrou perime retire, previous_instance_id renseigne).
+    local cause=start; [ "$mode" = kill ] && cause=takeover
+    wait_for "relay.failover ($cause) journalise par le nouveau maitre $SECOND" 60 hook_more "$SECOND" "$ROOT_RELAY_ID" FAILOVER "$fo_before" >/dev/null
+    events_log "$SECOND" | awk -v h="$ROOT_RELAY_ID" -v c="$cause" '$2=="FAILOVER" && $3==h {l=$0; k=$4} END{if (k!=c) {print "derniere ligne FAILOVER : " l > "/dev/stderr"; exit 1}}' \
+      || fail "relay.failover de $SECOND : cause attendue $cause"
+    echo "relay.failover journalise par $SECOND (cause $cause)"
+  fi
   hooks
   # L'ancien maitre revient en secondaire : aucun port, healthy, toujours un seul verrou.
   ctr start "$MASTER" >/dev/null

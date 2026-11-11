@@ -3,22 +3,46 @@
 # contre un demon Docker distant le chemin est resolu sur l'hote distant et le conteneur ne se cree pas
 # (« bind source path does not exist », qualif reelle 192.168.1.218). Le volume est alimente par
 # `chain-test.sh push-hooks` (conteneur ephemere, flux tar sur stdin) ; chain-test.sh ajoute toujours ce fichier.
-# Le journal des hooks est ecrit dans /run/secagent/events.log (tmpfs de chaque conteneur).
-x-hooks: &hooks
-  environment:
-    RELAY_HOOKS_CONFIG: /etc/secagent-hooks/hooks.json
-  volumes:
-    - type: volume
-      source: secagent_hooks
-      target: /etc/secagent-hooks
-      read_only: true
+# Le journal des hooks est ecrit dans /var/log/secagent-events/events.log, sur un VOLUME EXTERNE PAR INSTANCE
+# (${SECAGENT_EVENTS_VOLUME}-a / -b / -child, v3.0.6) : il survit a l'arret et a la recreation du conteneur (preuve des
+# evenements de l'ancien maitre apres une bascule) et n'est pas partage entre a et b (chaque journal = un seul noeud).
+# Volumes crees en 10001:10001 0700 par `chain-test.sh push-events` (fait par bootstrap), retires par `chain-test.sh down`.
+x-hooks-config: &hooks-config
+  type: volume
+  source: secagent_hooks
+  target: /etc/secagent-hooks
+  read_only: true
 
 services:
-  secagent-server-a: *hooks
-  secagent-server-b: *hooks
-  secagent-child: *hooks
+  secagent-server-a:
+    environment:
+      RELAY_HOOKS_CONFIG: /etc/secagent-hooks/hooks.json
+    volumes:
+      - *hooks-config
+      - {type: volume, source: secagent_events_a, target: /var/log/secagent-events}
+  secagent-server-b:
+    environment:
+      RELAY_HOOKS_CONFIG: /etc/secagent-hooks/hooks.json
+    volumes:
+      - *hooks-config
+      - {type: volume, source: secagent_events_b, target: /var/log/secagent-events}
+  secagent-child:
+    environment:
+      RELAY_HOOKS_CONFIG: /etc/secagent-hooks/hooks.json
+    volumes:
+      - *hooks-config
+      - {type: volume, source: secagent_events_child, target: /var/log/secagent-events}
 
 volumes:
   secagent_hooks:
     external: true
     name: ${SECAGENT_HOOKS_VOLUME:-secagent-qualif_hooks}
+  secagent_events_a:
+    external: true
+    name: ${SECAGENT_EVENTS_VOLUME:-secagent-qualif_events}-a
+  secagent_events_b:
+    external: true
+    name: ${SECAGENT_EVENTS_VOLUME:-secagent-qualif_events}-b
+  secagent_events_child:
+    external: true
+    name: ${SECAGENT_EVENTS_VOLUME:-secagent-qualif_events}-child

@@ -3,19 +3,71 @@
     {
       "event": "host.up",
       "actions": [
-        { "type": "file", "path": "/run/secagent/events.log", "append": "{{timestamp}} UP   {{hostname}}\n" }
+        {
+          "type": "file",
+          "path": "/var/log/secagent-events/events.log",
+          "append": "{{timestamp}} UP   {{hostname}}\n"
+        }
       ]
     },
     {
       "event": "host.reconnect",
       "actions": [
-        { "type": "file", "path": "/run/secagent/events.log", "append": "{{timestamp}} RECONNECT {{hostname}}\n" }
+        {
+          "type": "file",
+          "path": "/var/log/secagent-events/events.log",
+          "append": "{{timestamp}} RECONNECT {{hostname}}\n"
+        }
       ]
     },
     {
       "event": "host.down",
       "actions": [
-        { "type": "file", "path": "/run/secagent/events.log", "append": "{{timestamp}} DOWN {{hostname}}\n" }
+        {
+          "type": "file",
+          "path": "/var/log/secagent-events/events.log",
+          "append": "{{timestamp}} DOWN {{hostname}}\n"
+        }
+      ]
+    },
+    {
+      "event": "relay.failover",
+      "actions": [
+        {
+          "type": "file",
+          "path": "/var/log/secagent-events/events.log",
+          "append": "{{timestamp}} FAILOVER {{relay_id}} {{cause}} instance={{instance_id}} previous={{previous_instance_id}}\n"
+        }
+      ]
+    },
+    {
+      "event": "relay.up",
+      "actions": [
+        {
+          "type": "file",
+          "path": "/var/log/secagent-events/events.log",
+          "append": "{{timestamp}} RELAY_UP {{relay_id}} conn_seq={{conn_seq}} mode={{mode}} hosts_routed={{hosts_routed}}\n"
+        }
+      ]
+    },
+    {
+      "event": "relay.reconnect",
+      "actions": [
+        {
+          "type": "file",
+          "path": "/var/log/secagent-events/events.log",
+          "append": "{{timestamp}} RELAY_RECONNECT {{relay_id}} conn_seq={{conn_seq}} mode={{mode}} hosts_routed={{hosts_routed}}\n"
+        }
+      ]
+    },
+    {
+      "event": "relay.down",
+      "actions": [
+        {
+          "type": "file",
+          "path": "/var/log/secagent-events/events.log",
+          "append": "{{timestamp}} RELAY_DOWN {{relay_id}} {{reason}} hosts_routed={{hosts_routed}}\n"
+        }
       ]
     }
   ]
