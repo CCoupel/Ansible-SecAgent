@@ -56,6 +56,15 @@ func TestRelayEvents_3000HostsBehindAChildGiveOneRelayEvent(t *testing.T) {
 		mu.Lock()
 		conns = append(conns, c) // kept open: the hosts stay connected to the child
 		mu.Unlock()
+		// A real agent reads its link: that is what answers the server's pings (gorilla's default ping handler runs
+		// inside ReadMessage). Without a reader the child drops the link after 60 s and its later snapshot is empty.
+		go func() {
+			for {
+				if _, _, err := c.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}()
 		return nil
 	}); err != nil {
 		t.Fatalf("an agent could not connect to the child: %v", err)
