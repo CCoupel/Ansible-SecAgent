@@ -47,12 +47,22 @@ func flushEventRejects(int64) {
 	}
 }
 
-// eventQuotaWindow is the length of the counting window.
-const eventQuotaWindow = time.Second
+// The event_forward quota is a TOKEN BUCKET per identity (#216, #246): the sustained rate is
+// maxEventsPerSecond, and a burst of up to eventQuotaBurst events is accepted after a quiet moment.
+// A fixed one-second window refused events when a stalled parent caught up on frames that a child had
+// sent at a perfectly regular, lower rate; the bucket only looks at the average, so a pause of up to
+// eventQuotaBurst/maxEventsPerSecond seconds costs nothing. There is no exemption (a replay counts like
+// any event) and the memory is O(1) per identity (two numbers).
+const (
+	// eventQuotaBurst is the bucket capacity: 2 seconds of the sustained rate.
+	eventQuotaBurst = 2 * maxEventsPerSecond
+	// eventQuotaFullAfter is the idle time after which a bucket is full again (its entry can be forgotten).
+	eventQuotaFullAfter = eventQuotaBurst / maxEventsPerSecond * time.Second
+)
 
 type eventQuota struct {
-	start time.Time
-	count int
+	tokens float64   // available events
+	last   time.Time // instant tokens was computed at
 }
 
 var (
@@ -61,36 +71,36 @@ var (
 	eventQuotaPurged time.Time
 )
 
-// purgeEventQuotaLocked drops the identities whose window is over (their counter restarts at zero anyway).
-// Runs at most once per window, or when the table is full (then the oldest windows are evicted).
+// purgeEventQuotaLocked drops the identities idle long enough for their bucket to be full again (a new
+// entry starts full anyway). Runs at most once per second.
 func purgeEventQuotaLocked(now time.Time) {
-	if now.Sub(eventQuotaPurged) < eventQuotaWindow {
+	if now.Sub(eventQuotaPurged) < time.Second {
 		return
 	}
 	eventQuotaPurged = now
 	for id, q := range eventQuotas {
-		if now.Sub(q.start) >= eventQuotaWindow {
+		if now.Sub(q.last) >= eventQuotaFullAfter {
 			delete(eventQuotas, id)
 		}
 	}
 }
 
 // evictEventQuotaLocked makes room for a NEW identity: only an insertion may push an entry out (B41), a
-// call for an identity already in the table never gives another relay a fresh window.
+// call for an identity already in the table never gives another relay a fresh bucket.
 func evictEventQuotaLocked() {
 	for len(eventQuotas) >= maxQuotaEntries {
 		var oldest string
 		var ot time.Time
 		for id, q := range eventQuotas {
-			if oldest == "" || q.start.Before(ot) {
-				oldest, ot = id, q.start
+			if oldest == "" || q.last.Before(ot) {
+				oldest, ot = id, q.last
 			}
 		}
 		delete(eventQuotas, oldest)
 	}
 }
 
-// allowEvent counts one event_forward of the identity and reports whether it is within the quota.
+// allowEvent takes one token of the identity's bucket and reports whether the event is within the quota.
 func allowEvent(relayID string, now time.Time) bool {
 	eventQuotaMu.Lock()
 	defer eventQuotaMu.Unlock()
@@ -98,13 +108,17 @@ func allowEvent(relayID string, now time.Time) bool {
 	q := eventQuotas[relayID]
 	if q == nil {
 		evictEventQuotaLocked()
-		q = &eventQuota{start: now}
+		q = &eventQuota{tokens: eventQuotaBurst, last: now}
 		eventQuotas[relayID] = q
-	} else if now.Sub(q.start) >= eventQuotaWindow {
-		q.start, q.count = now, 0
+	} else if d := now.Sub(q.last); d > 0 {
+		q.tokens = min(eventQuotaBurst, q.tokens+d.Seconds()*maxEventsPerSecond)
+		q.last = now
 	}
-	q.count++
-	return q.count <= maxEventsPerSecond
+	if q.tokens < 1 {
+		return false
+	}
+	q.tokens--
+	return true
 }
 
 func eventQuotaEntries() int {
