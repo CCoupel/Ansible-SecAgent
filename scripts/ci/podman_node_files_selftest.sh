@@ -36,7 +36,10 @@ grep -q "^SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-abc$" "$B/release/r
   && ok "release.env : image et adresse de A" || ko "release.env : $(cat "$B/release/release.env")"
 grep -qiE 'secret|token|key=' "$B/release/release.env" && ko "release.env contient un secret ?" || ok "release.env sans secret"
 U="$B/systemd/secagent-qualif-srv4.service"
-grep -q "^ExecStartPre=$B/bin/check-private.sh qualif srv4$" "$U" && ok "unite : ExecStartPre = garde du partage" || ko "unite ExecStartPre : $(grep ExecStartPre "$U")"
+[ "$(grep '^ExecStartPre=' "$U" | tr '\n' '|')" = "ExecStartPre=/usr/bin/sha256sum --quiet --strict -c %h/.config/secagent/qualif-srv4.sha256|ExecStartPre=$B/bin/check-private.sh qualif srv4 %h/.config/secagent/qualif-srv4.sha256|" ] \
+  && ok "unite : ExecStartPre = empreintes epinglees PUIS garde (avec liste exacte)" || ko "unite ExecStartPre : $(grep ExecStartPre "$U")"
+cmp -s "$HERE/../../DEPLOYMENT/podman/check-private.sh" "$B/bin/check-private.sh" && [ "$(stat -c %a "$B/bin/check-private.sh")" = 700 ] \
+  && ok "stage : garde bin/check-private.sh re-ecrite depuis le depot (0700)" || ko "stage : garde bin/ differente du depot"
 grep -q "^ExecStart=/usr/bin/podman-compose -p secagent-qualif -f docker-compose.chain.yml -f docker-compose.hooks.yml -f docker-compose.podman.qualif.yml up -d secagent-server-b secagent-child minion-root minion-child$" "$U" \
   && ok "unite : services de srv4 seulement" || ko "unite ExecStart : $(grep '^ExecStart=' "$U")"
 grep -q "^StartLimitBurst=3$" "$U" && grep -q "^Restart=on-failure$" "$U" && grep -q "^After=network-online.target$" "$U" \
@@ -59,9 +62,65 @@ v_refus "fichier manquant" 'rm -f "$B/release/docker-compose.hooks.yml"' "differ
 v_refus "SHA256SUMS recalcule par un tiers" 'echo "# x" >> "$B/release/docker-compose.chain.yml"; ( cd "$B/release" && rm SHA256SUMS && sha256sum -- * > SHA256SUMS )' "differents du depot"
 v_refus "lien symbolique a la place d'un Compose" 'rm -f "$B/release/docker-compose.hooks.yml"; ln -s /etc/hostname "$B/release/docker-compose.hooks.yml"' "differents du depot"
 v_refus "release.env avec une autre image" 'sed -i "s/sha-abc/sha-evil/" "$B/release/release.env"' "differents du depot"
+v_refus "garde bin/check-private.sh falsifiee (exit 0 ajoute)" 'sed -i "s/^set -u$/set -u; exit 0/" "$B/bin/check-private.sh"' "bin/check-private.sh"
+v_refus "garde bin/check-private.sh remplacee (pwned)" 'echo "echo pwned" >> "$B/bin/check-private.sh"' "differents du depot"
+v_refus "fichier en trop dans bin/" ': > "$B/bin/autre.sh"' "differents du depot"
+v_refus "fichier .env en trop dans release/ (lu par podman-compose)" ': > "$B/release/.env"' "differents du depot"
 stage qualif srv4 >/dev/null
 out="$(SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-other VERIFY_LOCAL=1 bash "$D/verify-node-files.sh" qualif srv4 2>&1)"; rc=$?
 [ "$rc" = 2 ] && ok "verify refuse : release attendue differente (autre image)" || ko "verify autre image rc=$rc"
+
+# --- --pin : copie locale de l'unite + manifeste epingle, verifies a CHAQUE demarrage (ExecStartPre simules) ---------
+PH="$T/home-srv4"; FST="$(stat -f -c %T "$T")"
+mkdir -p "$P/QUALIF/state/root" "$P/QUALIF/state/child" "$P/QUALIF/secrets" "$P/QUALIF/pki"
+chmod 700 "$P/QUALIF/state" "$P/QUALIF/state/root" "$P/QUALIF/state/child" "$P/QUALIF/secrets" "$P/QUALIF/pki"
+: > "$P/QUALIF/pki/ca.crt"
+pin() { VERIFY_LOCAL=1 PIN_HOME="$PH" bash "$D/verify-node-files.sh" --pin qualif srv4; }
+PINF="$PH/.config/secagent/qualif-srv4.sha256"; LU="$PH/.config/systemd/user/secagent-qualif-srv4.service"
+start_pre() { # execute les ExecStartPre de l'unite COPIEE, %h = PIN_HOME (comme systemd --user) ; code du premier echec
+  local l rc=0
+  [ -f "$LU" ] || return 9
+  while IFS= read -r l; do
+    l="${l#ExecStartPre=}"; l="${l//%h/$PH}"
+    # shellcheck disable=SC2086   # ligne de commande d'unite : mots separes par des espaces, sans guillemets
+    env SECAGENT_PRIVATE_ROOT="$P" SECAGENT_NODE_UID="$(id -u)" SECAGENT_NODE_NAME=srv4 SECAGENT_PRIVATE_FSTYPES="$FST" $l >/dev/null 2>&1 || { rc=$?; break; }
+  done < <(grep '^ExecStartPre=' "$LU")
+  return $rc
+}
+stage qualif srv4 >/dev/null
+[ "$(VERIFY_LOCAL=1 rc_of bash "$D/verify-node-files.sh" --pin qualif srv4)" = 2 ] && ok "--pin sans PIN_HOME (essai local) refuse" || ko "--pin sans PIN_HOME"
+[ "$(rc_of pin)" = 0 ] && ok "verify --pin conforme" || ko "verify --pin : $(pin 2>&1)"
+[ -f "$PINF" ] && [ ! -L "$LU" ] && cmp -s "$U" "$LU" && ok "--pin : unite COPIEE hors partage (identique a l'attendu, pas un lien)" || ko "--pin : unite locale absente ou differente"
+[ "$(stat -c %a "$PINF")" = 600 ] && [ "$(stat -c %a "$LU")" = 600 ] && [ "$(stat -c %a "$PH/.config/secagent")" = 700 ] \
+  && ok "--pin : manifeste et unite en 0600, dossier 0700" || ko "--pin : modes $(stat -c %a "$PINF" "$LU")"
+[ "$(wc -l < "$PINF")" = "$(find "$B/bin" "$B/release" "$B/systemd" -type f | wc -l)" ] && grep -q "  $B/bin/check-private.sh$" "$PINF" \
+  && ok "--pin : manifeste couvre bin/, release/, systemd/ (garde comprise), chemins absolus" || ko "--pin : manifeste $(cat "$PINF")"
+start_pre; [ $? = 0 ] && ok "demarrage simule : ExecStartPre conformes" || ko "demarrage simule nominal : rc $?"
+sp_refus() { # $1 nom, $2 alteration du partage APRES --pin (eval)
+  stage qualif srv4 >/dev/null; pin >/dev/null 2>&1 || ko "pin prealable ($1)"
+  eval "$2"
+  start_pre; local rc=$?
+  [ "$rc" != 0 ] && ok "demarrage refuse : $1 (rc=$rc)" || ko "demarrage accepte malgre : $1"
+}
+sp_refus "garde falsifiee apres verification" 'sed -i "s/^set -u$/set -u; exit 0/" "$B/bin/check-private.sh"'
+sp_refus "Compose modifie apres verification" 'echo "# x" >> "$B/release/docker-compose.chain.yml"'
+sp_refus "release.env modifie apres verification" 'sed -i "s/sha-abc/sha-evil/" "$B/release/release.env"'
+sp_refus "release/.env ajoute apres verification" 'echo "X=1" > "$B/release/.env"'
+sp_refus "sous-dossier ajoute dans release/" 'mkdir "$B/release/sub"'
+sp_refus "fichier manquant apres verification" 'rm -f "$B/release/docker-compose.hooks.yml"'
+sp_refus "unite du partage modifiee apres verification" 'sed -i "/^ExecStartPre=/d" "$U"'
+sp_refus "manifeste epingle absent" 'rm -f "$PINF"'
+sp_refus "manifeste epingle vide" ': > "$PINF"'
+sp_refus "partage inaccessible (PRIVATE/QUALIF absent)" 'mv "$P/QUALIF" "$P/QUALIF.off"'
+mv "$P/QUALIF.off" "$P/QUALIF"
+stage qualif srv4 >/dev/null; pin >/dev/null 2>&1; cp "$PINF" "$T/pin.before"
+echo "# x" >> "$B/release/docker-compose.chain.yml"
+[ "$(rc_of pin)" = 2 ] && cmp -s "$PINF" "$T/pin.before" && ok "--pin apres echec de verification : rien re-epingle" || ko "--pin a epingle un partage non conforme"
+stage qualif srv4 >/dev/null; pin >/dev/null 2>&1
+SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-new stage qualif srv4 >/dev/null
+start_pre; [ $? != 0 ] && ok "nouvelle release deposee sans re-epinglage : demarrage refuse" || ko "nouvelle release non epinglee acceptee"
+[ "$(SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-new rc_of pin)" = 0 ] && start_pre && ok "nouvelle release verifiee et re-epinglee : demarrage accepte" || ko "re-epinglage nouvelle release"
+rm -rf "$P/QUALIF/state" "$P/QUALIF/secrets" "$P/QUALIF/pki"
 
 # --- stage : remplacement complet, gardes ------------------------------------------------------------------------------
 : > "$B/release/en-trop.yml"; stage qualif srv4 >/dev/null
@@ -77,6 +136,9 @@ grep -q "up -d secagent-server$" "$P/PROD/srv1/cyril/secagent/systemd/secagent-p
 [ "$(SECAGENT_VERSION=v3.0.6 VERIFY_LOCAL=1 rc_of bash "$D/verify-node-files.sh" prod srv1)" = 0 ] && ok "verify prod srv1 conforme" || ko "verify prod srv1"
 [ "$(SECAGENT_IMAGE='img x' rc_of stage qualif srv3)" = 2 ] && ok "release.env : valeur avec espace refusee" || ko "release.env espace"
 [ "$(SECAGENT_IMAGE=$'img\nX=1' rc_of stage qualif srv3)" = 2 ] && ok "release.env : saut de ligne refuse" || ko "release.env saut de ligne"
+[ "$(SECAGENT_PRIVATE_DIR="$P/x y" rc_of stage qualif srv3)" = 2 ] && ok "SECAGENT_PRIVATE_DIR avec espace refuse (ecrit dans l'unite)" || ko "PRIVATE_DIR espace"
+[ "$(SECAGENT_PRIVATE_DIR=$'/tmp/a\nExecStartPre=/bin/x' VERIFY_LOCAL=1 rc_of bash "$D/verify-node-files.sh" qualif srv3)" = 2 ] && ok "SECAGENT_PRIVATE_DIR avec saut de ligne refuse (injection de directive)" || ko "PRIVATE_DIR saut de ligne"
+[ "$(SECAGENT_PRIVATE_DIR="$P/../PRIVATE" rc_of stage qualif srv3)" = 2 ] && ok "SECAGENT_PRIVATE_DIR avec .. refuse" || ko "PRIVATE_DIR .."
 [ "$(NODE_SOURCE_DIR=rel rc_of stage qualif srv3)" = 2 ] && ok "NODE_SOURCE_DIR relatif refuse" || ko "NODE_SOURCE_DIR relatif"
 mkdir -p "$T/arch"; cp "$HERE/../../DEPLOYMENT/qualif/"docker-compose.{chain,server,hooks}.yml "$T/arch/"; cp "$D/docker-compose.podman.qualif.yml" "$T/arch/"
 echo "# archive" >> "$T/arch/docker-compose.server.yml"

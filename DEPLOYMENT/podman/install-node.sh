@@ -10,9 +10,9 @@
 #
 # Fichiers de deploiement du noeud CENTRALISES sur le partage (decision utilisateur) : PRIVATE/<ENV>/<srvX>/cyril/secagent/
 # (bin/check-private.sh, release/, systemd/), crees depuis le poste. Sur le noeud ne restent que le linger et
-# ~/.config/systemd/user, ou les unites --user des conteneurs sont LIEES (`systemctl --user link`, T44/T45) vers
-# PRIVATE/<ENV>/<srvX>/cyril/secagent/systemd/ : partage absent = lien casse = unite non chargee (fail-closed), et
-# ExecStartPre=check-private.sh refuse aussi un partage inaccessible.
+# ~/.config/systemd/user, ou `verify-node-files.sh --pin` (poste, T44/T45) COPIE l'unite --user verifiee (jamais liee
+# vers le partage) avec le manifeste epingle ~/.config/secagent/ : a chaque demarrage, ExecStartPre verifie les empreintes
+# du partage puis la garde check-private.sh (partage inaccessible ou modifie = aucun conteneur, fail-closed).
 #
 # Noeuds COLOCALISES (decision utilisateur T42) : srv1-srv4 portent aussi RKE2 et des chunkservers MooseFS ; rien n'est
 # touche cote k8s ni MooseFS. Acces au partage : BIND du montage autofs root EXISTANT
@@ -188,7 +188,7 @@ main() {
   as_user env SECAGENT_PRIVATE_ROOT="$PRIVATE_ROOT" SECAGENT_NODE_UID="$NODE_UID" SECAGENT_NODE_NAME="$here" "$guard" "$env" "$node" \
     || refuse "garde PRIVATE en echec pour $env $node (voir message ci-dessus) : aucun conteneur ne doit demarrer"
   echo "install-node OK ($env $node) : linger, ~/.config/systemd/user, garde du partage conforme. Rien d'autre sur le noeud."
-  echo "Etape suivante, en $NODE_USER SANS sudo : systemctl --user enable --now podman.socket ; unites (T44/T45) : systemctl --user link $PRIVATE_ROOT/$ENV/$node/cyril/secagent/systemd/<unite>.service, avec ExecStartPre=$guard $env $node"
+  echo "Etape suivante, en $NODE_USER SANS sudo : systemctl --user enable --now podman.socket ; unites (T44/T45) : copiees depuis le poste par verify-node-files.sh --pin $env $node (jamais systemctl --user link), puis daemon-reload"
 }
 
 [ "${INSTALL_NODE_SOURCED:-0}" = 1 ] || main "$@"

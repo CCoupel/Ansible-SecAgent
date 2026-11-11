@@ -10,8 +10,8 @@
 # Cree (0700, uid courant = 1000, sans toucher a ce qui existe) PRIVATE/<ENV>/<srvX>/cyril/secagent/ et ses
 # sous-dossiers bin/ (garde check-private.sh, 0700), release/ (Compose de la release, deposes par deployer), run/
 # (fichiers VOLATILS de la qualif : jetons et env_file de chain-test.sh, hors verification d'integrite) et systemd/
-# (unites --user des conteneurs, T44/T45 : liees sur le noeud par `systemctl --user link`, donc absentes si le partage
-# n'est pas monte = fail-closed). Aucun secret n'est ecrit ni lu. Refus (code 2) si la racine PRIVATE/ est absente
+# (unite --user de reference, T44/T45 : COPIEE sur le noeud, hors partage, par `verify-node-files.sh --pin` apres
+# verification ; jamais liee). Aucun secret n'est ecrit ni lu. Refus (code 2) si la racine PRIVATE/ est absente
 # (jamais creee par les scripts, #250) ou relative.
 # Variable : SECAGENT_PRIVATE_DIR (defaut <depot>/PRIVATE ; chemin ABSOLU du checkout depuis une copie).
 set -euo pipefail

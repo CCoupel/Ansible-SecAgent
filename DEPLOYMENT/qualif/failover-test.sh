@@ -52,6 +52,7 @@ if [ "$CONTAINER_CLI" = podman ]; then
   # Les noeuds voient PRIVATE/ au MEME chemin absolu que le poste (autofs /share/MFS/ROOT) : sinon les chemins passes a
   # podman-compose (CHAIN_DIR, QUALIF_TLS_DIR, etat) designeraient autre chose sur le noeud.
   case "$PRIVATE_DIR" in /share/MFS/ROOT/*) ;; *) refuse "CONTAINER_CLI=podman : SECAGENT_PRIVATE_DIR=$PRIVATE_DIR hors de /share/MFS/ROOT (chemin vu par les noeuds)" ;; esac
+  [[ $PRIVATE_DIR =~ ^/[A-Za-z0-9_./-]+$ && ! /$PRIVATE_DIR/ =~ /\.\./ ]] || refuse "CONTAINER_CLI=podman : SECAGENT_PRIVATE_DIR='$PRIVATE_DIR' : caracteres [A-Za-z0-9_./-] sans .. attendus (transmis aux noeuds)"
   export QUALIF_NODE_A QUALIF_NODE_B CONTAINER_HOST_A CONTAINER_HOST_B CONTAINER_SSHKEY CONTAINER_KNOWN_HOSTS SECRET_OWNER_UID
 else
   SECRET_OWNER_UID="${SECRET_OWNER_UID:-10001}"
@@ -75,7 +76,10 @@ node_ssh() {
   t="$(ssh_target "$(node_url "$n")")"
   [ -f "$CONTAINER_SSHKEY" ] && [ -f "$CONTAINER_KNOWN_HOSTS" ] || refuse "cle SSH ($CONTAINER_SSHKEY) ou known_hosts ($CONTAINER_KNOWN_HOSTS) absents"
   cp="${TMPDIR:-/tmp}"; cp="${cp%/}/secagent-ssh-$(id -u)"
-  [ -d "$cp" ] || ( umask 077; mkdir -p "$cp" )
+  [ -e "$cp" ] || [ -L "$cp" ] || ( umask 077; mkdir -p "$cp" )
+  # repertoire des sockets maitres SSH : a soi, 0700, pas un lien (un tiers local y poserait un faux maitre)
+  [ -d "$cp" ] && [ ! -L "$cp" ] && [ "$(stat -c '%u %a' "$cp")" = "$(id -u) 700" ] \
+    || refuse "$cp : repertoire des sockets SSH attendu a l'uid $(id -u) en 0700 (non lien) ; le supprimer puis relancer"
   local opts=(-i "$CONTAINER_SSHKEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes
               -o UserKnownHostsFile="$CONTAINER_KNOWN_HOSTS" -o ConnectTimeout=10
               -o ControlMaster=auto -o ControlPath="$cp/%C" -o ControlPersist=120)

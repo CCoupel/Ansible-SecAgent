@@ -50,7 +50,7 @@
             "DEPLOYMENT/podman/verify-node-files.sh"
           ],
           "override": "DEPLOYMENT/podman/docker-compose.podman.qualif.yml",
-          "unit": "secagent-qualif-<srvX>.service (systemctl --user link depuis PRIVATE/QUALIF/<srvX>/cyril/secagent/systemd/)",
+          "unit": "secagent-qualif-<srvX>.service (copie verifiee de PRIVATE/QUALIF/<srvX>/cyril/secagent/systemd/ dans ~/.config/systemd/user par verify-node-files.sh --pin, jamais liee ; manifeste epingle ~/.config/secagent/<env>-<srvX>.sha256 verifie par ExecStartPre)",
           "cli": "CONTAINER_CLI=podman chain-test.sh <etape> (DEPLOYMENT/qualif)"
         },
         "access": {
@@ -78,7 +78,7 @@
           "known_hosts": "PRIVATE/QUALIF/poste-cyril/known_hosts (ed25519, empreintes confirmees par l'utilisateur 2026-11-09)",
           "secret_owner_uid": 1000,
           "private_on_node": "/share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/QUALIF (autofs root existant, meme chemin que le poste)",
-          "node_files": "PRIVATE/QUALIF/<srvX>/cyril/secagent/{bin/check-private.sh,release/,systemd/,run/} (prepare-node-files.sh, stage-node-files.sh ; verify-node-files.sh avant daemon-reload)",
+          "node_files": "PRIVATE/QUALIF/<srvX>/cyril/secagent/{bin/check-private.sh,release/,systemd/,run/} (prepare-node-files.sh, stage-node-files.sh ; verify-node-files.sh --pin avant daemon-reload et tout (re)demarrage decide)",
           "colocation": "noeuds partages avec RKE2 et des chunkservers MooseFS : interdits (docker, kubectl, k3s/rke2, /opt/MFS, arret de service ou de conteneur hors secagent) ; limites memoire obligatoires (cgroup memory delegue)",
           "registry": "ghcr.io/ccoupel",
           "verified": {
@@ -141,7 +141,7 @@
             "DEPLOYMENT/podman/verify-node-files.sh"
           ],
           "override": "DEPLOYMENT/podman/docker-compose.podman.yml",
-          "unit": "secagent-prod-<srvX>.service (systemctl --user link depuis PRIVATE/PROD/<srvX>/cyril/secagent/systemd/)"
+          "unit": "secagent-prod-<srvX>.service (copie verifiee de PRIVATE/PROD/<srvX>/cyril/secagent/systemd/ dans ~/.config/systemd/user par verify-node-files.sh --pin, jamais liee ; manifeste epingle ~/.config/secagent/<env>-<srvX>.sha256 verifie par ExecStartPre)"
         },
         "access": {
           "method": "podman-ssh",
@@ -168,7 +168,7 @@
           "known_hosts": "PRIVATE/PROD/poste-cyril/known_hosts (ed25519, empreintes confirmees par l'utilisateur 2026-11-09)",
           "secret_owner_uid": 1000,
           "private_on_node": "/share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/PROD (autofs root existant, meme chemin que le poste)",
-          "node_files": "PRIVATE/PROD/<srvX>/cyril/secagent/{bin/check-private.sh,release/,systemd/,run/} (prepare-node-files.sh, stage-node-files.sh ; verify-node-files.sh avant daemon-reload)",
+          "node_files": "PRIVATE/PROD/<srvX>/cyril/secagent/{bin/check-private.sh,release/,systemd/,run/} (prepare-node-files.sh, stage-node-files.sh ; verify-node-files.sh --pin avant daemon-reload et tout (re)demarrage decide)",
           "colocation": "noeuds partages avec RKE2 et des chunkservers MooseFS : interdits (docker, kubectl, k3s/rke2, /opt/MFS, arret de service ou de conteneur hors secagent) ; limites memoire obligatoires (cgroup memory delegue)",
           "registry": "ghcr.io/ccoupel",
           "verified": {

@@ -11,6 +11,8 @@
 # $1 env, $2 noeud -> variables ENV (QUALIF|PROD), NODE_IP, PROJECT_NAME, NODE_SERVICES, COMPOSE_ARGS, SOURCES
 # (fichiers du depot copies tels quels dans release/, chemin source:nom).
 node_topology() {
+  # PRIVATE_DIR est ecrit tel quel dans l'unite et release.env : memes caracteres permis que les autres valeurs.
+  [[ $PRIVATE_DIR =~ ^/[A-Za-z0-9_./-]+$ && ! /$PRIVATE_DIR/ =~ /\.\./ ]] || refuse "SECAGENT_PRIVATE_DIR='$PRIVATE_DIR' : chemin absolu [A-Za-z0-9_./-] sans .. attendu"
   case "$1:$2" in
     qualif:srv3) ENV=QUALIF; NODE_IP=192.168.1.213; NODE_SERVICES="secagent-server-a" ;;
     qualif:srv4) ENV=QUALIF; NODE_IP=192.168.1.214; NODE_SERVICES="secagent-server-b secagent-child minion-root minion-child" ;;
@@ -29,6 +31,11 @@ node_topology() {
   fi
   NODE_BASE="$PRIVATE_DIR/$ENV/$2/cyril/secagent"
   UNIT_NAME="secagent-$1-$2.service"
+  # Manifeste EPINGLE sur le noeud, HORS partage (home local de cyril) : ecrit par `verify-node-files.sh --pin` apres une
+  # verification reussie contre le depot, relu par ExecStartPre a CHAQUE demarrage (reboot, Restart=, relance manuelle).
+  PIN_REL=".config/secagent/$1-$2.sha256"
+  # Copie locale (hors partage) de l'unite, ecrite par `verify-node-files.sh --pin` : c'est elle que systemd charge.
+  UNIT_REL=".config/systemd/user/$UNIT_NAME"
 }
 
 # Variables NON secretes ecrites dans release/release.env (lues par l'unite au demarrage) : liste FERMEE.
@@ -51,11 +58,17 @@ release_env() { # $1 env, $2 noeud (node_topology deja appele)
   fi
 }
 
-# Unite --user du noeud (liee par `systemctl --user link`, jamais copiee sur le noeud). Deterministe.
+# Unite --user du noeud. Deterministe. Deposee sur le partage (systemd/, reference verifiee) puis COPIEE, apres
+# verification, HORS partage dans ~/.config/systemd/user/ par `verify-node-files.sh --pin` : systemd ne lit donc jamais
+# une unite modifiable depuis le partage (une unite liee serait relue telle quelle au boot, ExecStartPre compris).
 node_unit() { # $1 env, $2 noeud (node_topology deja appele)
   cat <<EOF
 # Genere par DEPLOYMENT/podman/stage-node-files.sh (#267) : conteneurs secagent $1 du noeud $2 (Podman rootless).
-# Liee depuis le partage : partage absent = unite absente (fail-closed) ; garde check-private.sh avant tout demarrage.
+# Copiee hors partage par verify-node-files.sh --pin (jamais liee). A CHAQUE demarrage (boot, Restart=, relance), avant
+# tout : 1) empreintes de bin/, release/ et systemd/ du partage comparees au manifeste epingle HORS partage
+# (%h/$PIN_REL, ecrit par verify-node-files.sh --pin apres verification contre le depot) ; 2) garde check-private.sh
+# (desormais verifiee) : partage, modes, pki/, et liste EXACTE des fichiers = celle du manifeste (rien en trop, ex. .env).
+# Partage absent : 1) echoue (fail-closed), nouvel essai par Restart= (3 en 600 s).
 [Unit]
 Description=secagent $1 ($2) : conteneurs Podman rootless
 Wants=network-online.target
@@ -68,7 +81,8 @@ Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$NODE_BASE/release
 EnvironmentFile=$NODE_BASE/release/release.env
-ExecStartPre=$NODE_BASE/bin/check-private.sh $1 $2
+ExecStartPre=/usr/bin/sha256sum --quiet --strict -c %h/$PIN_REL
+ExecStartPre=$NODE_BASE/bin/check-private.sh $1 $2 %h/$PIN_REL
 ExecStart=/usr/bin/podman-compose -p $PROJECT_NAME $COMPOSE_ARGS up -d $NODE_SERVICES
 ExecStop=/usr/bin/podman-compose -p $PROJECT_NAME $COMPOSE_ARGS stop $NODE_SERVICES
 Restart=on-failure
@@ -80,11 +94,12 @@ WantedBy=default.target
 EOF
 }
 
-# Manifeste ATTENDU "sha256  sous-dossier/nom" (release/ et systemd/), recalcule depuis le depot dans $1 (repertoire
-# temporaire de l'appelant) : copies des sources, release.env et unite generes.
+# Manifeste ATTENDU "sha256  sous-dossier/nom" (bin/, release/ et systemd/), recalcule depuis le depot dans $1 (repertoire
+# temporaire de l'appelant) : garde du depot, copies des sources, release.env et unite generes.
 expected_tree() { # $1 repertoire de sortie, $2 env, $3 noeud
   local out="$1" f
-  mkdir -p "$out/release" "$out/systemd"
+  mkdir -p "$out/bin" "$out/release" "$out/systemd"
+  cp "$REPO/DEPLOYMENT/podman/check-private.sh" "$out/bin/check-private.sh"; chmod 700 "$out/bin/check-private.sh"
   # NODE_SOURCE_DIR (optionnel) : repertoire extrait d'une archive de release (Compose dont l'image est reecrite en
   # tag@digest) ; les fichiers y sont pris par leur nom. Sinon : le depot.
   local src
@@ -95,6 +110,13 @@ expected_tree() { # $1 repertoire de sortie, $2 env, $3 noeud
   done
   release_env "$2" "$3" > "$out/release/release.env"
   node_unit "$2" "$3" > "$out/systemd/$UNIT_NAME"
-  ( cd "$out/release" && sha256sum -- * > SHA256SUMS )
-  ( cd "$out/systemd" && sha256sum -- * > SHA256SUMS )
+  local sub; for sub in bin release systemd; do ( cd "$out/$sub" && sha256sum -- * > SHA256SUMS ); done
+}
+
+# Manifeste epingle (format sha256sum -c, chemins ABSOLUS sur le partage) : garde, release/ et unite, depuis l'attendu.
+pin_manifest() { # $1 repertoire produit par expected_tree
+  local f
+  ( cd "$1" && find bin release systemd -type f -print | LC_ALL=C sort ) | while read -r f; do
+    printf '%s  %s\n' "$(sha256sum < "$1/$f" | cut -d' ' -f1)" "$NODE_BASE/$f"
+  done
 }
