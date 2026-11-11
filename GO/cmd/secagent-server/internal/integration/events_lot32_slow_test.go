@@ -46,13 +46,13 @@ func TestRelayRerouted_Reparent3000HostsGivesOneEventNoHostRerouted(t *testing.T
 	}
 }
 
-// (7) 10 000 events queued while the uplink is cut are replayed CADENCED (RELAY_UPSTREAM_RATE, default 150/s, under the
+// (7) 9 900 events (165 identities x 60, under the 10 000 slots of the queue, so that nothing is lost by the queue itself) queued while the uplink is cut are replayed CADENCED (RELAY_UPSTREAM_RATE, default 150/s, under the
 // parent quota of 200/s): all of them arrive, the parent refuses none, the replay takes about 67 s (not an instant burst).
 func TestUpstreamQueue_Replay10000IsCadencedUnderTheParentQuota(t *testing.T) {
-	c := newCutTree(t, 10000, "RELAY_HOOKS_QUEUE_SIZE=100000") // the child's own hooks journal must keep up with the production
+	c := newCutTree(t, 9900, "RELAY_HOOKS_QUEUE_SIZE=100000") // the child's own hooks journal must keep up with the production
 	c.cut(t)
 	c.produce(t, 16)
-	waitFor(t, "the child journaled every event it produced", func() bool { return c.count(c.child) >= 10000 })
+	waitFor(t, "the child journaled every event it produced", func() bool { return c.count(c.child) >= 9900 })
 	produced := c.count(c.child)
 
 	t0 := time.Now()
@@ -72,6 +72,6 @@ func TestUpstreamQueue_Replay10000IsCadencedUnderTheParentQuota(t *testing.T) {
 		t.Errorf("the parent refused events over its quota during the replay")
 	}
 	if v, _ := c.child.statusField("upstream_dropped_events"); v != 0 {
-		t.Errorf("upstream_dropped_events = %v, want 0 (10 000 fit the default queue)", v)
+		t.Errorf("upstream_dropped_events = %v, want 0 (9 900 events fit the 10 000 slots of the default queue)", v)
 	}
 }

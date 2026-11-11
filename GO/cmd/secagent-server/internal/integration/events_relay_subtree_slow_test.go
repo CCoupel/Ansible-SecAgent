@@ -60,21 +60,26 @@ func TestRelayEvents_3000HostsBehindAChildGiveOneRelayEvent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("an agent could not connect to the child: %v", err)
 	}
-	// The per-host host.up events of a burst are NOT all expected at the root: the parent accepts 200 event_forward per
-	// second per relay (maxEventsPerSecond) and drops the rest (journalised), until the paced upstream queue of #246
-	// (LOT-3.2) exists. Measured on this rig: ~500 of 3 000 reach the root. What this test pins is the relay events and
-	// the absence of per-host events caused by the SNAPSHOT: wait for the host.up count to settle, then take the baseline.
+	// LOT-3.2 (#246): the child's upstream queue (10 000 slots) keeps the burst and replays it PACED (RELAY_UPSTREAM_RATE,
+	// 150/s, under the parent's quota of 200/s): the 3 000 host.up all reach the root, in about agents/150 s. The wait
+	// is a budget derived from that rate (+ margin for the agent_list of 3 000 hosts that interleave), not a settling poll.
 	waitFor(t, "relay.up", func() bool { return len(root.relayLines("relay.up", "relay1")) == 1 })
-	hostUps := -1
-	waitFor(t, "the host.up of the connection burst have settled", func() bool {
-		n := root.hookCount("host.up ")
-		settled := n == hostUps
-		hostUps = n
-		time.Sleep(3 * time.Second)
-		return settled
-	})
-	if hostUps == 0 {
-		t.Fatal("no host.up at all reached the root")
+	// The wait ends when all arrived, or when the count has not moved for 30 s (then it is a loss, not slowness), or at
+	// the hard budget.
+	budget := time.Duration(agents/150)*time.Second + 300*time.Second
+	deadline, lastMove, last := time.Now().Add(budget), time.Now(), -1
+	for root.hookCount("host.up ") < agents && time.Now().Before(deadline) && time.Since(lastMove) < 30*time.Second {
+		if n := root.hookCount("host.up "); n != last {
+			last, lastMove = n, time.Now()
+		}
+		time.Sleep(time.Second)
+	}
+	hostUps := root.hookCount("host.up ")
+	if hostUps != agents {
+		t.Fatalf("%d host.up reached the root, want all %d (paced replay, none lost); last progress %s ago, %s since the burst", hostUps, agents, time.Since(lastMove).Round(time.Second), budget)
+	}
+	if root.logs.has("event_forward rate limit exceeded") {
+		t.Errorf("the paced replay must stay under the parent quota")
 	}
 
 	root.closeRelay("relay1", 1011)
