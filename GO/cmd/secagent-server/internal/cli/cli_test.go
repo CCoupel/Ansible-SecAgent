@@ -1538,3 +1538,21 @@ func TestServerStatusShowsHooksCounters(t *testing.T) {
 		}
 	}
 }
+
+// #246: server status shows the upstream queue counters.
+func TestServerStatusShowsUpstreamQueueCounters(t *testing.T) {
+	mockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"db":"ok","ws_connections":3,"uptime":"2h","upstream_dropped_events":44,"upstream_queue_depth":12,"upstream_queue_capacity":10000}`))
+	})
+	out := captureStdout(t, func() {
+		if err := serverStatusCmd.RunE(serverStatusCmd, nil); err != nil {
+			t.Errorf("RunE: %v", err)
+		}
+	})
+	for _, want := range []string{"upstream_queue_depth", "12 / 10000", "upstream_dropped_events", "44"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q missing from:\n%s", want, out)
+		}
+	}
+}

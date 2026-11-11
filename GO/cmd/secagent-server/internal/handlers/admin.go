@@ -541,6 +541,19 @@ var (
 	instanceStatusFn func() map[string]interface{}
 )
 
+var (
+	upstreamStatusMu sync.RWMutex
+	upstreamStatusFn func() (dropped int64, depth, capacity int)
+)
+
+// SetUpstreamQueueStatusFunc wires the counters of the upstream event queue exposed by
+// GET /api/admin/status: upstream_dropped_events, upstream_queue_depth, upstream_queue_capacity (#246).
+func SetUpstreamQueueStatusFunc(fn func() (dropped int64, depth, capacity int)) {
+	upstreamStatusMu.Lock()
+	upstreamStatusFn = fn
+	upstreamStatusMu.Unlock()
+}
+
 // SetLinkStatusFunc wires the parent / push-child link status exposed by GET /api/admin/status (#154).
 func SetLinkStatusFunc(fn func() interface{}) {
 	linkStatusMu.Lock()
@@ -549,7 +562,8 @@ func SetLinkStatusFunc(fn func() interface{}) {
 }
 
 // AdminStatus returns server health: db, ws_connections, uptime, links and the hooks queue counters
-// (hooks_queue_depth, hooks_queue_capacity, hooks_inflight, hooks_dropped_events, hooks_dropped_actions).
+// (hooks_queue_depth, hooks_queue_capacity, hooks_inflight, hooks_dropped_events, hooks_dropped_actions)
+// and the upstream event queue counters (upstream_dropped_events, upstream_queue_depth, upstream_queue_capacity).
 // GET /api/admin/status
 func AdminStatus(w http.ResponseWriter, r *http.Request) {
 	if !requireAdminAuth(w, r) {
@@ -583,6 +597,18 @@ func AdminStatus(w http.ResponseWriter, r *http.Request) {
 		body["hooks_dropped_events"] = st.DroppedEvents
 		body["hooks_dropped_actions"] = st.DroppedActions
 	}
+	// upstream event queue (#246): always present, 0 / 0 / 0 until wired (a root without parent still has the queue)
+	var upDropped int64
+	var upDepth, upCap int
+	upstreamStatusMu.RLock()
+	upFn := upstreamStatusFn
+	upstreamStatusMu.RUnlock()
+	if upFn != nil {
+		upDropped, upDepth, upCap = upFn()
+	}
+	body["upstream_dropped_events"] = upDropped
+	body["upstream_queue_depth"] = upDepth
+	body["upstream_queue_capacity"] = upCap
 	instanceStatusMu.RLock()
 	instFn := instanceStatusFn
 	instanceStatusMu.RUnlock()

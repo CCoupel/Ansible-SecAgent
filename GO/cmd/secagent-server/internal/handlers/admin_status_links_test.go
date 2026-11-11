@@ -65,3 +65,30 @@ func TestAdminStatus_IncludesHooksQueueCounters(t *testing.T) {
 		t.Errorf("hooks counters = %v", m)
 	}
 }
+
+// #246: the upstream queue counters are always present (0 / 0 / 0 until wired), then follow the queue.
+func TestAdminStatus_UpstreamQueueCounters(t *testing.T) {
+	useFreshStores(t)
+	SetUpstreamQueueStatusFunc(nil)
+	get := func() map[string]any {
+		w := httptest.NewRecorder()
+		AdminStatus(w, adminReq("GET", "/api/admin/status", nil))
+		var m map[string]any
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &m) != nil {
+			t.Fatalf("status %d %s", w.Code, w.Body.String())
+		}
+		return m
+	}
+	m := get()
+	for _, k := range []string{"upstream_dropped_events", "upstream_queue_depth", "upstream_queue_capacity"} {
+		if v, ok := m[k]; !ok || v != float64(0) {
+			t.Errorf("%s = %v (present=%v), want 0", k, v, ok)
+		}
+	}
+	SetUpstreamQueueStatusFunc(func() (int64, int, int) { return 44, 12, 10000 })
+	t.Cleanup(func() { SetUpstreamQueueStatusFunc(nil) })
+	m = get()
+	if m["upstream_dropped_events"] != float64(44) || m["upstream_queue_depth"] != float64(12) || m["upstream_queue_capacity"] != float64(10000) {
+		t.Errorf("counters = %v / %v / %v", m["upstream_dropped_events"], m["upstream_queue_depth"], m["upstream_queue_capacity"])
+	}
+}

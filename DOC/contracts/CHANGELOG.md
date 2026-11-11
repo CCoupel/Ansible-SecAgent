@@ -7,6 +7,7 @@
 - **[ADDED]** `WSS /ws/agent` — en-tête `X-SecAgent-Conn-Seq` (#265, entier décimal `1..2³¹`, absent/invalide ⇒ 1), ignoré par un serveur antérieur.
 - **[CHANGED]** événement `host.up` (#265) — n'est plus émis aux reconnexions d'un **même process** minion ≥ 3.0.6 : elles donnent `host.reconnect` ; qui veut « toute connexion » s'abonne à `host.up` **et** `host.reconnect`. Minion v3.0.5 (sans en-tête) : inchangé (`host.up`).
 - **[CHANGED]** documentation (SERVER_SPEC §9.7) — `relay.updated` ne déclenche aucun hook (propagé seulement) ; la doc affirmait le contraire.
+- **[ADDED]** `GET /api/admin/status` (#246) — champs additifs, toujours présents : `upstream_dropped_events` (événements ascendants perdus : file pleine, ou retirés de la file sans pouvoir être envoyés), `upstream_queue_depth`, `upstream_queue_capacity` (`0 / 0 / N` sur une racine sans parent). `secagent-server server status` les affiche. Variables `RELAY_UPSTREAM_QUEUE_SIZE` (défaut 10000, bornes 256..100000) et `RELAY_UPSTREAM_RATE` (défaut 150 événements/s, bornes 10..1000 ; sous le quota 200/s du parent, sans exemption) ; valeur hors borne ⇒ défaut + `[WARN]`. Journal des actions : entrée agrégée `action_type:"upstream_dropped"` (`event:"*"`), une par minute au plus. Le refus de quota d'un `event_forward` n'est plus journalisé par événement mais une fois par minute et par identité.
 - Compatibilité : un parent v3.0.5 jette les kinds inconnus (`unsupported event kind`) sans fermer le lien ; monter les parents d'abord (T9).
 - Aucun changement BREAKING.
 

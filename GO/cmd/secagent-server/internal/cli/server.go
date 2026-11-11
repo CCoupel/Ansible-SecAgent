@@ -64,6 +64,10 @@ var serverStatusCmd = &cobra.Command{
 				tp.printf("hooks_dropped_events\t%v\n", m["hooks_dropped_events"])
 				tp.printf("hooks_dropped_actions\t%v\n", m["hooks_dropped_actions"])
 			}
+			if _, ok := m["upstream_queue_capacity"]; ok {
+				tp.printf("upstream_queue_depth\t%v / %v\n", m["upstream_queue_depth"], m["upstream_queue_capacity"])
+				tp.printf("upstream_dropped_events\t%v\n", m["upstream_dropped_events"])
+			}
 			if err := tp.flush(); err != nil {
 				return err
 			}
