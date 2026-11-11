@@ -70,7 +70,10 @@ func TestUpstreamQueue_NR_300EventsOverA256SlotQueue_AllDeliveredNoneDropped(t *
 	if ups != hosts {
 		t.Errorf("%d host.up of the 300 hosts at the root, want exactly %d (none lost, none duplicated)", ups, hosts)
 	}
-	if child.logs.has("upstream event queue full") {
+	if v, ok := child.statusField("upstream_dropped_events"); ok && v != 0 { // field added by T15 (absent on e0d1970)
+		t.Errorf("upstream_dropped_events = %v, want 0", v)
+	}
+	if child.logs.has("event(s) dropped in the last minute") || child.logs.has("upstream event queue full") {
 		t.Errorf("the child dropped events from its upstream queue (uplink up):\n%s", child.logs.String())
 	}
 	if root.logs.has("event_forward rate limit exceeded") {
