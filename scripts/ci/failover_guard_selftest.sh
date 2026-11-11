@@ -73,6 +73,10 @@ cat > "$LOG" <<'EOF'
 2026-11-11T10:05:05Z RELAY_RECONNECT dmz1 conn_seq=2 mode=pull hosts_routed=1
 2026-11-11T10:05:06Z RECONNECT minion-root
 2026-11-11T10:06:00Z RELAY_DOWN dmz1 peer_closed:1001 hosts_routed=1
+2026-11-11T10:06:30Z CONVERGED secagent-server relays_connected=0 relays_missing=1 hosts_direct=1 hosts_routed=0 dropped=0
+2026-11-11T10:07:00Z CONVERGED secagent-server relays_connected=1 relays_missing=0 hosts_direct=1 hosts_routed=2 dropped=0
+2026-11-11T10:08:00Z REROUTED minion-child direct old=dmz1 new=secagent-server old_chain=dmz1 new_chain=secagent-server
+2026-11-11T10:09:00Z RELAY_REROUTED dmz2 old_chain=dmz1,dmz2 new_chain=dmz2 hosts_routed=1
 EOF
 ev() { # $1 script apres `source` (faux docker : `exec <c> cat ...` lit $LOG)
   env -u TLS_MODE -u DOCKER_HOST -u SECAGENT_ENDPOINT_HOST -u CONTROL_HOST SECAGENT_PRIVATE_DIR="$TMPD/priv" bash -c '
@@ -88,6 +92,12 @@ chk "hooks : RELAY_UP dmz1 ne compte pas RELAY_RECONNECT" "$([ "$(ev 'hook_count
 chk "hooks : hook_more (1 > 0) vrai, (1 > 1) faux" "$(ev 'hook_more c minion-root RECONNECT 0 && ! hook_more c minion-root RECONNECT 1' >/dev/null; echo $?)"
 chk "hooks : sujet exact (minion-root != minion-root2)" "$([ "$(ev 'hook_count c minion-root2 UP')" = 0 ]; echo $?)"
 chk "hooks : journal absent => compte 0, rien vu" "$(env -u TLS_MODE -u DOCKER_HOST SECAGENT_PRIVATE_DIR="$TMPD/priv" bash -c 'source "'"$F"'"; docker() { return 1; }; [ "$(hook_count c dmz1 RELAY_UP)" = 0 ] && ! hook_seen c dmz1 RELAY_UP' 2>/dev/null; echo $?)"
+chk "hooks : kind_count REROUTED (tous sujets) = 1, RELAY_REROUTED = 1" "$([ "$(ev 'kind_count c REROUTED')" = 1 ] && [ "$(ev 'kind_count c RELAY_REROUTED')" = 1 ]; echo $?)"
+chk "hooks : kind_more REROUTED (1 > 0) vrai, (1 > 1) faux" "$(ev 'kind_more c REROUTED 0 && ! kind_more c REROUTED 1' >/dev/null; echo $?)"
+chk "hooks : hook_last_kv lit la DERNIERE ligne CONVERGED (relays_connected=1)" "$([ "$(ev 'hook_last_kv c secagent-server CONVERGED relays_connected')" = 1 ]; echo $?)"
+chk "hooks : hook_last_kv : cle exacte (hosts_routed != hosts_direct), chaine avec virgule" "$([ "$(ev 'hook_last_kv c secagent-server CONVERGED hosts_routed')" = 2 ] && [ "$(ev 'hook_last_kv c dmz2 RELAY_REROUTED old_chain')" = dmz1,dmz2 ]; echo $?)"
+chk "hooks : hook_last_kv : cle absente => vide" "$([ -z "$(ev 'hook_last_kv c secagent-server CONVERGED absente')" ]; echo $?)"
+chk "hooks : hook_last = derniere ligne du sujet/genre" "$(ev 'hook_last c minion-child REROUTED' | grep -q ' direct old=dmz1 '; echo $?)"
 chk "hooks : hooks_enabled si COMPOSE_OVERRIDES contient docker-compose.hooks.yml" "$(ev 'COMPOSE_OVERRIDES="/x/docker-compose.remote-tls.yml /x/docker-compose.hooks.yml"; hooks_enabled' >/dev/null; echo $?)"
 chk "hooks : hooks_enabled faux sans la surcharge" "$(if ev 'COMPOSE_OVERRIDES=/x/docker-compose.remote-tls.yml; hooks_enabled' >/dev/null; then echo 1; else echo 0; fi)"
 set +e

@@ -17,6 +17,8 @@ services:
   secagent-child: *tls-volume
   minion-root: *tls-volume
   minion-child: *tls-volume
+  secagent-grandchild: *tls-volume   # profil level3
+  minion-grand: *tls-volume          # profil level3
 
 volumes:
   secagent_tls:

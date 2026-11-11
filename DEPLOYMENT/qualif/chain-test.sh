@@ -20,7 +20,13 @@
 #   chain-test.sh link-rotation  # rotation de la cle de lien, confirmation, nouveau jeton, retire-link-previous (v3.0.4)
 #   chain-test.sh link-revoke    # revocation du lien d'un enfant : fermeture 4010, pas de reconnexion, puis remise en etat
 #   chain-test.sh hooks        # journal des hooks apres bootstrap : relay.failover, relay.up dmz1, host.up (#197, #225, #245, hooks.json)
-#   chain-test.sh relay-down   # arret puis redemarrage de l'enfant : relay.down puis relay.up de dmz1 au maitre (#245), smoke
+#   chain-test.sh relay-down   # arret puis redemarrage de l'enfant : relay.down peer_closed:1001 puis relay.up de dmz1 (#245, T22)
+#   chain-test.sh converged-timeout   # enfant arrete puis bascule : relay.converged au delai (relays_missing=1), un seul (#246)
+#   chain-test.sh rerouted     # minion-child re-pointe vers la racine puis retour : host.rerouted direct puis indirect (#244)
+#   chain-test.sh upstream-queue  # lien amont gele, N (de)connexions rejouees sans perte ; UPSTREAM_QUEUE_SIZE=256 : variante (#246)
+#   chain-test.sh relay-rerouted  # CHAIN_LEVEL3=1 : dmz2 re-pointe vers la racine puis retour : relay.rerouted (#244)
+#   chain-test.sh failover-3-levels  # CHAIN_LEVEL3=1 : redemarrage de dmz2, relay.failover dmz2 journalise par la racine (#225)
+#   chain-test.sh lost-during-failover  # kill du maitre + minion-root arrete pendant la fenetre : aucun host.down (#247)
 #   chain-test.sh negative-ca  # essai CA negatif (profil Compose `negative`) : un minion sans la CA est refuse (#197)
 #   chain-test.sh admission-503  # refus 503 memory_budget_exhausted en reel (#241) : plafond abaisse, voir admission-503.sh
 #   chain-test.sh paths        # chemins prives resolus (sans docker) ; echec si la racine PRIVATE/ manque
@@ -36,6 +42,7 @@
 #   ANSIBLE_BIN (defaut `ansible`, version EXACTE de ansible-core epinglee dans .github/ci/requirements-ansible.txt,
 #   sinon smoke/failover/admission-503 refusent : #249), PROJECT (defaut secagent-chain), TOKEN_TTL (defaut 2h).
 #   LINK_TTL (defaut = TOKEN_TTL) : duree du jeton de lien relay-child de l'enfant.
+#   LOT-3.2 : CHAIN_LEVEL3 (0|1, 3e niveau dmz2, Docker), UPSTREAM_CYCLES / UPSTREAM_QUEUE_SIZE / UPSTREAM_PAUSE_MAX_S, RELAY_DOWN_REASON.
 # Les jetons sont ecrits UNIQUEMENT dans $CHAIN_DIR (0700, fichiers 0600, hors du depot) : jamais affiches.
 # Le poste de controle Ansible (plugin SECAGENT-PYTHON + secagent-inventory) est ici le poste qui lance ce script,
 # il joint la racine par les ports d'hote 7770 (a) et 8770 (b) avec la CA de test.
@@ -63,7 +70,19 @@ fi
 ENDPOINT_HOST="${CONTROL_HOST:-${SECAGENT_ENDPOINT_HOST:-127.0.0.1}}"   # CONTROL_HOST = alias
 export QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$PRIVATE_DIR/QUALIF/pki}"
 export SECAGENT_LINK_VOLUME="${SECAGENT_LINK_VOLUME:-${PROJECT}_link}"   # volume de l'ancre (cle publique racine)
-C_A="secagent-qualif-a"; C_B="secagent-qualif-b"; C_CHILD="secagent-qualif-child"
+export SECAGENT_LINK_GRAND_VOLUME="${SECAGENT_LINK_GRAND_VOLUME:-${PROJECT}_link_grand}"   # lien du 3e niveau (dmz2)
+C_A="secagent-qualif-a"; C_B="secagent-qualif-b"; C_CHILD="secagent-qualif-child"; C_GRAND="secagent-qualif-grandchild"
+# 3e niveau (LOT-3.2 : dmz2 enfant pull de dmz1 + minion-grand, profil Compose `level3`) : CHAIN_LEVEL3=1, Docker seulement
+# (sous Podman : T47). Defaut 0 : la CI et les qualifs a deux niveaux sont inchangees.
+CHAIN_LEVEL3="${CHAIN_LEVEL3:-0}"
+case "$CHAIN_LEVEL3" in 0|1) ;; *) echo "REFUS: CHAIN_LEVEL3='$CHAIN_LEVEL3' : 0 ou 1 attendu" >&2; exit 2 ;; esac
+if [ "$CHAIN_LEVEL3" = 1 ]; then
+  [ "${CONTAINER_CLI:-docker}" = docker ] || { echo "REFUS: CHAIN_LEVEL3=1 : 3e niveau sous Docker seulement (Podman : T47)" >&2; exit 2; }
+  export COMPOSE_PROFILES="level3"
+fi
+level3() { [ "$CHAIN_LEVEL3" = 1 ]; }
+need_level3() { level3 || refuse "$1 : 3e niveau requis (CHAIN_LEVEL3=1 depuis le bootstrap)"; }
+docker_only() { [ "$CONTAINER_CLI" = docker ] || refuse "$1 : sous Docker seulement (adresses de la chaine Podman repartie : T47)"; }
 export C_A C_B
 TOKEN_TTL="${TOKEN_TTL:-2h}"
 LINK_TTL="${LINK_TTL:-$TOKEN_TTL}"
@@ -201,7 +220,7 @@ push_hooks() {
 
 # Volumes du journal des hooks, un PAR INSTANCE (docker-compose.hooks.yml) : crees s'ils manquent et rendus a l'uid 10001
 # (0700) par un conteneur ephemere, comme push-hooks ; un journal existant est CONSERVE (preuves), seul `down` le retire.
-EVENTS_SUFFIXES="a b child"
+EVENTS_SUFFIXES="a b child grandchild"   # grandchild : profil level3 (volume cree dans tous les cas, vide sinon)
 push_events() {
   local CTR_NODE sfx; for CTR_NODE in $(nodes); do   # Podman : les trois volumes sur chaque noeud (seuls ceux du noeud servent)
     for sfx in $EVENTS_SUFFIXES; do
@@ -210,7 +229,7 @@ push_events() {
         alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
         sh -c 'set -e; chown 10001:10001 /events; chmod 0700 /events; [ ! -e /events/events.log ] || chown 10001:10001 /events/events.log'
     done
-    echo "volumes du journal des hooks prets : $SECAGENT_EVENTS_VOLUME-{a,b,child}${CTR_NODE:+ (noeud $CTR_NODE)}"
+    echo "volumes du journal des hooks prets : $SECAGENT_EVENTS_VOLUME-{a,b,child,grandchild}${CTR_NODE:+ (noeud $CTR_NODE)}"
   done
 }
 events_volumes() { local sfx; for sfx in $EVENTS_SUFFIXES; do printf '%s ' "$SECAGENT_EVENTS_VOLUME-$sfx"; done; }
@@ -309,9 +328,20 @@ bootstrap() {
     | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton minion-root non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-root.env; }
   adm "$C_CHILD" tokens create --role enrollment --hostname-pattern '^minion-child$' --expires "$TOKEN_TTL" 2>&1 \
     | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton minion-child non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-child.env; }
+  if level3; then
+    echo "== 3e niveau : dmz2 (enfant pull de dmz1) declare sur dmz1, jeton de lien mine sur la racine (--aud dmz1)"
+    adm "$C_CHILD" relays add --id dmz2 --description "chain grandchild" >/dev/null || fail "relays add dmz2 (sur dmz1) refuse"
+    link_mint_grand "$m" dmz1
+    dc run --rm --no-deps secagent-grandchild state init
+    dc up -d secagent-grandchild
+    wait_for "petit-enfant dmz2 healthy" 120 all_health healthy "$C_GRAND" >/dev/null
+    adm "$C_GRAND" tokens create --role enrollment --hostname-pattern '^minion-grand$' --expires "$TOKEN_TTL" 2>&1 \
+      | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton minion-grand non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-grand.env; }
+  fi
   plugin_token
   echo "== minions"
   dc up -d minion-root minion-child
+  if level3; then dc up -d minion-grand; fi
   echo "bootstrap OK (jetons dans $CHAIN_DIR, non affiches)"
 }
 
@@ -333,7 +363,8 @@ wait_inventory() {
   local t0 inv; t0=$(now)
   while :; do
     inv="$(RELAY_TOKEN="$(cat "$RELAY_TOKEN_FILE")" "$INVENTORY_BIN" --list 2>/dev/null || true)"
-    if printf '%s' "$inv" | grep -q minion-root && printf '%s' "$inv" | grep -q minion-child; then return 0; fi
+    if printf '%s' "$inv" | grep -q minion-root && printf '%s' "$inv" | grep -q minion-child \
+       && { ! level3 || printf '%s' "$inv" | grep -q minion-grand; }; then return 0; fi
     awk -v a="$t0" -v b="$(now)" 'BEGIN{exit !(b-a>120)}' && fail "minion-root et minion-child absents de l'inventaire de la racine apres 120 s"
     sleep 3
   done
@@ -367,6 +398,7 @@ smoke() {
   connected "$m" relays dmz1 4
   connected "$m" minions minion-root 2
   connected "$C_CHILD" minions minion-child 2
+  if level3; then connected "$C_CHILD" relays dmz2 4; connected "$C_GRAND" minions minion-grand 2; fi
   echo "== inventaire hierarchique (liste d'adresses de la racine)"
   control_env
   need INVENTORY_BIN
@@ -377,7 +409,8 @@ smoke() {
   chmod 700 "$inv_script"
   ANSIBLE_CONNECTION_PLUGINS="$REPO/SECAGENT-PYTHON/ansible_plugins/connection_plugins" ANSIBLE_HOST_KEY_CHECKING=False \
     "${ANSIBLE_BIN:-ansible}" all -i "$inv_script" -m ping | tee "$CHAIN_DIR/ping.log"
-  [ "$(grep -c SUCCESS "$CHAIN_DIR/ping.log")" -ge 2 ] || fail "ansible -m ping : moins de 2 hotes SUCCESS"
+  local want=2; level3 && want=3
+  [ "$(grep -c SUCCESS "$CHAIN_DIR/ping.log")" -ge "$want" ] || fail "ansible -m ping : moins de $want hotes SUCCESS"
   echo "smoke OK"
 }
 
@@ -454,18 +487,19 @@ backup_restore() {
 # (chain/root-link.pub, NON secrete, 0644) et, s'il existe, le jeton de lien (chain/upstream-token, SECRET, 0400,
 # proprietaire 10001 = uid du conteneur), par un conteneur ephemere (flux tar sur stdin, image alpine epinglee) : aucun
 # bind mount, aucun droit requis sur l'hote. Le jeton local est supprime apres la copie (il vit alors dans le volume).
-push_link_key() {
+push_link_key() { # $1 volume (defaut $SECAGENT_LINK_VOLUME, lien de dmz1 ; $SECAGENT_LINK_GRAND_VOLUME pour dmz2)
+  local vol="${1:-$SECAGENT_LINK_VOLUME}"
   [ -f "$CHAIN_DIR/root-link.pub" ] || fail "$CHAIN_DIR/root-link.pub absent (lancer bootstrap)"
   local files="root-link.pub" CTR_NODE=B   # Podman : volume de l'enfant, noeud B
   [ -f "$CHAIN_DIR/upstream-token" ] && files="root-link.pub upstream-token"
-  ctr volume create "$SECAGENT_LINK_VOLUME" >/dev/null
+  ctr volume create "$vol" >/dev/null
   # shellcheck disable=SC2086
-  tar -C "$CHAIN_DIR" -cf - $files | ctr run --rm -i "${RUN_USERNS[@]}" -v "$SECAGENT_LINK_VOLUME:/link" \
+  tar -C "$CHAIN_DIR" -cf - $files | ctr run --rm -i "${RUN_USERNS[@]}" -v "$vol:/link" \
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'set -e; tar -xf - -C /link; chmod 755 /link; chown 0:0 /link/root-link.pub; chmod 644 /link/root-link.pub
            if [ -f /link/upstream-token ]; then chown 10001:10001 /link/upstream-token; chmod 0400 /link/upstream-token; fi'
   rm -f "$CHAIN_DIR/upstream-token"
-  echo "ancre (et jeton de lien) deposes dans le volume $SECAGENT_LINK_VOLUME"
+  echo "ancre (et jeton de lien) deposes dans le volume $vol"
 }
 
 # $1 conteneur maitre : exporte la cle publique racine, releve root_id, ecrit chain/root-link.pub, chain/root-id et
@@ -485,18 +519,26 @@ link_anchor_prepare() {
 # $1 conteneur maitre : mint (sur la racine) du jeton relay-child de dmz1 -> chain/upstream-token puis DEPOT dans le
 # volume (push_link_key : 0400, proprietaire 10001, fichier local supprime) et chain/upstream-token.id (identifiant du
 # registre, non secret, pour `tokens revoke`). Jamais affiche.
-link_mint_child() {
-  local m="$1" out t id rid
+link_mint_child() { # $1 maitre ; $2 sub (defaut dmz1) ; $3 aud (defaut racine) ; $4 volume ; $5 fichier d'id (non secret)
+  local m="$1" sub="${2:-dmz1}" aud="${3:-}" vol="${4:-$SECAGENT_LINK_VOLUME}" idf="${5:-upstream-token.id}" out t id rid
   rid="$(cat "$CHAIN_DIR/root-id")" || fail "chain/root-id absent (link_anchor_prepare)"
-  out="$(adm "$m" tokens create --role relay-child --sub dmz1 --aud "$rid" --expires "$LINK_TTL" 2>&1)" \
-    || fail "mint du jeton de lien dmz1 -> $rid refuse (tokens create --role relay-child)"
+  [ -n "$aud" ] || aud="$rid"
+  # Mint TOUJOURS sur la racine (seule a signer les liens : 409 not_root ailleurs), quel que soit le parent (aud).
+  out="$(adm "$m" tokens create --role relay-child --sub "$sub" --aud "$aud" --expires "$LINK_TTL" 2>&1)" \
+    || fail "mint du jeton de lien $sub -> $aud refuse (tokens create --role relay-child)"
   t="$(printf '%s\n' "$out" | extract 'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+')"
   id="$(printf '%s\n' "$out" | sed -n 's/^ *ID: *//p' | head -1)"
   [ -n "$t" ] || fail "jeton de lien non extrait"
   [ -n "$id" ] || fail "identifiant du jeton de lien non extrait"
   printf '%s' "$t" | write_secret upstream-token
-  printf '%s' "$id" | write_secret upstream-token.id
-  push_link_key
+  printf '%s' "$id" | write_secret "$idf"
+  push_link_key "$vol"
+}
+# Lien du 3e niveau : dmz2 vers $2 (dmz1 par defaut ; la racine pour relay-rerouted), volume $SECAGENT_LINK_GRAND_VOLUME.
+link_mint_grand() { link_mint_child "$1" dmz2 "${2:-dmz1}" "$SECAGENT_LINK_GRAND_VOLUME" upstream-token-grand.id; }
+recreate_grand() {
+  dc up -d --force-recreate --no-deps secagent-grandchild
+  wait_for "petit-enfant dmz2 healthy" 120 all_health healthy "$C_GRAND" >/dev/null
 }
 
 relay_connected() { # $1 conteneur CLI, $2 relay_id
@@ -572,23 +614,44 @@ link_revoke() {
 
 # --- Hooks en reel (#197 item 1) -----------------------------------------------------------------------------------
 # hooks.json (DEPLOYMENT/qualif/hooks.json, livre par le volume `${PROJECT}_hooks`, push-hooks) ecrit une ligne par
-# evenement (host.up, host.reconnect, host.down, relay.failover, relay.up, relay.reconnect, relay.down ; un hook distinct
-# par evenement : seul le premier hook correspondant s'execute, c9ae9e7/#271) dans /var/log/secagent-events/events.log,
-# volume externe PAR INSTANCE (push-events) : le journal survit a l'arret du conteneur (preuves de l'ancien maitre).
+# evenement (10 hooks, un par evenement : seul le premier hook correspondant s'execute, c9ae9e7/#271) dans
+# /var/log/secagent-events/events.log, volume externe PAR INSTANCE (push-events) : le journal survit a l'arret du conteneur.
 # Seul le MAITRE de la racine execute ses hooks. Depuis #265 (v3.0.6) : 1re connexion d'un processus (conn_seq 1) =
 # host.up / relay.up ; reconnexion du meme processus (conn_seq > 1, ex. apres une bascule) = host.reconnect /
-# relay.reconnect, jamais les deux. Fonctions events_log, hook_seen, hook_count, hook_more : failover-test.sh (source).
+# relay.reconnect, jamais les deux. LOT-3.2 : host.rerouted (REROUTED <hote> <cause>), relay.rerouted (RELAY_REROUTED),
+# relay.converged (CONVERGED <self> relays_connected= relays_missing= ...). Fonctions events_log, hook_seen, hook_count,
+# hook_more, kind_count, hook_last_kv, hook_last : failover-test.sh (source).
 # Les journaux persistent jusqu'a `down` : les controles APRES une action comptent les lignes (une de plus), jamais la
 # simple presence.
 EVENTS_LOG_HINT="docker exec <conteneur> cat /var/log/secagent-events/events.log"
 
+# Compteurs de la file amont de $1 (`server status`) : "<depth> <capacity> <dropped>" (vides si absents).
+upstream_counters() {
+  adm "$1" server status 2>/dev/null | awk '$1=="upstream_queue_depth" {d=$2; c=$4} $1=="upstream_dropped_events" {x=$2} END{print d, c, x}'
+}
+# $1 conteneur, $2 cle, $3 valeur attendue : la DERNIERE ligne CONVERGED de la racine porte cle=valeur.
+converged_is() { [ "$(hook_last_kv "$1" "$ROOT_RELAY_ID" CONVERGED "$2")" = "$3" ]; }
+# Ordre dans le journal : la derniere ligne $2 (genre) precede la derniere ligne $3 (genre), sujet = la racine.
+in_order() { events_log "$1" | awk -v a="$2" -v b="$3" -v h="$ROOT_RELAY_ID" '$2==a && $3==h {ia=NR} $2==b && $3==h {ib=NR} END{exit !(ia && ib && ia<ib)}'; }
+
 check_hooks() {
-  local m; m="$(master)" || fail "pas de maitre sur la racine"
-  echo "== hooks : maitre $m (relay.failover, relay.up dmz1, host.up minion-root), enfant $C_CHILD (host.up minion-child)"
+  local m n; m="$(master)" || fail "pas de maitre sur la racine"
+  echo "== hooks : maitre $m (relay.failover, relay.converged, relay.up dmz1, host.up minion-root), enfant $C_CHILD (host.up minion-child)"
   wait_for "relay.failover (start) du maitre $m" 60 hook_seen "$m" "$ROOT_RELAY_ID" FAILOVER start >/dev/null
+  # relay.converged (#246) : au 1er demarrage la racine n'attend encore aucun enfant (dmz1 est declare APRES) : emission
+  # immediate, relays_missing=0 ; UN seul (jamais reemis).
+  wait_for "relay.converged du maitre $m" 60 hook_seen "$m" "$ROOT_RELAY_ID" CONVERGED >/dev/null
+  n="$(hook_count "$m" "$ROOT_RELAY_ID" CONVERGED)"; [ "$n" = 1 ] || fail "relay.converged : $n lignes au maitre $m (une seule attendue)"
+  converged_is "$m" relays_missing 0 || fail "relay.converged du demarrage : relays_missing != 0 ($(hook_last "$m" "$ROOT_RELAY_ID" CONVERGED))"
+  in_order "$m" FAILOVER CONVERGED || fail "relay.converged journalise avant relay.failover au maitre $m"
+  echo "relay.converged : $(hook_last "$m" "$ROOT_RELAY_ID" CONVERGED)"
   wait_for "relay.up dmz1 dans le journal du maitre $m" 90 hook_seen "$m" dmz1 RELAY_UP >/dev/null
   wait_for "host.up minion-root dans le journal du maitre $m" 60 hook_seen "$m" minion-root UP >/dev/null
   wait_for "host.up minion-child dans le journal de l'enfant" 60 hook_seen "$C_CHILD" minion-child UP >/dev/null
+  if level3; then
+    wait_for "relay.up dmz2 dans le journal de l'enfant dmz1" 90 hook_seen "$C_CHILD" dmz2 RELAY_UP >/dev/null
+    wait_for "host.up minion-grand dans le journal de dmz2" 60 hook_seen "$C_GRAND" minion-grand UP >/dev/null
+  fi
   echo "hooks OK (journaux : $EVENTS_LOG_HINT)"
 }
 
@@ -596,51 +659,273 @@ check_hooks() {
 declare -A HOOKS_BEFORE=()
 hooks_snapshot() {
   local c e; for c in "$C_A" "$C_B"; do
-    for e in "minion-root RECONNECT" "minion-root UP" "dmz1 RELAY_RECONNECT" "dmz1 RELAY_UP"; do
+    for e in "minion-root RECONNECT" "minion-root UP" "minion-root DOWN" "dmz1 RELAY_RECONNECT" "dmz1 RELAY_UP" \
+             "$ROOT_RELAY_ID CONVERGED" "$ROOT_RELAY_ID FAILOVER"; do
       # shellcheck disable=SC2086   # e = "<sujet> <genre>"
       HOOKS_BEFORE["$c $e"]="$(hook_count "$c" $e)"
     done
+    HOOKS_BEFORE["$c *REROUTED"]="$(kind_count "$c" REROUTED)"
+    HOOKS_BEFORE["$c *RELAY_REROUTED"]="$(kind_count "$c" RELAY_REROUTED)"
   done
+}
+before() { echo "${HOOKS_BEFORE["$1"]:-0}"; }
+
+# Compteurs de la file amont de l'enfant apres une bascule (#246) : aucune perte, capacite par defaut (ou $1).
+check_child_upstream() { # $1 capacite attendue (defaut 10000)
+  local d c x; read -r d c x < <(upstream_counters "$C_CHILD")
+  [ -n "$c" ] || fail "server status de l'enfant : compteurs upstream_* absents (serveur < LOT-3.2 ?)"
+  echo "file amont de l'enfant : profondeur=$d capacite=$c perdus=$x"
+  [ "$c" = "${1:-10000}" ] || fail "upstream_queue_capacity de l'enfant = $c (attendu ${1:-10000})"
+  [ "$x" = 0 ] || fail "upstream_dropped_events de l'enfant = $x (aucune perte attendue)"
 }
 
 # Bascule avec hooks (failover-test.sh run stop|kill) : le NOUVEAU maitre doit journaliser relay.failover (cause start
 # apres un arret propre, takeover apres un kill ; controle fait aussi par failover-test.sh), puis une NOUVELLE ligne
 # host.reconnect de minion-root et relay.reconnect de dmz1 (memes processus qui se reconnectent : conn_seq > 1, #265,
-# #245 ; ni host.up ni relay.up). minion-child : informatif (il reste connecte a l'enfant, qui ne redemarre pas).
-check_hooks_after_failover() { # $1 cause attendue de relay.failover (start | takeover)
-  local m cause="${1:-start}"; m="$(master)" || fail "pas de maitre apres la bascule"
+# #245 ; ni host.up ni relay.up), puis UN SEUL relay.converged (#246 : relays_connected=1, relays_missing=0, ou au delai
+# relays_connected=0 relays_missing=1 si $2=missing), et AUCUN host.rerouted / relay.rerouted (#244 : routes volatiles).
+# minion-child : informatif (il reste connecte a l'enfant, qui ne redemarre pas).
+check_hooks_after_failover() { # $1 cause attendue (start | takeover) ; $2 connected (defaut) | missing
+  local m cause="${1:-start}" conv="${2:-connected}" n; m="$(master)" || fail "pas de maitre apres la bascule"
   echo "== hooks apres bascule : nouveau maitre $m"
   hook_seen "$m" "$ROOT_RELAY_ID" FAILOVER "$cause" || fail "relay.failover ($cause) absent du journal de $m"
-  wait_for "host.reconnect minion-root journalise par le nouveau maitre $m" 150 hook_more "$m" minion-root RECONNECT "${HOOKS_BEFORE["$m minion-root RECONNECT"]:-0}" >/dev/null
-  wait_for "relay.reconnect dmz1 journalise par le nouveau maitre $m" 150 hook_more "$m" dmz1 RELAY_RECONNECT "${HOOKS_BEFORE["$m dmz1 RELAY_RECONNECT"]:-0}" >/dev/null
-  if hook_more "$m" minion-root UP "${HOOKS_BEFORE["$m minion-root UP"]:-0}"; then echo "info : host.up minion-root AUSSI journalise par $m (attendu : host.reconnect seul, #265 ; minion < v3.0.6 ?)"; fi
-  if hook_more "$m" dmz1 RELAY_UP "${HOOKS_BEFORE["$m dmz1 RELAY_UP"]:-0}"; then fail "relay.up dmz1 journalise par $m apres la bascule (attendu : relay.reconnect seul, #245)"; fi
+  wait_for "host.reconnect minion-root journalise par le nouveau maitre $m" 150 hook_more "$m" minion-root RECONNECT "$(before "$m minion-root RECONNECT")" >/dev/null
+  if [ "$conv" = connected ]; then
+    wait_for "relay.reconnect dmz1 journalise par le nouveau maitre $m" 150 hook_more "$m" dmz1 RELAY_RECONNECT "$(before "$m dmz1 RELAY_RECONNECT")" >/dev/null
+  fi
+  wait_for "relay.converged journalise par le nouveau maitre $m" 60 hook_more "$m" "$ROOT_RELAY_ID" CONVERGED "$(before "$m $ROOT_RELAY_ID CONVERGED")" >/dev/null
+  sleep 5   # un second relay.converged serait un defaut (jamais reemis)
+  n=$(( $(hook_count "$m" "$ROOT_RELAY_ID" CONVERGED) - $(before "$m $ROOT_RELAY_ID CONVERGED") ))
+  [ "$n" = 1 ] || fail "relay.converged : $n nouvelle(s) ligne(s) au nouveau maitre $m (une seule attendue)"
+  echo "relay.converged : $(hook_last "$m" "$ROOT_RELAY_ID" CONVERGED)"
+  if [ "$conv" = connected ]; then
+    converged_is "$m" relays_connected 1 && converged_is "$m" relays_missing 0 \
+      || fail "relay.converged : relays_connected=1 relays_missing=0 attendus"
+  else
+    converged_is "$m" relays_connected 0 && converged_is "$m" relays_missing 1 \
+      || fail "relay.converged au delai : relays_connected=0 relays_missing=1 attendus"
+  fi
+  in_order "$m" FAILOVER CONVERGED || fail "relay.converged journalise avant relay.failover au maitre $m"
+  kind_more "$m" REROUTED "$(before "$m *REROUTED")" && fail "host.rerouted journalise par $m apres la bascule (aucun attendu, #244)"
+  kind_more "$m" RELAY_REROUTED "$(before "$m *RELAY_REROUTED")" && fail "relay.rerouted journalise par $m apres la bascule (aucun attendu, #244)"
+  if hook_more "$m" minion-root UP "$(before "$m minion-root UP")"; then echo "info : host.up minion-root AUSSI journalise par $m (attendu : host.reconnect seul, #265 ; minion < v3.0.6 ?)"; fi
+  if hook_more "$m" dmz1 RELAY_UP "$(before "$m dmz1 RELAY_UP")" && [ "$conv" = connected ]; then fail "relay.up dmz1 journalise par $m apres la bascule (attendu : relay.reconnect seul, #245)"; fi
   local k; for k in RECONNECT UP; do
     if hook_seen "$m" minion-child "$k"; then echo "info : $k minion-child aussi journalise par $m"; fi
   done
-  hook_seen "$m" minion-child RECONNECT || hook_seen "$m" minion-child UP || echo "info : aucun evenement minion-child dans le journal de $m (a analyser a l'execution)"
+  [ "$conv" = connected ] && check_child_upstream
   echo "hooks apres bascule OK"
 }
 
-# Scenario relay-down (#245) : l'enfant s'arrete (conteneur stoppe, PAS le maitre) -> le maitre journalise relay.down
-# de dmz1 (raison = fermeture par le pair ou erreur de lecture) ; puis l'enfant redemarre (nouveau processus,
-# conn_seq 1) -> relay.up dmz1, smoke. Idempotent : compte les lignes avant l'action, ne depend d'aucun etat anterieur.
+# Scenario relay-down (#245, T22) : l'enfant s'arrete (conteneur stoppe, PAS le maitre) -> le maitre journalise
+# relay.down de dmz1 avec la raison `peer_closed:1001` (fermeture ordonnee « going away » de l'enfant, T22 : avant T22
+# `peer_closed:1006`) ; puis l'enfant redemarre (nouveau processus, conn_seq 1) -> relay.up dmz1, smoke. Idempotent :
+# compte les lignes avant l'action, ne depend d'aucun etat anterieur.
 relay_down() {
   verify_images; need INVENTORY_BIN
-  local m down0 up0; m="$(master)" || fail "pas de maitre sur la racine"
+  local m down0 up0 why; m="$(master)" || fail "pas de maitre sur la racine"
   connected "$m" relays dmz1 4
   down0="$(hook_count "$m" dmz1 RELAY_DOWN)"; up0="$(hook_count "$m" dmz1 RELAY_UP)"
-  echo "== arret de l'enfant ($C_CHILD) : relay.down dmz1 attendu au maitre $m"
+  echo "== arret de l'enfant ($C_CHILD) : relay.down dmz1 (peer_closed:1001) attendu au maitre $m"
   dc stop secagent-child >/dev/null
   wait_for "relay.down dmz1 journalise par le maitre $m" 60 hook_more "$m" dmz1 RELAY_DOWN "$down0" >/dev/null
-  echo "relay.down : $(events_log "$m" | awk '$2=="RELAY_DOWN" && $3=="dmz1" {l=$0} END{print l}')"
+  echo "relay.down : $(hook_last "$m" dmz1 RELAY_DOWN)"
+  why="$(events_log "$m" | awk '$2=="RELAY_DOWN" && $3=="dmz1" {r=$4} END{print r}')"
+  [ "$why" = "${RELAY_DOWN_REASON:-peer_closed:1001}" ] || fail "relay.down dmz1 : raison '$why' (attendu ${RELAY_DOWN_REASON:-peer_closed:1001}, T22)"
   echo "== redemarrage de l'enfant : relay.up dmz1 (nouveau processus, conn_seq 1)"
   dc start secagent-child >/dev/null
   wait_for "enfant healthy" 120 all_health healthy "$C_CHILD" >/dev/null
   connected "$m" relays dmz1 4
   wait_for "relay.up dmz1 journalise par le maitre $m" 90 hook_more "$m" dmz1 RELAY_UP "$up0" >/dev/null
   smoke
-  echo "relay-down OK (relay.down puis relay.up de dmz1 au maitre $m)"
+  echo "relay-down OK (relay.down peer_closed:1001 puis relay.up de dmz1 au maitre $m)"
+}
+
+# Scenario converged-timeout (#246) : l'enfant est ARRETE, puis bascule a->b (arret propre) : le nouveau maitre attend dmz1
+# (declare) qui ne vient pas -> UN relay.converged au delai RELAY_CONVERGENCE_TIMEOUT (qualif 30 s) avec
+# relays_connected=0 relays_missing=1 ; l'enfant redemarre -> relay.up dmz1 (nouveau processus), PAS de second converged.
+converged_timeout() {
+  require_ansible_version; verify_images; need INVENTORY_BIN; control_env
+  local m up0 cv; m="$(master)" || fail "pas de maitre sur la racine"
+  connected "$m" relays dmz1 4
+  echo "== arret de l'enfant, puis bascule de la racine (dmz1 attendu mais absent)"
+  dc stop secagent-child >/dev/null
+  hooks_snapshot
+  bash "$HERE/failover-test.sh" run stop   # attend relay.failover puis relay.converged (<= 45 s) sur le nouveau maitre
+  check_hooks_after_failover start missing
+  m="$(master)" || fail "pas de maitre apres la bascule"
+  up0="$(hook_count "$m" dmz1 RELAY_UP)"; cv="$(hook_count "$m" "$ROOT_RELAY_ID" CONVERGED)"
+  echo "== redemarrage de l'enfant : relay.up dmz1, aucun nouveau relay.converged"
+  dc start secagent-child >/dev/null
+  wait_for "enfant healthy" 120 all_health healthy "$C_CHILD" >/dev/null
+  connected "$m" relays dmz1 4
+  wait_for "relay.up dmz1 journalise par le maitre $m" 90 hook_more "$m" dmz1 RELAY_UP "$up0" >/dev/null
+  sleep 10
+  [ "$(hook_count "$m" "$ROOT_RELAY_ID" CONVERGED)" = "$cv" ] || fail "second relay.converged apres le retour de dmz1 (jamais reemis, #246)"
+  smoke
+  echo "converged-timeout OK"
+}
+
+# Scenario rerouted (#244, cause direct puis indirect) : minion-child (enrole derriere dmz1) est re-pointe vers la racine
+# (MINION_CHILD_*_URL) : le maitre journalise `REROUTED minion-child direct` (route relais -> connexion locale) ; puis retour
+# derriere dmz1 : `REROUTED minion-child indirect`. L'enfant ne journalise aucun REROUTED. Docker seulement.
+rerouted() {
+  docker_only rerouted; verify_images; need INVENTORY_BIN
+  local m d0 c0; m="$(master)" || fail "pas de maitre sur la racine"
+  connected "$C_CHILD" minions minion-child 2
+  d0="$(hook_count "$m" minion-child REROUTED)"; c0="$(kind_count "$C_CHILD" REROUTED)"
+  echo "== minion-child re-pointe vers la racine : host.rerouted direct attendu au maitre $m"
+  MINION_CHILD_SERVER_URL="https://secagent-server-a:7770,https://secagent-server-b:7770" \
+  MINION_CHILD_WS_URL="wss://secagent-server-a:7772/ws/agent,wss://secagent-server-b:7772/ws/agent" \
+    dc up -d --force-recreate --no-deps minion-child
+  connected "$m" minions minion-child 2
+  wait_for "host.rerouted minion-child (direct) au maitre $m" 90 hook_more "$m" minion-child REROUTED "$d0" >/dev/null
+  echo "rerouted : $(hook_last "$m" minion-child REROUTED)"
+  [ "$(events_log "$m" | awk '$2=="REROUTED" && $3=="minion-child" {c=$4} END{print c}')" = direct ] || fail "host.rerouted minion-child : cause direct attendue"
+  d0="$(hook_count "$m" minion-child REROUTED)"
+  echo "== retour derriere dmz1 : host.rerouted indirect attendu au maitre $m"
+  dc up -d --force-recreate --no-deps minion-child
+  connected "$C_CHILD" minions minion-child 2
+  wait_for "host.rerouted minion-child (indirect) au maitre $m" 90 hook_more "$m" minion-child REROUTED "$d0" >/dev/null
+  echo "rerouted : $(hook_last "$m" minion-child REROUTED)"
+  [ "$(events_log "$m" | awk '$2=="REROUTED" && $3=="minion-child" {c=$4} END{print c}')" = indirect ] || fail "host.rerouted minion-child : cause indirect attendue"
+  [ "$(kind_count "$C_CHILD" REROUTED)" = "$c0" ] || fail "l'enfant dmz1 a journalise un host.rerouted (aucun attendu : il n'est pas l'ancetre commun)"
+  smoke
+  echo "rerouted OK"
+}
+
+# Scenario upstream-queue (#246) : le lien amont de l'enfant est GELE (`pause` du maitre de la racine), minion-child fait
+# UPSTREAM_CYCLES (defaut 20) (de)connexions, puis `unpause` : le maitre journalise toutes les UP/DOWN rejouees, aucune
+# perte (file 10 000). Variante UPSTREAM_QUEUE_SIZE=256 : l'enfant est recree avec une file de 256 ; une perte n'est
+# OBSERVABLE que si 2 x UPSTREAM_CYCLES > 256 (sinon : constat seulement, la preuve reste le test d'integration (6)).
+# Gel borne a UPSTREAM_PAUSE_MAX_S (defaut 150 s, < 3 min de SelfRetire du verrou : pas de bascule pendant le gel).
+upstream_queue() {
+  verify_images; need INVENTORY_BIN
+  local m cycles="${UPSTREAM_CYCLES:-20}" qs="${UPSTREAM_QUEUE_SIZE:-}" pmax="${UPSTREAM_PAUSE_MAX_S:-150}" i ndone=0 t0 d c x x0 dmax=0 up0 dn0 e0
+  [[ $cycles =~ ^[1-9][0-9]{0,3}$ ]] || refuse "UPSTREAM_CYCLES='$cycles' invalide"
+  m="$(master)" || fail "pas de maitre sur la racine"
+  if [ -n "$qs" ]; then
+    [[ $qs =~ ^[0-9]{3,6}$ ]] || refuse "UPSTREAM_QUEUE_SIZE='$qs' invalide"
+    echo "== variante : file amont de l'enfant a $qs"
+    CHILD_UPSTREAM_QUEUE_SIZE="$qs" recreate_child
+  fi
+  connected "$m" relays dmz1 4; connected "$C_CHILD" minions minion-child 2
+  read -r d c x0 < <(upstream_counters "$C_CHILD"); [ -n "$c" ] || fail "compteurs upstream_* absents de l'enfant"
+  echo "file amont avant : profondeur=$d capacite=$c perdus=$x0"
+  up0="$(hook_count "$m" minion-child UP)"; dn0="$(hook_count "$m" minion-child DOWN)"
+  e0="$(adm "$C_CHILD" hooks log --event '*' --limit 200 --format json 2>/dev/null | grep -Eo '"action_type": *"upstream_dropped"' | wc -l)"
+  echo "== gel du lien amont (pause de $m), $cycles (de)connexions de minion-child"
+  ctr pause "$m" >/dev/null; t0=$(now)
+  for i in $(seq 1 "$cycles"); do
+    dc stop minion-child >/dev/null; dc start minion-child >/dev/null
+    connected "$C_CHILD" minions minion-child 2
+    ndone=$i
+    read -r d _ _ < <(upstream_counters "$C_CHILD"); [ "${d:-0}" -gt "$dmax" ] && dmax="${d:-0}"
+    awk -v a="$t0" -v b="$(now)" -v m="$pmax" 'BEGIN{exit !(b-a>m)}' && { echo "info : gel borne a ${pmax}s, arret apres $i cycle(s)"; break; }
+  done
+  ctr unpause "$m" >/dev/null
+  echo "file amont pendant le gel : profondeur max observee $dmax (cycles faits : $ndone)"
+  read -r d c x < <(upstream_counters "$C_CHILD")
+  if [ -z "$qs" ] || [ $((2 * ndone)) -le "$qs" ]; then
+    wait_for "UP minion-child rejoues au maitre $m" 180 hook_more "$m" minion-child UP $((up0 + ndone - 1)) >/dev/null
+    wait_for "DOWN minion-child rejoues au maitre $m" 180 hook_more "$m" minion-child DOWN $((dn0 + ndone - 1)) >/dev/null
+    for i in $(seq 1 60); do [ "$(upstream_counters "$C_CHILD" | awk '{print $1}')" = 0 ] && break; sleep 2; done
+    read -r d c x < <(upstream_counters "$C_CHILD")
+    [ "$x" = "$x0" ] || fail "upstream_dropped_events de l'enfant : $x0 -> $x (aucune perte attendue)"
+    [ "$dmax" -gt 0 ] || echo "info : profondeur max 0 (evenements absorbes par le tampon de la socket gelee ?) : non bloquant"
+    echo "file amont apres : profondeur=$d capacite=$c perdus=$x ; maitre : +$(( $(hook_count "$m" minion-child UP) - up0 )) UP, +$(( $(hook_count "$m" minion-child DOWN) - dn0 )) DOWN"
+  else
+    sleep 30
+    read -r d c x < <(upstream_counters "$C_CHILD")
+    [ "$x" -gt "$x0" ] || fail "file a $qs, $((2 * ndone)) evenements : aucune perte comptee (upstream_dropped_events $x0 -> $x)"
+    local e1; e1="$(adm "$C_CHILD" hooks log --event '*' --limit 200 --format json 2>/dev/null | grep -Eo '"action_type": *"upstream_dropped"' | wc -l)"
+    [ $((e1 - e0)) -ge 1 ] || fail "aucune entree upstream_dropped dans hooks log de l'enfant"
+    echo "pertes comptees : $x0 -> $x ; entrees upstream_dropped : +$((e1 - e0))"
+  fi
+  if [ -n "$qs" ]; then echo "== retour a la file par defaut"; recreate_child; connected "$m" relays dmz1 4; fi
+  smoke
+  echo "upstream-queue OK"
+}
+
+# Scenario relay-rerouted (#244, 3e niveau) : dmz2 (derriere dmz1) est re-pointe directement vers la racine (declaration
+# sur la racine + jeton --aud <racine>) -> le maitre journalise `RELAY_REROUTED dmz2 old_chain=dmz1,dmz2 new_chain=dmz2`
+# (et aucun host.rerouted de minion-grand) ; puis retour derriere dmz1 (nouveau RELAY_REROUTED), declaration retiree.
+relay_rerouted() {
+  need_level3 relay-rerouted; verify_images; need INVENTORY_BIN
+  local m r0 h0 rid; m="$(master)" || fail "pas de maitre sur la racine"
+  rid="$(cat "$CHAIN_DIR/root-id")" || fail "chain/root-id absent"
+  connected "$C_CHILD" relays dmz2 4
+  r0="$(hook_count "$m" dmz2 RELAY_REROUTED)"; h0="$(hook_count "$m" minion-grand REROUTED)"
+  echo "== dmz2 re-pointe vers la racine : declaration sur la racine, jeton --aud $rid"
+  adm "$m" relays add --id dmz2 --description "grandchild rerouted" >/dev/null 2>&1 || true   # deja declare : sans effet
+  link_mint_grand "$m" "$rid"
+  GRANDCHILD_UPSTREAM_URL="wss://secagent-server-a:7772,wss://secagent-server-b:7772" recreate_grand
+  connected "$m" relays dmz2 4
+  wait_for "relay.rerouted dmz2 au maitre $m" 90 hook_more "$m" dmz2 RELAY_REROUTED "$r0" >/dev/null
+  echo "relay-rerouted : $(hook_last "$m" dmz2 RELAY_REROUTED)"
+  [ "$(hook_last_kv "$m" dmz2 RELAY_REROUTED old_chain)" = "dmz1,dmz2" ] && [ "$(hook_last_kv "$m" dmz2 RELAY_REROUTED new_chain)" = dmz2 ] \
+    || fail "relay.rerouted dmz2 : old_chain=dmz1,dmz2 new_chain=dmz2 attendus"
+  [ "$(hook_count "$m" minion-grand REROUTED)" = "$h0" ] || fail "host.rerouted minion-grand journalise (reparent => relay.rerouted seul, #244)"
+  r0="$(hook_count "$m" dmz2 RELAY_REROUTED)"
+  echo "== retour de dmz2 derriere dmz1 (jeton --aud dmz1)"
+  link_mint_grand "$m" dmz1
+  recreate_grand
+  connected "$C_CHILD" relays dmz2 4
+  wait_for "relay.rerouted dmz2 (retour) au maitre $m" 90 hook_more "$m" dmz2 RELAY_REROUTED "$r0" >/dev/null
+  echo "relay-rerouted : $(hook_last "$m" dmz2 RELAY_REROUTED)"
+  [ "$(hook_count "$m" minion-grand REROUTED)" = "$h0" ] || fail "host.rerouted minion-grand journalise au retour"
+  # dmz2 ne doit plus etre attendu par la racine (sinon les relay.converged suivants compteraient relays_missing=1)
+  adm "$m" relays remove dmz2 --yes >/dev/null || fail "relays remove dmz2 (racine) refuse"
+  smoke
+  echo "relay-rerouted OK"
+}
+
+# Scenario failover-3-levels (#225, 3e niveau) : redemarrage de dmz2 -> son relay.failover (cause start) est propage
+# dmz2 -> dmz1 -> racine et journalise par le MAITRE de la racine ; dmz1 journalise relay.up dmz2 (nouveau processus).
+failover_3_levels() {
+  need_level3 failover-3-levels; verify_images; need INVENTORY_BIN
+  local m f0 u0; m="$(master)" || fail "pas de maitre sur la racine"
+  connected "$C_CHILD" relays dmz2 4
+  f0="$(hook_count "$m" dmz2 FAILOVER)"; u0="$(hook_count "$C_CHILD" dmz2 RELAY_UP)"
+  echo "== redemarrage de dmz2 : relay.failover dmz2 attendu au maitre de la racine $m (via dmz1)"
+  dc restart secagent-grandchild >/dev/null
+  wait_for "petit-enfant dmz2 healthy" 120 all_health healthy "$C_GRAND" >/dev/null
+  wait_for "relay.failover dmz2 journalise par la racine ($m)" 90 hook_more "$m" dmz2 FAILOVER "$f0" >/dev/null
+  echo "failover-3-levels : $(hook_last "$m" dmz2 FAILOVER)"
+  [ "$(events_log "$m" | awk '$2=="FAILOVER" && $3=="dmz2" {c=$4} END{print c}')" = start ] || fail "relay.failover dmz2 : cause start attendue"
+  wait_for "relay.up dmz2 journalise par dmz1" 90 hook_more "$C_CHILD" dmz2 RELAY_UP "$u0" >/dev/null
+  connected "$C_CHILD" relays dmz2 4
+  smoke
+  echo "failover-3-levels OK"
+}
+
+# Scenario lost-during-failover (#247, option A) : kill du maitre, puis minion-root ARRETE pendant la fenetre de reprise
+# (peremption du verrou, 5 min) : le nouveau maitre ne journalise AUCUN host.down de minion-root (agent direct tombe
+# pendant la fenetre : perte documentee, HOOKS_SPEC §9b) ; au redemarrage du minion : host.up (nouveau processus).
+lost_during_failover() {
+  require_ansible_version; verify_images; need INVENTORY_BIN; control_env
+  local m s dn0 up0 t
+  m="$(master)" || fail "pas de maitre sur la racine"
+  if [ "$m" = "$C_A" ]; then s="$C_B"; else s="$C_A"; fi
+  connected "$m" minions minion-root 2
+  dn0="$(hook_count "$s" minion-root DOWN)"; up0="$(hook_count "$s" minion-root UP)"
+  echo "== kill du maitre $m, puis arret de minion-root pendant la fenetre de reprise"
+  ctr kill "$m" >/dev/null
+  dc stop minion-root >/dev/null
+  t=$(wait_for "reprise par $s" "$KILL_MAX_S" is_master "$s")
+  echo "reprise par $s en ${t}s"
+  wait_for "relay.failover (takeover) de $s" 60 hook_seen "$s" "$ROOT_RELAY_ID" FAILOVER takeover >/dev/null
+  wait_for "relay.converged de $s" 60 hook_seen "$s" "$ROOT_RELAY_ID" CONVERGED >/dev/null
+  sleep 15
+  [ "$(hook_count "$s" minion-root DOWN)" = "$dn0" ] || fail "host.down minion-root journalise par $s (aucun attendu : agent tombe pendant la fenetre, #247 option A)"
+  echo "aucun host.down minion-root au nouveau maitre (conforme a #247 option A)"
+  dc start minion-root >/dev/null
+  wait_for "host.up minion-root (nouveau processus) au nouveau maitre $s" 150 hook_more "$s" minion-root UP "$up0" >/dev/null
+  ctr start "$m" >/dev/null
+  wait_for "ancien maitre healthy" 120 all_health healthy "$m" >/dev/null
+  is_silent "$m" || fail "l'ancien maitre ecoute alors qu'il y a un maitre"
+  smoke
+  echo "lost-during-failover OK"
 }
 
 # --- Essai CA negatif (#197 item 2) : service Compose `minion-negca`, profil `negative` -----------------------------
@@ -697,6 +982,12 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     link-revoke) link_revoke ;;
     hooks) check_hooks ;;
     relay-down) relay_down ;;
+    converged-timeout) converged_timeout ;;
+    rerouted) rerouted ;;
+    upstream-queue) upstream_queue ;;
+    relay-rerouted) relay_rerouted ;;
+    failover-3-levels) failover_3_levels ;;
+    lost-during-failover) lost_during_failover ;;
     negative-ca) negative_ca ;;
     admission-503) admission_503 ;;
     down) guard_project
@@ -706,12 +997,13 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
             # shellcheck disable=SC2046   # events_volumes : noms sans espace
             for CTR_NODE in A B; do ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" $(events_volumes) >/dev/null 2>&1 || true; done
           else
+            export COMPOSE_PROFILES=level3   # retire aussi dmz2 et minion-grand, meme sans CHAIN_LEVEL3=1
             dc down -v
             # le volume du jeton de lien est EXTERNE (non supprime par down -v) et contient un secret : retrait explicite
             # shellcheck disable=SC2046   # events_volumes : noms sans espace
-            ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" $(events_volumes) >/dev/null 2>&1 || true
+            ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_LINK_GRAND_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" $(events_volumes) >/dev/null 2>&1 || true
           fi
           chain_dir_clean ;;   # jetons volatils du poste (garde chain_dir_check avant tout rm)
-    *) sed -n '2,40p' "$0"; exit 2 ;;
+    *) sed -n '2,47p' "$0"; exit 2 ;;
   esac
 fi

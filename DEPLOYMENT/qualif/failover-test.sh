@@ -89,7 +89,7 @@ node_ssh() {
 node_of() { # $1 nom de conteneur ou de service -> A|B (vide si inconnu)
   case "$1" in
     "$C_A"|secagent-server-a) echo A ;;
-    "$C_B"|secagent-server-b|"${C_CHILD:-secagent-qualif-child}"|secagent-child|minion-*|*_minion-*|*-minion-*) echo B ;;
+    "$C_B"|secagent-server-b|"${C_CHILD:-secagent-qualif-child}"|secagent-child|secagent-qualif-grandchild|secagent-grandchild|minion-*|*_minion-*|*-minion-*) echo B ;;
   esac
 }
 # Remplace `docker` : docker local/DOCKER_HOST, ou `podman` SUR le noeud du conteneur vise (sinon $CTR_NODE, defaut B).
@@ -101,7 +101,7 @@ ctr() {
   node_ssh "${n:-${CTR_NODE:-B}}" "$in" podman "$@"
 }
 # Variables transmises a podman-compose sur le noeud (Compose interpole cote noeud) : liste FERMEE, valeurs non secretes.
-DC_ENV_VARS="SECAGENT_IMAGE SECAGENT_MINION_IMAGE SECAGENT_PULL_POLICY SECAGENT_MEM_LIMIT LOG_LEVEL GOMEMLIMIT QUALIF_TLS_DIR CHAIN_DIR SECAGENT_HOOKS_VOLUME SECAGENT_EVENTS_VOLUME SECAGENT_LINK_VOLUME SECAGENT_SECRETS_VOLUME SECAGENT_TLS_VOLUME QUALIF_PRIVATE_DIR QUALIF_NODE_A_ADDR"
+DC_ENV_VARS="SECAGENT_IMAGE SECAGENT_MINION_IMAGE SECAGENT_PULL_POLICY SECAGENT_MEM_LIMIT LOG_LEVEL GOMEMLIMIT QUALIF_TLS_DIR CHAIN_DIR SECAGENT_HOOKS_VOLUME SECAGENT_EVENTS_VOLUME SECAGENT_LINK_VOLUME SECAGENT_LINK_GRAND_VOLUME CHILD_UPSTREAM_QUEUE_SIZE MINION_CHILD_SERVER_URL MINION_CHILD_WS_URL GRANDCHILD_UPSTREAM_URL SECAGENT_SECRETS_VOLUME SECAGENT_TLS_VOLUME QUALIF_PRIVATE_DIR QUALIF_NODE_A_ADDR"
 release_dir() { printf '%s' "$PRIVATE_DIR/QUALIF/$(node_name "$1")/cyril/secagent/release"; }
 dc_on() { # $1 A|B, puis les arguments podman-compose
   local n="$1" v env=(); shift
@@ -262,6 +262,13 @@ hook_seen() { events_log "$1" | awk -v h="$2" -v k="$3" -v c="${4:-}" '$2==k && 
 # $1 conteneur, $2 sujet, $3 genre : nombre de lignes (scenarios idempotents : on attend une ligne DE PLUS).
 hook_count() { events_log "$1" | awk -v h="$2" -v k="$3" '$2==k && $3==h {n++} END{print n+0}'; }
 hook_more() { [ "$(hook_count "$1" "$2" "$3")" -gt "$4" ]; }   # $4 compte avant l'action
+# $1 conteneur, $2 genre : nombre de lignes de ce genre, TOUS sujets (ex. aucun REROUTED, quel que soit l'hote).
+kind_count() { events_log "$1" | awk -v k="$2" '$2==k {n++} END{print n+0}'; }
+kind_more() { [ "$(kind_count "$1" "$2")" -gt "$3" ]; }
+# $1 conteneur, $2 sujet, $3 genre, $4 cle : valeur de `cle=` sur la DERNIERE ligne (vide si absente).
+hook_last_kv() { events_log "$1" | awk -v h="$2" -v k="$3" -v key="$4" '$2==k && $3==h {v=""; for (i=4; i<=NF; i++) if (index($i, key "=")==1) v=substr($i, length(key)+2)} END{print v}'; }
+# $1 conteneur, $2 sujet, $3 genre : derniere ligne (affichage).
+hook_last() { events_log "$1" | awk -v h="$2" -v k="$3" '$2==k && $3==h {l=$0} END{print l}'; }
 # Sujet de relay.failover d'une racine : son relay_id local (REPEATER_ID absent = defaut du serveur).
 ROOT_RELAY_ID="${ROOT_RELAY_ID:-secagent-server}"
 
@@ -379,8 +386,8 @@ run() {
   require_run_tls   # avant toute commande docker (#256)
   up_and_identify
   hooks
-  local fo_before=0
-  if hooks_enabled; then fo_before="$(hook_count "$SECOND" "$ROOT_RELAY_ID" FAILOVER)"; fi
+  local fo_before=0 cv_before=0
+  if hooks_enabled; then fo_before="$(hook_count "$SECOND" "$ROOT_RELAY_ID" FAILOVER)"; cv_before="$(hook_count "$SECOND" "$ROOT_RELAY_ID" CONVERGED)"; fi
   if [ "$mode" = freeze ]; then
     ctr kill -s STOP "$MASTER" >/dev/null
     t=$(wait_for "$MASTER unhealthy (process fige)" 180 all_health unhealthy "$MASTER")
@@ -408,6 +415,10 @@ run() {
     events_log "$SECOND" | awk -v h="$ROOT_RELAY_ID" -v c="$cause" '$2=="FAILOVER" && $3==h {l=$0; k=$4} END{if (k!=c) {print "derniere ligne FAILOVER : " l > "/dev/stderr"; exit 1}}' \
       || fail "relay.failover de $SECOND : cause attendue $cause"
     echo "relay.failover journalise par $SECOND (cause $cause)"
+    # relay.converged (#246, LOT-3.2) : UN seul, apres relay.failover, au plus tard au delai RELAY_CONVERGENCE_TIMEOUT
+    # (qualif : 30 s) + marge ; ses comptes sont verifies par chain-test.sh.
+    wait_for "relay.converged journalise par le nouveau maitre $SECOND" "${CONVERGED_MAX_S:-45}" hook_more "$SECOND" "$ROOT_RELAY_ID" CONVERGED "$cv_before" >/dev/null
+    echo "relay.converged : $(hook_last "$SECOND" "$ROOT_RELAY_ID" CONVERGED)"
   fi
   hooks
   # L'ancien maitre revient en secondaire : aucun port, healthy, toujours un seul verrou.

@@ -432,12 +432,17 @@ jobs:
           docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.remote-tls.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml config --format json > render/qualif-chain-remote.json
           # Profil `negative` (minion-negca) : absent du rendu par defaut, donc de tout controle sans --profile
           docker compose --profile negative -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml config --format json > render/qualif-chain-negative.json
+          # 3e niveau (profil level3, LOT-3.2 : secagent-grandchild dmz2 + minion-grand) : rendu et controles du durcissement
+          docker compose --profile level3 -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.remote-tls.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml config --format json > render/qualif-chain-level3-remote.json
           python3 - <<'PY'
           import json, sys
+          svc = json.load(open("render/qualif-chain-level3-remote.json"))["services"]
+          if not {"secagent-grandchild", "minion-grand"} <= set(svc):
+              sys.exit("::error::secagent-grandchild/minion-grand absents du rendu --profile level3")
           if "minion-negca" not in json.load(open("render/qualif-chain-negative.json"))["services"]:
               sys.exit("::error::minion-negca absent du rendu --profile negative : le controle de durcissement ne le verrait pas")
           PY
-          python3 scripts/ci/check_compose.py --require-memory-limit --require-secret-files render/prod-root.json render/prod-root-ports.json render/prod-child.json render/qualif-server.json render/qualif-chain.json render/qualif-chain-remote.json render/qualif-chain-negative.json
+          python3 scripts/ci/check_compose.py --require-memory-limit --require-secret-files render/prod-root.json render/prod-root-ports.json render/prod-child.json render/qualif-server.json render/qualif-chain.json render/qualif-chain-remote.json render/qualif-chain-negative.json render/qualif-chain-level3-remote.json
           # Podman rootless (#267, LOT-4) : surcharges keep-id rendues sur les Compose livres ; uid 10001 du conteneur =
           # utilisateur rootless de l'hote. Rendu par docker compose (userns_mode est une cle Compose standard).
           docker compose -f DEPLOYMENT/prod/docker-compose.server.yml -f DEPLOYMENT/podman/docker-compose.podman.yml config --format json > render/podman-prod-root.json
@@ -452,6 +457,7 @@ jobs:
           # Rendu destine a un demon Docker DISTANT (qualif reelle) : aucun chemin du client (bind, secret/config file:, build).
           # Le CI a un demon local et ne peut pas voir ce defaut a l'execution : ce controle statique est la seule garde.
           python3 scripts/ci/check_no_binds.py < render/qualif-chain-remote.json
+          python3 scripts/ci/check_no_binds.py < render/qualif-chain-level3-remote.json
 
       - name: Test negatif — un Compose qui publie 7771 sur toutes les interfaces doit echouer
         run: |

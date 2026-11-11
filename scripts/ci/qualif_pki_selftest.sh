@@ -70,13 +70,13 @@ has "CA" "$P/ca.crt" subjectKeyIdentifier "Subject Key Identifier"
 has "feuille" "$P/tls.crt" basicConstraints "critical CA:FALSE"
 has "feuille" "$P/tls.crt" keyUsage "critical Digital Signature, Key Encipherment"
 has "feuille" "$P/tls.crt" extendedKeyUsage "TLS Web Server Authentication"
-has "feuille" "$P/tls.crt" subjectAltName "DNS:localhost, IP Address:127.0.0.1, DNS:secagent-server-a, DNS:secagent-server-b, DNS:secagent-child, IP Address:192.168.1.218, DNS:qualif.lan"
+has "feuille" "$P/tls.crt" subjectAltName "DNS:localhost, IP Address:127.0.0.1, DNS:secagent-server-a, DNS:secagent-server-b, DNS:secagent-child, DNS:secagent-grandchild, IP Address:192.168.1.218, DNS:qualif.lan"
 ski="$(ext "$P/ca.crt" subjectKeyIdentifier | awk '{print $NF}')"
 aki="$(ext "$P/tls.crt" authorityKeyIdentifier | awk '{print $NF}')"
 [ -n "$ski" ] && [ "$ski" = "$aki" ] && ok "feuille : authorityKeyIdentifier = SKI de la CA" || ko "feuille : AKI '$aki' != SKI de la CA '$ski'"
 openssl verify -x509_strict -purpose sslserver -CAfile "$P/ca.crt" "$P/tls.crt" > /dev/null 2>&1 \
   && ok "openssl verify -x509_strict -purpose sslserver" || ko "openssl verify -x509_strict : $(openssl verify -x509_strict -CAfile "$P/ca.crt" "$P/tls.crt" 2>&1)"
-for h in localhost secagent-server-a 127.0.0.1 192.168.1.218; do
+for h in localhost secagent-server-a secagent-grandchild 127.0.0.1 192.168.1.218; do
   if handshake "$P/tls.crt" "$P/tls.key" "$P/ca.crt" "$h"; then ok "poignee de main stricte ($h) : $HS"; else ko "poignee de main stricte ($h) : $HS"; fi
 done
 handshake "$P/tls.crt" "$P/tls.key" "$P/ca.crt" autre-nom && ko "nom hors SAN accepte : $HS" || ok "nom hors SAN refuse (verification d'hote active)"

@@ -2,6 +2,11 @@
 #
 #   racine actif/passif (secagent-server-a/-b, STATE_DIR partage)  <--pull--  secagent-child (relay enfant dmz1)
 #        ^  minion-root (liste des 2 adresses de la racine)                        ^  minion-child
+#                                                                                   ^--pull--  secagent-grandchild (dmz2)
+#                                                                                                 ^  minion-grand
+# 3e niveau (LOT-3.2 v3.0.6, #244/#225) : profil `level3`, demarre par chain-test.sh seulement avec CHAIN_LEVEL3=1
+# (Docker ; jamais par la CI ni sous Podman). Jeton de lien de dmz2 mine sur la RACINE (--sub dmz2 --aud dmz1 : seule la
+# racine signe les liens, SECURITY.md §jetons de lien), dans un volume de lien distinct (${SECAGENT_LINK_GRAND_VOLUME}).
 #
 # La racine est celle de docker-compose.server.yml (incluse, non dupliquee). L'enfant pull est UNE instance
 # (justification : l'actif/passif de la racine est le cas teste ; un enfant a deux instances n'apporte que la
@@ -40,6 +45,10 @@ x-child-env: &child-env
   # (NON secrete) dans le meme volume.
   REPEATER_UPSTREAM_TOKEN_FILE: /run/secagent-link/upstream-token
   REPEATER_ROOT_LINK_KEY_FILE: /run/secagent-link/root-link.pub
+  # relay.converged (#246) : delai de convergence de qualif ; file amont (#246) : taille parametrable pour la variante
+  # `upstream-queue` a 256 (chain-test.sh), defaut serveur 10 000.
+  RELAY_CONVERGENCE_TIMEOUT: 30s
+  RELAY_UPSTREAM_QUEUE_SIZE: ${CHILD_UPSTREAM_QUEUE_SIZE:-10000}
 
 services:
   secagent-child:
@@ -120,11 +129,85 @@ services:
       - path: ${CHAIN_DIR:-./chain}/minion-child.env
         required: false
     environment:
-      RELAY_SERVER_URL: https://secagent-child:7770
-      RELAY_WS_URL: wss://secagent-child:7772/ws/agent
+      # re-pointable vers la racine par le scenario `rerouted` (host.rerouted direct puis indirect, #244)
+      RELAY_SERVER_URL: ${MINION_CHILD_SERVER_URL:-https://secagent-child:7770}
+      RELAY_WS_URL: ${MINION_CHILD_WS_URL:-wss://secagent-child:7772/ws/agent}
       RELAY_CA_BUNDLE: /certs/ca.crt
     volumes:
       - minion_child_data:/var/lib/secagent-minion
+      - type: bind
+        source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}
+        target: /certs
+        read_only: true
+    # Durcissement (#238) : memes capacites minimales que minion-root.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+
+  # 3e niveau (profil `level3`) : relay pull dmz2, enfant de dmz1 ; meme durcissement que secagent-child.
+  # Re-pointable vers la racine (scenario `relay-rerouted`) par GRANDCHILD_UPSTREAM_URL (+ jeton --aud <racine>).
+  secagent-grandchild:
+    profiles: ["level3"]
+    image: ${SECAGENT_IMAGE:?SECAGENT_IMAGE est obligatoire (image candidate sha-<commit>@sha256:<digest>)}
+    container_name: secagent-qualif-grandchild
+    pull_policy: ${SECAGENT_PULL_POLICY:-missing}
+    restart: unless-stopped
+    user: "10001:10001"
+    stop_grace_period: 30s
+    read_only: true
+    mem_limit: ${SECAGENT_MEM_LIMIT:-2g}
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    env_file:
+      - path: ${CHAIN_DIR:-./chain}/child.env   # REPEATER_ROOT_ID : meme racine, meme ancre que dmz1
+        required: false
+    environment:
+      <<: *child-env
+      REPEATER_ID: dmz2
+      REPEATER_UPSTREAM_URL: ${GRANDCHILD_UPSTREAM_URL:-wss://secagent-child:7772}
+      RELAY_UPSTREAM_QUEUE_SIZE: "10000"
+    volumes:
+      - grandchild_state:/data
+      - type: volume
+        source: secagent_secrets
+        target: /run/secagent-secrets
+        read_only: true
+      - type: volume                       # cle publique racine + jeton de lien de dmz2 (0400, 10001)
+        source: secagent_link_grand
+        target: /run/secagent-link
+        read_only: true
+      - type: bind
+        source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}
+        target: /certs
+        read_only: true
+    tmpfs:
+      - /run/secagent:uid=10001,gid=10001,mode=0700
+      - /tmp:uid=10001,gid=10001,mode=1777
+    ports:
+      - "127.0.0.1:9772:7771"     # admin : boucle locale uniquement
+    healthcheck:
+      test: ["CMD", "/app/secagent-server", "status", "--local"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  minion-grand:
+    profiles: ["level3"]
+    image: ${SECAGENT_MINION_IMAGE:?SECAGENT_MINION_IMAGE est obligatoire (image minion sha-<commit>@sha256:<digest>)}
+    hostname: minion-grand
+    pull_policy: ${SECAGENT_PULL_POLICY:-missing}
+    restart: unless-stopped
+    env_file:
+      - path: ${CHAIN_DIR:-./chain}/minion-grand.env
+        required: false
+    environment:
+      RELAY_SERVER_URL: https://secagent-grandchild:7770
+      RELAY_WS_URL: wss://secagent-grandchild:7772/ws/agent
+      RELAY_CA_BUNDLE: /certs/ca.crt
+    volumes:
+      - minion_grand_data:/var/lib/secagent-minion
       - type: bind
         source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}
         target: /certs
@@ -163,6 +246,12 @@ volumes:
   secagent_link:
     external: true
     name: ${SECAGENT_LINK_VOLUME:-secagent-qualif_link}
+  # Lien du 3e niveau (dmz2) : meme modele que secagent_link, volume distinct (jeton --sub dmz2).
+  secagent_link_grand:
+    external: true
+    name: ${SECAGENT_LINK_GRAND_VOLUME:-secagent-qualif_link_grand}
   child_state:
+  grandchild_state:
   minion_root_data:
   minion_child_data:
+  minion_grand_data:

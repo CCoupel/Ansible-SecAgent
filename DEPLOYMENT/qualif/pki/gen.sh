@@ -11,7 +11,7 @@
 # Produit : ca.crt (bundle de confiance : REPEATER_CA_FILE, RELAY_CA_BUNDLE), tls.crt + tls.key (TLS_CERT/TLS_KEY).
 # ca.key (cle de la CA, #267) est ecrite A PART dans $PKI_CA_OUT (defaut : repertoire frere `pki-ca` de la sortie,
 # ex. PRIVATE/QUALIF/pki-ca) : le repertoire de sortie ne contient que ce qui est monte dans les conteneurs (/certs).
-# SAN : localhost, 127.0.0.1, secagent-server-a/-b, secagent-child (noms DNS du reseau Compose).
+# SAN : localhost, 127.0.0.1, secagent-server-a/-b, secagent-child, secagent-grandchild (3e niveau, profil level3) : noms DNS du reseau Compose.
 # SAN supplementaires (hote distant, ex. la qualif reelle) : PKI_EXTRA_SAN="IP:192.168.1.218,DNS:qualif.lan"
 # (liste separee par des virgules ; defaut vide = comportement inchange, utilise par la CI).
 # Choix : UN certificat pour toutes les instances (au lieu d'un par instance) : le Compose monte un seul repertoire
@@ -66,7 +66,7 @@ CNF
 openssl req -x509 -newkey rsa:2048 -nodes -days "$DAYS" -config ca.cnf \
   -keyout "$CA_OUT/ca.key" -out ca.crt 2>/dev/null
 openssl req -newkey rsa:2048 -nodes -subj "/CN=secagent-chain" -keyout tls.key -out tls.csr 2>/dev/null
-SAN="DNS:localhost,IP:127.0.0.1,DNS:secagent-server-a,DNS:secagent-server-b,DNS:secagent-child"
+SAN="DNS:localhost,IP:127.0.0.1,DNS:secagent-server-a,DNS:secagent-server-b,DNS:secagent-child,DNS:secagent-grandchild"
 if [ -n "${PKI_EXTRA_SAN:-}" ]; then
   IFS=',' read -r -a EXTRA <<< "$PKI_EXTRA_SAN"
   for e in "${EXTRA[@]}"; do

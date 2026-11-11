@@ -63,6 +63,8 @@ x-secagent-env: &secagent-env
   TLS_KEY: /certs/tls.key
   LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
   GOMEMLIMIT: ${GOMEMLIMIT:-1638MiB}   # ~80 % de SECAGENT_MEM_LIMIT
+  # relay.converged (#246, LOT-3.2) : delai de convergence apres une promotion, raccourci en qualif (defaut serveur 60 s)
+  RELAY_CONVERGENCE_TIMEOUT: 30s
 
 services:
   secagent-server-a:

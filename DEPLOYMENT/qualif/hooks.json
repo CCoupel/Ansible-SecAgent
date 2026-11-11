@@ -69,6 +69,36 @@
           "append": "{{timestamp}} RELAY_DOWN {{relay_id}} {{reason}} hosts_routed={{hosts_routed}}\n"
         }
       ]
+    },
+    {
+      "event": "host.rerouted",
+      "actions": [
+        {
+          "type": "file",
+          "path": "/var/log/secagent-events/events.log",
+          "append": "{{timestamp}} REROUTED {{hostname}} {{cause}} old={{old_relay}} new={{new_relay}} old_chain={{old_chain}} new_chain={{new_chain}}\n"
+        }
+      ]
+    },
+    {
+      "event": "relay.rerouted",
+      "actions": [
+        {
+          "type": "file",
+          "path": "/var/log/secagent-events/events.log",
+          "append": "{{timestamp}} RELAY_REROUTED {{relay_id}} old_chain={{old_chain}} new_chain={{new_chain}} hosts_routed={{hosts_routed}}\n"
+        }
+      ]
+    },
+    {
+      "event": "relay.converged",
+      "actions": [
+        {
+          "type": "file",
+          "path": "/var/log/secagent-events/events.log",
+          "append": "{{timestamp}} CONVERGED {{relay_id}} relays_connected={{relays_connected}} relays_missing={{relays_missing}} hosts_direct={{hosts_direct}} hosts_routed={{hosts_routed}} dropped={{upstream_dropped_events_total}}\n"
+        }
+      ]
     }
   ]
 }
