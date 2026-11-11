@@ -1705,9 +1705,14 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	}
 	// Remember the real path to every relay below the peer (chains are validated: they start at
 	// the peer and end at the relay), so our own snapshot upstream does not flatten the tree.
+	chainsBefore := knownRelayChains()
 	storeRelayChain(conn.RelayID, []string{conn.RelayID})
 	for _, r := range msg.Relays {
 		storeRelayChain(r.RelayID, r.RelayChain)
+	}
+	chainsAfter := map[string][]string{conn.RelayID: {conn.RelayID}}
+	for _, r := range msg.Relays {
+		chainsAfter[r.RelayID] = r.RelayChain
 	}
 	if replacing {
 		for id := range conn.descendants {
@@ -1770,6 +1775,8 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	if !replacing {
 		emitRelayUp(conn, msg)
 	}
+	// A relay already known whose path changed (reparent): ONE relay.rerouted per relay, no event per host.
+	emitRelayRerouted(snapshotDiff(chainsBefore, chainsAfter), func(id string) int { return len(byRelay[id]) })
 	notifyTopologyChanged()
 }
 
@@ -2134,7 +2141,18 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 				log.Printf("event_forward: register relay %q: %v", origin, err)
 			}
 		}
-		if fn := routeUpsertHook(); fn != nil {
+		rerouteHooksMu.RLock()
+		upsertPrev := routeUpsertPrevFn
+		rerouteHooksMu.RUnlock()
+		if upsertPrev != nil {
+			prev, err := upsertPrev(msg.Hostname, origin, topDown)
+			if err != nil {
+				log.Printf("event_forward: route update host=%q: %v", msg.Hostname, err)
+			} else if cause, old := rerouteCause(msg.Hostname, origin, topDown, prev); cause != "" {
+				// after host.conflict (reported above) on the same hostname worker: conflict, then rerouted
+				emitHostRerouted(msg.Hostname, cause, chain, old, topDown)
+			}
+		} else if fn := routeUpsertHook(); fn != nil {
 			if err := fn(msg.Hostname, origin, topDown); err != nil {
 				log.Printf("event_forward: route update host=%q: %v", msg.Hostname, err)
 			}

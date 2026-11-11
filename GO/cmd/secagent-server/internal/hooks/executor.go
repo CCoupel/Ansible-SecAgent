@@ -89,8 +89,9 @@ type WebhookExecutor struct {
 type webhookPayload struct {
 	Event     string           `json:"event"`
 	Timestamp string           `json:"timestamp"`
-	Host      *webhookHost     `json:"host,omitempty"`  // omitted for relay.* events (no hostname)
-	Relay     *webhookRelayObj `json:"relay,omitempty"` // relay.* events and *.rerouted
+	Host      *webhookHost     `json:"host,omitempty"`   // omitted for relay.* events (no hostname)
+	Relay     *webhookRelayObj `json:"relay,omitempty"`  // relay.* events and *.rerouted
+	Change    *webhookChange   `json:"change,omitempty"` // host.rerouted and relay.rerouted
 	webhookRelay
 }
 
@@ -143,6 +144,23 @@ func relayObjOf(vars map[string]string) *webhookRelayObj {
 	return o
 }
 
+// webhookChange describes a re-route: the relays and the top-down chains before and after.
+type webhookChange struct {
+	OldRelay string   `json:"old_relay,omitempty"`
+	NewRelay string   `json:"new_relay,omitempty"`
+	OldChain []string `json:"old_chain,omitempty"`
+	NewChain []string `json:"new_chain,omitempty"`
+	Cause    string   `json:"cause,omitempty"`
+}
+
+func changeOf(vars map[string]string) *webhookChange {
+	if !strings.HasSuffix(vars["event"], ".rerouted") {
+		return nil
+	}
+	return &webhookChange{OldRelay: vars["old_relay"], NewRelay: vars["new_relay"], OldChain: varList(vars, "old_chain"),
+		NewChain: varList(vars, "new_chain"), Cause: vars["cause"]}
+}
+
 type webhookHost struct {
 	Hostname   string `json:"hostname"`
 	Status     string `json:"status,omitempty"`
@@ -168,6 +186,7 @@ func (e *WebhookExecutor) Execute(ctx context.Context, action ActionDef, vars ma
 		}
 	}
 	payload.Relay = relayObjOf(vars)
+	payload.Change = changeOf(vars)
 	if rc := vars["relay_chain"]; rc != "" {
 		payload.Chain = strings.Split(rc, ",")
 		payload.Origin = vars["relay_origin"]

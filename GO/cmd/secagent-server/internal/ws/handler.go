@@ -200,6 +200,7 @@ func RegisterConnection(hostname string, conn *AgentConnection, connSeq int) {
 		name = "host.reconnect"
 	}
 	emitEvent(hooks.Event{Name: name, Hostname: hostname, Status: "connected", Detail: hooks.Detail{ConnSeq: hooks.Seq(seq)}})
+	noteLocalConnect(hostname) // a host that still has a route through a relay: host.rerouted direct (#244)
 }
 
 // UnregisterConnection removes a hostname from active connections
@@ -210,6 +211,7 @@ func UnregisterConnection(hostname string) {
 	log.Printf("Agent disconnected: hostname=%q", hostname)
 
 	emitEvent(hooks.Event{Name: "host.down", Hostname: hostname, Status: "disconnected"})
+	noteLocalDisconnect(hostname)
 
 	// Resolve all pending futures with error
 	ResolveFuturesForHostname(hostname, "agent_disconnected")
@@ -230,6 +232,7 @@ func unregisterIfCurrent(hostname string, conn *AgentConnection) {
 	log.Printf("Agent disconnected: hostname=%q", hostname)
 
 	emitEvent(hooks.Event{Name: "host.down", Hostname: hostname, Status: "disconnected"})
+	noteLocalDisconnect(hostname)
 	ResolveFuturesForHostname(hostname, "agent_disconnected")
 }
 

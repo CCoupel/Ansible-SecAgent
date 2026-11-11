@@ -32,6 +32,20 @@ type Detail struct {
 	FirstSeenAt                string   `json:"first_seen_at,omitempty"`
 }
 
+// OldRelay is the relay a re-routed host or relay lived on: the last element of the top-down
+// old_chain ("" when there is no old chain).
+func (dt Detail) OldRelay() string { return lastOf(dt.OldChain) }
+
+// NewRelay is the relay it lives on now: the last element of the top-down new_chain.
+func (dt Detail) NewRelay() string { return lastOf(dt.NewChain) }
+
+func lastOf(c []string) string {
+	if len(c) == 0 {
+		return ""
+	}
+	return c[len(c)-1]
+}
+
 // Seq is a conn_seq on the wire. Decoding is fail-safe: anything that is not a JSON integer (a
 // string, a float, a boolean, null, an integer too large for int64) decodes to 0, i.e. "absent",
 // which every consumer treats as 1 (host.up / relay.up) instead of failing the whole frame.
@@ -96,6 +110,10 @@ func (dt Detail) vars(event, relayID string) map[string]string {
 	set("relays_below_ids", strings.Join(dt.RelaysBelowIDs, ","))
 	set("old_chain", strings.Join(dt.OldChain, ","))
 	set("new_chain", strings.Join(dt.NewChain, ","))
+	if strings.HasSuffix(event, ".rerouted") { // derived: the relay each chain ends on
+		set("old_relay", dt.OldRelay())
+		set("new_relay", dt.NewRelay())
+	}
 	num("conn_seq", int(dt.ConnSeq), false)
 	num("hosts_routed", dt.HostsRouted, rel && event != "relay.failover" && event != "relay.removed")
 	num("relays_below", dt.RelaysBelow, event == "relay.up" || event == "relay.reconnect")
@@ -111,7 +129,7 @@ func (dt Detail) vars(event, relayID string) map[string]string {
 // eventEnvKeys are the template variables exported to shell hooks as SECAGENT_<NAME> when set.
 var eventEnvKeys = []string{
 	"relay_id", "mode", "cause", "reason", "instance_id", "previous_instance_id", "first_seen_at",
-	"relays_below_ids", "old_chain", "new_chain", "conn_seq", "hosts_routed", "relays_below",
+	"relays_below_ids", "old_relay", "new_relay", "old_chain", "new_chain", "conn_seq", "hosts_routed", "relays_below",
 	"relays_connected", "relays_missing", "hosts_direct", "upstream_dropped_events_total",
 }
 

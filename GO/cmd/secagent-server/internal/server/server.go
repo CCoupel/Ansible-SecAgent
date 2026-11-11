@@ -486,8 +486,12 @@ func Build(cfg Config) (node *Node, err error) {
 		if ts == "" {
 			ts = time.Now().UTC().Format(time.RFC3339)
 		}
-		upQueue.Offer(repeater.Event{Event: ev.Name, Hostname: ev.Hostname, RelayID: ev.RelayID, Status: ev.Status,
-			EnrolledAt: ev.EnrolledAt, Timestamp: ts, RelayChain: ev.RelayChain, Mode: ev.Detail.Mode, Detail: ev.Detail})
+		up := repeater.Event{Event: ev.Name, Hostname: ev.Hostname, RelayID: ev.RelayID, Status: ev.Status,
+			EnrolledAt: ev.EnrolledAt, Timestamp: ts, RelayChain: ev.RelayChain, Mode: ev.Detail.Mode, Detail: ev.Detail}
+		if ev.Name == "host.rerouted" { // the parent validates the two relays of a re-route
+			up.OldRelay, up.NewRelay = ev.Detail.OldRelay(), ev.Detail.NewRelay()
+		}
+		upQueue.Offer(up)
 	})
 	// Events received from a child run THIS node's hooks with the received relay_chain.
 	ws.SetRelayEventLocalFunc(func(ev hooks.Event) {
@@ -498,6 +502,27 @@ func Build(cfg Config) (node *Node, err error) {
 	ws.SetRelayRouteUpsertFunc(func(hostname, relayID string, chain []string) error {
 		_, err := store.UpsertRelayRoute(hostname, relayID, chain)
 		return err
+	})
+	ws.SetRelayRouteUpsertPrevFunc(func(hostname, relayID string, chain []string) (*ws.PrevRoute, error) {
+		prev, err := store.UpsertRelayRoute(hostname, relayID, chain)
+		if err != nil || prev == nil {
+			return nil, err
+		}
+		return &ws.PrevRoute{RelayID: prev.RelayID, Chain: prev.RelayChain}, nil
+	})
+	ws.SetRelayChainsFunc(func() map[string][]string {
+		chains, err := store.ListRelayChains()
+		if err != nil {
+			return nil
+		}
+		return chains
+	})
+	ws.SetRelayHostRouteChainFunc(func(hostname string) (string, []string) {
+		r, err := store.GetRelayRoute(hostname)
+		if err != nil || r == nil {
+			return "", nil
+		}
+		return r.RelayID, r.RelayChain
 	})
 	ws.SetRelayChainFunc(func(relayID string, chain []string) error {
 		_, err := store.SetRelayChain(relayID, chain)
