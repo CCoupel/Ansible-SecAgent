@@ -18,7 +18,7 @@ import (
 // come back before announcing relay.converged with what it has (#246).
 const (
 	DefaultConvergenceTimeout = 60 * time.Second
-	MinConvergenceTimeout     = time.Second // below the 5 s of the plan so that a test can set 2 s
+	MinConvergenceTimeout     = 5 * time.Second
 	MaxConvergenceTimeout     = 10 * time.Minute
 	// convergenceSettle bounds the wait for the hooks queue to drain before relay.converged is handed
 	// to it, so that the journal reads relay.failover < relay.up/reconnect < relay.converged.
@@ -26,7 +26,7 @@ const (
 )
 
 // ConvergenceTimeoutFromEnv returns RELAY_CONVERGENCE_TIMEOUT (a Go duration such as "30s", or a number
-// of seconds), within [1s, 10m]; anything else gives the default 60 s and a warning.
+// of seconds), within [5s, 10m]; anything else gives the default 60 s and a warning.
 func ConvergenceTimeoutFromEnv() time.Duration {
 	raw := strings.TrimSpace(os.Getenv("RELAY_CONVERGENCE_TIMEOUT"))
 	if raw == "" {

@@ -103,7 +103,7 @@ func TestConvergence_TimeoutEnvBounds(t *testing.T) {
 	for _, c := range []struct {
 		val  string
 		want time.Duration
-	}{{"", 60 * time.Second}, {"2s", 2 * time.Second}, {"30s", 30 * time.Second}, {"45", 45 * time.Second}, {"10m", 10 * time.Minute},
+	}{{"", 60 * time.Second}, {"5s", 5 * time.Second}, {"2s", 60 * time.Second}, {"30s", 30 * time.Second}, {"45", 45 * time.Second}, {"10m", 10 * time.Minute},
 		{"500ms", 60 * time.Second}, {"11m", 60 * time.Second}, {"abc", 60 * time.Second}, {"-5s", 60 * time.Second}} {
 		t.Setenv("RELAY_CONVERGENCE_TIMEOUT", c.val)
 		if got := ConvergenceTimeoutFromEnv(); got != c.want {
