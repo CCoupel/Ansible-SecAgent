@@ -225,3 +225,31 @@ func emitRelayRerouted(moves []chainMove, hostsRouted func(id string) int) {
 			OldChain: m.Old, NewChain: m.New, HostsRouted: hostsRouted(m.RelayID)}})
 	}
 }
+
+var (
+	linkEstablishedMu sync.RWMutex
+	linkEstablishedFn func(relayID string, below []string)
+)
+
+// SetRelayLinkEstablishedFunc sets the notification of the FIRST accepted snapshot of a child link
+// (the moment relay.up / relay.reconnect is emitted): the peer and the relays it declares below it.
+// The convergence tracker (relay.converged) counts the relays that are back through it. fn must not block.
+func SetRelayLinkEstablishedFunc(fn func(relayID string, below []string)) {
+	linkEstablishedMu.Lock()
+	linkEstablishedFn = fn
+	linkEstablishedMu.Unlock()
+}
+
+func notifyLinkEstablished(relayID string, relays []RelayTopoEntry) {
+	linkEstablishedMu.RLock()
+	fn := linkEstablishedFn
+	linkEstablishedMu.RUnlock()
+	if fn == nil {
+		return
+	}
+	below := make([]string, 0, len(relays))
+	for _, r := range relays {
+		below = append(below, r.RelayID)
+	}
+	fn(relayID, below)
+}

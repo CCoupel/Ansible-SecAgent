@@ -1802,6 +1802,7 @@ func emitRelayUp(conn *RelayConnection, msg RelayMessage) {
 	}
 	emitEvent(hooks.Event{Name: name, RelayID: conn.RelayID, RelayChain: []string{conn.RelayID}, Detail: hooks.Detail{
 		Mode: mode, ConnSeq: hooks.Seq(normConnSeq(conn.connSeq)), HostsRouted: len(msg.Agents), RelaysBelow: len(msg.Relays), RelaysBelowIDs: ids}})
+	notifyLinkEstablished(conn.RelayID, msg.Relays) // relay.converged tracker, after relay.up / relay.reconnect
 }
 
 // handleEventForward validates an ascending event (HAUT-1) and propagates it upstream.

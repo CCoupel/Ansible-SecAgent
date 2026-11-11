@@ -49,6 +49,8 @@ type Node struct {
 	purgeWG     sync.WaitGroup // the periodic blacklist purge goroutine
 	journal     *actionlog.Journal
 	upQueue     *upstreamQueue // events going up to the parent (#246)
+	conv        *convergence   // relay.converged follow-up after a promotion (#246)
+	convMu      sync.Mutex
 	hooksPath   string
 	dispatchCtx context.Context
 	cancel      context.CancelFunc
@@ -524,6 +526,7 @@ func Build(cfg Config) (node *Node, err error) {
 		}
 		return r.RelayID, r.RelayChain
 	})
+	ws.SetRelayLinkEstablishedFunc(n.linkEstablished)
 	ws.SetRelayChainFunc(func(relayID string, chain []string) error {
 		_, err := store.SetRelayChain(relayID, chain)
 		return err
@@ -604,6 +607,11 @@ func (n *Node) Close() {
 			n.dispatcher.Wait()
 		}
 		n.purgeWG.Wait()
+		n.convMu.Lock()
+		if n.conv != nil {
+			n.conv.stop() // nothing may be announced while closing
+		}
+		n.convMu.Unlock()
 		if n.upQueue != nil {
 			n.upQueue.Close() // flushes the pending drop report while the journal is still open
 		}
@@ -835,6 +843,7 @@ func (n *Node) AnnounceFailover(st lock.Status) {
 		return
 	}
 	n.dispatcher.DispatchEvent(hooks.Event{Name: "relay.failover", RelayID: id, Detail: d})
+	n.startConvergence(id) // relay.converged: once, when the declared children are back or at the timeout
 }
 
 func (n *Node) shutdownServers() {
