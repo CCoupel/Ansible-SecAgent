@@ -77,7 +77,7 @@ func (c *convergence) start(timeout time.Duration) {
 	if len(c.missing) == 0 {
 		c.done = true
 		c.mu.Unlock()
-		c.emit(c.total, 0)
+		go c.emit(c.total, 0) // never block the caller (AnnounceFailover runs before the ports open)
 		return
 	}
 	c.timer = time.AfterFunc(timeout, c.expire)
@@ -175,6 +175,9 @@ func (n *Node) emitConverged(selfID string, connected, missing int) {
 	var dropped int64
 	if n.upQueue != nil {
 		dropped, _, _ = n.upQueue.Stats()
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return // closing: checked again right before the hand-over
 	}
 	n.dispatcher.DispatchEvent(hooks.Event{Name: "relay.converged", RelayID: selfID, Detail: hooks.Detail{
 		RelaysConnected: connected, RelaysMissing: missing, HostsDirect: len(ws.GetConnectedHostnames()),

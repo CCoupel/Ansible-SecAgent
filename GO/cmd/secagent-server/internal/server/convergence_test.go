@@ -38,6 +38,7 @@ func TestConvergence_NoChildIsImmediate(t *testing.T) {
 	r := &convRec{}
 	c := newConvergence(nil, r.emit)
 	c.start(time.Hour)
+	waitCalls(t, r, 1) // emitted from a goroutine: start never blocks its caller
 	if got := r.get(); len(got) != 1 || got[0] != [2]int{0, 0} {
 		t.Fatalf("emissions = %v, want [[0 0]]", got)
 	}

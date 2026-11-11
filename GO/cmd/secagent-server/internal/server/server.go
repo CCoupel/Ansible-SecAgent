@@ -584,6 +584,11 @@ func (n *Node) ReloadHooks() {
 func (n *Node) Close() {
 	n.closeOnce.Do(func() {
 		handlers.ConfigureMasterKey("")
+		n.convMu.Lock()
+		if n.conv != nil {
+			n.conv.stop() // before the cancel: nothing may be announced while closing
+		}
+		n.convMu.Unlock()
 		if n.cancel != nil {
 			n.cancel()
 		}
