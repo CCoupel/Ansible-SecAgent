@@ -349,8 +349,9 @@ Ce qui se passe si un enfant est monté avant son parent :
 
 Le relais ne garde pas de registre persistant des hôtes connectés (option A, décision du 2026-11-09). Après une bascule, les hooks `host.*` peuvent donc **manquer** des changements survenus pendant la fenêtre sans maître :
 
-- **arrêt brutal** (perte du verrou) : aucun `host.down` pour les agents directs tombés pendant la fenêtre ; **arrêt propre** : `host.down` drainés 10 s au plus ;
-- **hôtes derrière un relais enfant** : aucun événement `host.*` à la reprise du lien ; l'enfant rejoue ses événements dans la limite de `RELAY_UPSTREAM_QUEUE_SIZE` (voir aussi `RELAY_UPSTREAM_RATE`, `RELAY_CONVERGENCE_TIMEOUT`).
+- **arrêt propre** : l'ancien maître émet `host.down` pour tous ses agents directs (en pratique avant le drain de 10 s ; un `host.down` tardif est rejeté et compté) ; **arrêt brutal** (perte du verrou) : tous perdus ;
+- **hôte tombé pendant la fenêtre** : aucun `host.down`, dans les deux modes ;
+- **hôtes derrière un relais enfant** : aucun événement `host.*` à la reprise du lien ; l'enfant rejoue ses événements dans la limite de sa file amont (256 à ce jour ; `RELAY_UPSTREAM_QUEUE_SIZE`, `RELAY_UPSTREAM_RATE`, `RELAY_CONVERGENCE_TIMEOUT` : à venir, LOT-3.2).
 
 À faire : sur `relay.failover`, puis quand les enfants attendus sont revenus (`relay.up` / `relay.reconnect`, ou `relay.converged` quand il sera émis — LOT-3.2), relire `GET /api/inventory` (jeton plugin) et réconcilier l'outil aval. Détail : `DOC/server/HOOKS_SPEC.md`, « Pertes à la bascule ».
 
