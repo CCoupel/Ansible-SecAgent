@@ -4,7 +4,10 @@
 package ws
 
 import (
+	"log"
+	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -280,5 +283,88 @@ func TestEventForward_HostMovedGivesOneRerouted(t *testing.T) {
 		ev.Detail.OldRelay() != "zone-a" || ev.Detail.NewRelay() != "zone-b" ||
 		!reflect.DeepEqual(ev.RelayChain, []string{"zone-b", "dmz1"}) {
 		t.Errorf("host.rerouted = %+v", ev)
+	}
+}
+
+// T16b: what a child may announce. Negative cases of reroutedRefusal.
+func TestReroutedRefusal(t *testing.T) {
+	setTreeHooks(t, "central", nil, nil, nil)
+	conn := &RelayConnection{RelayID: "dmz1", descendants: map[string]struct{}{"zone-a": {}, "zone-b": {}}}
+	noteSnapshotRoute("known-host", "zone-a", []string{"dmz1", "zone-a"})
+
+	host := func(mut func(*RelayMessage)) RelayMessage {
+		m := RelayMessage{Event: "host.rerouted", Hostname: "known-host", RelayChain: []string{"zone-b", "dmz1"},
+			OldRelay: "zone-a", NewRelay: "zone-b",
+			Detail: hooks.Detail{Cause: "moved", OldChain: []string{"dmz1", "zone-a"}, NewChain: []string{"dmz1", "zone-b"}}}
+		if mut != nil {
+			mut(&m)
+		}
+		return m
+	}
+	rel := func(mut func(*RelayMessage)) RelayMessage {
+		m := RelayMessage{Event: "relay.rerouted", RelayID: "zone-b", RelayChain: []string{"zone-b", "dmz1"},
+			Detail: hooks.Detail{OldChain: []string{"dmz1", "zone-a", "zone-b"}, NewChain: []string{"dmz1", "zone-b"}, HostsRouted: 2}}
+		if mut != nil {
+			mut(&m)
+		}
+		return m
+	}
+	for name, c := range map[string]struct {
+		m    RelayMessage
+		want string
+	}{
+		"host ok":                         {host(nil), ""},
+		"relay ok":                        {rel(nil), ""},
+		"relay: new_chain not reversed":   {rel(func(m *RelayMessage) { m.NewChain = []string{"dmz1", "zone-a"} }), "reverse"},
+		"relay: chain shorter":            {rel(func(m *RelayMessage) { m.NewChain = []string{"zone-b"} }), "reverse"},
+		"host: element outside subtree":   {host(func(m *RelayMessage) { m.OldChain = []string{"dmz1", "elsewhere"}; m.OldRelay = "elsewhere" }), "outside"},
+		"relay: element outside subtree":  {rel(func(m *RelayMessage) { m.OldChain = []string{"dmz1", "ghost", "zone-b"} }), "outside"},
+		"host: unknown host":              {host(func(m *RelayMessage) { m.Hostname = "never-seen" }), "without known route"},
+		"host: old_relay forged":          {host(func(m *RelayMessage) { m.OldRelay = "zone-b" }), "differ"},
+		"host: new_relay forged":          {host(func(m *RelayMessage) { m.NewRelay = "dmz1" }), "differ"},
+		"host: relays absent, chains set": {host(func(m *RelayMessage) { m.OldRelay, m.NewRelay = "", "" }), "differ"},
+	} {
+		if got := reroutedRefusal(conn, c.m); (c.want == "" && got != "") || (c.want != "" && !strings.Contains(got, c.want)) {
+			t.Errorf("%s: refusal %q, want %q", name, got, c.want)
+		}
+	}
+}
+
+// A refused re-route is neither dispatched nor forwarded, and logged once per period (aggregated).
+func TestReroutedRefusal_IsAggregatedAndDropsTheEvent(t *testing.T) {
+	rec := &recEvents{}
+	SetEventFunc(rec.add)
+	SetRelayEventLocalFunc(func(ev hooks.Event) { rec.add(ev) })
+	t.Cleanup(func() { SetEventFunc(nil); SetRelayEventLocalFunc(nil) })
+	var fwd sync.Mutex
+	forwarded := 0
+	setTreeHooks(t, "central", nil, nil, func(RelayMessage) { fwd.Lock(); forwarded++; fwd.Unlock() })
+	out := &lockedLog{}
+	log.SetOutput(out)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
+	handshake(t, c, "dmz1")
+	sendSnapshot(t, c, []RelayTopoEntry{{RelayID: "zone-a", RelayChain: []string{"dmz1", "zone-a"}}}, nil)
+	readMsg(t, c)
+	for i := 0; i < 5; i++ {
+		_ = c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.rerouted", Hostname: "invented", Status: "",
+			RelayChain: []string{"zone-a", "dmz1"}, OldRelay: "zone-a", NewRelay: "zone-a",
+			Detail: hooks.Detail{Cause: "moved", OldChain: []string{"dmz1", "zone-a"}, NewChain: []string{"dmz1", "zone-a"}}})
+	}
+	_ = c.WriteJSON(RelayMessage{Type: "heartbeat"})
+	readMsg(t, c)
+	if n := len(rec.named("host.rerouted")); n != 0 {
+		t.Errorf("%d refused host.rerouted dispatched", n)
+	}
+	fwd.Lock()
+	if forwarded != 0 {
+		t.Errorf("%d refused events forwarded upstream", forwarded)
+	}
+	fwd.Unlock()
+	rerouteRefuseAgg.Flush()
+	if n := strings.Count(out.String(), "re-route event refused"); n != 1 || !strings.Contains(out.String(), "5 event(s)") {
+		t.Errorf("want ONE aggregated line for 5 refusals:\n%s", out.String())
 	}
 }

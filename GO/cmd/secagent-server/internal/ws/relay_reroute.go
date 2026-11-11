@@ -14,9 +14,12 @@ package ws
 // never a re-route, so a failover (a -> b) gives no event at all.
 
 import (
+	"log"
 	"sort"
 	"sync"
+	"time"
 
+	"secagent-server/cmd/secagent-server/internal/dropreport"
 	"secagent-server/cmd/secagent-server/internal/hooks"
 )
 
@@ -239,4 +242,80 @@ func notifyLinkEstablished(relayID string, relays []RelayTopoEntry) {
 		below = append(below, r.RelayID)
 	}
 	fn(relayID, below)
+}
+
+// ── Validation of a re-route announced by a child (T16b) ─────────────────────
+
+// rerouteRefuseInterval is the period of the aggregated "re-route refused" log.
+const rerouteRefuseInterval = time.Minute
+
+var (
+	rerouteRefuseMu  sync.Mutex
+	rerouteRefusals  = map[string]int64{} // "relay_id: reason" -> refused since the last report
+	rerouteRefuseAgg = dropreport.New(rerouteRefuseInterval, flushRerouteRefusals)
+)
+
+func noteRerouteRefused(relayID, event, reason string) {
+	key := relayID + ": " + event + ": " + reason
+	rerouteRefuseMu.Lock()
+	if _, known := rerouteRefusals[key]; known || len(rerouteRefusals) < 256 {
+		rerouteRefusals[key]++
+	}
+	rerouteRefuseMu.Unlock()
+	rerouteRefuseAgg.Add(1)
+}
+
+func flushRerouteRefusals(int64) {
+	rerouteRefuseMu.Lock()
+	r := rerouteRefusals
+	rerouteRefusals = map[string]int64{}
+	rerouteRefuseMu.Unlock()
+	for k, n := range r {
+		log.Printf("[SECURITY WARNING] re-route event refused (%s): %d event(s) in the last minute", k, n)
+	}
+}
+
+// reroutedRefusal returns why a host.rerouted / relay.rerouted received from a child must be refused
+// ("" = accepted). The shape (identifiers, lengths) was checked by eventShapeError; here the event is
+// checked against what the sender is allowed to speak about:
+//  1. relay.rerouted: new_chain is the reverse of the event's relay_chain (origin first);
+//  2. every element of old_chain / new_chain is the peer or a relay it declared below it;
+//  3. host.rerouted: the host has a route this node knows (a child cannot invent a re-route);
+//  4. host.rerouted: old_relay / new_relay are the last element of the matching chain.
+func reroutedRefusal(conn *RelayConnection, m RelayMessage) string {
+	if m.Event == "relay.rerouted" && !sameChain(m.NewChain, reversed(m.RelayChain)) {
+		return "new_chain is not the reverse of relay_chain"
+	}
+	for _, ch := range [][]string{m.OldChain, m.NewChain} {
+		for _, id := range ch {
+			if id == conn.RelayID {
+				continue
+			}
+			if _, ok := conn.descendants[id]; !ok {
+				return "chain element outside the sender's subtree"
+			}
+		}
+	}
+	if m.Event == "host.rerouted" {
+		if m.OldRelay != m.Detail.OldRelay() || m.NewRelay != m.Detail.NewRelay() {
+			return "old_relay/new_relay differ from the chains"
+		}
+		if !knownHostRoute(m.Hostname) {
+			return "host without known route"
+		}
+	}
+	return ""
+}
+
+// knownHostRoute reports whether this node knows a route for the host: remembered by the process
+// (survives the store dropping it at the next agent_list) or recorded in the store.
+func knownHostRoute(hostname string) bool {
+	rerouteMemMu.Lock()
+	_, ok := lastRoutes[hostname]
+	rerouteMemMu.Unlock()
+	if ok {
+		return true
+	}
+	rid, _ := lookupHostRoute(hostname)
+	return rid != ""
 }

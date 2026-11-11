@@ -2164,6 +2164,12 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 		}
 		return true
 	case "host.down", "host.discover", "host.removed", "host.rerouted":
+		if msg.Event == "host.rerouted" {
+			if why := reroutedRefusal(conn, msg); why != "" {
+				noteRerouteRefused(conn.RelayID, msg.Event, why)
+				return false
+			}
+		}
 		// A child may only report the going down of a host of its own subtree: never of a host
 		// connected here nor routed through another peer (no alert spam / no spoofing).
 		if _, err := GetConnection(msg.Hostname); err == nil {
@@ -2207,6 +2213,12 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 		if msg.RelayID != conn.RelayID {
 			if _, mine := conn.descendants[msg.RelayID]; !mine {
 				log.Printf("[SECURITY WARNING] %s refused: relay_id=%q describes %q which is not in its subtree", msg.Event, conn.RelayID, msg.RelayID)
+				return false
+			}
+		}
+		if msg.Event == "relay.rerouted" {
+			if why := reroutedRefusal(conn, msg); why != "" {
+				noteRerouteRefused(conn.RelayID, msg.Event, why)
 				return false
 			}
 		}
