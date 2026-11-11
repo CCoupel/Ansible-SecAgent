@@ -106,3 +106,16 @@ func TestUpstreamQueue_MemoryOfAFullQueue(t *testing.T) {
 	}
 	q.Close()
 }
+
+func TestUpstreamRate_WarnsAboveTheParentQuota(t *testing.T) {
+	out := captureLog(t)
+	t.Setenv("RELAY_UPSTREAM_RATE", "150")
+	UpstreamRateFromEnv()
+	if strings.Contains(out.String(), "exceeds the parent's event quota") {
+		t.Errorf("150/s must not warn:\n%s", out.String())
+	}
+	t.Setenv("RELAY_UPSTREAM_RATE", "250")
+	if got := UpstreamRateFromEnv(); got != 250 || !strings.Contains(out.String(), "exceeds the parent's event quota") {
+		t.Errorf("rate %d, log:\n%s", got, out.String())
+	}
+}

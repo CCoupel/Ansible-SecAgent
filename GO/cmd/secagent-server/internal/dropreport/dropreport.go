@@ -21,6 +21,7 @@ type Aggregator struct {
 	pending int64
 	timer   *time.Timer
 	stopped bool
+	running sync.WaitGroup // one count per armed timer, released when its flush has returned (or it was cancelled)
 }
 
 // New returns an Aggregator reporting at most once per interval.
@@ -40,11 +41,13 @@ func (a *Aggregator) Add(n int64) {
 	}
 	a.pending += n
 	if a.timer == nil {
+		a.running.Add(1)
 		a.timer = time.AfterFunc(a.interval, a.fire)
 	}
 }
 
 func (a *Aggregator) fire() {
+	defer a.running.Done()
 	a.mu.Lock()
 	n := a.pending
 	a.pending, a.timer = 0, nil
@@ -54,29 +57,35 @@ func (a *Aggregator) fire() {
 	}
 }
 
-// Stop reports what is still pending, once, and disarms the Aggregator for good.
+// cancelTimerLocked disarms the timer; when it had not fired yet its WaitGroup count is released here.
+func (a *Aggregator) cancelTimerLocked() {
+	if a.timer != nil && a.timer.Stop() {
+		a.running.Done()
+	}
+	a.timer = nil
+}
+
+// Stop reports what is still pending, once, disarms the Aggregator for good, and waits for a flush
+// already started by the timer to return (nothing logs after Stop returns).
 func (a *Aggregator) Stop() {
 	a.mu.Lock()
 	a.stopped = true
-	if a.timer != nil {
-		a.timer.Stop()
-	}
+	a.cancelTimerLocked()
 	n := a.pending
-	a.pending, a.timer = 0, nil
+	a.pending = 0
 	a.mu.Unlock()
 	if n > 0 {
 		a.flush(n)
 	}
+	a.running.Wait()
 }
 
 // Flush reports what is pending now and keeps the Aggregator armed for the next period.
 func (a *Aggregator) Flush() {
 	a.mu.Lock()
-	if a.timer != nil {
-		a.timer.Stop()
-	}
+	a.cancelTimerLocked()
 	n := a.pending
-	a.pending, a.timer = 0, nil
+	a.pending = 0
 	a.mu.Unlock()
 	if n > 0 {
 		a.flush(n)

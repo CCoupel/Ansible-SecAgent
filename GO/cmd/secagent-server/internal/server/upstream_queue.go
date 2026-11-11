@@ -28,6 +28,8 @@ const (
 	DefaultUpstreamRate = 150
 	MinUpstreamRate     = 10
 	MaxUpstreamRate     = 1000
+	// parentEventQuota is the parent's per-identity limit of event_forward per second (ws.maxEventsPerSecond).
+	parentEventQuota = 200
 	// upstreamDropReportInterval is the period of the aggregated drop warning / journal entry.
 	upstreamDropReportInterval = time.Minute
 )
@@ -53,7 +55,11 @@ func UpstreamQueueSizeFromEnv() int {
 
 // UpstreamRateFromEnv returns RELAY_UPSTREAM_RATE in events per second (10..1000, default 150).
 func UpstreamRateFromEnv() int {
-	return boundedEnvInt("RELAY_UPSTREAM_RATE", DefaultUpstreamRate, MinUpstreamRate, MaxUpstreamRate)
+	r := boundedEnvInt("RELAY_UPSTREAM_RATE", DefaultUpstreamRate, MinUpstreamRate, MaxUpstreamRate)
+	if r > parentEventQuota {
+		log.Printf("[WARN] RELAY_UPSTREAM_RATE=%d exceeds the parent's event quota (%d/s per relay): the parent will refuse the excess", r, parentEventQuota)
+	}
+	return r
 }
 
 // upstreamQueue is the bounded buffer between the handlers and the uplink: it never blocks a

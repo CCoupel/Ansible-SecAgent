@@ -75,3 +75,37 @@ func TestAggregator_FlushKeepsItArmed(t *testing.T) {
 		t.Fatalf("reports = %v, want [2 3]", got)
 	}
 }
+
+// Stop waits for a flush the timer has already started.
+func TestAggregator_StopWaitsForARunningFlush(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	var done bool
+	var mu sync.Mutex
+	a := New(10*time.Millisecond, func(int64) {
+		close(started)
+		<-release
+		mu.Lock()
+		done = true
+		mu.Unlock()
+	})
+	a.Add(1)
+	<-started // the timer's flush is running
+	stopped := make(chan struct{})
+	go func() { a.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while a flush was still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not return after the flush ended")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !done {
+		t.Error("the flush had not finished when Stop returned")
+	}
+}
