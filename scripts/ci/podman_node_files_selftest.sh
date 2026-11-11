@@ -107,6 +107,20 @@ sp_refus "Compose modifie apres verification" 'echo "# x" >> "$B/release/docker-
 sp_refus "release.env modifie apres verification" 'sed -i "s/sha-abc/sha-evil/" "$B/release/release.env"'
 sp_refus "release/.env ajoute apres verification" 'echo "X=1" > "$B/release/.env"'
 sp_refus "sous-dossier ajoute dans release/" 'mkdir "$B/release/sub"'
+sp_refus "Compose remplace par un lien vers une copie IDENTIQUE" 'cp "$B/release/docker-compose.chain.yml" "$T/chain.copie"; rm "$B/release/docker-compose.chain.yml"; ln -s "$T/chain.copie" "$B/release/docker-compose.chain.yml"'
+sp_refus "garde bin/check-private.sh remplacee par un lien vers une copie IDENTIQUE" 'cp -p "$B/bin/check-private.sh" "$T/garde.copie"; rm "$B/bin/check-private.sh"; ln -s "$T/garde.copie" "$B/bin/check-private.sh"'
+sp_refus "unite du partage remplacee par un lien vers une copie IDENTIQUE" 'cp "$U" "$T/unite.copie"; rm "$U"; ln -s "$T/unite.copie" "$U"'
+sp_refus "dossier release/ remplace par un lien vers une copie IDENTIQUE" 'cp -a "$B/release" "$T/release.copie"; rm -rf "$B/release"; ln -s "$T/release.copie" "$B/release"'
+rm -f "$B/release"; mv "$T/release.copie" "$B/release"   # dossier reel remis (stage refuse un lien)
+sp_refus "lien symbolique en trop (meme nom qu'un fichier cache)" 'ln -s /dev/null "$B/systemd/.lien"'
+# la garde seule, juste apres un sha256sum -c qui SUIT le lien : c'est elle qui refuse, avec un message explicite
+stage qualif srv4 >/dev/null; pin >/dev/null 2>&1
+cp "$B/release/release.env" "$T/env.copie"; rm "$B/release/release.env"; ln -s "$T/env.copie" "$B/release/release.env"
+sha256sum --quiet --strict -c "$PINF" >/dev/null 2>&1 && ok "lien vers copie identique : sha256sum -c l'accepte (il suit le lien)" || ko "sha256sum -c refuse deja le lien ?"
+out="$(env SECAGENT_PRIVATE_ROOT="$P" SECAGENT_NODE_UID="$(id -u)" SECAGENT_NODE_NAME=srv4 SECAGENT_PRIVATE_FSTYPES="$FST" bash "$B/bin/check-private.sh" qualif srv4 "$PINF" 2>&1)"; rc=$?
+[ "$rc" = 2 ] && printf '%s' "$out" | grep -q "l $B/release/release.env" && printf '%s' "$out" | grep -q "non fichier ordinaire" \
+  && ok "garde : lien vers copie identique refuse (rc 2, entree nommee)" || ko "garde lien identique rc=$rc : $out"
+rm -f "$B/release/release.env"
 sp_refus "fichier manquant apres verification" 'rm -f "$B/release/docker-compose.hooks.yml"'
 sp_refus "unite du partage modifiee apres verification" 'sed -i "/^ExecStartPre=/d" "$U"'
 sp_refus "manifeste epingle absent" 'rm -f "$PINF"'

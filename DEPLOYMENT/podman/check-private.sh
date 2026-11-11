@@ -7,8 +7,9 @@
 #   check-private.sh <qualif|prod> <srvX> [<manifeste epingle>]    0 si PRIVATE/<ENV> est accessible et conforme, 2 (REFUS:) sinon
 #
 # <manifeste epingle> (ExecStartPre de l'unite : %h/.config/secagent/<env>-<srvX>.sha256, hors partage, ecrit par
-# verify-node-files.sh --pin) : la liste EXACTE des entrees de bin/, release/ et systemd/ du noeud doit etre celle du
-# manifeste (fichier, dossier, lien ou fichier cache en trop = REFUS, ex. un release/.env lu par podman-compose). Les
+# verify-node-files.sh --pin) : bin/, release/ et systemd/ ne contiennent que des FICHIERS ORDINAIRES (lien symbolique,
+# meme vers une copie identique, ou sous-dossier = REFUS) et leur liste EXACTE est celle du manifeste (fichier ou fichier
+# cache en trop = REFUS, ex. un release/.env lu par podman-compose). Les
 # empreintes sont verifiees juste avant par `sha256sum -c` du meme manifeste (ExecStartPre precedent).
 #
 # Copiee depuis le poste (prepare-node-files.sh) dans PRIVATE/<ENV>/<srvX>/cyril/secagent/bin/ ; executee par
@@ -64,6 +65,16 @@ if [ -n "$pin" ]; then
   [[ $pin =~ ^/[A-Za-z0-9_./-]+$ && ! /$pin/ =~ /\.\./ ]] || refuse "manifeste epingle '$pin' : chemin absolu [A-Za-z0-9_./-] sans .. attendu"
   [ -f "$pin" ] && [ ! -L "$pin" ] || refuse "manifeste epingle $pin absent ou lien : relancer verify-node-files.sh --pin $env $node depuis le poste"
   B="$P/$node/cyril/secagent"
+  # Liens symboliques : `sha256sum -c` les SUIT (un lien vers une copie identique passerait) ; la garde les refuse donc
+  # ici, comme tout ce qui n'est pas un fichier ordinaire (find -P : liens jamais suivis, y compris pour les 3 dossiers).
+  for d in bin release systemd; do
+    [ -d "$B/$d" ] && [ ! -L "$B/$d" ] || refuse "$B/$d absent, non repertoire ou lien symbolique : ne pas demarrer"
+  done
+  odd="$(find "$B/bin" "$B/release" "$B/systemd" -mindepth 1 ! -type f -printf '  %y %p\n' 2>/dev/null)"
+  if [ -n "$odd" ]; then
+    printf '%s\n' "$odd" >&2
+    refuse "entree(s) non fichier ordinaire (l = lien symbolique, d = dossier...) sous bin/, release/ ou systemd/ de $node : ne pas demarrer"
+  fi
   want="$(cut -d' ' -f3- "$pin" | LC_ALL=C sort)"
   have="$(find "$B/bin" "$B/release" "$B/systemd" -mindepth 1 -print 2>/dev/null | LC_ALL=C sort)"
   if [ -z "$want" ] || [ "$want" != "$have" ]; then
