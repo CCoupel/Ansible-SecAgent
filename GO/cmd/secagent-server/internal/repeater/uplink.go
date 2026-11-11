@@ -221,11 +221,11 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 			err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(u.opts.HandshakeTimeout))
 			u.wmu.Unlock()
 			if err != nil {
-				return true, fmt.Errorf("ping: %w", err)
+				return true, u.preferRead(fmt.Errorf("ping: %w", err), readErr)
 			}
 		case <-list.C:
 			if err := u.sendAgentList(conn); err != nil {
-				return true, err
+				return true, u.preferRead(err, readErr)
 			}
 		case <-u.topologyChanged():
 			// coalesce a burst of changes into ONE full snapshot, never closer than TopologyMinGap
@@ -241,13 +241,13 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 		case <-topoC:
 			topoTimer, topoC = nil, nil
 			if err := u.sendSnapshot(conn); err != nil {
-				return true, err
+				return true, u.preferRead(err, readErr)
 			}
 			u.resendLinkStates(conn)
 			lastSnap = time.Now()
 		case <-u.changed():
 			if err := u.sendAgentList(conn); err != nil {
-				return true, err
+				return true, u.preferRead(err, readErr)
 			}
 		case ev, ok := <-evCh:
 			if !ok {
@@ -255,7 +255,7 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 				continue
 			}
 			if err := u.forwardEvent(conn, ev); err != nil {
-				return true, err
+				return true, u.preferRead(err, readErr)
 			}
 			if evInterval > 0 {
 				if evTimer == nil {
@@ -268,6 +268,25 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 		}
 	}
 }
+
+// preferRead is called when a WRITE failed: the parent that closes a link writes its close frame first
+// (4010 permanent refusal, 4012 retry), but a write of ours racing with that close fails before the
+// reader goroutine has delivered the frame, and the node would retry as if the link had merely broken
+// (a revoked child coming back). The close frame, when it arrives within a short delay, wins.
+func (u *Uplink) preferRead(werr error, readErr <-chan error) error {
+	select {
+	case rerr := <-readErr:
+		if u.revoked.Load() {
+			return &refusedError{reason: "link token revoked by the root (operator action required)", permanent: true}
+		}
+		return wrapRead("read", rerr)
+	case <-time.After(writeFailReadGrace):
+		return werr
+	}
+}
+
+// writeFailReadGrace is how long a failed write waits for the close frame of the parent.
+const writeFailReadGrace = 500 * time.Millisecond
 
 func (u *Uplink) topologyChanged() <-chan struct{} { return u.opts.TopologyChanged }
 
@@ -350,6 +369,8 @@ func (u *Uplink) forwardEvent(conn *websocket.Conn, ev Event) error {
 	ev.RelayChain = chain
 	if ev.Timestamp == "" {
 		ev.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	} else if at, perr := time.Parse(time.RFC3339, ev.Timestamp); perr == nil && time.Since(at) > LateEventAfter {
+		ev.Late = true
 	}
 	if err := u.write(conn, eventMessage{Type: "event_forward", Event: ev}); err != nil {
 		u.eventLost(1) // the event left the queue but not the node
@@ -357,6 +378,9 @@ func (u *Uplink) forwardEvent(conn *websocket.Conn, ev Event) error {
 	}
 	return nil
 }
+
+// LateEventAfter is the age from which a forwarded event is marked Late (it waited in the queue).
+const LateEventAfter = 10 * time.Second
 
 // eventLost reports events removed from the queue and never delivered.
 func (u *Uplink) eventLost(n int64) {

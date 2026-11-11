@@ -92,3 +92,43 @@ func TestUplink_ParentHangupIsNotGoingAway(t *testing.T) {
 		t.Fatal("Serve did not return after the parent hung up")
 	}
 }
+
+// A parent that closes with 4010 while the child is writing: the child reads the refusal (permanent),
+// whichever of its write failure or the close frame is seen first (a revoked child must not come back).
+func TestUplink_Close4010WinsOverAConcurrentWriteFailure(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		events := make(chan Event, 500)
+		for j := 0; j < 500; j++ {
+			events <- Event{Event: "host.up", Hostname: "h", RelayChain: []string{}}
+		}
+		up := NewUplink("child", Options{Events: events})
+		errc := make(chan error, 1)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			c, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+			if err != nil {
+				return
+			}
+			errc <- up.Serve(context.Background(), c)
+		}))
+		c, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, _, err := c.ReadMessage(); err != nil { // the snapshot: the link is up
+			t.Fatal(err)
+		}
+		_ = c.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(CloseCodePermanent, "revoked"), time.Now().Add(time.Second))
+		_ = c.UnderlyingConn().Close() // the socket goes away right after the close frame
+		select {
+		case serr := <-errc:
+			var ref *refusedError
+			if !errors.As(serr, &ref) || !ref.permanent {
+				t.Fatalf("iteration %d: Serve returned %v, want a permanent refusal", i, serr)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Serve did not return")
+		}
+		srv.Close()
+	}
+}
