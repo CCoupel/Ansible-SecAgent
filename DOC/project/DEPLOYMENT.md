@@ -332,7 +332,7 @@ Aucune rupture de lien ni d'agent. Trois précautions **avant** de démarrer le 
 
 ## Montée de version v3.0.5 → v3.0.6 : monter les parents d'abord (événements de relais, #225 #245 #265)
 
-La v3.0.6 ne change ni le format de `relay.state` ni les liens (aucune rupture, aucun champ d'état ajouté dans le code de ce lot ; retour arrière = binaires v3.0.5), mais elle ajoute des **événements** que seule la v3.0.6 comprend (SERVER_SPEC §9.2, HOOKS_SPEC §2) : `relay.failover`, `relay.up`, `relay.reconnect`, `relay.down`, `host.reconnect`. Un nœud v3.0.5 qui les reçoit d'un enfant v3.0.6 **jette tout kind inconnu** : un `[SECURITY WARNING] event_forward rejected … unsupported event kind` **par événement**, lien conservé (rien ne ferme un lien mixte), et chacun consomme le quota de 200 `event_forward` par seconde du `relay_id` (#216).
+La v3.0.6 ne change ni le format de `relay.state` ni les liens (aucune rupture, aucun champ d'état ajouté dans le code de ce lot ; retour arrière = binaires v3.0.5), mais elle ajoute des **événements** que seule la v3.0.6 comprend (SERVER_SPEC §9.2, HOOKS_SPEC §2) : `relay.failover`, `relay.up`, `relay.reconnect`, `relay.down`, `host.reconnect`, et (LOT-3.2) `host.rerouted`, `relay.rerouted`, `relay.converged`. Un nœud v3.0.5 qui les reçoit d'un enfant v3.0.6 **jette tout kind inconnu** : un `[SECURITY WARNING] event_forward rejected … unsupported event kind` **par événement**, lien conservé (rien ne ferme un lien mixte), et chacun consomme le quota de 200 `event_forward` par seconde du `relay_id` (#216).
 
 **Règle : monter les parents d'abord**, niveau par niveau, de la racine vers les feuilles (même ordre passif/actif pour une paire), pour qu'aucun enfant v3.0.6 ne parle à un parent v3.0.5.
 
@@ -351,9 +351,13 @@ Le relais ne garde pas de registre persistant des hôtes connectés (option A, d
 
 - **arrêt propre** : l'ancien maître émet `host.down` pour tous ses agents directs (en pratique avant le drain de 10 s ; un `host.down` tardif est rejeté et compté) ; **arrêt brutal** (perte du verrou) : tous perdus ;
 - **hôte tombé pendant la fenêtre** : aucun `host.down`, dans les deux modes ;
-- **hôtes derrière un relais enfant** : aucun événement `host.*` à la reprise du lien ; l'enfant rejoue ses événements dans la limite de sa file amont (256 à ce jour ; `RELAY_UPSTREAM_QUEUE_SIZE`, `RELAY_UPSTREAM_RATE`, `RELAY_CONVERGENCE_TIMEOUT` : à venir, LOT-3.2).
+- **hôtes derrière un relais enfant** : aucun événement `host.*` à la reprise du lien ; l'enfant rejoue ses événements dans la limite de sa file amont (`RELAY_UPSTREAM_QUEUE_SIZE`, défaut 10 000, bornes 256 à 100 000 ; cadence `RELAY_UPSTREAM_RATE`, défaut 150/s ; `RELAY_CONVERGENCE_TIMEOUT`, défaut 60 s, bornes 5 s à 10 min).
 
-À faire : sur `relay.failover`, puis quand les enfants attendus sont revenus (`relay.up` / `relay.reconnect`, ou `relay.converged` quand il sera émis — LOT-3.2), relire `GET /api/inventory` (jeton plugin) et réconcilier l'outil aval. Détail : `DOC/server/HOOKS_SPEC.md`, « Pertes à la bascule ».
+À faire : sur `relay.failover`, puis quand les enfants attendus sont revenus (`relay.up` / `relay.reconnect`, ou `relay.converged`, émis une fois par le nœud promu), relire `GET /api/inventory` (jeton plugin) et réconcilier l'outil aval. Détail : `DOC/server/HOOKS_SPEC.md`, « Pertes à la bascule ».
+
+### Mémoire de la file amont d'un relais enfant (v3.0.6, #246)
+
+Un relais enfant garde les événements de son sous-arbre dans une file bornée tant que son parent est injoignable : `RELAY_UPSTREAM_QUEUE_SIZE` (défaut 10 000, bornes 256 à 100 000), rejouée à `RELAY_UPSTREAM_RATE` (défaut 150/s, bornes 10 à 1000 ; au-delà de 200/s le parent refuse l'excédent). **10 000 événements pleins ≈ 4,2 Mio** ; la taille d'un événement est bornée par la taille maximale d'un message WebSocket, donc le pire cas d'une file à 100 000 est nettement plus grand. **Si vous relevez `RELAY_UPSTREAM_QUEUE_SIZE`, adaptez `GOMEMLIMIT` et la limite mémoire du conteneur.** Rejeu de 10 000 événements ≈ 67 s. Les pertes sont comptées (`upstream_dropped_events` dans `GET /api/admin/status`, un `[WARN]` et une entrée `upstream_dropped` du journal par minute). Détail : `DOC/server/HOOKS_SPEC.md` §9b « File amont ».
 
 ## Gestion des Tokens Relay (v3.0.4)
 

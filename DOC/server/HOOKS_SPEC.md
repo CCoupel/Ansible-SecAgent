@@ -83,7 +83,8 @@ Au chargement de la configuration (démarrage et `SIGHUP`), le serveur journalis
 | `host.revoked` | Agent révoqué (`/api/admin/revoke/{hostname}`) |
 | `host.deleted` | Agent supprimé (`DELETE /api/admin/minions/{hostname}`) |
 | `host.conflict` | Hôte revendiqué par un second relay alors qu'il est déjà routé vers un autre : émis une fois par changement de propriétaire, statut `ancien->nouveau` (`server/server.go:496` ; accepté en `event_forward` par `ws/relay_handler.go:1789` ; SERVER_SPEC §9.5a) |
-| `host.discover`, `host.rerouted`, `host.removed` | **À venir (LOT-3.2/3.3), jamais émis en v3.0.6.** Le nom est déjà accepté dans `hooks.json` (pas d'avertissement) et la forme déjà acceptée sur le fil (SERVER_SPEC §9.2) |
+| `host.rerouted` | (v3.0.6, #244) La **route** d'un hôte a changé, vue de ce nœud. `cause` = `moved` (la route est passée d'un relais ou d'un chemin à un autre) \| `direct` (un hôte routé par un relais se connecte maintenant à ce nœud) \| `indirect` (un hôte qui était connecté à ce nœud revient par un relais). Variables `old_relay`, `new_relay`, `old_chain`, `new_chain`, `cause` (§4). La route précédente est celle que **ce process** a vue : une première route, une route identique, un redémarrage ou une bascule actif/passif n'émettent rien. Un conflit donne `host.conflict` **puis** `host.rerouted`. Un hôte dont l'agent vit sur le nœud n'est jamais re-routé (`ws/relay_reroute.go`, `snapshotDiff`, `rerouteCause`, `noteLocalConnect` ; test `ws/relay_reroute_test.go`) |
+| `host.discover`, `host.removed` | **À venir (LOT-3.3), jamais émis en v3.0.6.** Le nom est déjà accepté dans `hooks.json` (pas d'avertissement) et la forme déjà acceptée sur le fil (SERVER_SPEC §9.2) |
 
 **Événements de relais** (v3.0.6 ; **sans hostname**, clé d'ordre : le `relay_id` ; `{{hostname}}` et `{{status}}` y sont vides)
 
@@ -93,7 +94,9 @@ Au chargement de la configuration (démarrage et `SIGHUP`), le serveur journalis
 | `relay.up` | Premier `topology_snapshot` accepté d'un lien relais dont le process enfant annonce sa première connexion (`conn_seq` ≤ 1 ou absent) ; un snapshot de **remplacement** sur un lien déjà établi n'émet rien (`ws/relay_handler.go:1770`) | le parent direct du lien ; remonte aux ancêtres |
 | `relay.reconnect` | Idem, mais `conn_seq` > 1 : même process enfant qui revient. Exclusif avec `relay.up` | le parent direct ; remonte |
 | `relay.down` | Fin d'un lien dont le snapshot avait été accepté. **Aucun** événement quand ce nœud ferme lui-même ses liens en s'arrêtant (`CloseAllLinks`, dialer arrêté) : c'est le nouveau maître qui s'annonce par `relay.failover` (`ws/relay_handler.go:1228`) | le parent direct ; remonte |
-| `relay.discover`, `relay.rerouted`, `relay.removed`, `relay.converged` | **À venir (LOT-3.2/3.3), jamais émis en v3.0.6** ; noms acceptés dans `hooks.json`, formes acceptées sur le fil | — |
+| `relay.rerouted` | (v3.0.6, #244) Un `topology_snapshot` montre qu'un **relais** a changé de chaîne (reparent, y compris le passage de descendant d'un pair à pair direct). **Un seul événement par relais déplacé**, jamais un `host.rerouted` par hôte sur un snapshot. Variables : `relay_id`, `old_relay`, `new_relay`, `old_chain`, `new_chain`, `hosts_routed` (hôtes du snapshot dont la chaîne passe par ce relais, ceux derrière ses enfants compris). Un relais jamais vu n'émet rien | le parent qui reçoit le snapshot ; remonte |
+| `relay.converged` | (v3.0.6, #246) **Un seul** par promotion : émis après `relay.failover`, quand tous les relais enfants déclarés sont revenus (lien direct, ou relais déclaré sous un lien), ou, sinon, au délai `RELAY_CONVERGENCE_TIMEOUT` (§9). Un nœud sans enfant déclaré l'émet aussitôt. Variables : `relay_id` (le nœud), `relays_connected`, `relays_missing`, `hosts_direct`, `hosts_routed`, `upstream_dropped_events_total`. Jamais réémis ; rien n'est émis pendant l'arrêt du nœud. Un relais mort pour de bon n'apparaît que dans `relays_missing` au délai (`server/convergence.go`) | le nœud promu ; remonte comme `relay.failover` |
+| `relay.discover`, `relay.removed` | **À venir (LOT-3.3), jamais émis en v3.0.6** ; noms acceptés dans `hooks.json`, formes acceptées sur le fil | — |
 
 `relay.updated` (changement de `group_vars`) circule dans l'arbre mais **ne déclenche aucun hook** : un hook déclaré sur ce nom ne se déclenche jamais et le chargement journalise un `[WARN]` (`hooks/config.go:61`, comme pour toute faute de frappe).
 
@@ -260,7 +263,22 @@ Variables de relais et de connexion (v3.0.6), présentes quand elles ont une val
 | `{{cause}}` | `takeover` \| `start` | `relay.failover` |
 | `{{instance_id}}`, `{{previous_instance_id}}` | Identité de l'instance devenue maître ; de l'ancien maître (absent après un arrêt propre ou si inconnu) | `relay.failover` |
 
-Variables inconnues (`{{foo}}`) sont laissées telles quelles. Les variables du premier tableau sont toujours définies (chaîne vide quand elles ne s'appliquent pas). Celles du second tableau n'existent que pour les événements indiqués : sur un autre événement, `{{conn_seq}}` (par exemple) reste **littéral** dans la sortie (`hooks/event.go`, `Detail.vars`).
+Variables de re-routage et de convergence (v3.0.6, #244 #246) :
+
+| Variable | Sens | Présent pour |
+|----------|------|-------------|
+| `{{old_relay}}`, `{{new_relay}}` | Le relais qui **portait** l'hôte (ou le relais déplacé), avant / après : le **dernier** élément de `old_chain` / `new_chain` (`Detail.OldRelay()`/`NewRelay()`, `hooks/event.go:35-40`). Vide s'il n'y a pas de chaîne | `host.rerouted`, `relay.rerouted` |
+| `{{old_chain}}`, `{{new_chain}}` | Chaîne **descendante** (virgules) : du pair direct de ce nœud jusqu'au relais qui porte l'hôte ; ≤ 32 ids | idem |
+| `{{cause}}` | `moved` \| `direct` \| `indirect` | `host.rerouted` (et `takeover` \| `start` pour `relay.failover`) |
+| `{{relays_connected}}`, `{{relays_missing}}` | Relais enfants déclarés revenus / encore absents à l'émission | `relay.converged` |
+| `{{hosts_direct}}`, `{{hosts_routed}}` | Agents connectés à ce nœud / routes du nœud | `relay.converged` |
+| `{{upstream_dropped_events_total}}` | Compteur cumulé des événements ascendants perdus (§9b « File amont ») | `relay.converged` |
+
+En variable d'environnement (action `shell`) : `SECAGENT_OLD_RELAY`, `SECAGENT_NEW_RELAY` (`hooks/event.go`, `eventEnvKeys`).
+
+**Règle de rendu (`Render`, v3.0.6, #246)** : un jeton `{{variable}}` d'une variable **connue** mais absente de l'événement (par exemple `{{cause}}` dans l'URL d'un hook `host.up`, ou `{{conn_seq}}` pour un minion < 3.0.6) est rendu **vide** ; un jeton **inconnu** (`{{foo}}`, faute de frappe) est laissé **tel quel** (`hooks/template.go`, `KnownVars()` ; tests `hooks/template_test.go`). Cela vaut pour tous les champs rendus : arguments et environnement `shell`, URL, corps et en-têtes `webhook`/`api`, ligne `file`. Avant la v3.0.6, un jeton de variable connue mais absente restait littéral dans la sortie : une URL de webhook devait donc ne contenir que des variables présentes pour l'événement.
+
+Les variables du premier tableau sont toujours définies (chaîne vide quand elles ne s'appliquent pas).
 
 ---
 
@@ -309,7 +327,21 @@ Un `relay.*` n'a pas d'hôte : l'objet **`host` est absent** (jamais un `host` v
 }
 ```
 
-Champs de `relay` (omis quand ils ne s'appliquent pas) : `relay_id` (toujours), `mode`, `reason`, `cause`, `instance_id`, `previous_instance_id`, `conn_seq`, `hosts_routed`, `relays_below`, `relays_below_ids` (voir §4 pour le sens). `relay.failover` d'un nœud racine n'a pas de `relay_chain` :
+Champs de `relay` (omis quand ils ne s'appliquent pas) : `relay_id` (toujours), `mode`, `reason`, `cause`, `instance_id`, `previous_instance_id`, `conn_seq`, `hosts_routed`, `relays_below`, `relays_below_ids`, et (v3.0.6) `old_chain`, `new_chain`, `relays_connected`, `relays_missing`, `hosts_direct`, `upstream_dropped_events_total` (voir §4 pour le sens ; `hooks/executor.go:93-115`).
+
+**Re-routage** : `host.rerouted` et `relay.rerouted` ajoutent un objet **`change`** (`hooks/executor.go:149-160`), `cause` seulement pour `host.rerouted` :
+
+```json
+{
+  "event": "host.rerouted",
+  "timestamp": "2026-11-11T10:00:00Z",
+  "host":   { "hostname": "web-01", "status": "connected" },
+  "change": { "old_relay": "dmz1", "new_relay": "dmz2", "old_chain": ["dmz1"], "new_chain": ["dmz2"], "cause": "moved" },
+  "relay_chain": ["dmz2"], "relay_origin": "dmz2"
+}
+```
+
+`relay.converged` porte ses compteurs dans `relay` : `{ "relay_id": "root", "relays_connected": 2, "relays_missing": 0, "hosts_direct": 14, "hosts_routed": 3000, "upstream_dropped_events_total": 0 }`. `relay.failover` d'un nœud racine n'a pas de `relay_chain` :
 
 ```json
 { "event": "relay.failover", "timestamp": "…", "relay": { "relay_id": "root", "cause": "takeover", "instance_id": "…", "previous_instance_id": "…" } }
@@ -401,10 +433,47 @@ Pour `host.up` et `host.reconnect`, `host.conn_seq` porte le numéro de connexio
           "headers": { "Authorization": "Bearer mon-token" }
         }
       ]
+    },
+    {
+      "event": "host.rerouted",
+      "actions": [
+        {
+          "type":   "file",
+          "path":   "/var/log/secagent/events.log",
+          "append": "{{timestamp}} REROUTE {{hostname}} {{cause}} {{old_relay}}->{{new_relay}}\n"
+        }
+      ]
+    },
+    {
+      "event": "relay.rerouted",
+      "actions": [
+        {
+          "type":   "file",
+          "path":   "/var/log/secagent/events.log",
+          "append": "{{timestamp}} RELAY-REROUTE {{relay_id}} {{old_chain}}->{{new_chain}} hosts={{hosts_routed}}\n"
+        }
+      ]
+    },
+    {
+      "event": "relay.converged",
+      "actions": [
+        {
+          "type":   "webhook",
+          "url":    "https://monitoring.internal/api/failover-done",
+          "secret": "hmac-key-prod"
+        },
+        {
+          "type":   "file",
+          "path":   "/var/log/secagent/events.log",
+          "append": "{{timestamp}} CONVERGED {{relay_id}} connected={{relays_connected}} missing={{relays_missing}} direct={{hosts_direct}} dropped={{upstream_dropped_events_total}}\n"
+        }
+      ]
     }
   ]
 }
 ```
+
+Après une bascule, un hook sur `relay.converged` est le bon déclencheur d'une resynchronisation par `GET /api/inventory` (voir « Pertes à la bascule »).
 
 ### Exemple minimal — log fichier uniquement
 
@@ -493,6 +562,9 @@ EXECUTED_AT           EVENT       HOSTNAME       TYPE     SUCCESS  DURATION  ERR
 | `RELAY_HOOKS_CONFIG` | `/etc/secagent-server/hooks.json` | Chemin du fichier de configuration des hooks |
 | `RELAY_HOOKS_MAX_CONCURRENT_ACTIONS` | `64` | Nombre de workers (événements traités en parallèle) |
 | `RELAY_HOOKS_QUEUE_SIZE` | `10000` | Nombre d'événements en file, tous workers confondus (voir §9b) |
+| `RELAY_UPSTREAM_QUEUE_SIZE` | `10000` | (v3.0.6, #246) Capacité de la **file amont** d'un relais enfant : événements gardés tant que le lien vers le parent est coupé. Bornes **256 à 100 000** ; hors bornes ou non entier : défaut + `[WARN]` (`server/upstream_queue.go:20-25`). Voir « File amont » ci-dessous, y compris la mémoire |
+| `RELAY_UPSTREAM_RATE` | `150` | (v3.0.6, #246) Cadence de rejeu vers le parent, en événements par seconde. Bornes **10 à 1000** ; hors bornes : défaut + `[WARN]` ; au-delà de 200, `[WARN]` : le parent refusera l'excédent (quota de 200/s par relais) |
+| `RELAY_CONVERGENCE_TIMEOUT` | `60s` | (v3.0.6, #246) Délai maximal d'attente des relais enfants avant d'émettre `relay.converged`. Durée Go (`30s`, `2m`) ou nombre de secondes ; bornes **5 s à 10 min** ; hors bornes : défaut + `[WARN]` (`server/convergence.go:20-22,41-43`) |
 
 ### 9b. Traitement des événements : file, ordre, contre-pression (#183)
 
@@ -508,6 +580,16 @@ Un événement est confié au worker désigné par un **hachage du hostname** ; 
 - **Arrêt propre** (signal d'arrêt) : les serveurs HTTP s'arrêtent, puis la file est vidée pendant 10 s au plus ; le reste est compté et loggué (`[SHUTDOWN] hooks: N event(s) still pending`). **Arrêt brutal** (perte du verrou actif/passif, #163) : sortie immédiate, les événements en file sont perdus, comptés et loggués (`Dispatcher stopped: N queued event(s) not processed`). Les `host.down` des agents directs que cet arrêt déconnecte ne sont **ni exécutés ni remontés** : le dispatcher est annulé avant la fermeture des liens (`server.go:756-772`). Voir « Bascule actif/passif » ci-dessous, tableau « Pertes à la bascule », pour ce que voit le nouveau maître.
 - **Budgets séparés avec #179** : les actions de hook ne consomment pas de slot de tâche `exec` ; une action `api` qui appellerait l'API exec du serveur serait soumise à #179 comme n'importe quel client.
 
+
+### File amont : événements d'un relais enfant vers son parent (v3.0.6, #246)
+
+Un relais enfant remonte ses événements (et ceux de son sous-arbre) à son parent par une **file bornée** (`RELAY_UPSTREAM_QUEUE_SIZE`, défaut 10 000, bornes 256 à 100 000), puis un **rejeu cadencé** (`RELAY_UPSTREAM_RATE`, défaut 150/s, bornes 10 à 1000). Elle ne bloque jamais un producteur (`upstreamQueue.Offer`, `server/upstream_queue.go:93`).
+
+- **Lien coupé** : les événements s'accumulent dans la file ; à la reconnexion ils sont rejoués à la cadence configurée, sans coupure de la boucle du lien (les pings et snapshots restent servis : `repeater/uplink.go:194`). Rejouer 10 000 événements à 150/s prend environ **67 s** (1/150 s entre deux événements ; `TestUplink_ReplayIsPacedAtEventRate`).
+- **Quota du parent** : le parent accepte au plus **200 `event_forward` par seconde et par `relay_id`** en **seau à jetons** : débit soutenu 200/s, **rafale de 400** (2 s de débit) acceptée après un silence, aucune exemption pour un rejeu (`ws/event_quota.go`, `eventQuotaBurst`). La cadence par défaut (150/s) reste sous ce débit ; une pause du parent suivie d'un rattrapage en rafale ne provoque plus de refus tant que la rafale tient dans le seau. Si `RELAY_UPSTREAM_RATE` dépasse 200, le serveur le signale au démarrage (`[WARN] RELAY_UPSTREAM_RATE=… exceeds the parent's event quota`) : l'excédent sera refusé par le parent, loggué une fois par minute et par identité, sans fermer le lien.
+- **File pleine** : l'événement est **rejeté et compté**. Même un événement retiré de la file mais non envoyé (écriture en échec, chaîne en boucle) est compté. Compteur : `upstream_dropped_events` (`GET /api/admin/status`, `secagent-server server status`, avec `upstream_queue_depth` et `upstream_queue_capacity` ; une racine sans parent renvoie `0`, `0`, la capacité). **Un seul** `[WARN] … event(s) dropped in the last minute` par minute et **une seule** entrée `action_type:"upstream_dropped"` (`event:"*"`) dans le journal des actions (`GET /api/admin/hooks/log?event=*`), jamais une ligne par événement. Le rapport arrive après la première minute de pertes et est vidé à l'arrêt du nœud.
+- **Mode push sans lien actif** : les événements d'**hôte** ne sont pas mis en file, ils sont **jetés** (le prochain `topology_snapshot` resynchronise le parent) ; seuls les `relay.*` d'un nœud non racine sont gardés, pour que `relay.failover` parte dès que le lien existe (`server/server.go:476-486`). Une racine sans parent ne met rien en file (`server.go:459-462`). Ces événements jetés ne sont **pas** comptés dans `upstream_dropped_events`.
+- **Mémoire** : la file est un canal de `RELAY_UPSTREAM_QUEUE_SIZE` événements ; **10 000 événements pleins ≈ 4,2 Mio de tas** (hostname et chaîne typiques ; mesure `TestUpstreamQueue_MemoryOfAFullQueue`). La taille d'un événement est bornée par la taille maximale d'un message WebSocket : une file à 100 000 événements peut donc occuper bien davantage dans le pire cas. **Quand on relève `RELAY_UPSTREAM_QUEUE_SIZE`, adapter `GOMEMLIMIT` (et la limite mémoire du conteneur) en conséquence.**
 
 ### Bascule actif/passif : ce que voit le nouveau maître (v3.0.6, #225)
 
@@ -529,9 +611,9 @@ Un snapshot de **remplacement** sur un lien déjà établi (changement de topolo
 | Agents directs, **vivants** à la bascule | Ils se reconnectent au nouveau maître : `host.reconnect` (`host.up` si le minion est < 3.0.6, `ws/handler.go:197-203`). | Idem. |
 | Agents directs **connectés à l'ancien maître** | Le maître sortant ferme **tous** leurs WebSockets (`CloseAllLinks`, `server.go:731`) : chaque handler émet `host.down` (`ws/handler.go:212,232`), **y compris pour les agents qui se reconnectent aussitôt** au nouveau maître (`host.reconnect`). Ces `host.down` sont émis en pratique avant le drain (10 s au plus, `server.go:731-746`), sans garantie : un `host.down` tardif est **rejeté et compté** (`hooks_dropped_events`). L'ordre entre le `host.down` de l'ancien maître et le `host.reconnect` du nouveau n'est pas garanti. | **Tous** les `host.down` de l'ancien maître sont perdus (`Abort` annule le dispatcher avant `CloseAllLinks`, `server.go:760` puis `:767`). |
 | Agents directs **tombés pendant la fenêtre** (jamais revenus) | **Aucun `host.down`**, ni du maître sortant (déjà parti) ni du nouveau (qui ne les a jamais vus connectés). C'est la vraie perte de l'option A. | Idem. |
-| Hôtes **indirects** (derrière un relais enfant) | Le premier `topology_snapshot` du lien rétabli les re-route **sans aucun événement `host.*`** (`ws/relay_handler.go`, `handleTopologySnapshot`). Leurs connexions et déconnexions survenues pendant la fenêtre sont rejouées par l'enfant **dans la limite de sa file amont** (variables `RELAY_UPSTREAM_QUEUE_SIZE` et `RELAY_UPSTREAM_RATE`, **à venir** avec le LOT-3.2 : en l'état du code commité, la file amont est fixe, à 256 événements) ; au-delà, elles sont perdues. | Idem. |
+| Hôtes **indirects** (derrière un relais enfant) | Le premier `topology_snapshot` du lien rétabli les re-route **sans aucun événement `host.*`** (`ws/relay_handler.go`, `handleTopologySnapshot`). Leurs connexions et déconnexions survenues pendant la fenêtre sont rejouées par l'enfant **dans la limite de sa file amont** (`RELAY_UPSTREAM_QUEUE_SIZE`, défaut 10 000, bornes 256 à 100 000 ; rejeu à `RELAY_UPSTREAM_RATE`, défaut 150/s : voir « File amont » ci-dessus) ; au-delà, elles sont perdues et comptées (`upstream_dropped_events`). | Idem. |
 
-**Recommandation** : ne pas déduire l'état du parc des seuls événements `host.*` après une bascule. Sur `relay.failover`, puis une fois les liens rétablis (`relay.up` / `relay.reconnect` de chaque enfant attendu, et `relay.converged` dès qu'il est émis : à venir, LOT-3.2, délai `RELAY_CONVERGENCE_TIMEOUT`), **resynchroniser par `GET /api/inventory`**, qui reste la source de vérité. Les trois variables `RELAY_UPSTREAM_QUEUE_SIZE`, `RELAY_UPSTREAM_RATE` et `RELAY_CONVERGENCE_TIMEOUT` sont **à venir** (LOT-3.2) ; elles seront documentées en détail en §9b (file amont).
+**Recommandation** : ne pas déduire l'état du parc des seuls événements `host.*` après une bascule. Sur `relay.failover`, puis une fois les liens rétablis (`relay.up` / `relay.reconnect` de chaque enfant attendu, et `relay.converged`, émis au plus tard après `RELAY_CONVERGENCE_TIMEOUT`), **resynchroniser par `GET /api/inventory`**, qui reste la source de vérité. Les trois variables `RELAY_UPSTREAM_QUEUE_SIZE`, `RELAY_UPSTREAM_RATE` et `RELAY_CONVERGENCE_TIMEOUT` sont décrites au §9 et dans « File amont » ci-dessus.
 
 Ordre : clé FIFO = `relay_id` pour les `relay.*` ; l'émission locale est synchrone, donc `relay.failover` puis `relay.reconnect` d'un même nœud gardent leur ordre dans la file. Pas d'ordre entre clés différentes.
 
@@ -553,7 +635,11 @@ Ordre : clé FIFO = `relay_id` pour les `relay.*` ; l'émission locale est synch
 | `ctx` annulé (shutdown) | Dispatcher s'arrête, jobs en queue droppés |
 | SIGHUP pendant une exécution | Les exécutions en cours terminent, nouvelle config pour les suivantes |
 | Hook sur un nom d'événement inconnu (`relay.updated`, faute de frappe) | `[WARN] hooks: … which this server never emits` au chargement ; le fichier reste accepté, le hook ne se déclenche jamais |
-| Hook sur `host.discover`, `host.rerouted`, `host.removed`, `relay.discover/rerouted/removed/converged` | Accepté, aucun avertissement ; **jamais déclenché en v3.0.6** (à venir) |
+| Hook sur `host.discover`, `host.removed`, `relay.discover`, `relay.removed` | Accepté, aucun avertissement ; **jamais déclenché en v3.0.6** (à venir, LOT-3.3) |
+| `host.rerouted` / `relay.rerouted` reçu d'un enfant et **incohérent avec son sous-arbre** (T16b) | Ni distribué ni remonté ; refus compté par (relais, kind, raison) et loggué **une fois par minute** (`[SECURITY WARNING] re-route event refused`). Règles : `old_relay`/`new_relay` = dernier élément de `old_chain`/`new_chain` ; chaque élément des chaînes est le pair ou un relais qu'il a déclaré ; `relay.rerouted` : `new_chain` = inverse de `relay_chain` ; `host.rerouted` : l'hôte a une route connue du nœud (`ws/relay_reroute.go`, `reroutedRefusal` ; test `TestReroutedRefusal`) |
+| Arrêt ordonné d'un relais enfant (pull ou push) | Trame de fermeture **1001 going away** avant la fermeture de la socket : le parent journalise `relay.down reason=peer_closed:1001` et non `1006` (coupure réelle) (`repeater/uplink.go`, `Uplink.goingAway` ; test `uplink_goingaway_test.go`) |
+| Variable connue absente / inconnue dans un modèle | Connue : rendue vide ; inconnue : laissée telle quelle (§4, `Render`) |
+| File amont pleine ; `event_forward` au-delà du quota du parent | Perte comptée (`upstream_dropped_events`), un `[WARN]` et une entrée `upstream_dropped` par minute ; refus de quota loggué une fois par minute et par identité (« File amont ») |
 | `relay.down` à l'arrêt propre du maître | Aucun : le nouveau maître s'annonce par `relay.failover` |
 | Parent < 3.0.6 recevant les nouveaux événements d'un enfant 3.0.6 | Événement jeté avec `[SECURITY WARNING] … unsupported event kind`, lien conservé ; `host.reconnect` ignoré jusqu'au prochain snapshot (DEPLOYMENT.md : parents d'abord) |
 | `conn_seq` absent, invalide ou hors 1..2³¹ (en-tête, `relay_hello`, `relay_ack`) | Traité comme 1 : `host.up` / `relay.up` |
