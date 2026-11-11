@@ -16,6 +16,7 @@ package ws
 import (
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,6 +102,16 @@ func noteRoute(hostname, relayID string, chain []string) (string, []string) {
 	if prev.relayID == relayID && (len(prev.chain) == 0 || sameChain(prev.chain, chain)) {
 		return "", nil
 	}
+	// One event per change along the tree: when the old and the new route go through the SAME direct
+	// peer, the move happened inside that peer's subtree, and the relay that saw it (the nearest common
+	// ancestor of the two routes, at or below the peer) emits host.rerouted itself: this node trusts
+	// the event the peer forwards (validated by reroutedRefusal) instead of announcing it twice. When
+	// the two routes leave through different peers, this node is the nearest common ancestor and the
+	// only one that can see the change: it emits. (The first hop of a route written without chain is
+	// its owner.)
+	if len(chain) > 0 && old[0] == chain[0] {
+		return "", nil
+	}
 	return "moved", old
 }
 
@@ -184,6 +195,14 @@ func snapshotDiff(before, after map[string][]string) []chainMove {
 	return moves
 }
 
+func copyChains(m map[string][]string) map[string][]string {
+	out := make(map[string][]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
 // knownRelayChains returns a copy of the recorded chains (nil when not wired).
 func knownRelayChains() map[string][]string {
 	rerouteHooksMu.RLock()
@@ -246,6 +265,9 @@ func notifyLinkEstablished(relayID string, relays []RelayTopoEntry) {
 
 // ── Validation of a re-route announced by a child (T16b) ─────────────────────
 
+// reasonNoKnownRoute is the refusal of a host.rerouted about a host this node has no route for.
+const reasonNoKnownRoute = "host without known route"
+
 // rerouteRefuseInterval is the period of the aggregated "re-route refused" log.
 const rerouteRefuseInterval = time.Minute
 
@@ -271,7 +293,11 @@ func flushRerouteRefusals(int64) {
 	rerouteRefusals = map[string]int64{}
 	rerouteRefuseMu.Unlock()
 	for k, n := range r {
-		log.Printf("[SECURITY WARNING] re-route event refused (%s): %d event(s) in the last minute", k, n)
+		prefix := "[SECURITY WARNING]"
+		if strings.HasSuffix(k, ": "+reasonNoKnownRoute) {
+			prefix = "[RELAY]" // normal after the restart of a parent: its route memory is empty
+		}
+		log.Printf("%s re-route event refused (%s): %d event(s) in the last minute", prefix, k, n)
 	}
 }
 
@@ -301,7 +327,7 @@ func reroutedRefusal(conn *RelayConnection, m RelayMessage) string {
 			return "old_relay/new_relay differ from the chains"
 		}
 		if !knownHostRoute(m.Hostname) {
-			return "host without known route"
+			return reasonNoKnownRoute
 		}
 	}
 	return ""
@@ -318,4 +344,42 @@ func knownHostRoute(hostname string) bool {
 	}
 	rid, _ := lookupHostRoute(hostname)
 	return rid != ""
+}
+
+// ── Memory of the relay chains (MAJEUR-2) ────────────────────────────────────
+
+var (
+	relayChainMemMu sync.Mutex
+	lastRelayChains = map[string][]string{} // relay -> last top-down chain a snapshot declared for it
+)
+
+// mergeRememberedChains completes the chains the store knows (before is modified and returned) with the
+// last ones this process saw: when the OLD parent of a reparented relay retires it (its replacing
+// snapshot, or its link closing, clears the stored chain) before the NEW link's snapshot arrives, the
+// store no longer remembers the old path, and the move would read as a first route.
+func mergeRememberedChains(before map[string][]string) map[string][]string {
+	if before == nil {
+		before = map[string][]string{}
+	}
+	relayChainMemMu.Lock()
+	defer relayChainMemMu.Unlock()
+	for id, c := range lastRelayChains {
+		if len(before[id]) == 0 {
+			before[id] = append([]string(nil), c...)
+		}
+	}
+	return before
+}
+
+// rememberRelayChains records the chains a snapshot declares (bounded like the route memory).
+func rememberRelayChains(after map[string][]string) {
+	relayChainMemMu.Lock()
+	defer relayChainMemMu.Unlock()
+	for id, c := range after {
+		if len(c) == 0 {
+			continue
+		}
+		boundLocked(lastRelayChains)
+		lastRelayChains[id] = append([]string(nil), c...)
+	}
 }

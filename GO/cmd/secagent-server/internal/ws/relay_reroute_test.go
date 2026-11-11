@@ -4,6 +4,7 @@
 package ws
 
 import (
+	"github.com/gorilla/websocket"
 	"log"
 	"os"
 	"reflect"
@@ -46,6 +47,21 @@ func TestSnapshotDiff(t *testing.T) {
 	}
 }
 
+// resetRerouteMemory empties the process memories (they are global): a test starts from a fresh process.
+func resetRerouteMemory(t *testing.T) {
+	t.Helper()
+	clear := func() {
+		rerouteMemMu.Lock()
+		lastRoutes, recentlyLocal = map[string]hostRoute{}, map[string]struct{}{}
+		rerouteMemMu.Unlock()
+		relayChainMemMu.Lock()
+		lastRelayChains = map[string][]string{}
+		relayChainMemMu.Unlock()
+	}
+	clear()
+	t.Cleanup(clear)
+}
+
 func TestNoteRoute(t *testing.T) {
 	setTreeHooks(t, "central", nil, nil, nil)
 	cases := []struct {
@@ -59,8 +75,9 @@ func TestNoteRoute(t *testing.T) {
 	}{
 		{"first route", nil, false, "dmz2", []string{"dmz1", "dmz2"}, "", nil},
 		{"same route", &hostRoute{"dmz2", []string{"dmz1", "dmz2"}}, false, "dmz2", []string{"dmz1", "dmz2"}, "", nil},
-		{"moved to another relay", &hostRoute{"dmz2", []string{"dmz1", "dmz2"}}, false, "dmz3", []string{"dmz1", "dmz3"}, "moved", []string{"dmz1", "dmz2"}},
-		{"same relay, new path", &hostRoute{"dmz2", []string{"dmz1", "dmz2"}}, false, "dmz2", []string{"dmz2"}, "moved", []string{"dmz1", "dmz2"}},
+		{"moved to another relay under another peer", &hostRoute{"dmz2", []string{"dmz1", "dmz2"}}, false, "dmz3", []string{"dmz9", "dmz3"}, "moved", []string{"dmz1", "dmz2"}},
+		{"moved inside the same peer's subtree: its own event is trusted", &hostRoute{"dmz2", []string{"dmz1", "dmz2"}}, false, "dmz3", []string{"dmz1", "dmz3"}, "", nil},
+		{"same relay, new path through another peer", &hostRoute{"dmz2", []string{"dmz1", "dmz2"}}, false, "dmz2", []string{"dmz2"}, "moved", []string{"dmz1", "dmz2"}},
 		{"snapshot route without chain, same owner", &hostRoute{"dmz2", nil}, false, "dmz2", []string{"dmz1", "dmz2"}, "", nil},
 		{"snapshot route without chain, other owner", &hostRoute{"dmz9", nil}, false, "dmz2", []string{"dmz1", "dmz2"}, "moved", []string{"dmz9"}},
 		{"back from local", nil, true, "dmz1", []string{"dmz1"}, "indirect", []string{"central"}},
@@ -167,6 +184,7 @@ func waitEvents(t *testing.T, r *recEvents, name string, n int) []hooks.Event {
 // Reparent seen from the ancestor: ONE relay.rerouted per moved relay, hosts_routed from the snapshot,
 // NO host.rerouted per host; the first snapshot gives none.
 func TestSnapshot_ReparentGivesOneRelayRerouted(t *testing.T) {
+	resetRerouteMemory(t)
 	rec := &recEvents{}
 	SetEventFunc(rec.add)
 	t.Cleanup(func() { SetEventFunc(nil) })
@@ -244,9 +262,10 @@ func TestSnapshot_ReparentGivesOneRelayRerouted(t *testing.T) {
 	}
 }
 
-// host.up of a host that moved from one relay to another: ONE host.rerouted moved with both chains;
+// host.up of a host that moved between two PEERS of this node: ONE host.rerouted moved with both chains;
 // the first route gives none; an identical re-announcement gives none.
 func TestEventForward_HostMovedGivesOneRerouted(t *testing.T) {
+	resetRerouteMemory(t)
 	rec := &recEvents{}
 	SetEventFunc(rec.add)
 	t.Cleanup(func() { SetEventFunc(nil) })
@@ -254,23 +273,26 @@ func TestEventForward_HostMovedGivesOneRerouted(t *testing.T) {
 	srv := setupRelayTestServer(t)
 	defer srv.Close()
 
-	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
-	handshake(t, c, "dmz1")
-	sendSnapshot(t, c, []RelayTopoEntry{
-		{RelayID: "zone-a", RelayChain: []string{"dmz1", "zone-a"}},
-		{RelayID: "zone-b", RelayChain: []string{"dmz1", "zone-b"}},
-	}, nil)
-	readMsg(t, c)
-	up := func(origin string) {
+	c1 := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
+	handshake(t, c1, "dmz1")
+	sendSnapshot(t, c1, []RelayTopoEntry{{RelayID: "zone-a", RelayChain: []string{"dmz1", "zone-a"}}}, nil)
+	readMsg(t, c1)
+	c2 := dialRelay(t, srv, makeRelayJWT("dmz2", "relay"))
+	handshake(t, c2, "dmz2")
+	sendSnapshot(t, c2, []RelayTopoEntry{{RelayID: "zone-b", RelayChain: []string{"dmz2", "zone-b"}}}, nil)
+	readMsg(t, c2)
+	up := func(c *websocket.Conn, origin, peer string) {
 		t.Helper()
 		if err := c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: "mover", Status: "connected",
-			RelayChain: []string{origin, "dmz1"}}); err != nil {
+			RelayChain: []string{origin, peer}}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	up("zone-a") // first route
-	up("zone-a") // same route
-	up("zone-b") // moved
+	up(c1, "zone-a", "dmz1") // first route
+	up(c1, "zone-a", "dmz1") // same route
+	_ = c1.WriteJSON(RelayMessage{Type: "heartbeat"})
+	readMsg(t, c1)           // the two events above are processed before the next link speaks
+	up(c2, "zone-b", "dmz2") // moved across peers
 	waitEvents(t, rec, "host.rerouted", 1)
 	time.Sleep(100 * time.Millisecond) // nothing else must follow
 	got := rec.named("host.rerouted")
@@ -279,9 +301,9 @@ func TestEventForward_HostMovedGivesOneRerouted(t *testing.T) {
 	}
 	ev := got[0]
 	if ev.Hostname != "mover" || ev.Detail.Cause != "moved" ||
-		!reflect.DeepEqual(ev.Detail.OldChain, []string{"dmz1", "zone-a"}) || !reflect.DeepEqual(ev.Detail.NewChain, []string{"dmz1", "zone-b"}) ||
+		!reflect.DeepEqual(ev.Detail.OldChain, []string{"dmz1", "zone-a"}) || !reflect.DeepEqual(ev.Detail.NewChain, []string{"dmz2", "zone-b"}) ||
 		ev.Detail.OldRelay() != "zone-a" || ev.Detail.NewRelay() != "zone-b" ||
-		!reflect.DeepEqual(ev.RelayChain, []string{"zone-b", "dmz1"}) {
+		!reflect.DeepEqual(ev.RelayChain, []string{"zone-b", "dmz2"}) {
 		t.Errorf("host.rerouted = %+v", ev)
 	}
 }
@@ -366,5 +388,159 @@ func TestReroutedRefusal_IsAggregatedAndDropsTheEvent(t *testing.T) {
 	rerouteRefuseAgg.Flush()
 	if n := strings.Count(out.String(), "re-route event refused"); n != 1 || !strings.Contains(out.String(), "5 event(s)") {
 		t.Errorf("want ONE aggregated line for 5 refusals:\n%s", out.String())
+	}
+}
+
+// MAJEUR-1: one host.rerouted per change along the tree. Same direct peer on both routes: the change
+// happened below it, its own event is trusted; different peers: this node is the common ancestor.
+func TestNoteRoute_OneEventPerChangeAlongTheTree(t *testing.T) {
+	setTreeHooks(t, "central", nil, nil, nil)
+	noteSnapshotRoute("deep-1", "g1", []string{"P", "g1"})
+	if cause, _ := noteRoute("deep-1", "g2", []string{"P", "g2"}); cause != "" {
+		t.Errorf("move inside the subtree of P: cause %q, want none (P forwards its own host.rerouted)", cause)
+	}
+	// the memory was updated anyway
+	if cause, _ := noteRoute("deep-1", "g2", []string{"P", "g2"}); cause != "" {
+		t.Errorf("same route again: %q", cause)
+	}
+	noteSnapshotRoute("deep-2", "g1", []string{"P", "g1"})
+	cause, old := noteRoute("deep-2", "h1", []string{"Q", "h1"})
+	if cause != "moved" || !reflect.DeepEqual(old, []string{"P", "g1"}) {
+		t.Errorf("move across two peers: cause=%q old=%v, want moved from [P g1]", cause, old)
+	}
+	// direct: from a grandchild to the peer itself (same first hop)
+	noteSnapshotRoute("deep-3", "g1", []string{"P", "g1"})
+	if cause, _ := noteRoute("deep-3", "P", []string{"P"}); cause != "" {
+		t.Errorf("grandchild -> child: cause %q, want none (P emits direct)", cause)
+	}
+}
+
+// Three levels at the intermediate node A: the host moves inside P's subtree. A receives host.up AND the
+// host.rerouted P forwards: exactly ONE host.rerouted is dispatched at A, and ONE goes up.
+func TestIntermediateNode_NoDuplicateHostRerouted(t *testing.T) {
+	resetRerouteMemory(t)
+	rec := &recEvents{}
+	SetEventFunc(rec.add)
+	SetRelayEventLocalFunc(rec.add)
+	t.Cleanup(func() { SetEventFunc(nil); SetRelayEventLocalFunc(nil) })
+	var umu sync.Mutex
+	up := 0
+	setTreeHooks(t, "A", nil, nil, func(m RelayMessage) {
+		if m.Event == "host.rerouted" {
+			umu.Lock()
+			up++
+			umu.Unlock()
+		}
+	})
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	c := dialRelay(t, srv, makeRelayJWT("P", "relay"))
+	handshake(t, c, "P")
+	sendSnapshot(t, c, []RelayTopoEntry{
+		{RelayID: "g1", RelayChain: []string{"P", "g1"}}, {RelayID: "g2", RelayChain: []string{"P", "g2"}},
+	}, []RelayAgentInfo{{Hostname: "mover3", RelayID: "g1", RelayChain: []string{"P", "g1"}}})
+	readMsg(t, c)
+	// the host comes up behind g2 (moved inside P's subtree): host.up, then P's own host.rerouted
+	_ = c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: "mover3", Status: "connected", RelayChain: []string{"g2", "P"}})
+	_ = c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.rerouted", Hostname: "mover3", RelayChain: []string{"g2", "P"},
+		OldRelay: "g1", NewRelay: "g2", Detail: hooks.Detail{Cause: "moved", OldChain: []string{"P", "g1"}, NewChain: []string{"P", "g2"}}})
+	_ = c.WriteJSON(RelayMessage{Type: "heartbeat"})
+	readMsg(t, c)
+	time.Sleep(100 * time.Millisecond)
+	if n := len(rec.named("host.rerouted")); n != 1 {
+		t.Errorf("%d host.rerouted dispatched at the intermediate node, want exactly 1", n)
+	}
+	umu.Lock()
+	defer umu.Unlock()
+	if up != 1 {
+		t.Errorf("%d host.rerouted forwarded upstream, want exactly 1", up)
+	}
+}
+
+// MAJEUR-2: a real reparent gives exactly ONE relay.rerouted whatever the order the two parents speak in.
+// relayLink is a test child link.
+type relayLink struct {
+	t *testing.T
+	c *websocket.Conn
+}
+
+func (l *relayLink) snapshot(relays []RelayTopoEntry, agents []RelayAgentInfo) {
+	l.t.Helper()
+	sendSnapshot(l.t, l.c, relays, agents)
+	readMsg(l.t, l.c)
+}
+
+func reparentRig(t *testing.T) (*recEvents, func(id string) *relayLink) {
+	t.Helper()
+	rec := &recEvents{}
+	SetEventFunc(rec.add)
+	t.Cleanup(func() { SetEventFunc(nil) })
+	var cmu sync.Mutex
+	chains := map[string][]string{}
+	SetRelayChainFunc(func(id string, c []string) error {
+		cmu.Lock()
+		defer cmu.Unlock()
+		if len(c) == 0 {
+			delete(chains, id)
+		} else {
+			chains[id] = append([]string(nil), c...)
+		}
+		return nil
+	})
+	SetRelayChainsFunc(func() map[string][]string {
+		cmu.Lock()
+		defer cmu.Unlock()
+		out := map[string][]string{}
+		for k, v := range chains {
+			out[k] = v
+		}
+		return out
+	})
+	t.Cleanup(func() { SetRelayChainFunc(nil); SetRelayChainsFunc(nil) })
+	setTreeHooks(t, "central", nil, nil, nil)
+	srv := setupRelayTestServer(t)
+	t.Cleanup(srv.Close)
+	return rec, func(id string) *relayLink {
+		c := dialRelay(t, srv, makeRelayJWT(id, "relay"))
+		handshake(t, c, id)
+		return &relayLink{t, c}
+	}
+}
+
+func TestReparent_OneRelayReroutedWhicheverOrder(t *testing.T) {
+	resetRerouteMemory(t)
+	for _, tc := range []struct {
+		name      string
+		oldFirst  bool
+		moved     string
+		oldParent string
+	}{{"old parent retires first", true, "mv-a", "op-a"}, {"new link first", false, "mv-b", "op-b"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, dial := reparentRig(t)
+			old := dial(tc.oldParent)
+			old.snapshot([]RelayTopoEntry{{RelayID: tc.moved, RelayChain: []string{tc.oldParent, tc.moved}}}, nil)
+			if n := len(rec.named("relay.rerouted")); n != 0 {
+				t.Fatalf("first declaration: %d relay.rerouted", n)
+			}
+			if tc.oldFirst {
+				old.snapshot(nil, nil) // the old parent retires the relay
+				nw := dial(tc.moved)
+				nw.snapshot(nil, nil) // the relay now connects directly
+			} else {
+				nw := dial(tc.moved)
+				nw.snapshot(nil, nil)
+				old.snapshot(nil, nil) // the old parent retires it afterwards
+			}
+			waitEvents(t, rec, "relay.rerouted", 1)
+			time.Sleep(150 * time.Millisecond)
+			got := rec.named("relay.rerouted")
+			if len(got) != 1 {
+				t.Fatalf("%d relay.rerouted, want exactly 1: %+v", len(got), got)
+			}
+			if got[0].RelayID != tc.moved || !reflect.DeepEqual(got[0].Detail.OldChain, []string{tc.oldParent, tc.moved}) ||
+				!reflect.DeepEqual(got[0].Detail.NewChain, []string{tc.moved}) {
+				t.Errorf("relay.rerouted = %+v", got[0])
+			}
+		})
 	}
 }

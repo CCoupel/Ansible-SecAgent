@@ -114,18 +114,21 @@ func TestEventQuota_AReconnectionDoesNotResetTheCounter(t *testing.T) {
 	srv := setupRelayTestServer(t)
 	defer srv.Close()
 	var firstLink, secondLink int
+	var el time.Duration
 	id := withinOneWindow(t, func(id string) time.Duration {
 		start := time.Now()
 		sendEvents(t, srv, id, eventQuotaBurst) // the whole bucket of the identity, one link
 		firstLink = sink.count(id)
 		sendEvents(t, srv, id, 50) // immediate reconnection: the child ignores its backoff
 		secondLink = sink.count(id) - firstLink
-		return time.Since(start)
+		el = time.Since(start)
+		return el
 	})
-	if firstLink < eventQuotaBurst || firstLink > eventQuotaBurst+40 { // the bucket plus its refill while sending
+	refill := int(el.Seconds()*maxEventsPerSecond) + 10                    // what the bucket refilled while the scenario ran
+	if firstLink < eventQuotaBurst || firstLink > eventQuotaBurst+refill { // the bucket plus its refill while sending
 		t.Fatalf("%s: the first link forwarded %d events, want its bucket (%d) and the refill of a few ms", id, firstLink, eventQuotaBurst)
 	}
-	if secondLink > 40 { // only what the bucket refilled in the few milliseconds between the two links
+	if secondLink > refill { // only what the bucket refilled in the few milliseconds between the two links
 		t.Fatalf("%s: %d event(s) of the NEW link were forwarded in the same second: the quota belongs to the relay_id, a reconnection must not reset it", id, secondLink)
 	}
 }

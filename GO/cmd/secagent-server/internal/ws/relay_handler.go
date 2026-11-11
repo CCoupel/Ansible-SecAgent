@@ -1710,7 +1710,8 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	}
 	// Remember the real path to every relay below the peer (chains are validated: they start at
 	// the peer and end at the relay), so our own snapshot upstream does not flatten the tree.
-	chainsBefore := knownRelayChains()
+	storeBefore := knownRelayChains() // what the store holds now (a relay another link owns keeps its own chain)
+	chainsBefore := mergeRememberedChains(copyChains(storeBefore))
 	storeRelayChain(conn.RelayID, []string{conn.RelayID})
 	for _, r := range msg.Relays {
 		storeRelayChain(r.RelayID, r.RelayChain)
@@ -1725,7 +1726,10 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	if replacing {
 		for id := range conn.descendants {
 			if _, still := relays[id]; !still {
-				storeRelayChain(id, nil)
+				// retired from THIS link: clear its chain unless another link already declared a new one
+				if c := storeBefore[id]; len(c) == 0 || c[0] == conn.RelayID {
+					storeRelayChain(id, nil)
+				}
 			}
 		}
 	}
@@ -1784,7 +1788,9 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 		emitRelayUp(conn, msg)
 	}
 	// A relay already known whose path changed (reparent): ONE relay.rerouted per relay, no event per host.
-	if moves := snapshotDiff(chainsBefore, chainsAfter); len(moves) > 0 {
+	moves := snapshotDiff(chainsBefore, chainsAfter)
+	rememberRelayChains(chainsAfter)
+	if len(moves) > 0 {
 		through := hostsThrough(msg.Agents)
 		emitRelayRerouted(moves, func(id string) int { return through[id] })
 	}
