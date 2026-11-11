@@ -43,7 +43,7 @@ func flushEventRejects(int64) {
 	eventRejects = map[string]int64{}
 	eventRejectMu.Unlock()
 	for id, n := range rejects {
-		log.Printf("[RELAY] event_forward rate limit exceeded: relay_id=%q, %d event(s) dropped in the last period", id, n)
+		log.Printf("[RELAY] event_forward rate limit exceeded: relay_id=%q, %d event(s) dropped in the last minute", id, n)
 	}
 }
 

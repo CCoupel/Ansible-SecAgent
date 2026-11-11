@@ -69,8 +69,8 @@ type upstreamQueue struct {
 func newUpstreamQueue(capacity int, journal *actionlog.Journal, interval time.Duration) *upstreamQueue {
 	q := &upstreamQueue{ch: make(chan repeater.Event, capacity)}
 	q.agg = dropreport.New(interval, func(n int64) {
-		msg := strconv.FormatInt(n, 10) + " event(s) dropped in the last period (total " +
-			strconv.FormatInt(q.dropped.Load(), 10) + "), upstream queue full or event undeliverable; see RELAY_UPSTREAM_QUEUE_SIZE"
+		msg := strconv.FormatInt(n, 10) + " event(s) dropped in the last minute, queue full or event undeliverable (total " +
+			strconv.FormatInt(q.dropped.Load(), 10) + "); see RELAY_UPSTREAM_QUEUE_SIZE"
 		log.Printf("[REPEATER] upstream: %s", msg)
 		if journal != nil {
 			if err := journal.Append(actionlog.Entry{
