@@ -152,7 +152,7 @@ func TestEventQuota_ManyQuickReconnectionsStayWithinOneQuota(t *testing.T) {
 	}
 }
 
-// 2. The excess is IGNORED and journalized once per excess, naming the relay and leaking no token.
+// 2. The excess is IGNORED and journalized once per period (aggregated, #246), naming the relay and leaking no token.
 func TestEventQuota_TheExcessIsJournalizedWithTheRelayID(t *testing.T) {
 	out := &lockedLog{}
 	log.SetOutput(out)
@@ -166,6 +166,7 @@ func TestEventQuota_TheExcessIsJournalizedWithTheRelayID(t *testing.T) {
 		sendEvents(t, srv, id, 3)
 		return time.Since(start)
 	})
+	eventRejectAgg.Flush() // the refusals are logged once per period (#246): do not wait for it
 	logs := out.String()
 	want := fmt.Sprintf("event_forward rate limit exceeded: relay_id=%q", id)
 	if !strings.Contains(logs, want) {

@@ -48,6 +48,7 @@ type Node struct {
 	dispatcher  *hooks.Dispatcher
 	purgeWG     sync.WaitGroup // the periodic blacklist purge goroutine
 	journal     *actionlog.Journal
+	upQueue     *upstreamQueue // events going up to the parent (#246)
 	hooksPath   string
 	dispatchCtx context.Context
 	cancel      context.CancelFunc
@@ -401,7 +402,11 @@ func Build(cfg Config) (node *Node, err error) {
 	// dials us (push, #140). A node has a single parent: with REPEATER_UPSTREAM_* configured,
 	// links opened by a parent are refused.
 	selfID, _ := ws.RelayIdentity()
-	upEvents := make(chan repeater.Event, 256)
+	// Bounded, measured queue of the events going up (#246): RELAY_UPSTREAM_QUEUE_SIZE, a counter, one
+	// aggregated warning per period; the uplink replays it at RELAY_UPSTREAM_RATE per second.
+	upQueue := newUpstreamQueue(UpstreamQueueSizeFromEnv(), journal, upstreamDropReportInterval)
+	n.upQueue = upQueue
+	handlers.SetUpstreamQueueStatusFunc(upQueue.Stats)
 	// A child link changed the subtree below us (snapshot accepted, link closed): our parent gets a
 	// full topology_snapshot again. Non-blocking, coalesced by the uplink.
 	topoChanged := make(chan struct{}, 1)
@@ -418,7 +423,9 @@ func Build(cfg Config) (node *Node, err error) {
 		GroupVars:       cfg.GroupVars,
 		DirectAgents:    directAgents,
 		Snapshot:        func() repeater.Snapshot { return buildSnapshot(selfID, store) },
-		Events:          upEvents,
+		Events:          upQueue.Chan(),
+		EventRate:       UpstreamRateFromEnv(),
+		OnEventLost:     upQueue.Lost,
 		TopologyChanged: topoChanged,
 		OnTask:          forwarder.Handle,
 	}
@@ -454,7 +461,7 @@ func Build(cfg Config) (node *Node, err error) {
 		}
 		d := m.Detail
 		d.Mode = m.Mode
-		queueUpstream(upEvents, repeater.Event{Event: m.Event, Hostname: m.Hostname, RelayID: m.RelayID, Status: m.Status,
+		upQueue.Offer(repeater.Event{Event: m.Event, Hostname: m.Hostname, RelayID: m.RelayID, Status: m.Status,
 			RelayChain: m.RelayChain, GroupVars: m.GroupVars, Timestamp: m.Timestamp, OldRelay: m.OldRelay, NewRelay: m.NewRelay,
 			EnrolledAt: m.EnrolledAt, Mode: m.Mode, Detail: d})
 	})
@@ -479,7 +486,7 @@ func Build(cfg Config) (node *Node, err error) {
 		if ts == "" {
 			ts = time.Now().UTC().Format(time.RFC3339)
 		}
-		queueUpstream(upEvents, repeater.Event{Event: ev.Name, Hostname: ev.Hostname, RelayID: ev.RelayID, Status: ev.Status,
+		upQueue.Offer(repeater.Event{Event: ev.Name, Hostname: ev.Hostname, RelayID: ev.RelayID, Status: ev.Status,
 			EnrolledAt: ev.EnrolledAt, Timestamp: ts, RelayChain: ev.RelayChain, Mode: ev.Detail.Mode, Detail: ev.Detail})
 	})
 	// Events received from a child run THIS node's hooks with the received relay_chain.
@@ -511,7 +518,7 @@ func Build(cfg Config) (node *Node, err error) {
 			hooks.GlobalDispatcher.Dispatch("host.conflict", c.Hostname, c.OldRelay+"->"+c.NewRelay, "")
 		}
 		if !fromBelow && (repeaterCfg != nil || n.uplink.Active()) {
-			queueUpstream(upEvents, repeater.Event{Event: "host.conflict", Hostname: c.Hostname,
+			upQueue.Offer(repeater.Event{Event: "host.conflict", Hostname: c.Hostname,
 				RelayID: c.NewRelay, OldRelay: c.OldRelay, NewRelay: c.NewRelay})
 		}
 	})
@@ -572,6 +579,9 @@ func (n *Node) Close() {
 			n.dispatcher.Wait()
 		}
 		n.purgeWG.Wait()
+		if n.upQueue != nil {
+			n.upQueue.Close() // flushes the pending drop report while the journal is still open
+		}
 		if n.journal != nil {
 			if err := n.journal.Close(); err != nil {
 				log.Printf("action journal close: %v", err)

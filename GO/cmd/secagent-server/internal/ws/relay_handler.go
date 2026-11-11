@@ -1805,7 +1805,7 @@ func handleEventForward(conn *RelayConnection, msg RelayMessage) {
 	}
 	// The quota belongs to the relay_id, not to the link (#216): a reconnection does not reset it.
 	if !allowEvent(conn.RelayID, time.Now()) {
-		log.Printf("[RELAY] event_forward rate limit exceeded: relay_id=%q (dropped)", conn.RelayID)
+		noteEventRejected(conn.RelayID) // one aggregated log line per period, not one per event
 		return
 	}
 	chain := msg.RelayChain

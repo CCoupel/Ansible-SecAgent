@@ -10,9 +10,42 @@ package ws
 // by activity, never swept.
 
 import (
+	"log"
 	"sync"
 	"time"
+
+	"secagent-server/cmd/secagent-server/internal/dropreport"
 )
+
+// eventRejectReportInterval is the period of the aggregated "quota exceeded" log: ONE line per
+// identity and per period, never one per refused event (#246).
+const eventRejectReportInterval = time.Minute
+
+var (
+	eventRejectMu  sync.Mutex
+	eventRejects   = map[string]int64{} // identity -> events refused since the last report
+	eventRejectAgg = dropreport.New(eventRejectReportInterval, flushEventRejects)
+)
+
+// noteEventRejected counts an event_forward refused by the quota; the log comes once per period.
+func noteEventRejected(relayID string) {
+	eventRejectMu.Lock()
+	if _, known := eventRejects[relayID]; known || len(eventRejects) < maxQuotaEntries {
+		eventRejects[relayID]++
+	}
+	eventRejectMu.Unlock()
+	eventRejectAgg.Add(1)
+}
+
+func flushEventRejects(int64) {
+	eventRejectMu.Lock()
+	rejects := eventRejects
+	eventRejects = map[string]int64{}
+	eventRejectMu.Unlock()
+	for id, n := range rejects {
+		log.Printf("[RELAY] event_forward rate limit exceeded: relay_id=%q, %d event(s) dropped in the last period", id, n)
+	}
+}
 
 // eventQuotaWindow is the length of the counting window.
 const eventQuotaWindow = time.Second

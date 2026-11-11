@@ -150,6 +150,13 @@ type Options struct {
 	Snapshot func() Snapshot
 	// Events carries local subtree events to forward upstream (optional).
 	Events <-chan Event
+	// EventRate caps the events sent upstream per second (token bucket, no burst): the replay of a
+	// queue that filled while the link was down must stay under the parent's per-identity quota
+	// (RELAY_UPSTREAM_RATE, #246). 0 = unlimited.
+	EventRate int
+	// OnEventLost is called with the number of events taken from Events but never delivered (an
+	// invalid chain, a write that failed): a loss is counted, never silent. Optional.
+	OnEventLost func(n int64)
 	// Changed signals a downstream state change → agent_list is re-sent (optional).
 	Changed <-chan struct{}
 	// TopologyChanged signals that the set of relays below this node changed: a FULL

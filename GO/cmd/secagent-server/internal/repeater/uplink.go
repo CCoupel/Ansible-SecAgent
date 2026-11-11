@@ -184,10 +184,27 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 	list := time.NewTicker(u.opts.AgentListInterval)
 	defer list.Stop()
 
+	// Replay cadence (#246): after each event the channel is left alone for one interval, so a
+	// backlog goes out at EventRate per second and the loop keeps answering pings and snapshots.
+	var evInterval time.Duration
+	if u.opts.EventRate > 0 {
+		evInterval = time.Second / time.Duration(u.opts.EventRate)
+	}
+	evCh := u.events()
+	var evTimer *time.Timer
+	var evTick <-chan time.Time
+	defer func() {
+		if evTimer != nil {
+			evTimer.Stop()
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return true, ctx.Err()
+		case <-evTick:
+			evTick, evCh = nil, u.events()
 		case err := <-readErr:
 			if u.revoked.Load() { // the root revoked our own link token: never reconnect with it
 				return true, &refusedError{reason: "link token revoked by the root (operator action required)", permanent: true}
@@ -226,12 +243,21 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 			if err := u.sendAgentList(conn); err != nil {
 				return true, err
 			}
-		case ev, ok := <-u.events():
+		case ev, ok := <-evCh:
 			if !ok {
+				evCh = nil
 				continue
 			}
 			if err := u.forwardEvent(conn, ev); err != nil {
 				return true, err
+			}
+			if evInterval > 0 {
+				if evTimer == nil {
+					evTimer = time.NewTimer(evInterval)
+				} else {
+					evTimer.Reset(evInterval)
+				}
+				evTick, evCh = evTimer.C, nil
 			}
 		}
 	}
@@ -306,6 +332,7 @@ func (u *Uplink) forwardEvent(conn *websocket.Conn, ev Event) error {
 	chain, err := ForwardChain(ev.RelayChain, u.id)
 	if err != nil {
 		log.Printf("[REPEATER] event %s dropped: %v", ev.Event, err)
+		u.eventLost(1)
 		return nil
 	}
 	ev.RelayChain = chain
@@ -313,9 +340,17 @@ func (u *Uplink) forwardEvent(conn *websocket.Conn, ev Event) error {
 		ev.Timestamp = time.Now().UTC().Format(time.RFC3339)
 	}
 	if err := u.write(conn, eventMessage{Type: "event_forward", Event: ev}); err != nil {
+		u.eventLost(1) // the event left the queue but not the node
 		return fmt.Errorf("send event_forward: %w", err)
 	}
 	return nil
+}
+
+// eventLost reports events removed from the queue and never delivered.
+func (u *Uplink) eventLost(n int64) {
+	if u.opts.OnEventLost != nil {
+		u.opts.OnEventLost(n)
+	}
 }
 
 // handleIncoming processes a message from the parent. An event_forward coming
