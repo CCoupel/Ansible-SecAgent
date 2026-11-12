@@ -99,7 +99,9 @@ func noteRoute(hostname, relayID string, chain []string) (string, []string) {
 	if len(old) == 0 {
 		old = []string{prev.relayID}
 	}
-	if prev.relayID == relayID && (len(prev.chain) == 0 || sameChain(prev.chain, chain)) {
+	if prev.relayID == relayID {
+		// Same carrier (the relay the host lives on): only the path ABOVE it may have changed, which is a
+		// reparent of that relay. It is announced once, as relay.rerouted, never as a host event (#244).
 		return "", nil
 	}
 	// One event per change along the tree: when the old and the new route go through the SAME direct
