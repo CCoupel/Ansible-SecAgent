@@ -2169,7 +2169,7 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 			// say where the host is. It must not rewrite the route, raise a conflict or re-route anything:
 			// it is kept (hooks, propagation) only when the host is not owned by someone else now.
 			if c := detectHostConflict(conn, msg.Hostname, topDown); c != nil {
-				noteRerouteRefused(conn.RelayID, msg.Event, reasonLateElsewhere)
+				noteRerouteRefused(conn.RelayID, msg.Event, msg.Hostname, reasonLateElsewhere)
 				return false
 			}
 			return true
@@ -2206,13 +2206,13 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 		// node knows. Refused events are neither dispatched nor forwarded; the refusal is counted and logged
 		// once per minute. The same rule applies to replayed (late) events.
 		if why, severe := hostSubtreeRefusal(conn, msg); why != "" {
-			noteHostRefused(conn.RelayID, msg.Event, why, severe)
+			noteHostRefused(conn.RelayID, msg.Event, msg.Hostname, why, severe)
 			return false
 		}
 		switch msg.Event {
 		case "host.rerouted":
 			if why := reroutedRefusal(conn, msg); why != "" {
-				noteRerouteRefused(conn.RelayID, msg.Event, why)
+				noteRerouteRefused(conn.RelayID, msg.Event, msg.Hostname+msg.RelayID, why)
 				return false
 			}
 		case "host.suspended", "host.resumed":
@@ -2233,7 +2233,7 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 		}
 		if msg.Event == "relay.rerouted" {
 			if why := reroutedRefusal(conn, msg); why != "" {
-				noteRerouteRefused(conn.RelayID, msg.Event, why)
+				noteRerouteRefused(conn.RelayID, msg.Event, msg.Hostname+msg.RelayID, why)
 				return false
 			}
 		}

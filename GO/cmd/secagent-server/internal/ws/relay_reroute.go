@@ -268,7 +268,13 @@ func notifyLinkEstablished(relayID string, relays []RelayTopoEntry) {
 // ── Validation of a re-route announced by a child (T16b) ─────────────────────
 
 // reasonNoKnownRoute is the refusal of a host.rerouted about a host this node has no route for.
-const reasonNoKnownRoute = "host without known route"
+const reasonNoKnownRoute = "has no route"
+
+// Reasons of a refused host event (the wording is what operators and tests grep for).
+const (
+	reasonLocal     = "is connected locally"
+	reasonElsewhere = "is routed through another relay"
+)
 
 // reasonLateElsewhere is the refusal of a replayed (late) host event for a host another peer or this node owns now.
 const reasonLateElsewhere = "late event for a host owned elsewhere"
@@ -282,18 +288,35 @@ var (
 	rerouteRefuseAgg = dropreport.New(rerouteRefuseInterval, flushRerouteRefusals)
 )
 
-func noteRerouteRefused(relayID, event, reason string) {
-	noteHostRefused(relayID, event, reason, reason != reasonNoKnownRoute && reason != reasonLateElsewhere)
+func noteRerouteRefused(relayID, event, subject, reason string) {
+	noteHostRefused(relayID, event, subject, reason, reason != reasonNoKnownRoute && reason != reasonLateElsewhere)
 }
+
+// rerouteImmediate remembers, per (level, relay, kind, reason), when the first occurrence was logged at once:
+// an alarm is not held back for a minute, the repetitions are what gets aggregated.
+var (
+	rerouteImmediateMu sync.Mutex
+	rerouteImmediate   = map[string]time.Time{}
+)
 
 // noteHostRefused counts a refused event; severe ones are logged as [SECURITY WARNING], the transient ones
 // (a route this node does not know yet) as [RELAY], once per minute and per (relay, kind, reason).
-func noteHostRefused(relayID, event, reason string, severe bool) {
-	level := "R|"
+func noteHostRefused(relayID, event, subject, reason string, severe bool) {
+	level, prefix := "R|", "[RELAY]"
 	if severe {
-		level = "S|"
+		level, prefix = "S|", "[SECURITY WARNING]"
 	}
 	key := level + relayID + ": " + event + ": " + reason
+	now := time.Now()
+	rerouteImmediateMu.Lock()
+	first := now.Sub(rerouteImmediate[key]) >= rerouteRefuseInterval
+	if first && len(rerouteImmediate) < 1024 {
+		rerouteImmediate[key] = now
+	}
+	rerouteImmediateMu.Unlock()
+	if first {
+		log.Printf("%s event_forward %s refused: relay_id=%q subject=%q %s", prefix, event, relayID, subject, reason)
+	}
 	rerouteRefuseMu.Lock()
 	if _, known := rerouteRefusals[key]; known || len(rerouteRefusals) < 256 {
 		rerouteRefusals[key]++
@@ -334,7 +357,7 @@ func flushRerouteRefusals(int64) {
 // next agent_list of its relay).
 func hostSubtreeRefusal(conn *RelayConnection, m RelayMessage) (string, bool) {
 	if _, err := GetConnection(m.Hostname); err == nil {
-		return "host connected on this node", true
+		return reasonLocal, true
 	}
 	owner, _ := lookupHostRoute(m.Hostname)
 	if owner == "" {
@@ -354,7 +377,7 @@ func hostSubtreeRefusal(conn *RelayConnection, m RelayMessage) (string, bool) {
 	if _, mine := conn.descendants[owner]; mine {
 		return "", false
 	}
-	return "host routed through another relay", true
+	return reasonElsewhere, true
 }
 
 // reroutedRefusal returns why a host.rerouted / relay.rerouted received from a child must be refused

@@ -342,7 +342,7 @@ func TestReroutedRefusal(t *testing.T) {
 		"relay: chain shorter":            {rel(func(m *RelayMessage) { m.NewChain = []string{"zone-b"} }), "reverse"},
 		"host: element outside subtree":   {host(func(m *RelayMessage) { m.OldChain = []string{"dmz1", "elsewhere"}; m.OldRelay = "elsewhere" }), "outside"},
 		"relay: element outside subtree":  {rel(func(m *RelayMessage) { m.OldChain = []string{"dmz1", "ghost", "zone-b"} }), "outside"},
-		"host: unknown host":              {host(func(m *RelayMessage) { m.Hostname = "never-seen" }), "without known route"},
+		"host: unknown host":              {host(func(m *RelayMessage) { m.Hostname = "never-seen" }), "has no route"},
 		"host: old_relay forged":          {host(func(m *RelayMessage) { m.OldRelay = "zone-b" }), "differ"},
 		"host: new_relay forged":          {host(func(m *RelayMessage) { m.NewRelay = "dmz1" }), "differ"},
 		"host: relays absent, chains set": {host(func(m *RelayMessage) { m.OldRelay, m.NewRelay = "", "" }), "differ"},
@@ -387,7 +387,7 @@ func TestReroutedRefusal_IsAggregatedAndDropsTheEvent(t *testing.T) {
 	}
 	fwd.Unlock()
 	rerouteRefuseAgg.Flush()
-	if n := strings.Count(out.String(), "host.rerouted: host without known route): 5 event(s)"); n != 1 {
+	if n := strings.Count(out.String(), "host.rerouted: has no route): 5 event(s)"); n != 1 {
 		t.Errorf("want ONE aggregated line for 5 refusals:\n%s", out.String())
 	}
 }

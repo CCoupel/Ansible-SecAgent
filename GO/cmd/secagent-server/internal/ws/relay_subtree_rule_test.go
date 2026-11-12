@@ -124,10 +124,10 @@ func TestSubtreeRule_AlarmLevelsAndAggregation(t *testing.T) {
 	r.ready()
 	rerouteRefuseAgg.Flush()
 	logs := out.String()
-	if !strings.Contains(logs, "[SECURITY WARNING] event refused (dmz1: host.down: host routed through another relay): 4 event(s)") {
+	if !strings.Contains(logs, "[SECURITY WARNING] event refused (dmz1: host.down: is routed through another relay): 4 event(s)") {
 		t.Errorf("no aggregated alarm for the host of another peer:\n%s", logs)
 	}
-	if !strings.Contains(logs, "[RELAY] event refused (dmz1: host.removed: host without known route): 3 event(s)") {
+	if !strings.Contains(logs, "[RELAY] event refused (dmz1: host.removed: has no route): 3 event(s)") {
 		t.Errorf("no aggregated [RELAY] line for the unknown route:\n%s", logs)
 	}
 }
