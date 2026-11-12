@@ -100,6 +100,11 @@ chk "lien amont : connected lu (et non la ligne upstream_queue_depth)" "$([ "$(s
 chk "lien amont : retrying lu" "$([ "$(st_of retrying)" = retrying ]; echo $?)"
 chk "lien amont : pas de lien amont => vide (racine)" "$([ -z "$(st_of '')" ]; echo $?)"
 
+# --- v3.0.6 : borne du gel testee AVANT chaque cycle (upstream-queue, QA r3 R4 : aucun cycle ne depasse la borne) ---
+chk "gel : cycle 100+10 <= 120 => commence" "$(pf 'cycle_fits 100 10 120' >/dev/null; echo $?)"
+chk "gel : cycle 112+10 > 120 => refuse (l'ancien test l'aurait lance : 112 <= 120)" "$(if pf 'cycle_fits 112 10 120' >/dev/null; then echo 1; else echo 0; fi)"
+chk "gel : bornes decimales (110.4+9.6 = 120 => commence ; 110.5+9.6 => refuse)" "$(pf 'cycle_fits 110.4 9.6 120 && ! cycle_fits 110.5 9.6 120' >/dev/null; echo $?)"
+
 # --- v3.0.6 : lecture du journal des hooks (events_log via faux `docker exec`), compteurs, surcharge des hooks ---
 LOG="$TMPD/events.log"
 cat > "$LOG" <<'EOF'

@@ -23,7 +23,7 @@
 #   chain-test.sh relay-down   # arret puis redemarrage de l'enfant : relay.down peer_closed:1001 puis relay.up de dmz1 (#245, T22)
 #   chain-test.sh converged-timeout   # enfant arrete puis bascule : relay.converged au delai (relays_missing=1), un seul (#246)
 #   chain-test.sh rerouted     # minion-child re-pointe vers la racine puis retour : host.rerouted direct puis indirect (#244)
-#   chain-test.sh upstream-queue  # lien amont gele puis vu coupe, 8 (de)connexions rejouees sans perte ; UPSTREAM_QUEUE_SIZE=256 : variante (#246)
+#   chain-test.sh upstream-queue  # lien amont gele (<= 120 s) puis vu coupe, 6 (de)connexions rejouees sans perte ; UPSTREAM_QUEUE_SIZE=256 : variante (#246)
 #   chain-test.sh relay-rerouted  # CHAIN_LEVEL3=1 : dmz2 re-pointe vers la racine puis retour : relay.rerouted (#244)
 #   chain-test.sh failover-3-levels  # CHAIN_LEVEL3=1 : redemarrage de dmz2, relay.failover dmz2 journalise par la racine (#225)
 #   chain-test.sh lost-during-failover  # kill du maitre + minion-root arrete pendant la fenetre : aucun host.down (#247)
@@ -851,10 +851,13 @@ rerouted() {
 # uplink.go:158), ce qu'il produit part sur la socket et est PERDU EN VOL a la fermeture (« au plus une fois »,
 # documente, correction v3.0.7 : _work/reports/dev-relay-qualif-upstream-queue-20261112.md). Le scenario attend donc
 # que l'enfant voie son lien amont NON connecte (`server status` : LINK upstream, STATE != connected) AVANT les cycles :
-# tout ce qui suit passe par la file amont. Puis UPSTREAM_CYCLES (defaut 8) (de)connexions de minion-child, `unpause` :
+# tout ce qui suit passe par la file amont. Puis UPSTREAM_CYCLES (defaut 6) (de)connexions de minion-child, `unpause` :
 # STRICT : la file a servi (profondeur > 0), le maitre journalise toutes les UP/DOWN, 0 perte (upstream_dropped_events).
-# Duree du gel bornee par UPSTREAM_PAUSE_MAX_S (defaut 140 s : ~90 s de detection + 8 x ~7 s ; le maitre gele ne bat
-# plus, son SelfRetire est a 3 min du dernier battement reussi, au plus 30 s avant le gel : 170 s < 180 s).
+# Duree du gel bornee par UPSTREAM_PAUSE_MAX_S (defaut 120 s, plafond 130 s) : le maitre gele ne bat plus et se retire
+# (SelfRetire, 180 s apres son DERNIER battement reussi, lock/params.go:54) ; ce battement peut dater de 30 s (Beat) avant
+# le gel : la marge reelle est donc 180 - 30 = 150 s, moins un cycle (~7 s) et une marge. La borne est testee AVANT
+# chaque cycle avec la duree estimee du cycle (la plus longue observee, 10 s au depart) : aucun cycle ne la depasse
+# (QA r3 : 141 s observes, jusqu'a ~147 s possibles avec l'ancien test). Detection mesuree : 71-78 s.
 # Variante UPSTREAM_QUEUE_SIZE=<n> (>= 256) : enfant recree avec une file de n (capacite verifiee). Une perte n'est
 # OBSERVABLE que si 2 x cycles faits > n ; dans la fenetre du gel (~8 cycles apres la detection) ce n'est PAS atteignable
 # pour n=256 (il faudrait > 128 cycles) : la variante verifie alors capacite = n et 0 perte, et la preuve du debordement
@@ -865,9 +868,9 @@ upstream_link_state() { # $1 conteneur : etat du lien amont (connected | retryin
 upstream_link_down() { local st; st="$(upstream_link_state "$1")"; [ -n "$st" ] && [ "$st" != connected ]; }
 upstream_queue() {
   verify_images; need INVENTORY_BIN
-  local m cycles="${UPSTREAM_CYCLES:-8}" qs="${UPSTREAM_QUEUE_SIZE:-}" pmax="${UPSTREAM_PAUSE_MAX_S:-140}" i ndone=0 t0 td d c x x0 dmax=0 up0 dn0 e0 st
+  local m cycles="${UPSTREAM_CYCLES:-6}" qs="${UPSTREAM_QUEUE_SIZE:-}" pmax="${UPSTREAM_PAUSE_MAX_S:-120}" i ndone=0 t0 td tc dc_max=10 d c x x0 dmax=0 up0 dn0 e0 st
   [[ $cycles =~ ^[1-9][0-9]{0,3}$ ]] || refuse "UPSTREAM_CYCLES='$cycles' invalide"
-  [[ $pmax =~ ^[1-9][0-9]{1,2}$ ]] && [ "$pmax" -le 170 ] || refuse "UPSTREAM_PAUSE_MAX_S='$pmax' invalide (10..170 s : SelfRetire du verrou a 180 s)"
+  [[ $pmax =~ ^[1-9][0-9]{1,2}$ ]] && [ "$pmax" -le 130 ] || refuse "UPSTREAM_PAUSE_MAX_S='$pmax' invalide (10..130 s : retrait du maitre gele possible des 150 s)"
   m="$(master)" || fail "pas de maitre sur la racine"
   if [ -n "$qs" ]; then
     [[ $qs =~ ^[0-9]{3,6}$ ]] && [ "$qs" -ge 256 ] || refuse "UPSTREAM_QUEUE_SIZE='$qs' invalide (>= 256)"
@@ -895,9 +898,13 @@ upstream_queue() {
   # compteurs du maitre RELEVES MAINTENANT : ce qui a ete produit avant la detection peut etre perdu en vol (documente)
   up0="$(hook_count "$m" minion-child UP)"; dn0="$(hook_count "$m" minion-child DOWN)"
   for i in $(seq 1 "$cycles"); do
-    awk -v a="$t0" -v b="$(now)" -v m="$pmax" 'BEGIN{exit !(b-a>m)}' && { echo "info : gel borne a ${pmax}s, arret apres $((i - 1)) cycle(s)"; break; }
+    # le cycle ne commence que s'il FINIT avant la borne (duree estimee = la plus longue observee)
+    cycle_fits "$(awk -v a="$t0" -v b="$(now)" 'BEGIN{print b-a}')" "$dc_max" "$pmax" \
+      || { echo "info : gel borne a ${pmax}s, arret apres $((i - 1)) cycle(s) (cycle estime ${dc_max}s)"; break; }
+    tc=$(now)
     dc stop minion-child >/dev/null; dc start minion-child >/dev/null
     connected "$C_CHILD" minions minion-child 2
+    dc_max="$(awk -v a="$tc" -v b="$(now)" -v m="$dc_max" 'BEGIN{d=b-a; printf "%.0f", (d>m ? d+0.5 : m)}')"
     ndone=$i
     read -r d _ _ < <(upstream_counters "$C_CHILD"); [ "${d:-0}" -gt "$dmax" ] && dmax="${d:-0}"
   done

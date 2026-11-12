@@ -274,6 +274,9 @@ hook_last() { events_log "$1" | awk -v h="$2" -v k="$3" '$2==k && $3==h {l=$0} E
 count_matches() { { grep -Eo -- "$1" || true; } | wc -l | tr -d ' '; }   # nombre d'occurrences du motif ERE $1 (0 si aucune)
 count_lines() { { grep -c -- "$1" || true; }; }                          # nombre de lignes contenant $1 (0 si aucune)
 extract() { { grep -oE -- "$1" || true; } | tail -1; }                   # derniere occurrence de $1 (vide si aucune), jamais affichee
+# Gel borne (chain-test.sh upstream-queue) : un cycle de duree estimee $2 s, commence a $1 s du debut du gel, finit-il
+# avant la borne $3 s ? (nombres entiers ou decimaux ; 0 = oui). La borne n'est JAMAIS depassee par un cycle commence.
+cycle_fits() { awk -v e="$1" -v d="$2" -v m="$3" 'BEGIN{exit !(e + d <= m)}'; }
 # Etat du lien amont dans la sortie de `secagent-server server status` (stdin) : ligne
 # "upstream (<mode>)  <pair>  <etat>  <depuis>  <raison>" (cli/server.go:124-125) -> <etat> (vide si pas de lien amont).
 upstream_state_from_status() { awk '$1=="upstream" {print $4; exit}'; }
