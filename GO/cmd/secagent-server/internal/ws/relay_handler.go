@@ -1799,6 +1799,18 @@ func handleTopologySnapshot(conn *RelayConnection, msg RelayMessage) {
 	notifyTopologyChanged()
 }
 
+// relayFirstSeenFn marks the first snapshot of a declared relay (storage.MarkRelayFirstSeen).
+var relayFirstSeenFn atomic.Pointer[func(relayID string) (first bool, at time.Time)]
+
+// SetRelayFirstSeenFunc wires the first-seen mark of declared relays (#266). nil disables relay.discover.
+func SetRelayFirstSeenFunc(fn func(relayID string) (first bool, at time.Time)) {
+	if fn == nil {
+		relayFirstSeenFn.Store(nil)
+		return
+	}
+	relayFirstSeenFn.Store(&fn)
+}
+
 // emitRelayUp announces the first accepted snapshot of a link: relay.up when the child process
 // announced its first connection (conn_seq <= 1 or unknown), relay.reconnect when it announced a
 // later one (same process back after a cut, a failover of this node, a keepalive). Exclusive.
@@ -1818,6 +1830,13 @@ func emitRelayUp(conn *RelayConnection, msg RelayMessage) {
 	sort.Strings(ids)
 	if len(ids) > maxRelaysBelowIDs {
 		ids = ids[:maxRelaysBelowIDs]
+	}
+	// relay.discover (#266): the FIRST snapshot of a DECLARED relay, by its direct parent, before relay.up.
+	if fn := relayFirstSeenFn.Load(); fn != nil {
+		if first, at := (*fn)(conn.RelayID); first {
+			emitEvent(hooks.Event{Name: "relay.discover", RelayID: conn.RelayID, RelayChain: []string{conn.RelayID}, Detail: hooks.Detail{
+				Mode: mode, HostsRouted: len(msg.Agents), FirstSeenAt: at.UTC().Format(time.RFC3339)}})
+		}
 	}
 	emitEvent(hooks.Event{Name: name, RelayID: conn.RelayID, RelayChain: []string{conn.RelayID}, Detail: hooks.Detail{
 		Mode: mode, ConnSeq: hooks.Seq(normConnSeq(conn.connSeq)), HostsRouted: len(msg.Agents), RelaysBelow: len(msg.Relays), RelaysBelowIDs: ids}})
@@ -1975,7 +1994,7 @@ var eventDetailFields = map[string]string{
 	"relay.down":      "reason hosts_routed",
 	"relay.discover":  "mode hosts_routed first_seen_at",
 	"relay.rerouted":  "old_chain new_chain hosts_routed",
-	"relay.removed":   "mode cause",
+	"relay.removed":   "mode cause hosts_routed first_seen_at",
 	"relay.converged": "hosts_routed relays_connected relays_missing hosts_direct upstream_dropped_events_total",
 	"host.up":         "conn_seq",
 	"host.reconnect":  "conn_seq",

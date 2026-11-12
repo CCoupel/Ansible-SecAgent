@@ -165,6 +165,14 @@ func (s *Store) pendingFirstSeen(hostname string) (time.Time, bool) {
 	return t, ok
 }
 
+// pendingRelayFirstSeen is pendingFirstSeen for a relay node.
+func (s *Store) pendingRelayFirstSeen(relayID string) (time.Time, bool) {
+	s.fsMu.Lock()
+	defer s.fsMu.Unlock()
+	t, ok := s.fs.relays[relayID]
+	return t, ok
+}
+
 // forgetFirstSeen drops the pending mark of a deleted agent / relay.
 func (s *Store) forgetFirstSeen(hostname, relayID string) {
 	s.fsMu.Lock()

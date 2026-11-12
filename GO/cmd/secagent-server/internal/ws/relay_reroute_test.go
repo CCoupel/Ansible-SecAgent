@@ -632,3 +632,71 @@ func TestRegisterConnection_DiscoverBeforeUpOnlyOnce(t *testing.T) {
 		t.Errorf("host.discover = %+v", first)
 	}
 }
+
+// #266: relay.discover at the FIRST snapshot of a declared relay, before relay.up; once; a replacing
+// snapshot or a relay the store does not know gives nothing.
+func TestRelayDiscover_BeforeUpOnlyOnceForADeclaredRelay(t *testing.T) {
+	resetRerouteMemory(t)
+	rec := &recEvents{}
+	SetEventFunc(rec.add)
+	var mu sync.Mutex
+	declared := map[string]bool{"decl-relay": true}
+	SetRelayFirstSeenFunc(func(id string) (bool, time.Time) {
+		mu.Lock()
+		defer mu.Unlock()
+		if declared[id] {
+			declared[id] = false
+			return true, time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+		}
+		return false, time.Time{}
+	})
+	t.Cleanup(func() { SetEventFunc(nil); SetRelayFirstSeenFunc(nil) })
+	setTreeHooks(t, "central", nil, nil, nil)
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+
+	c := dialRelay(t, srv, makeRelayJWT("decl-relay", "relay"))
+	handshake(t, c, "decl-relay")
+	sendSnapshot(t, c, nil, []RelayAgentInfo{{Hostname: "a1", RelayID: "decl-relay", RelayChain: []string{"decl-relay"}}})
+	readMsg(t, c)
+	sendSnapshot(t, c, nil, nil) // replacing snapshot: nothing
+	readMsg(t, c)
+	_ = c.Close()
+	c2 := dialRelay(t, srv, makeRelayJWT("decl-relay", "relay")) // a reconnection: nothing
+	handshake(t, c2, "decl-relay")
+	sendSnapshot(t, c2, nil, nil)
+	readMsg(t, c2)
+	c3 := dialRelay(t, srv, makeRelayJWT("undeclared", "relay")) // not declared on this node: nothing
+	handshake(t, c3, "undeclared")
+	sendSnapshot(t, c3, nil, nil)
+	readMsg(t, c3)
+	time.Sleep(100 * time.Millisecond)
+
+	rec.mu.Lock()
+	var names []string
+	var disc hooks.Event
+	for _, e := range rec.evs {
+		if e.RelayID == "decl-relay" || e.RelayID == "undeclared" {
+			names = append(names, e.RelayID+":"+e.Name)
+			if e.Name == "relay.discover" {
+				disc = e
+			}
+		}
+	}
+	rec.mu.Unlock()
+	if len(names) < 2 || names[0] != "decl-relay:relay.discover" || names[1] != "decl-relay:relay.up" {
+		t.Fatalf("events = %v, want relay.discover then relay.up first", names)
+	}
+	n := 0
+	for _, nm := range names {
+		if nm == "decl-relay:relay.discover" || nm == "undeclared:relay.discover" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d relay.discover, want exactly 1: %v", n, names)
+	}
+	if disc.Detail.FirstSeenAt != "2026-11-12T10:00:00Z" || disc.Detail.HostsRouted != 1 || disc.Detail.Mode != "push" && disc.Detail.Mode != "pull" {
+		t.Errorf("relay.discover = %+v", disc)
+	}
+}

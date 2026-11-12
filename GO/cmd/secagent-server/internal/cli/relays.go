@@ -62,7 +62,7 @@ var relaysListCmd = &cobra.Command{
 		return printOutput(globalFormat, relays, func(v interface{}) error {
 			list, _ := v.([]interface{})
 			tp := newTabPrinter()
-			tp.println("RELAY_ID\tMODE\tIS_PROXY\tSTATUS\tLAST_SEEN\tDESCRIPTION")
+			tp.println("RELAY_ID\tMODE\tIS_PROXY\tSTATUS\tLAST_SEEN\tDESCRIPTION\tFIRST_SEEN")
 			for _, item := range list {
 				m, _ := item.(map[string]interface{})
 				relayID, _ := m["relay_id"].(string)
@@ -78,8 +78,12 @@ var relaysListCmd = &cobra.Command{
 				if lastSeen == "" {
 					lastSeen = "-"
 				}
-				tp.printf("%s\t%s\t%s\t%s\t%s\t%s\n",
-					relayID, mode, isProxyStr, status, lastSeen, description)
+				firstSeen, _ := m["first_seen_at"].(string)
+				if firstSeen == "" {
+					firstSeen = "-"
+				}
+				tp.printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					relayID, mode, isProxyStr, status, lastSeen, description, firstSeen)
 			}
 			return tp.flush()
 		})

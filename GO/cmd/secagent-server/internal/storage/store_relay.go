@@ -26,19 +26,26 @@ type RelayNode struct {
 	RelayID     string   // human-readable unique ID, e.g. "dmz1"
 	URLs        []string // wss:// addresses of the child's instances — push mode only (tried in order), empty for pull
 	Description string
-	TokenHash   string // pull mode: SHA-256 of the relay token
-	TokenSecret string // push mode: sealed token ("enc:…"), see state.SealSecret
-	Mode        string // "pull" | "push"
-	IsProxy     bool   // true if the downstream relay is itself a proxy
-	CreatedAt   int64  // Unix timestamp
-	LastSeen    *int64 // nil if never connected (volatile)
-	Status      string // "connected" | "disconnected" | "pending" (volatile)
+	TokenHash   string     // pull mode: SHA-256 of the relay token
+	TokenSecret string     // push mode: sealed token ("enc:…"), see state.SealSecret
+	Mode        string     // "pull" | "push"
+	IsProxy     bool       // true if the downstream relay is itself a proxy
+	CreatedAt   int64      // Unix timestamp
+	FirstSeenAt *time.Time // #266: first snapshot accepted from this declared relay (nil: never)
+	LastSeen    *int64     // nil if never connected (volatile)
+	Status      string     // "connected" | "disconnected" | "pending" (volatile)
 }
 
 func (s *Store) relayFromState(n state.RelayNode) RelayNode {
 	out := RelayNode{ID: n.ID, RelayID: n.RelayID, Description: n.Description, TokenHash: n.TokenHash, TokenSecret: n.TokenSecret,
 		Mode: n.Mode, IsProxy: n.IsProxy, CreatedAt: n.CreatedAt.Unix(), Status: "pending"}
 	out.URLs = append([]string(nil), n.URLs...)
+	if n.FirstSeenAt != nil {
+		t := *n.FirstSeenAt
+		out.FirstSeenAt = &t
+	} else if t, ok := s.pendingRelayFirstSeen(n.RelayID); ok { // marked in memory, not written yet
+		out.FirstSeenAt = &t
+	}
 	s.mu.RLock()
 	if v, ok := s.relayVol[n.RelayID]; ok {
 		if v.status != "" {
@@ -134,6 +141,7 @@ func (s *Store) DeleteRelayNode(id string) error {
 		return fmt.Errorf("DeleteRelayNode: %w", err)
 	}
 	if relayID != "" {
+		s.forgetFirstSeen("", relayID)
 		s.mu.Lock()
 		delete(s.relayVol, relayID)
 		for h, r := range s.routes { // ON DELETE CASCADE

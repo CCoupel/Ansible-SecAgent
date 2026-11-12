@@ -522,6 +522,7 @@ func Build(cfg Config) (node *Node, err error) {
 		}
 		return true, at, enrolled
 	})
+	ws.SetRelayFirstSeenFunc(store.MarkRelayFirstSeen)
 	ws.SetRelayLinkEstablishedFunc(n.linkEstablished)
 	ws.SetRelayChainFunc(func(relayID string, chain []string) error {
 		_, err := store.SetRelayChain(relayID, chain)

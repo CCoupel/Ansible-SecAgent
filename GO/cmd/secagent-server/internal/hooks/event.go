@@ -115,7 +115,7 @@ func (dt Detail) vars(event, relayID string) map[string]string {
 		set("new_relay", dt.NewRelay())
 	}
 	num("conn_seq", int(dt.ConnSeq), false)
-	num("hosts_routed", dt.HostsRouted, rel && event != "relay.failover" && event != "relay.removed")
+	num("hosts_routed", dt.HostsRouted, rel && event != "relay.failover")
 	num("relays_below", dt.RelaysBelow, event == "relay.up" || event == "relay.reconnect")
 	num("relays_connected", dt.RelaysConnected, event == "relay.converged")
 	num("relays_missing", dt.RelaysMissing, event == "relay.converged")
