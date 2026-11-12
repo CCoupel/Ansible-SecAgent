@@ -352,6 +352,7 @@ Le relais ne garde pas de registre persistant des hôtes connectés (option A, d
 - **arrêt propre** : l'ancien maître émet `host.down` pour tous ses agents directs (en pratique avant le drain de 10 s ; un `host.down` tardif est rejeté et compté) ; **arrêt brutal** (perte du verrou) : tous perdus ;
 - **hôte tombé pendant la fenêtre** : aucun `host.down`, dans les deux modes ;
 - **hôtes derrière un relais enfant** : aucun événement `host.*` à la reprise du lien ; l'enfant met ses événements en file lien coupé (pull comme push) et les rejoue après son snapshot, marqués `late` au-delà de 10 s (historique : ni route, ni conflit, ni `host.rerouted`), dans la limite de sa file amont (`RELAY_UPSTREAM_QUEUE_SIZE`, défaut 10 000, bornes 256 à 100 000 ; cadence `RELAY_UPSTREAM_RATE`, défaut 150/s ; `RELAY_CONVERGENCE_TIMEOUT`, défaut 60 s, bornes 5 s à 10 min).
+- **parent gelé sans coupure TCP** (livraison au plus une fois) : les événements qu'un enfant écrit pendant la détection de la perte (jusqu'à 90 s) sont perdus et **non comptés** dans `upstream_dropped_events` ; la file amont ne protège que les coupures déjà détectées. Correction (`event_ack`, rejeu, déduplication) prévue en v3.0.7.
 
 À faire : sur `relay.failover`, puis quand les enfants attendus sont revenus (`relay.up` / `relay.reconnect`, ou `relay.converged`, émis une fois par le nœud promu), relire `GET /api/inventory` (jeton plugin) et réconcilier l'outil aval. Détail : `DOC/server/HOOKS_SPEC.md`, « Pertes à la bascule ».
 
