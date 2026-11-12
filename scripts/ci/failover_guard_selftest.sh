@@ -89,6 +89,17 @@ chk "pipefail : extract => derniere occurrence" "$([ "$(pf 'printf "eyJa.b.c\ney
 chk "pipefail : extract vide | { read || true ; fail } => le message de refus est emis" "$(pf 'printf "" | extract zz | { read -r t || true; [ -n "$t" ] || echo REFUS-EMIS; }' | grep -q REFUS-EMIS; echo $?)"
 chk "pipefail : temoin, l'ancien motif grep|wc -l abandonne sans message" "$(if pf 'x="$(printf "a\n" | grep -Eo zz | wc -l)"; echo atteint' | grep -q atteint; then echo 1; else echo 0; fi)"
 
+# --- v3.0.6 : etat du lien amont lu dans `server status` (upstream-queue attend STATE != connected avant les cycles) ---
+ST="$TMPD/status.txt"
+st_of() { # $1 etat de la ligne upstream (vide = pas de ligne) ; sortie = etat lu
+  { printf 'COMPONENT              STATUS\nupstream_queue_depth   0 / 10000\nupstream_dropped_events 0\n'
+    [ -z "$1" ] || printf '\nLINK             PEER                         STATE      SINCE                 REASON\nupstream (pull)  wss://secagent-server-b:7772  %s  2026-11-12T09:38:54Z  -\n' "$1"; } > "$ST"
+  pf "upstream_state_from_status < '$ST'"
+}
+chk "lien amont : connected lu (et non la ligne upstream_queue_depth)" "$([ "$(st_of connected)" = connected ]; echo $?)"
+chk "lien amont : retrying lu" "$([ "$(st_of retrying)" = retrying ]; echo $?)"
+chk "lien amont : pas de lien amont => vide (racine)" "$([ -z "$(st_of '')" ]; echo $?)"
+
 # --- v3.0.6 : lecture du journal des hooks (events_log via faux `docker exec`), compteurs, surcharge des hooks ---
 LOG="$TMPD/events.log"
 cat > "$LOG" <<'EOF'

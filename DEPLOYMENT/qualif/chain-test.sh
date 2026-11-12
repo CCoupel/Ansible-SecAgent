@@ -23,7 +23,7 @@
 #   chain-test.sh relay-down   # arret puis redemarrage de l'enfant : relay.down peer_closed:1001 puis relay.up de dmz1 (#245, T22)
 #   chain-test.sh converged-timeout   # enfant arrete puis bascule : relay.converged au delai (relays_missing=1), un seul (#246)
 #   chain-test.sh rerouted     # minion-child re-pointe vers la racine puis retour : host.rerouted direct puis indirect (#244)
-#   chain-test.sh upstream-queue  # lien amont gele, N (de)connexions rejouees sans perte ; UPSTREAM_QUEUE_SIZE=256 : variante (#246)
+#   chain-test.sh upstream-queue  # lien amont gele puis vu coupe, 8 (de)connexions rejouees sans perte ; UPSTREAM_QUEUE_SIZE=256 : variante (#246)
 #   chain-test.sh relay-rerouted  # CHAIN_LEVEL3=1 : dmz2 re-pointe vers la racine puis retour : relay.rerouted (#244)
 #   chain-test.sh failover-3-levels  # CHAIN_LEVEL3=1 : redemarrage de dmz2, relay.failover dmz2 journalise par la racine (#225)
 #   chain-test.sh lost-during-failover  # kill du maitre + minion-root arrete pendant la fenetre : aucun host.down (#247)
@@ -829,45 +829,73 @@ rerouted() {
   echo "rerouted OK"
 }
 
-# Scenario upstream-queue (#246) : le lien amont de l'enfant est GELE (`pause` du maitre de la racine), minion-child fait
-# UPSTREAM_CYCLES (defaut 20) (de)connexions, puis `unpause` : le maitre journalise toutes les UP/DOWN rejouees, aucune
-# perte (file 10 000). Variante UPSTREAM_QUEUE_SIZE=256 : l'enfant est recree avec une file de 256 ; une perte n'est
-# OBSERVABLE que si 2 x UPSTREAM_CYCLES > 256 (sinon : constat seulement, la preuve reste le test d'integration (6)).
-# Gel borne a UPSTREAM_PAUSE_MAX_S (defaut 150 s, < 3 min de SelfRetire du verrou : pas de bascule pendant le gel).
+# Scenario upstream-queue (#246) : le lien amont de l'enfant est GELE (`pause` du maitre de la racine). Tant que l'enfant
+# croit ce lien vivant (jusqu'a l'expiration du delai de lecture, 3 x PingInterval = 90 s : repeater/client.go:52,54,
+# uplink.go:158), ce qu'il produit part sur la socket et est PERDU EN VOL a la fermeture (« au plus une fois »,
+# documente, correction v3.0.7 : _work/reports/dev-relay-qualif-upstream-queue-20261112.md). Le scenario attend donc
+# que l'enfant voie son lien amont NON connecte (`server status` : LINK upstream, STATE != connected) AVANT les cycles :
+# tout ce qui suit passe par la file amont. Puis UPSTREAM_CYCLES (defaut 8) (de)connexions de minion-child, `unpause` :
+# STRICT : la file a servi (profondeur > 0), le maitre journalise toutes les UP/DOWN, 0 perte (upstream_dropped_events).
+# Duree du gel bornee par UPSTREAM_PAUSE_MAX_S (defaut 140 s : ~90 s de detection + 8 x ~7 s ; le maitre gele ne bat
+# plus, son SelfRetire est a 3 min du dernier battement reussi, au plus 30 s avant le gel : 170 s < 180 s).
+# Variante UPSTREAM_QUEUE_SIZE=<n> (>= 256) : enfant recree avec une file de n (capacite verifiee). Une perte n'est
+# OBSERVABLE que si 2 x cycles faits > n ; dans la fenetre du gel (~8 cycles apres la detection) ce n'est PAS atteignable
+# pour n=256 (il faudrait > 128 cycles) : la variante verifie alors capacite = n et 0 perte, et la preuve du debordement
+# reste le test d'integration (6) de T19. Meme regle de detection du lien coupe que le cas nominal.
+upstream_link_state() { # $1 conteneur : etat du lien amont (connected | retrying | refused_permanent ; vide si absent)
+  { adm "$1" server status 2>/dev/null || true; } | upstream_state_from_status
+}
+upstream_link_down() { local st; st="$(upstream_link_state "$1")"; [ -n "$st" ] && [ "$st" != connected ]; }
 upstream_queue() {
   verify_images; need INVENTORY_BIN
-  local m cycles="${UPSTREAM_CYCLES:-20}" qs="${UPSTREAM_QUEUE_SIZE:-}" pmax="${UPSTREAM_PAUSE_MAX_S:-150}" i ndone=0 t0 d c x x0 dmax=0 up0 dn0 e0
+  local m cycles="${UPSTREAM_CYCLES:-8}" qs="${UPSTREAM_QUEUE_SIZE:-}" pmax="${UPSTREAM_PAUSE_MAX_S:-140}" i ndone=0 t0 td d c x x0 dmax=0 up0 dn0 e0 st
   [[ $cycles =~ ^[1-9][0-9]{0,3}$ ]] || refuse "UPSTREAM_CYCLES='$cycles' invalide"
+  [[ $pmax =~ ^[1-9][0-9]{1,2}$ ]] && [ "$pmax" -le 170 ] || refuse "UPSTREAM_PAUSE_MAX_S='$pmax' invalide (10..170 s : SelfRetire du verrou a 180 s)"
   m="$(master)" || fail "pas de maitre sur la racine"
   if [ -n "$qs" ]; then
-    [[ $qs =~ ^[0-9]{3,6}$ ]] || refuse "UPSTREAM_QUEUE_SIZE='$qs' invalide"
+    [[ $qs =~ ^[0-9]{3,6}$ ]] && [ "$qs" -ge 256 ] || refuse "UPSTREAM_QUEUE_SIZE='$qs' invalide (>= 256)"
     echo "== variante : file amont de l'enfant a $qs"
     CHILD_UPSTREAM_QUEUE_SIZE="$qs" recreate_child
   fi
   connected "$m" relays dmz1 4; connected "$C_CHILD" minions minion-child 2
+  st="$(upstream_link_state "$C_CHILD")"; [ "$st" = connected ] || fail "lien amont de l'enfant '$st' avant le gel (connected attendu)"
   read -r d c x0 < <(upstream_counters "$C_CHILD"); [ -n "$c" ] || fail "compteurs upstream_* absents de l'enfant"
   echo "file amont avant : profondeur=$d capacite=$c perdus=$x0"
-  up0="$(hook_count "$m" minion-child UP)"; dn0="$(hook_count "$m" minion-child DOWN)"
+  [ -z "$qs" ] || [ "$c" = "$qs" ] || fail "capacite de la file amont de l'enfant = $c (attendu $qs)"
   e0="$(upstream_dropped_entries "$C_CHILD")"
-  echo "== gel du lien amont (pause de $m), $cycles (de)connexions de minion-child"
+  echo "== gel du lien amont (pause de $m) ; attente que l'enfant voie le lien coupe (<= 90 s + marge)"
   ctr pause "$m" >/dev/null; t0=$(now)
+  trap 'ctr unpause "'"$m"'" >/dev/null 2>&1 || true' EXIT   # jamais un maitre laisse gele sur un echec
+  while ! upstream_link_down "$C_CHILD"; do
+    if awk -v a="$t0" -v b="$(now)" -v m="$pmax" 'BEGIN{exit !(b-a>m)}'; then
+      ctr unpause "$m" >/dev/null; trap - EXIT
+      fail "l'enfant voit toujours son lien amont connected apres ${pmax}s de gel (detection attendue vers 90 s)"
+    fi
+    sleep 2
+  done
+  td=$(now)
+  echo "lien amont vu coupe par l'enfant apres $(awk -v a="$t0" -v b="$td" 'BEGIN{printf "%.0f", b-a}') s (etat $(upstream_link_state "$C_CHILD")) : $cycles (de)connexions de minion-child"
+  # compteurs du maitre RELEVES MAINTENANT : ce qui a ete produit avant la detection peut etre perdu en vol (documente)
+  up0="$(hook_count "$m" minion-child UP)"; dn0="$(hook_count "$m" minion-child DOWN)"
   for i in $(seq 1 "$cycles"); do
+    awk -v a="$t0" -v b="$(now)" -v m="$pmax" 'BEGIN{exit !(b-a>m)}' && { echo "info : gel borne a ${pmax}s, arret apres $((i - 1)) cycle(s)"; break; }
     dc stop minion-child >/dev/null; dc start minion-child >/dev/null
     connected "$C_CHILD" minions minion-child 2
     ndone=$i
     read -r d _ _ < <(upstream_counters "$C_CHILD"); [ "${d:-0}" -gt "$dmax" ] && dmax="${d:-0}"
-    awk -v a="$t0" -v b="$(now)" -v m="$pmax" 'BEGIN{exit !(b-a>m)}' && { echo "info : gel borne a ${pmax}s, arret apres $i cycle(s)"; break; }
   done
-  ctr unpause "$m" >/dev/null
-  echo "file amont pendant le gel : profondeur max observee $dmax (cycles faits : $ndone)"
-  read -r d c x < <(upstream_counters "$C_CHILD")
+  ctr unpause "$m" >/dev/null; trap - EXIT
+  echo "file amont pendant le gel : profondeur max observee $dmax (cycles faits : $ndone, gel $(awk -v a="$t0" -v b="$(now)" 'BEGIN{printf "%.0f", b-a}') s)"
+  [ "$ndone" -gt 0 ] || fail "aucun cycle dans la fenetre du gel (detection trop tardive) : scenario non concluant"
+  [ "$dmax" -gt 0 ] || fail "file amont restee vide alors que le lien etait vu coupe (les evenements devaient y entrer)"
   if [ -z "$qs" ] || [ $((2 * ndone)) -le "$qs" ]; then
     wait_for "UP minion-child rejoues au maitre $m" 180 hook_more "$m" minion-child UP $((up0 + ndone - 1)) >/dev/null
     wait_for "DOWN minion-child rejoues au maitre $m" 180 hook_more "$m" minion-child DOWN $((dn0 + ndone - 1)) >/dev/null
     for i in $(seq 1 60); do [ "$(upstream_counters "$C_CHILD" | awk '{print $1}')" = 0 ] && break; sleep 2; done
     read -r d c x < <(upstream_counters "$C_CHILD")
+    [ "$d" = 0 ] || fail "file amont de l'enfant non videe apres le degel (profondeur $d)"
     [ "$x" = "$x0" ] || fail "upstream_dropped_events de l'enfant : $x0 -> $x (aucune perte attendue)"
-    [ "$dmax" -gt 0 ] || echo "info : profondeur max 0 (evenements absorbes par le tampon de la socket gelee ?) : non bloquant"
+    [ -z "$qs" ] || echo "info : variante $qs : $((2 * ndone)) evenements <= $qs, debordement non atteignable dans le gel (preuve : test d'integration (6))"
     echo "file amont apres : profondeur=$d capacite=$c perdus=$x ; maitre : +$(( $(hook_count "$m" minion-child UP) - up0 )) UP, +$(( $(hook_count "$m" minion-child DOWN) - dn0 )) DOWN"
   else
     sleep 30
