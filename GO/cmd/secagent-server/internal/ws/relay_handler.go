@@ -491,6 +491,12 @@ func (m RelayMessage) hookEvent() hooks.Event {
 	d.Mode = m.Mode
 	ev := hooks.Event{Name: m.Event, Hostname: m.Hostname, Status: m.Status, EnrolledAt: m.EnrolledAt,
 		RelayChain: append([]string(nil), m.RelayChain...), Detail: d}
+	// The hooks of this node run with the timestamp of ORIGIN ({{timestamp}}), also for a replayed (late) event:
+	// the dispatcher would otherwise stamp the replay time. Only a well-formed date is taken (free text from a
+	// peer never reaches a template).
+	if t, err := time.Parse(time.RFC3339, m.Timestamp); err == nil {
+		ev.Timestamp = t.UTC().Format(time.RFC3339)
+	}
 	if hooks.IsRelayEvent(m.Event) {
 		ev.RelayID = m.RelayID
 		ev.Hostname = ""

@@ -700,3 +700,20 @@ func TestRelayDiscover_BeforeUpOnlyOnceForADeclaredRelay(t *testing.T) {
 		t.Errorf("relay.discover = %+v", disc)
 	}
 }
+
+// Q3 (#266): a replayed (late) event keeps its ORIGIN timestamp end to end: the hooks of the receiving node
+// run with it, a malformed one is ignored.
+func TestHookEvent_CarriesTheOriginTimestamp(t *testing.T) {
+	m := RelayMessage{Event: "host.discover", Hostname: "h", RelayChain: []string{"dmz1"}, Timestamp: "2026-11-12T13:36:37+01:00", Late: true}
+	if got := m.hookEvent().Timestamp; got != "2026-11-12T12:36:37Z" {
+		t.Errorf("timestamp = %q, want the origin date normalized to UTC", got)
+	}
+	m.Timestamp = "yesterday\n{{secret}}"
+	if got := m.hookEvent().Timestamp; got != "" {
+		t.Errorf("a malformed timestamp must be ignored, got %q", got)
+	}
+	m.Timestamp = ""
+	if got := m.hookEvent().Timestamp; got != "" {
+		t.Errorf("no timestamp: got %q", got)
+	}
+}
