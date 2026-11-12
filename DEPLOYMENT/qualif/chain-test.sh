@@ -578,6 +578,16 @@ link_rotation() {
   link_mint_child "$m"   # depose aussi la cle publique courante dans le volume
   recreate_child
   connected "$m" relays dmz1 4
+  if level3; then
+    # 3e niveau : le jeton de dmz2 (minte au bootstrap) est signe par l'ANCIENNE cle et son ancre l'est aussi ; la rotation
+    # se propage bien jusqu'a dmz2 (link_keys), mais apres retire-link-previous sa reconnexion serait refusee (« bad
+    # handshake », fail-closed voulu : SECURITY.md, jeton a re-minter). Re-mint (--aud dmz1) + nouvelle ancre (meme volume)
+    # + recreation de dmz2 AVANT le retrait (_work/reports/dev-relay-qualif-link-rotation-3levels-20261112.md).
+    echo "== 3e niveau : nouveau jeton et nouvelle ancre de dmz2, petit-enfant recree"
+    link_mint_grand "$m" dmz1
+    recreate_grand
+    connected "$C_CHILD" relays dmz2 4
+  fi
   echo "== retire-link-previous (refus attendu tant que non confirme : ici confirme)"
   adm "$m" keys retire-link-previous || fail "retire-link-previous refuse (rotation non confirmee ?)"
   prev="$(link_field "$m" previous)"
@@ -585,8 +595,15 @@ link_rotation() {
   echo "== le lien survit a une reconnexion de l'enfant apres le retrait"
   dc restart secagent-child >/dev/null
   connected "$m" relays dmz1 4
+  if level3; then
+    echo "== 3e niveau : dmz2 se reconnecte a dmz1 apres le retrait, puis survit a son propre redemarrage (ancre courante)"
+    connected "$C_CHILD" relays dmz2 4
+    dc restart secagent-grandchild >/dev/null
+    wait_for "petit-enfant dmz2 healthy" 120 all_health healthy "$C_GRAND" >/dev/null
+    connected "$C_CHILD" relays dmz2 4
+  fi
   smoke
-  echo "link-rotation OK (kid $kid0 -> $kid1, previous retire, lien reconnecte)"
+  echo "link-rotation OK (kid $kid0 -> $kid1, previous retire, lien reconnecte$(level3 && echo ', dmz2 re-minte et reconnecte'))"
 }
 
 # Scenario link-revoke : revocation du jeton de lien de dmz1 sur la racine -> lien ferme (4010, refus PERMANENT),
