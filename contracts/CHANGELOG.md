@@ -23,6 +23,7 @@
 - **[ADDED]** `GET /api/admin/minions`, `GET /api/admin/minions/{hostname}` : champ `first_seen_at` (additif).
 - **[ADDED]** hooks `host.discover` (premier handshake, avant `host.up`, une seule fois) et `host.removed` (suppression admin ; cause `deleted`), propagés (`event_forward`) ; `late` sans effet.
 - **[DEPRECATED]** hook `host.deleted` : toujours émis en v3.0.6 (après `host.removed`), `[WARN]` au chargement d'une config qui s'y abonne, **retiré en v3.0.7 ([BREAKING])** : utiliser `host.removed`.
+- **[ADDED]** hooks `relay.discover` (premier snapshot d'un relais déclaré, par son parent direct, avant `relay.up`, une seule fois) et `relay.removed` (`DELETE /api/admin/relays/{id}`, avant `relay.down reason=revoked`, sans cascade, `hosts_routed` informatif ; jamais sur une révocation), propagés ; `GET /api/admin/relays` : champ additif `first_seen_at` (#266).
 - Compatibilité : un parent v3.0.5 jette les kinds inconnus (`unsupported event kind`) sans fermer le lien ; monter les parents d'abord (T9).
 - Aucun changement BREAKING.
 

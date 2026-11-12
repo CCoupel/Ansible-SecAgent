@@ -463,6 +463,8 @@ Lu dans le journal append-only `actions.log` (#161). `limit` : 1–200 (défaut 
 | `DELETE /api/admin/relays/{id}` | Supprime un relay |
 | `POST /api/admin/relays/{id}/revoke` | Révoque un relay (CLI : `relays revoke <relay_id|uuid>` ou `relays remove --revoke`, depuis v3.0.5) |
 
+`GET /api/admin/relays` (v3.0.6, #266) : champ additif `first_seen_at` (RFC 3339, premier snapshot accepté de ce relais déclaré par ce nœud ; absent s'il ne s'est jamais connecté).
+
 (`server/routers.go:96-100`, `handlers/admin_relays.go`.)
 
 ### Clé de signature des liens (v3.0.4, #141) — racine seulement
