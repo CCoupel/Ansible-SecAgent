@@ -299,6 +299,37 @@ var (
 	rerouteImmediate   = map[string]time.Time{}
 )
 
+// maxImmediateKeys bounds rerouteImmediate.
+const maxImmediateKeys = 1024
+
+// immediateRefusalLog reports whether this occurrence of key is the first of the current minute (it is then
+// logged at once). The table is bounded AND purged: entries older than the minute are dropped when it fills up;
+// if it is still full of live keys, a new key is NOT logged at once (it is only counted and aggregated), so a
+// flood of distinct refusals can never turn into one log line per event.
+func immediateRefusalLog(key string, now time.Time) bool {
+	rerouteImmediateMu.Lock()
+	defer rerouteImmediateMu.Unlock()
+	if last, ok := rerouteImmediate[key]; ok {
+		if now.Sub(last) < rerouteRefuseInterval {
+			return false
+		}
+		rerouteImmediate[key] = now
+		return true
+	}
+	if len(rerouteImmediate) >= maxImmediateKeys {
+		for k, at := range rerouteImmediate {
+			if now.Sub(at) >= rerouteRefuseInterval {
+				delete(rerouteImmediate, k)
+			}
+		}
+		if len(rerouteImmediate) >= maxImmediateKeys {
+			return false
+		}
+	}
+	rerouteImmediate[key] = now
+	return true
+}
+
 // noteHostRefused counts a refused event; severe ones are logged as [SECURITY WARNING], the transient ones
 // (a route this node does not know yet) as [RELAY], once per minute and per (relay, kind, reason).
 func noteHostRefused(relayID, event, subject, reason string, severe bool) {
@@ -308,12 +339,7 @@ func noteHostRefused(relayID, event, subject, reason string, severe bool) {
 	}
 	key := level + relayID + ": " + event + ": " + reason
 	now := time.Now()
-	rerouteImmediateMu.Lock()
-	first := now.Sub(rerouteImmediate[key]) >= rerouteRefuseInterval
-	if first && len(rerouteImmediate) < 1024 {
-		rerouteImmediate[key] = now
-	}
-	rerouteImmediateMu.Unlock()
+	first := immediateRefusalLog(key, now)
 	if first {
 		log.Printf("%s event_forward %s refused: relay_id=%q subject=%q %s", prefix, event, relayID, subject, reason)
 	}

@@ -4,10 +4,12 @@
 package ws
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"secagent-server/cmd/secagent-server/internal/hooks"
 )
@@ -129,5 +131,41 @@ func TestSubtreeRule_AlarmLevelsAndAggregation(t *testing.T) {
 	}
 	if !strings.Contains(logs, "[RELAY] event refused (dmz1: host.removed: has no route): 3 event(s)") {
 		t.Errorf("no aggregated [RELAY] line for the unknown route:\n%s", logs)
+	}
+}
+
+// The "first occurrence is logged at once" table is bounded and purged: once full of live keys, new keys are
+// only aggregated (no log line per event), and it is usable again once its entries are older than a minute.
+func TestImmediateRefusalLog_IsBoundedAndPurged(t *testing.T) {
+	rerouteImmediateMu.Lock()
+	saved := rerouteImmediate
+	rerouteImmediate = map[string]time.Time{}
+	rerouteImmediateMu.Unlock()
+	t.Cleanup(func() { rerouteImmediateMu.Lock(); rerouteImmediate = saved; rerouteImmediateMu.Unlock() })
+
+	t0 := time.Unix(1_000_000, 0)
+	for i := 0; i < maxImmediateKeys; i++ {
+		if !immediateRefusalLog(fmt.Sprintf("k%d", i), t0) {
+			t.Fatalf("key %d must be logged at once", i)
+		}
+	}
+	if immediateRefusalLog("k0", t0.Add(time.Second)) {
+		t.Error("the same key twice inside the minute must be aggregated")
+	}
+	// full of live keys: a NEW key is not logged at once, however many come (200/s flood)
+	for i := 0; i < 5000; i++ {
+		if immediateRefusalLog(fmt.Sprintf("flood%d", i), t0.Add(2*time.Second)) {
+			t.Fatalf("flood key %d logged at once while the table is full of live keys", i)
+		}
+	}
+	if n := len(rerouteImmediate); n > maxImmediateKeys {
+		t.Errorf("table grew to %d entries, bound %d", n, maxImmediateKeys)
+	}
+	// a minute later the old entries are purged and new keys are logged at once again
+	if !immediateRefusalLog("after-the-minute", t0.Add(rerouteRefuseInterval+time.Second)) {
+		t.Error("after the minute the table must be purged and usable again")
+	}
+	if n := len(rerouteImmediate); n > 1 {
+		t.Errorf("%d entries left after the purge, want 1", n)
 	}
 }
