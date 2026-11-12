@@ -269,6 +269,11 @@ kind_more() { [ "$(kind_count "$1" "$2")" -gt "$3" ]; }
 hook_last_kv() { events_log "$1" | awk -v h="$2" -v k="$3" -v key="$4" '$2==k && $3==h {v=""; for (i=4; i<=NF; i++) if (index($i, key "=")==1) v=substr($i, length(key)+2)} END{print v}'; }
 # $1 conteneur, $2 sujet, $3 genre : derniere ligne (affichage).
 hook_last() { events_log "$1" | awk -v h="$2" -v k="$3" '$2==k && $3==h {l=$0} END{print l}'; }
+# Comptages et extractions SURS sous `set -euo pipefail` : grep sort en 1 sans correspondance, ce qui faisait echouer
+# SANS MESSAGE l'affectation `x="$(... | grep ... | wc -l)"` (upstream-queue, QUALIF 2026-11-12). Lisent stdin.
+count_matches() { { grep -Eo -- "$1" || true; } | wc -l | tr -d ' '; }   # nombre d'occurrences du motif ERE $1 (0 si aucune)
+count_lines() { { grep -c -- "$1" || true; }; }                          # nombre de lignes contenant $1 (0 si aucune)
+extract() { { grep -oE -- "$1" || true; } | tail -1; }                   # derniere occurrence de $1 (vide si aucune), jamais affichee
 # Sujet de relay.failover d'une racine : son relay_id local (REPEATER_ID absent = defaut du serveur).
 ROOT_RELAY_ID="${ROOT_RELAY_ID:-secagent-server}"
 

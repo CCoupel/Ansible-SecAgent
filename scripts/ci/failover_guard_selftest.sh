@@ -75,6 +75,20 @@ up_call() { # $1 valeur de FAILOVER_UP_SERVICES (vide = non definie) ; sortie : 
 chk "run : FAILOVER_UP_SERVICES => up -d de ces services seulement" "$(up_call 'secagent-server-a secagent-server-b' | grep -q ' up -d secagent-server-a secagent-server-b$'; echo $?)"
 chk "run : sans FAILOVER_UP_SERVICES => up -d de tout le Compose" "$(up_call '' | grep -q ' up -d$'; echo $?)"
 
+# --- v3.0.6 : comptages sous `set -euo pipefail` (upstream-queue sortait en rc 1 SANS message, QUALIF 2026-11-12) ---
+pf() { # $1 script apres `source` execute sous set -euo pipefail ; sortie = stdout ; code = celui du script
+  env -u TLS_MODE -u DOCKER_HOST -u SECAGENT_ENDPOINT_HOST -u CONTROL_HOST SECAGENT_PRIVATE_DIR="$TMPD/priv" bash -c '
+    set -euo pipefail; source "'"$F"'"; set -euo pipefail
+    '"$1" 2>/dev/null
+}
+chk "pipefail : count_matches sans correspondance => 0, sans abandon" "$([ "$(pf 'x="$(printf "a\nb\n" | count_matches "upstream_dropped")"; echo "n=$x"')" = n=0 ]; echo $?)"
+chk "pipefail : count_matches compte les occurrences (2 sur une ligne)" "$([ "$(pf 'printf "{\"action_type\": \"upstream_dropped\"},{\"action_type\":\"upstream_dropped\"}\n" | count_matches "\"action_type\": *\"upstream_dropped\""')" = 2 ]; echo $?)"
+chk "pipefail : count_lines sans correspondance => 0, sans abandon" "$([ "$(pf 'x="$(count_lines SUCCESS < /dev/null)"; echo "n=$x"')" = n=0 ]; echo $?)"
+chk "pipefail : extract sans correspondance => vide, sans abandon" "$([ "$(pf 'x="$(printf "rien\n" | extract "secagent_enr_[0-9a-f]{64}")"; echo "t=[$x]"')" = 't=[]' ]; echo $?)"
+chk "pipefail : extract => derniere occurrence" "$([ "$(pf 'printf "eyJa.b.c\neyJd.e.f\n" | extract "eyJ[a-z]+\.[a-z]+\.[a-z]+"')" = eyJd.e.f ]; echo $?)"
+chk "pipefail : extract vide | { read || true ; fail } => le message de refus est emis" "$(pf 'printf "" | extract zz | { read -r t || true; [ -n "$t" ] || echo REFUS-EMIS; }' | grep -q REFUS-EMIS; echo $?)"
+chk "pipefail : temoin, l'ancien motif grep|wc -l abandonne sans message" "$(if pf 'x="$(printf "a\n" | grep -Eo zz | wc -l)"; echo atteint' | grep -q atteint; then echo 1; else echo 0; fi)"
+
 # --- v3.0.6 : lecture du journal des hooks (events_log via faux `docker exec`), compteurs, surcharge des hooks ---
 LOG="$TMPD/events.log"
 cat > "$LOG" <<'EOF'

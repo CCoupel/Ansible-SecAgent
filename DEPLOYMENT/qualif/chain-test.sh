@@ -145,7 +145,7 @@ write_secret() { # $1 fichier relatif a chain/, valeur lue sur stdin : jamais af
   ( umask 077; cat > "$CHAIN_DIR/$1" )
   chmod 600 "$CHAIN_DIR/$1"
 }
-extract() { grep -oE "$1" | tail -1; }   # extrait un jeton de la sortie du CLI sans l'afficher
+# extract (derniere occurrence d'un motif, vide si aucune : sur sous pipefail) : failover-test.sh (source).
 need() { [ -n "${!1:-}" ] || refuse "variable $1 obligatoire"; }
 # Garde de version ansible-core (#249) : le poste de controle doit avoir EXACTEMENT la version epinglee par la CI
 # (`ansible-core==X` de .github/ci/requirements-ansible.txt). Avec une autre version (ex. 2.17), le plugin se comporte
@@ -325,9 +325,9 @@ bootstrap() {
   wait_for "enfant healthy" 120 all_health healthy "$C_CHILD" >/dev/null
   echo "== jetons d'enrolement (un par minion, hostname exact) et jeton plugin (FICHIER 0600)"
   adm "$m" tokens create --role enrollment --hostname-pattern '^minion-root$' --expires "$TOKEN_TTL" 2>&1 \
-    | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton minion-root non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-root.env; }
+    | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t || true; [ -n "$t" ] || fail "jeton minion-root non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-root.env; }
   adm "$C_CHILD" tokens create --role enrollment --hostname-pattern '^minion-child$' --expires "$TOKEN_TTL" 2>&1 \
-    | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton minion-child non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-child.env; }
+    | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t || true; [ -n "$t" ] || fail "jeton minion-child non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-child.env; }
   if level3; then
     echo "== 3e niveau : dmz2 (enfant pull de dmz1) declare sur dmz1, jeton de lien mine sur la racine (--aud dmz1)"
     adm "$C_CHILD" relays add --id dmz2 --description "chain grandchild" >/dev/null || fail "relays add dmz2 (sur dmz1) refuse"
@@ -336,7 +336,7 @@ bootstrap() {
     dc up -d secagent-grandchild
     wait_for "petit-enfant dmz2 healthy" 120 all_health healthy "$C_GRAND" >/dev/null
     adm "$C_GRAND" tokens create --role enrollment --hostname-pattern '^minion-grand$' --expires "$TOKEN_TTL" 2>&1 \
-      | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton minion-grand non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-grand.env; }
+      | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t || true; [ -n "$t" ] || fail "jeton minion-grand non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-grand.env; }
   fi
   plugin_token
   echo "== minions"
@@ -377,7 +377,7 @@ plugin_token() {
   local m; m="$(master)" || fail "pas de maitre sur la racine (jeton plugin)"
   chain_dir
   adm "$m" tokens create --role plugin --description "chain-smoke-$(date +%s)" --expires "$TOKEN_TTL" 2>&1 \
-    | extract 'secagent_plg_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton plugin non extrait"; printf '%s' "$t" | write_secret plugin.token; }
+    | extract 'secagent_plg_[0-9a-f]{64}' | { read -r t || true; [ -n "$t" ] || fail "jeton plugin non extrait"; printf '%s' "$t" | write_secret plugin.token; }
 }
 
 control_env() { # variables du poste de controle Ansible : listes d'adresses, CA de test, jeton en FICHIER
@@ -410,7 +410,7 @@ smoke() {
   ANSIBLE_CONNECTION_PLUGINS="$REPO/SECAGENT-PYTHON/ansible_plugins/connection_plugins" ANSIBLE_HOST_KEY_CHECKING=False \
     "${ANSIBLE_BIN:-ansible}" all -i "$inv_script" -m ping | tee "$CHAIN_DIR/ping.log"
   local want=2; level3 && want=3
-  [ "$(grep -c SUCCESS "$CHAIN_DIR/ping.log")" -ge "$want" ] || fail "ansible -m ping : moins de $want hotes SUCCESS"
+  [ "$(count_lines SUCCESS < "$CHAIN_DIR/ping.log")" -ge "$want" ] || fail "ansible -m ping : moins de $want hotes SUCCESS"
   echo "smoke OK"
 }
 
@@ -507,7 +507,7 @@ push_link_key() { # $1 volume (defaut $SECAGENT_LINK_VOLUME, lien de dmz1 ; $SEC
 link_anchor_prepare() {
   local m="$1" rid
   # stdout = PEM (fichier) ; stderr = "root_id=<id> kid=<kid>" (capture), jamais de cle privee.
-  rid="$(adm "$m" keys link-pubkey 2>&1 >"$CHAIN_DIR/root-link.pub" | sed -n 's/^root_id=\([^ ]*\) .*/\1/p')"
+  rid="$({ adm "$m" keys link-pubkey 2>&1 >"$CHAIN_DIR/root-link.pub" || true; } | sed -n 's/^root_id=\([^ ]*\) .*/\1/p')"
   [ -n "$rid" ] || fail "root_id non releve (keys link-pubkey)"
   grep -q 'BEGIN PUBLIC KEY' "$CHAIN_DIR/root-link.pub" || fail "keys link-pubkey n'a pas produit de PEM public"
   chmod 644 "$CHAIN_DIR/root-link.pub"
@@ -628,6 +628,9 @@ EVENTS_LOG_HINT="docker exec <conteneur> cat /var/log/secagent-events/events.log
 # Relais attendus par la racine apres une promotion (#246, server/convergence.go:139-147) : TOUS ses relay_nodes valides,
 # y compris les DESCENDANTS appris par snapshot (relay_handler.go:1707-1712) : dmz1, et dmz2 avec CHAIN_LEVEL3=1.
 expected_relays() { if level3; then echo 2; else echo 1; fi; }
+
+# Entrees `upstream_dropped` du journal des actions de $1 (hooks log) : 0 si aucune ou si la commande echoue.
+upstream_dropped_entries() { { adm "$1" hooks log --event '*' --limit 200 --format json 2>/dev/null || true; } | count_matches '"action_type": *"upstream_dropped"'; }
 
 # Compteurs de la file amont de $1 (`server status`) : "<depth> <capacity> <dropped>" (vides si absents).
 upstream_counters() {
@@ -788,7 +791,7 @@ converged_timeout() {
 minion_child_retarget() { # $1 conteneur qui mint le jeton d'enrolement (noeud vise) ; URL dans MINION_CHILD_*_URL
   local issuer="$1"
   adm "$issuer" tokens create --role enrollment --hostname-pattern '^minion-child$' --expires "$TOKEN_TTL" 2>&1 \
-    | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton minion-child ($issuer) non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-child.env; }
+    | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t || true; [ -n "$t" ] || fail "jeton minion-child ($issuer) non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-child.env; }
   dc stop minion-child >/dev/null
   ctr run --rm -v "${PROJECT}_minion_child_data:/d" \
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
@@ -845,7 +848,7 @@ upstream_queue() {
   read -r d c x0 < <(upstream_counters "$C_CHILD"); [ -n "$c" ] || fail "compteurs upstream_* absents de l'enfant"
   echo "file amont avant : profondeur=$d capacite=$c perdus=$x0"
   up0="$(hook_count "$m" minion-child UP)"; dn0="$(hook_count "$m" minion-child DOWN)"
-  e0="$(adm "$C_CHILD" hooks log --event '*' --limit 200 --format json 2>/dev/null | grep -Eo '"action_type": *"upstream_dropped"' | wc -l)"
+  e0="$(upstream_dropped_entries "$C_CHILD")"
   echo "== gel du lien amont (pause de $m), $cycles (de)connexions de minion-child"
   ctr pause "$m" >/dev/null; t0=$(now)
   for i in $(seq 1 "$cycles"); do
@@ -870,7 +873,7 @@ upstream_queue() {
     sleep 30
     read -r d c x < <(upstream_counters "$C_CHILD")
     [ "$x" -gt "$x0" ] || fail "file a $qs, $((2 * ndone)) evenements : aucune perte comptee (upstream_dropped_events $x0 -> $x)"
-    local e1; e1="$(adm "$C_CHILD" hooks log --event '*' --limit 200 --format json 2>/dev/null | grep -Eo '"action_type": *"upstream_dropped"' | wc -l)"
+    local e1; e1="$(upstream_dropped_entries "$C_CHILD")"
     [ $((e1 - e0)) -ge 1 ] || fail "aucune entree upstream_dropped dans hooks log de l'enfant"
     echo "pertes comptees : $x0 -> $x ; entrees upstream_dropped : +$((e1 - e0))"
   fi
@@ -881,7 +884,7 @@ upstream_queue() {
 
 # Scenario relay-rerouted (#244, 3e niveau) : dmz2 (derriere dmz1) est re-pointe directement vers la racine (declaration
 # sur la racine + jeton --aud <racine>) -> le maitre journalise `RELAY_REROUTED dmz2 old_chain=dmz1,dmz2 new_chain=dmz2`
-# (et aucun host.rerouted de minion-grand) ; puis retour derriere dmz1 (nouveau RELAY_REROUTED), declaration retiree.
+# (et aucun host.rerouted de minion-grand) ; puis retour derriere dmz1 (nouveau RELAY_REROUTED).
 relay_rerouted() {
   need_level3 relay-rerouted; verify_images; need INVENTORY_BIN
   local m r0 h0 rid; m="$(master)" || fail "pas de maitre sur la racine"
@@ -906,8 +909,8 @@ relay_rerouted() {
   wait_for "relay.rerouted dmz2 (retour) au maitre $m" 90 hook_more "$m" dmz2 RELAY_REROUTED "$r0" >/dev/null
   echo "relay-rerouted : $(hook_last "$m" dmz2 RELAY_REROUTED)"
   [ "$(hook_count "$m" minion-grand REROUTED)" = "$h0" ] || fail "host.rerouted minion-grand journalise au retour"
-  # dmz2 ne doit plus etre attendu par la racine (sinon les relay.converged suivants compteraient relays_missing=1)
-  adm "$m" relays remove dmz2 --yes >/dev/null || fail "relays remove dmz2 (racine) refuse"
+  # Pas de `relays remove dmz2` : la racine reenregistre dmz2 a chaque snapshot de dmz1 (relay_handler.go:1707-1712) et
+  # les relay.converged a 3 niveaux le comptent deja (expected_relays) ; le retrait serait sans effet, voire refuse.
   smoke
   echo "relay-rerouted OK"
 }
