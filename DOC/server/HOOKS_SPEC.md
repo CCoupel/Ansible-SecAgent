@@ -81,10 +81,11 @@ Au chargement de la configuration (démarrage et `SIGHUP`), le serveur journalis
 | `host.suspended` | Agent suspendu (`POST /api/admin/minions/{hostname}/suspend`) ; remonte aux ancêtres (#180) |
 | `host.resumed` | Suspension levée (`POST /api/admin/minions/{hostname}/resume`) ; remonte aux ancêtres (#180) |
 | `host.revoked` | Agent révoqué (`/api/admin/revoke/{hostname}`) |
-| `host.deleted` | Agent supprimé (`DELETE /api/admin/minions/{hostname}`) |
+| `host.deleted` | **[DEPRECATED]** Agent supprimé (`DELETE /api/admin/minions/{hostname}`) : toujours émis en v3.0.6, **juste après `host.removed`**, mais **déprécié depuis la v3.0.6 et retiré en v3.0.7 ([BREAKING] annoncé)**. Un hook qui s'y abonne produit au chargement `[WARN] … host.deleted: deprecated since v3.0.6, removed in v3.0.7, use host.removed` (`hooks/config.go`). Migrer vers `host.removed` (#277) |
 | `host.conflict` | Hôte revendiqué par un second relay alors qu'il est déjà routé vers un autre : émis une fois par changement de propriétaire, statut `ancien->nouveau` (`server/server.go:530` ; accepté en `event_forward` par `ws/relay_handler.go:1789` ; SERVER_SPEC §9.5a) |
 | `host.rerouted` | (v3.0.6, #244) La **route** d'un hôte a changé, vue de ce nœud. `cause` = `moved` (la route est passée d'un relais ou d'un chemin à un autre) \| `direct` (un hôte routé par un relais se connecte maintenant à ce nœud) \| `indirect` (un hôte qui était connecté à ce nœud revient par un relais). Variables `old_relay`, `new_relay`, `old_chain`, `new_chain`, `cause` (§4). La route précédente est celle que **ce process** a vue : une première route, une route identique, un redémarrage ou une bascule actif/passif n'émettent rien. Un conflit donne `host.conflict` **puis** `host.rerouted`. **Un seul événement par changement le long de l'arbre** : un nœud n'émet le sien que s'il est l'ancêtre commun des deux routes, sinon il distribue et remonte celui de son pair ; les chaînes émises par un enfant sont relatives à cet enfant ; **limite** : si l'enfant redémarre, le `host.rerouted` est perdu pour tout l'arbre (détail sous « Pertes à la bascule »). Un hôte dont l'agent vit sur le nœud n'est jamais re-routé (`ws/relay_reroute.go`, `snapshotDiff`, `rerouteCause`, `noteLocalConnect` ; test `ws/relay_reroute_test.go`) |
-| `host.discover`, `host.removed` | **À venir (LOT-3.3), jamais émis en v3.0.6.** Le nom est déjà accepté dans `hooks.json` (pas d'avertissement) et la forme déjà acceptée sur le fil (SERVER_SPEC §9.2) |
+| `host.discover` | (v3.0.6, #266) **Première** connexion d'un hôte : émis **une seule fois** dans la vie de l'hôte, au premier handshake `/ws/agent` réussi, **avant** `host.up` (même hostname : FIFO). La date est persistée (`first_seen_at`, `relay.state`) : jamais à une reconnexion, un redémarrage ou une bascule actif/passif (état partagé) ; un `DELETE` puis un ré-enrôlement en redonnent un, un ré-enrôlement sans suppression non. Variables `enrolled_at`, `first_seen_at`. **Au moins une fois** : l'événement part avant la persistance (écriture groupée au plus `RELAY_FIRST_SEEN_FLUSH` = 1 s plus tard) ; un arrêt brutal dans cette fenêtre peut en donner **un de plus**. Les hôtes **indirects** ne sont pas marqués par le parent : leur `discover` est celui de leur relais direct, propagé (`ws/handler.go`, `RegisterConnection` ; `storage/store_first_seen.go`, `MarkFirstSeen`) |
+| `host.removed` | (v3.0.6, #266) Un administrateur **supprime** l'hôte (`DELETE /api/admin/minions/{hostname}`) : `cause` = `deleted`, `enrolled_at`, `first_seen_at` (absent si l'hôte ne s'est jamais connecté). Propagé aux ancêtres. Une **révocation** n'en émet jamais. Remplace `host.deleted` (`handlers/admin.go`, `AdminDeleteMinion` ; `TestAdminRevokeMinion_EmitsNoRemoved`) |
 
 **Événements de relais** (v3.0.6 ; **sans hostname**, clé d'ordre : le `relay_id` ; `{{hostname}}` et `{{status}}` y sont vides)
 
@@ -96,7 +97,8 @@ Au chargement de la configuration (démarrage et `SIGHUP`), le serveur journalis
 | `relay.down` | Fin d'un lien dont le snapshot avait été accepté. **Aucun** événement quand ce nœud ferme lui-même ses liens en s'arrêtant (`CloseAllLinks`, dialer arrêté) : c'est le nouveau maître qui s'annonce par `relay.failover` (`ws/relay_handler.go:1228`) | le parent direct ; remonte |
 | `relay.rerouted` | (v3.0.6, #244) Un `topology_snapshot` montre qu'un **relais** a changé de chaîne (reparent, y compris le passage de descendant d'un pair à pair direct). **Un seul événement par relais déplacé**, jamais un `host.rerouted` par hôte sur un snapshot. Variables : `relay_id`, `old_relay`, `new_relay`, `old_chain`, `new_chain`, `hosts_routed` (hôtes du snapshot dont la chaîne passe par ce relais, ceux derrière ses enfants compris). Un relais jamais vu n'émet rien | le parent qui reçoit le snapshot ; remonte |
 | `relay.converged` | (v3.0.6, #246) **Un seul** par promotion : émis après `relay.failover`, quand tous les relais enfants déclarés sont revenus (lien direct, ou relais déclaré sous un lien), ou, sinon, au délai `RELAY_CONVERGENCE_TIMEOUT` (§9). Un nœud sans enfant déclaré l'émet aussitôt. Variables : `relay_id` (le nœud), `relays_connected`, `relays_missing`, `hosts_direct`, `hosts_routed`, `upstream_dropped_events_total`. Jamais réémis ; rien n'est émis pendant l'arrêt du nœud. Un relais mort pour de bon n'apparaît que dans `relays_missing` au délai (`server/convergence.go`) | le nœud promu ; remonte comme `relay.failover` |
-| `relay.discover`, `relay.removed` | **À venir (LOT-3.3), jamais émis en v3.0.6** ; noms acceptés dans `hooks.json`, formes acceptées sur le fil | — |
+| `relay.discover` | (v3.0.6, #266) **Premier** snapshot accepté d'un relais **déclaré** (`POST /api/admin/relays`, pull ou push), vu par son **parent direct**, **avant** `relay.up`/`relay.reconnect`. Une seule fois (marque `first_seen_at` du `relay_nodes`) : jamais à une reconnexion, un redémarrage de l'enfant, un snapshot de remplacement ni une bascule du parent. Variables `relay_id`, `mode`, `hosts_routed` (hôtes du snapshot), `first_seen_at`. Un `relay.discover` **reçu** d'un enfant ne marque rien ; un relais reparenté vers un ancêtre qui ne l'a jamais tenu directement donne un second `relay.discover` chez cet ancêtre ; les descendants appris seulement par la topologie ne sont pas marqués (`ws/relay_handler.go`, `emitRelayUp` ; `TestRelayDiscover_BeforeUpOnlyOnceForADeclaredRelay`) | le parent direct ; remonte |
+| `relay.removed` | (v3.0.6, #266) Un administrateur **supprime** la déclaration d'un relais (`DELETE /api/admin/relays/{id}`) : `cause` = `deleted`, `mode`, `first_seen_at` (absent si jamais connecté), `hosts_routed` **à titre informatif** (hôtes routés par ce relais au moment de la suppression). Émis **avant** le `relay.down reason=revoked` que la coupure du lien provoque. **Pas de cascade** : un seul événement, aucun `relay.removed`/`host.removed` pour le sous-arbre. Une révocation n'en émet jamais. Un `DELETE` d'un relais **sans JTI suivi** (relais **push**, ou déclaré avant #153) **non révoqué** est refusé en **409 `relay_not_revoked`** : le révoquer d'abord (`POST /api/admin/relays/{id}/revoke`) (`handlers/admin_relays.go:377-390`, `AdminDeleteRelay` ; `TestAdminDeleteRelay_EmitsOneRelayRemoved`) | le nœud qui supprime ; remonte |
 
 `relay.updated` (changement de `group_vars`) circule dans l'arbre mais **ne déclenche aucun hook** : un hook déclaré sur ce nom ne se déclenche jamais et le chargement journalise un `[WARN]` (`hooks/config.go:61`, comme pour toute faute de frappe).
 
@@ -246,7 +248,8 @@ Les variables suivantes sont disponibles dans les champs `url`, `args`, `append`
 | `{{event}}` | Type d'événement (`host.new`...) | Tous |
 | `{{timestamp}}` | RFC3339 UTC de l'événement | Tous |
 | `{{status}}` | État agent (`connected`, `revoked`...) (vide pour un `relay.*`) | Tous les événements d'hôte |
-| `{{enrolled_at}}` | Date d'enrollment RFC3339 | `host.new` uniquement |
+| `{{enrolled_at}}` | Date d'enrollment RFC3339 | `host.new`, `host.discover`, `host.removed` (v3.0.6) |
+| `{{first_seen_at}}` | (v3.0.6, #266) Date RFC3339 du **premier handshake** de l'hôte, ou du premier snapshot accepté d'un relais ; vide si l'hôte ou le relais ne s'est jamais connecté (`hooks/event.go`) | `host.discover`, `host.removed`, `relay.discover`, `relay.removed` |
 | `{{relay_chain}}` | Relais traversés, séparés par des virgules, **origine en premier** (ex. `zone-a,dmz1`) ; vide pour un événement local de ce nœud (dont `relay.failover`) | Événement venu d'un relay enfant ; `relay.up`/`reconnect`/`down` (chaîne = le relais décrit) |
 | `{{relay_origin}}` | Premier élément de la chaîne (relais d'où vient l'événement) | idem |
 
@@ -269,7 +272,7 @@ Variables de re-routage et de convergence (v3.0.6, #244 #246) :
 |----------|------|-------------|
 | `{{old_relay}}`, `{{new_relay}}` | Le relais qui **portait** l'hôte (ou le relais déplacé), avant / après : le **dernier** élément de `old_chain` / `new_chain` (`Detail.OldRelay()`/`NewRelay()`, `hooks/event.go:35-40`). Vide s'il n'y a pas de chaîne | `host.rerouted`, `relay.rerouted` |
 | `{{old_chain}}`, `{{new_chain}}` | Chaîne **descendante** (virgules) : du pair direct de ce nœud jusqu'au relais qui porte l'hôte ; ≤ 32 ids | idem |
-| `{{cause}}` | `moved` \| `direct` \| `indirect` | `host.rerouted` (et `takeover` \| `start` pour `relay.failover`) |
+| `{{cause}}` | `moved` \| `direct` \| `indirect` | `host.rerouted` (et `takeover` \| `start` pour `relay.failover`, `deleted` pour `host.removed` et `relay.removed`) |
 | `{{relays_connected}}`, `{{relays_missing}}` | Relais enfants déclarés revenus / encore absents à l'émission | `relay.converged` |
 | `{{hosts_direct}}`, `{{hosts_routed}}` | Agents connectés à ce nœud / routes du nœud | `relay.converged` |
 | `{{upstream_dropped_events_total}}` | Compteur cumulé des événements ascendants perdus (§9b « File amont ») | `relay.converged` |
@@ -277,6 +280,8 @@ Variables de re-routage et de convergence (v3.0.6, #244 #246) :
 En variable d'environnement (action `shell`) : `SECAGENT_OLD_RELAY`, `SECAGENT_NEW_RELAY` (`hooks/event.go`, `eventEnvKeys`).
 
 **Règle de rendu (`Render`, v3.0.6, #246)** : un jeton `{{variable}}` d'une variable **connue** mais absente de l'événement (par exemple `{{cause}}` dans l'URL d'un hook `host.up`, ou `{{conn_seq}}` pour un minion < 3.0.6) est rendu **vide** ; un jeton **inconnu** (`{{foo}}`, faute de frappe) est laissé **tel quel** (`hooks/template.go`, `KnownVars()` ; tests `hooks/template_test.go`). Cela vaut pour tous les champs rendus : arguments et environnement `shell`, URL, corps et en-têtes `webhook`/`api`, ligne `file`. Avant la v3.0.6, un jeton de variable connue mais absente restait littéral dans la sortie : une URL de webhook devait donc ne contenir que des variables présentes pour l'événement.
+
+**Ordre de `relay_chain`** : dans les **événements** (`{{relay_chain}}`, `relay_chain` d'un webhook, `event_forward`), l'**origine est en premier** (`dmz2,dmz1` : dmz2 est le relais d'où vient l'événement, dmz1 son parent) ; dans les **routes** et les chaînes `old_chain` / `new_chain` des re-routages, l'ordre est **descendant** (du pair direct du nœud au relais qui porte l'hôte). Ne pas comparer les deux sans les inverser.
 
 Les variables du premier tableau sont toujours définies (chaîne vide quand elles ne s'appliquent pas).
 
@@ -307,7 +312,7 @@ Les variables du premier tableau sont toujours définies (chaîne vide quand ell
 | `host.suspended` | `"suspended"` | absent |
 | `host.resumed` | `"resumed"` | absent |
 | `host.revoked` | `"revoked"` | absent |
-| `host.deleted` | `"deleted"` | absent |
+| `host.deleted` (déprécié, retiré en v3.0.7) | `"deleted"` | absent |
 
 ### Événements de relais (v3.0.6)
 
@@ -424,7 +429,7 @@ Pour `host.up` et `host.reconnect`, `host.conn_seq` porte le numéro de connexio
       ]
     },
     {
-      "event": "host.deleted",
+      "event": "host.removed",
       "actions": [
         {
           "type":    "api",
@@ -466,6 +471,36 @@ Pour `host.up` et `host.reconnect`, `host.conn_seq` porte le numéro de connexio
           "type":   "file",
           "path":   "/var/log/secagent/events.log",
           "append": "{{timestamp}} CONVERGED {{relay_id}} connected={{relays_connected}} missing={{relays_missing}} direct={{hosts_direct}} dropped={{upstream_dropped_events_total}}\n"
+        }
+      ]
+    },
+    {
+      "event": "host.discover",
+      "actions": [
+        {
+          "type":   "file",
+          "path":   "/var/log/secagent/events.log",
+          "append": "{{timestamp}} DISCOVER {{hostname}} enrolled={{enrolled_at}} first_seen={{first_seen_at}}\n"
+        }
+      ]
+    },
+    {
+      "event": "relay.discover",
+      "actions": [
+        {
+          "type":   "file",
+          "path":   "/var/log/secagent/events.log",
+          "append": "{{timestamp}} RELAY-DISCOVER {{relay_id}} mode={{mode}} hosts={{hosts_routed}}\n"
+        }
+      ]
+    },
+    {
+      "event": "relay.removed",
+      "actions": [
+        {
+          "type":   "file",
+          "path":   "/var/log/secagent/events.log",
+          "append": "{{timestamp}} RELAY-REMOVED {{relay_id}} cause={{cause}} hosts={{hosts_routed}}\n"
         }
       ]
     }
@@ -537,7 +572,7 @@ host.new        webhook(https://cmdb/...), shell(/opt/hooks/register.sh), file(/
 host.up         api(PATCH http://monitoring/...)
 host.down       api(PATCH http://monitoring/...), file(/var/log/...)
 host.revoked    shell(/opt/hooks/on-revoke.sh)
-host.deleted    api(DELETE http://cmdb/...)
+host.removed    api(DELETE http://cmdb/...)
 ```
 
 ### `secagent-server hooks log`
@@ -580,6 +615,31 @@ Un événement est confié au worker désigné par un **hachage du hostname** ; 
 - **Arrêt propre** (signal d'arrêt) : les serveurs HTTP s'arrêtent, puis la file est vidée pendant 10 s au plus ; le reste est compté et loggué (`[SHUTDOWN] hooks: N event(s) still pending`). **Arrêt brutal** (perte du verrou actif/passif, #163) : sortie immédiate, les événements en file sont perdus, comptés et loggués (`Dispatcher stopped: N queued event(s) not processed`). Les `host.down` des agents directs que cet arrêt déconnecte ne sont **ni exécutés ni remontés** : le dispatcher est annulé avant la fermeture des liens (`server.go:791-806`). Voir « Bascule actif/passif » ci-dessous, tableau « Pertes à la bascule », pour ce que voit le nouveau maître.
 - **Budgets séparés avec #179** : les actions de hook ne consomment pas de slot de tâche `exec` ; une action `api` qui appellerait l'API exec du serveur serait soumise à #179 comme n'importe quel client.
 
+
+### Cycle de vie : `discover` et `removed` (v3.0.6, #266)
+
+`host.discover` / `relay.discover` sont émis à la **première connexion** persistée, `host.removed` / `relay.removed` à la **suppression** par un administrateur (tableau des événements, §2).
+
+- **Bascule actif/passif : 0 `discover`.** La marque `first_seen_at` est dans `relay.state`, que les deux nœuds partagent : le nouveau maître sait que l'hôte ou le relais a déjà été vu et émet `host.reconnect` / `relay.reconnect`, jamais `discover`. De même pour un redémarrage de l'enfant, un snapshot de remplacement ou une reconnexion.
+- **Livraison au moins une fois** : l'événement `discover` est émis **avant** la persistance de la marque, qui est écrite par lots (`RELAY_FIRST_SEEN_FLUSH`, 1 s par défaut, bornes 100 ms à 10 s ; hors bornes : défaut + `[WARN]`). Un arrêt brutal dans cette seconde peut redonner **un** `discover` de plus ; l'écriture est refusée sans verrou maître (garde #163) et les marques en attente sont conservées et réessayées. Au-delà de 100 000 marques en attente, la marque (donc l'événement) est abandonnée (fail-safe).
+- **Aucune écriture déclenchée par un événement reçu** : seul un handshake local réussi (`RegisterConnection`) ou le premier snapshot d'un relais déclaré marque. Un `discover` propagé par un enfant ne modifie pas l'état de l'ancêtre.
+- **`late` sans effet** : un événement `discover` / `removed` rejoué depuis la file amont (marqueur `late`, « File amont ») est traité **normalement**, et son **horodatage d'origine** est conservé jusqu'aux hooks du récepteur (`{{timestamp}}` = l'heure de l'événement, pas celle du rejeu ; `TestHookEvent_CarriesTheOriginTimestamp`).
+- **Vague de `discover` à la montée** : les hôtes et relais **déjà enrôlés** n'ont pas de marque : **chacun** émet **un** `discover` à sa première connexion après la montée en v3.0.6 (aucun rattrapage). Prévoir une rafale (voir `DEPLOYMENT.md`) ; la file des hooks (`RELAY_HOOKS_QUEUE_SIZE`) absorbe 10 000 événements.
+- **Hôtes inactifs** : il n'y a **pas** d'événement `host.stale` ; la surveillance des hôtes inactifs est à la charge de l'administrateur, à partir de l'inventaire : `GET /api/admin/minions` (liste et détail) expose `status` et `last_seen` (RFC 3339, dernier contact vu ; valeur approximative, en retard d'au plus une écriture d'état), ainsi que `first_seen_at`.
+
+### Règle du sous-arbre (v3.0.6, #266, T34)
+
+Un relais ne remonte et ne distribue d'événements que pour les hôtes de **son sous-arbre**. Pour `host.down`, `host.discover`, `host.removed`, `host.rerouted`, `host.suspended`, `host.resumed` et `host.conflict` reçus d'un enfant (`host.up`, `host.new` et `host.reconnect` créent la route : le conflit existant reste la règle), `hostSubtreeRefusal` (`ws/relay_reroute.go`, appelée par `applyEventRouting`) refuse l'événement, **ni distribué ni remonté**, quand :
+
+1. l'hôte est **connecté sur ce nœud** : `[SECURITY WARNING] … is connected locally` ;
+2. le propriétaire de la route n'est **ni le pair ni un de ses descendants déclarés** : `[SECURITY WARNING] … is routed through another relay` ;
+3. il n'y a **aucune route connue** : `[RELAY] … has no route`, **sans alarme de sécurité** (état transitoire normal : parent redémarré avant son snapshot, reparentage).
+
+**Exceptions sans route** : `host.discover` (il précède `host.up`, donc la route) et `host.conflict` sont acceptés pour un hôte sans route, si la `relay_chain` est cohérente avec le pair ; un hôte local ou routé ailleurs reste refusé. Les événements `late` suivent la **même** règle.
+
+**Journalisation** : la **première** occurrence par (relais, kind, raison) est journalisée aussitôt, les suivantes agrégées en **une ligne par minute** (`dropreport`, table bornée). **Nouveau descendant** : l'uplink de l'intermédiaire **retient** un événement dont la chaîne cite un relais pas encore déclaré, et ne l'émet qu'après l'envoi du snapshot qui le déclare, **5 s au plus** (`HoldEventsForSnapshotAfter`, `repeater/uplink.go` ; `TestUplink_EventForAnUndeclaredRelayWaitsForItsSnapshot`) ; passé ce délai il part et sera refusé. Avant la v3.0.6, un hôte sans route était accepté (**[CHANGED]**).
+
+**Limite connue (#278)** : un `host.up` d'un enfant peut **réécrire la route d'un hôte annoncé par un autre pair** ; cela n'est qu'**alerté** (`host.conflict`), pas refusé.
 
 ### File amont : événements d'un relais enfant vers son parent (v3.0.6, #246)
 
@@ -642,7 +702,11 @@ Ordre : clé FIFO = `relay_id` pour les `relay.*` ; l'émission locale est synch
 | `ctx` annulé (shutdown) | Dispatcher s'arrête, jobs en queue droppés |
 | SIGHUP pendant une exécution | Les exécutions en cours terminent, nouvelle config pour les suivantes |
 | Hook sur un nom d'événement inconnu (`relay.updated`, faute de frappe) | `[WARN] hooks: … which this server never emits` au chargement ; le fichier reste accepté, le hook ne se déclenche jamais |
-| Hook sur `host.discover`, `host.removed`, `relay.discover`, `relay.removed` | Accepté, aucun avertissement ; **jamais déclenché en v3.0.6** (à venir, LOT-3.3) |
+| Hook sur `host.deleted` | Accepté, mais `[WARN] … deprecated since v3.0.6, removed in v3.0.7, use host.removed` au chargement ; toujours déclenché en v3.0.6 |
+| `host.discover` / `host.removed` / `relay.discover` / `relay.removed` rejoué (`late`) | Traité normalement ; horodatage d'origine conservé (« Cycle de vie ») |
+| `host.*` d'un enfant pour un hôte hors de son sous-arbre | Refusé, alarme (« Règle du sous-arbre ») |
+| `DELETE /api/admin/relays/{id}` d'un relais sans JTI suivi (push, ancien) **non révoqué** | **409 `relay_not_revoked`** ; aucun `relay.removed` ; révoquer d'abord |
+| `DELETE` d'un relais ayant des descendants | Un seul `relay.removed` (`hosts_routed` informatif), pas de cascade |
 | `host.rerouted` / `relay.rerouted` reçu d'un enfant et **incohérent avec son sous-arbre** (T16b) | Ni distribué ni remonté ; refus compté par (relais, kind, raison) et loggué **une fois par minute** (`[SECURITY WARNING] re-route event refused`). Règles : `old_relay`/`new_relay` = dernier élément de `old_chain`/`new_chain` ; chaque élément des chaînes est le pair ou un relais qu'il a déclaré ; `relay.rerouted` : `new_chain` = inverse de `relay_chain` ; `host.rerouted` : l'hôte a une route connue du nœud (`ws/relay_reroute.go`, `reroutedRefusal` ; test `TestReroutedRefusal`) |
 | Arrêt ordonné d'un relais enfant (pull ou push) | Trame de fermeture **1001 going away** avant la fermeture de la socket : le parent journalise `relay.down reason=peer_closed:1001` et non `1006` (coupure réelle) (`repeater/uplink.go`, `Uplink.goingAway` ; test `uplink_goingaway_test.go`) |
 | Variable connue absente / inconnue dans un modèle | Connue : rendue vide ; inconnue : laissée telle quelle (§4, `Render`) |
