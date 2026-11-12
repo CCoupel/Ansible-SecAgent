@@ -58,12 +58,13 @@ func (c *cutTree) back(t *testing.T) {
 	waitFor(t, "the child is linked again", func() bool { return c.child.upstreamState() == "connected" })
 }
 
-// count is the number of relay.up + relay.down lines the node journaled for the fake grandchildren.
+// count is the number of relay.discover + relay.up + relay.down lines the node journaled for the fake grandchildren.
 func (c *cutTree) count(n *node) int {
 	total := 0
 	for _, id := range c.ids {
 		w := map[string]string{"relay": id}
-		total += len(n.eventsOf("relay.up", w)) + len(n.eventsOf("relay.down", w))
+		// relay.discover (#266): the first link of each declared grandchild also queues one event
+		total += len(n.eventsOf("relay.discover", w)) + len(n.eventsOf("relay.up", w)) + len(n.eventsOf("relay.down", w))
 	}
 	return total
 }

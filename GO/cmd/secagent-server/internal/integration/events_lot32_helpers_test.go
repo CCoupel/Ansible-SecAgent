@@ -20,7 +20,7 @@ import (
 // lot32Events are the events the lot32Hooks shell hooks log.
 var lot32Events = []string{
 	"host.up", "host.down", "host.reconnect", "host.conflict", "host.rerouted",
-	"relay.up", "relay.down", "relay.reconnect", "relay.failover", "relay.rerouted", "relay.converged",
+	"relay.up", "relay.down", "relay.reconnect", "relay.failover", "relay.rerouted", "relay.converged", "relay.discover",
 }
 
 // lot32Hooks builds a hooks configuration whose shell actions append ONE line per event to out:

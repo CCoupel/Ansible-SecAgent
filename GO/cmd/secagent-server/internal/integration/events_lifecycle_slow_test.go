@@ -112,7 +112,11 @@ func TestLifecycleSlow_SwitchOverRaisesNoDiscover(t *testing.T) {
 	waitFor(t, "host.discover and relay.discover on the first master", func() bool {
 		return countOf(a, "host.discover", h) == 1 && len(a.eventsOf("relay.discover", map[string]string{"relay": "so-relay"})) == 1
 	})
-	waitFor(t, "first_seen_at persisted", func() bool { return firstSeenOf(a, h) != "" })
+	waitFor(t, "first_seen_at of the host AND of the relay flushed to relay.state (a pending mark is lost by a kill: at-least-once)", func() bool {
+		_, hostOK := a.stateSection("agents")[h]["first_seen_at"]
+		_, relayOK := a.stateSection("relay_nodes")["so-relay"]["first_seen_at"]
+		return hostOK && relayOK
+	})
 
 	a.killNow()
 	if !b.awaitPromotion(30 * time.Second) {
@@ -161,6 +165,15 @@ func TestLifecycleSlow_HostEventsClimbTwoLevelsWithTheirChain(t *testing.T) {
 // NO cascade: deleting dmz2 raises ONE relay.removed, none for dmz3 below it and no host.removed for its host.
 func TestLifecycleSlow_RelayEventsClimbThreeLevelsWithoutCascade(t *testing.T) {
 	root := startNode(t, nodeSpec{ID: "root", Hooks: lot33Hooks})
+	t.Cleanup(func() { // registered after startNode's own cleanup: runs first
+		if t.Failed() {
+			for _, l := range strings.Split(root.logs.String(), "\n") {
+				if strings.Contains(l, "event_forward") || strings.Contains(l, "unknown descendant") {
+					t.Logf("root: %s", l)
+				}
+			}
+		}
+	})
 	dmz1 := startNode(t, nodeSpec{ID: "dmz1", ParentURL: root.wssURL(), ParentToken: root.registerChild("dmz1"), Hooks: lot33Hooks})
 	waitFor(t, "dmz1 linked", func() bool { return dmz1.upstreamState() == "connected" })
 	tok2, id2 := dmz1.registerChildWithID("dmz2")
