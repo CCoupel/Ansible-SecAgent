@@ -419,7 +419,7 @@ func AdminDeleteRelay(w http.ResponseWriter, r *http.Request) {
 	// relay.removed (#266): ONE event, no cascade, BEFORE the relay.down reason=revoked the cut below causes
 	// (same relay_id key: FIFO). A revocation never emits it.
 	if hooks.GlobalDispatcher != nil {
-		removed := hooks.Event{Name: "relay.removed", RelayID: node.RelayID, Detail: hooks.Detail{Mode: node.Mode, Cause: "deleted", HostsRouted: hostsRouted}}
+		removed := hooks.Event{Name: "relay.removed", RelayID: node.RelayID, RelayChain: []string{node.RelayID}, Detail: hooks.Detail{Mode: node.Mode, Cause: "deleted", HostsRouted: hostsRouted}}
 		if node.FirstSeenAt != nil {
 			removed.Detail.FirstSeenAt = node.FirstSeenAt.UTC().Format(time.RFC3339)
 		}

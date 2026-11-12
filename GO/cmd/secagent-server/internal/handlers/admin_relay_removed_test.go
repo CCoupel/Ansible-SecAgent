@@ -11,19 +11,41 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"secagent-server/cmd/secagent-server/internal/hooks"
 )
 
+var (
+	upMu     sync.Mutex
+	upEvents []hooks.Event
+)
+
+// capturedRemovedChain returns the relay_chain of the relay.removed handed to the upstream forwarder.
+func capturedRemovedChain() []string {
+	upMu.Lock()
+	defer upMu.Unlock()
+	for _, e := range upEvents {
+		if e.Name == "relay.removed" {
+			return e.RelayChain
+		}
+	}
+	return nil
+}
+
 func relayEventsRig(t *testing.T) string {
 	t.Helper()
+	upMu.Lock()
+	upEvents = nil
+	upMu.Unlock()
 	out := filepath.Join(t.TempDir(), "events.log")
 	d := hooks.NewDispatcher(nil, 100)
 	d.SetConfig(&hooks.HooksConfig{Hooks: []hooks.HookDef{
 		{Event: "relay.removed", Actions: []hooks.ActionDef{{Type: "file", Path: out, Append: "REMOVED {{relay_id}} mode={{mode}} cause={{cause}} hosts={{hosts_routed}} first={{first_seen_at}}\n"}}},
 	}})
+	d.SetUpstreamEvent(func(ev hooks.Event) { upMu.Lock(); upEvents = append(upEvents, ev); upMu.Unlock() })
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	d.Start(ctx)
@@ -62,6 +84,9 @@ func TestAdminDeleteRelay_EmitsOneRelayRemoved(t *testing.T) {
 	AdminDeleteRelay(rr, req)
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("delete: %d %s", rr.Code, rr.Body.String())
+	}
+	if got := capturedRemovedChain(); len(got) != 1 || got[0] != "rm-relay" {
+		t.Errorf("relay.removed relay_chain = %v, want [rm-relay] (the parent requires the chain to start with the relay it describes)", got)
 	}
 	var lines []string
 	deadline := time.Now().Add(5 * time.Second)
