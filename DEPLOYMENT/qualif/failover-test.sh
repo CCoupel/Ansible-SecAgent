@@ -267,6 +267,8 @@ kind_count() { events_log "$1" | awk -v k="$2" '$2==k {n++} END{print n+0}'; }
 kind_more() { [ "$(kind_count "$1" "$2")" -gt "$3" ]; }
 # $1 conteneur, $2 sujet, $3 genre, $4 cle : valeur de `cle=` sur la DERNIERE ligne (vide si absente).
 hook_last_kv() { events_log "$1" | awk -v h="$2" -v k="$3" -v key="$4" '$2==k && $3==h {v=""; for (i=4; i<=NF; i++) if (index($i, key "=")==1) v=substr($i, length(key)+2)} END{print v}'; }
+# $1 conteneur, $2 sujet : la PREMIERE ligne de genre $3 precede la premiere de genre $4 (ex. DISCOVER avant UP, #266).
+first_before() { events_log "$1" | awk -v h="$2" -v a="$3" -v b="$4" '$3==h && $2==a && !ia {ia=NR} $3==h && $2==b && !ib {ib=NR} END{exit !(ia && ib && ia<ib)}'; }
 # $1 conteneur, $2 sujet, $3 genre : derniere ligne (affichage).
 hook_last() { events_log "$1" | awk -v h="$2" -v k="$3" '$2==k && $3==h {l=$0} END{print l}'; }
 # Comptages et extractions SURS sous `set -euo pipefail` : grep sort en 1 sans correspondance, ce qui faisait echouer

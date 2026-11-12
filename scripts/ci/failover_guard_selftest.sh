@@ -119,6 +119,10 @@ cat > "$LOG" <<'EOF'
 2026-11-11T10:07:00Z CONVERGED secagent-server relays_connected=1 relays_missing=0 hosts_direct=1 hosts_routed=2 dropped=0
 2026-11-11T10:08:00Z REROUTED minion-child direct old=dmz1 new=secagent-server old_chain=dmz1 new_chain=secagent-server
 2026-11-11T10:09:00Z RELAY_REROUTED dmz2 old_chain=dmz1,dmz2 new_chain=dmz2 hosts_routed=1
+2026-11-11T10:10:00Z DISCOVER minion-new  first_seen=2026-11-11T10:10:00Z enrolled=E chain=
+2026-11-11T10:10:01Z UP   minion-new
+2026-11-11T10:10:02Z UP   minion-late
+2026-11-11T10:10:03Z DISCOVER minion-late dmz1 first_seen=2026-11-11T10:10:03Z enrolled=E chain=dmz1
 EOF
 ev() { # $1 script apres `source` (faux docker : `exec <c> cat ...` lit $LOG)
   env -u TLS_MODE -u DOCKER_HOST -u SECAGENT_ENDPOINT_HOST -u CONTROL_HOST SECAGENT_PRIVATE_DIR="$TMPD/priv" bash -c '
@@ -140,6 +144,10 @@ chk "hooks : hook_last_kv lit la DERNIERE ligne CONVERGED (relays_connected=1)" 
 chk "hooks : hook_last_kv : cle exacte (hosts_routed != hosts_direct), chaine avec virgule" "$([ "$(ev 'hook_last_kv c secagent-server CONVERGED hosts_routed')" = 2 ] && [ "$(ev 'hook_last_kv c dmz2 RELAY_REROUTED old_chain')" = dmz1,dmz2 ]; echo $?)"
 chk "hooks : hook_last_kv : cle absente => vide" "$([ -z "$(ev 'hook_last_kv c secagent-server CONVERGED absente')" ]; echo $?)"
 chk "hooks : hook_last = derniere ligne du sujet/genre" "$(ev 'hook_last c minion-child REROUTED' | grep -q ' direct old=dmz1 '; echo $?)"
+chk "hooks : first_before DISCOVER avant UP (hote direct, relay_origin vide)" "$(ev 'first_before c minion-new DISCOVER UP' >/dev/null; echo $?)"
+chk "hooks : first_before refuse un DISCOVER journalise APRES UP" "$(if ev 'first_before c minion-late DISCOVER UP' >/dev/null; then echo 1; else echo 0; fi)"
+chk "hooks : first_before refuse un genre absent" "$(if ev 'first_before c minion-root DISCOVER UP' >/dev/null; then echo 1; else echo 0; fi)"
+chk "hooks : DISCOVER direct, champ vide : first_seen lu par cle, chain vide" "$([ "$(ev 'hook_last_kv c minion-new DISCOVER first_seen')" = 2026-11-11T10:10:00Z ] && [ -z "$(ev 'hook_last_kv c minion-new DISCOVER chain')" ] && [ "$(ev 'hook_last_kv c minion-late DISCOVER chain')" = dmz1 ]; echo $?)"
 chk "hooks : hooks_enabled si COMPOSE_OVERRIDES contient docker-compose.hooks.yml" "$(ev 'COMPOSE_OVERRIDES="/x/docker-compose.remote-tls.yml /x/docker-compose.hooks.yml"; hooks_enabled' >/dev/null; echo $?)"
 chk "hooks : hooks_enabled faux sans la surcharge" "$(if ev 'COMPOSE_OVERRIDES=/x/docker-compose.remote-tls.yml; hooks_enabled' >/dev/null; then echo 1; else echo 0; fi)"
 set +e

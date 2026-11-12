@@ -99,6 +99,56 @@
           "append": "{{timestamp}} CONVERGED {{relay_id}} relays_connected={{relays_connected}} relays_missing={{relays_missing}} hosts_direct={{hosts_direct}} hosts_routed={{hosts_routed}} dropped={{upstream_dropped_events_total}}\n"
         }
       ]
+    },
+    {
+      "event": "host.discover",
+      "actions": [
+        {
+          "type": "file",
+          "path": "/var/log/secagent-events/events.log",
+          "append": "{{timestamp}} DISCOVER {{hostname}} {{relay_origin}} first_seen={{first_seen_at}} enrolled={{enrolled_at}} chain={{relay_chain}}\n"
+        }
+      ]
+    },
+    {
+      "event": "host.removed",
+      "actions": [
+        {
+          "type": "file",
+          "path": "/var/log/secagent-events/events.log",
+          "append": "{{timestamp}} REMOVED {{hostname}} {{cause}} first_seen={{first_seen_at}} chain={{relay_chain}}\n"
+        }
+      ]
+    },
+    {
+      "event": "relay.discover",
+      "actions": [
+        {
+          "type": "file",
+          "path": "/var/log/secagent-events/events.log",
+          "append": "{{timestamp}} RELAY_DISCOVER {{relay_id}} {{mode}} first_seen={{first_seen_at}} hosts_routed={{hosts_routed}}\n"
+        }
+      ]
+    },
+    {
+      "event": "relay.removed",
+      "actions": [
+        {
+          "type": "file",
+          "path": "/var/log/secagent-events/events.log",
+          "append": "{{timestamp}} RELAY_REMOVED {{relay_id}} {{cause}} mode={{mode}}\n"
+        }
+      ]
+    },
+    {
+      "event": "host.deleted",
+      "actions": [
+        {
+          "type": "file",
+          "path": "/var/log/secagent-events/events.log",
+          "append": "{{timestamp}} DELETED {{hostname}}\n"
+        }
+      ]
     }
   ]
 }

@@ -27,6 +27,11 @@
 #   chain-test.sh relay-rerouted  # CHAIN_LEVEL3=1 : dmz2 re-pointe vers la racine puis retour : relay.rerouted (#244)
 #   chain-test.sh failover-3-levels  # CHAIN_LEVEL3=1 : redemarrage de dmz2, relay.failover dmz2 journalise par la racine (#225)
 #   chain-test.sh lost-during-failover  # kill du maitre + minion-root arrete pendant la fenetre : aucun host.down (#247)
+#   chain-test.sh removed      # suppression de minion-root : host.removed + host.deleted (deprecie), reenrolement : discover (#266)
+#   chain-test.sh removed-indirect  # suppression chez dmz1 : removed propage au maitre, deleted local, reenrolement (#266)
+#   chain-test.sh revoke-no-removed  # revocations (minion-root ; dmz2 a 3 niveaux) : aucun removed, puis remise en etat (#266)
+#   chain-test.sh relay-removed  # CHAIN_LEVEL3=1 : dmz2 revoque puis supprime chez dmz1 : relay.removed, pas de cascade (#266)
+#   chain-test.sh rollback-refused  # ROLLBACK_IMAGE (v3.0.5 par digest) : state verify refuse l'etat v3.0.6 (first_seen_at)
 #   chain-test.sh negative-ca  # essai CA negatif (profil Compose `negative`) : un minion sans la CA est refuse (#197)
 #   chain-test.sh admission-503  # refus 503 memory_budget_exhausted en reel (#241) : plafond abaisse, voir admission-503.sh
 #   chain-test.sh paths        # chemins prives resolus (sans docker) ; echec si la racine PRIVATE/ manque
@@ -43,6 +48,7 @@
 #   sinon smoke/failover/admission-503 refusent : #249), PROJECT (defaut secagent-chain), TOKEN_TTL (defaut 2h).
 #   LINK_TTL (defaut = TOKEN_TTL) : duree du jeton de lien relay-child de l'enfant.
 #   LOT-3.2 : CHAIN_LEVEL3 (0|1, 3e niveau dmz2, Docker), UPSTREAM_CYCLES / UPSTREAM_QUEUE_SIZE / UPSTREAM_PAUSE_MAX_S, RELAY_DOWN_REASON.
+#   LOT-3.3 : ROLLBACK_IMAGE (rollback-refused : image serveur v3.0.5 epinglee par digest).
 # Les jetons sont ecrits UNIQUEMENT dans $CHAIN_DIR (0700, fichiers 0600, hors du depot) : jamais affiches.
 # Le poste de controle Ansible (plugin SECAGENT-PYTHON + secagent-inventory) est ici le poste qui lance ce script,
 # il joint la racine par les ports d'hote 7770 (a) et 8770 (b) avec la CA de test.
@@ -672,9 +678,21 @@ check_hooks() {
   wait_for "relay.up dmz1 dans le journal du maitre $m" 90 hook_seen "$m" dmz1 RELAY_UP >/dev/null
   wait_for "host.up minion-root dans le journal du maitre $m" 60 hook_seen "$m" minion-root UP >/dev/null
   wait_for "host.up minion-child dans le journal de l'enfant" 60 hook_seen "$C_CHILD" minion-child UP >/dev/null
+  # LOT-3.3 (#266) : discover = premier handshake reussi (cycle de vie d'inventaire), AVANT up, jamais reemis
+  first_before "$m" dmz1 RELAY_DISCOVER RELAY_UP || fail "relay.discover dmz1 absent ou apres relay.up au maitre $m (#266)"
+  first_before "$m" minion-root DISCOVER UP || fail "host.discover minion-root absent ou apres host.up au maitre $m (#266)"
+  first_before "$C_CHILD" minion-child DISCOVER UP || fail "host.discover minion-child absent ou apres host.up a l'enfant (#266)"
+  wait_for "host.discover minion-child propage au maitre $m" 60 hook_seen "$m" minion-child DISCOVER >/dev/null
+  [ "$(hook_last_kv "$m" minion-child DISCOVER chain)" = dmz1 ] || fail "host.discover minion-child au maitre : chain=dmz1 attendu ($(hook_last "$m" minion-child DISCOVER))"
+  [ "$(hook_last_kv "$m" dmz1 RELAY_DISCOVER first_seen)" != "" ] || fail "relay.discover dmz1 sans first_seen"
+  [ "$(count_matches '"first_seen_at"' < <({ adm "$m" minions list --format json 2>/dev/null || true; }))" -ge 1 ] \
+    || fail "minions list --format json du maitre : first_seen_at absent (#266)"
+  echo "discover : $(hook_last "$m" minion-root DISCOVER) | $(hook_last "$m" dmz1 RELAY_DISCOVER)"
   if level3; then
     wait_for "relay.up dmz2 dans le journal de l'enfant dmz1" 90 hook_seen "$C_CHILD" dmz2 RELAY_UP >/dev/null
     wait_for "host.up minion-grand dans le journal de dmz2" 60 hook_seen "$C_GRAND" minion-grand UP >/dev/null
+    first_before "$C_CHILD" dmz2 RELAY_DISCOVER RELAY_UP || fail "relay.discover dmz2 absent ou apres relay.up chez dmz1 (#266)"
+    wait_for "relay.discover dmz2 propage au maitre $m" 60 hook_seen "$m" dmz2 RELAY_DISCOVER >/dev/null
   fi
   echo "hooks OK (journaux : $EVENTS_LOG_HINT)"
 }
@@ -689,6 +707,8 @@ hooks_snapshot() {
       HOOKS_BEFORE["$c $e"]="$(hook_count "$c" $e)"
     done
     HOOKS_BEFORE["$c *REROUTED"]="$(kind_count "$c" REROUTED)"
+    HOOKS_BEFORE["$c *DISCOVER"]="$(kind_count "$c" DISCOVER)"
+    HOOKS_BEFORE["$c *RELAY_DISCOVER"]="$(kind_count "$c" RELAY_DISCOVER)"
     HOOKS_BEFORE["$c *RELAY_REROUTED"]="$(kind_count "$c" RELAY_REROUTED)"
   done
 }
@@ -734,6 +754,9 @@ check_hooks_after_failover() { # $1 cause attendue (start | takeover) ; $2 conne
   in_order "$m" FAILOVER CONVERGED || fail "relay.converged journalise avant relay.failover au maitre $m"
   kind_more "$m" REROUTED "$(before "$m *REROUTED")" && fail "host.rerouted journalise par $m apres la bascule (aucun attendu, #244)"
   kind_more "$m" RELAY_REROUTED "$(before "$m *RELAY_REROUTED")" && fail "relay.rerouted journalise par $m apres la bascule (aucun attendu, #244)"
+  # #266 : first_seen_at est dans l'etat PARTAGE : le nouveau maitre ne redecouvre rien
+  kind_more "$m" DISCOVER "$(before "$m *DISCOVER")" && fail "host.discover journalise par $m apres la bascule (aucun attendu, #266)"
+  kind_more "$m" RELAY_DISCOVER "$(before "$m *RELAY_DISCOVER")" && fail "relay.discover journalise par $m apres la bascule (aucun attendu, #266)"
   if hook_more "$m" minion-root UP "$(before "$m minion-root UP")"; then echo "info : host.up minion-root AUSSI journalise par $m (attendu : host.reconnect seul, #265 ; minion < v3.0.6 ?)"; fi
   if hook_more "$m" dmz1 RELAY_UP "$(before "$m dmz1 RELAY_UP")" && [ "$conv" = connected ]; then fail "relay.up dmz1 journalise par $m apres la bascule (attendu : relay.reconnect seul, #245)"; fi
   local k; for k in RECONNECT UP; do
@@ -752,6 +775,7 @@ relay_down() {
   local m down0 up0 why; m="$(master)" || fail "pas de maitre sur la racine"
   connected "$m" relays dmz1 4
   down0="$(hook_count "$m" dmz1 RELAY_DOWN)"; up0="$(hook_count "$m" dmz1 RELAY_UP)"
+  local rd0 hd0; rd0="$(hook_count "$m" dmz1 RELAY_DISCOVER)"; hd0="$(hook_count "$C_CHILD" minion-child DISCOVER)"
   echo "== arret de l'enfant ($C_CHILD) : relay.down dmz1 (peer_closed:1001) attendu au maitre $m"
   dc stop secagent-child >/dev/null
   wait_for "relay.down dmz1 journalise par le maitre $m" 60 hook_more "$m" dmz1 RELAY_DOWN "$down0" >/dev/null
@@ -763,6 +787,9 @@ relay_down() {
   wait_for "enfant healthy" 120 all_health healthy "$C_CHILD" >/dev/null
   connected "$m" relays dmz1 4
   wait_for "relay.up dmz1 journalise par le maitre $m" 90 hook_more "$m" dmz1 RELAY_UP "$up0" >/dev/null
+  connected "$C_CHILD" minions minion-child 2
+  [ "$(hook_count "$m" dmz1 RELAY_DISCOVER)" = "$rd0" ] || fail "relay.discover dmz1 au redemarrage de l'enfant (deja decouvert, #266)"
+  [ "$(hook_count "$C_CHILD" minion-child DISCOVER)" = "$hd0" ] || fail "host.discover minion-child a l'enfant apres son redemarrage (etat persistant, #266)"
   smoke
   echo "relay-down OK (relay.down peer_closed:1001 puis relay.up de dmz1 au maitre $m)"
 }
@@ -805,16 +832,21 @@ converged_timeout() {
 # sur CE noeud (minion-child.env), ancien JWT retire du volume du minion (sa cle id_rsa est conservee). Le maitre doit
 # avoir vu passer minion-child par dmz1 DEPUIS sa promotion (memoire des routes en RAM, relay_reroute.go:84-118) : le
 # minion est d'abord redemarre derriere dmz1.
-minion_child_retarget() { # $1 conteneur qui mint le jeton d'enrolement (noeud vise) ; URL dans MINION_CHILD_*_URL
-  local issuer="$1"
-  adm "$issuer" tokens create --role enrollment --hostname-pattern '^minion-child$' --expires "$TOKEN_TTL" 2>&1 \
-    | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t || true; [ -n "$t" ] || fail "jeton minion-child ($issuer) non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-child.env; }
-  dc stop minion-child >/dev/null
-  ctr run --rm -v "${PROJECT}_minion_child_data:/d" \
+# Reenrolement d'un minion (Docker) : $1 service (minion-root|minion-child|minion-grand), $2 conteneur qui mint le jeton
+# d'enrolement (le noeud qui l'accueillera ; chaque noeud signe les JWT de SES agents). Jeton ecrit dans <service>.env
+# (0600, jamais affiche), JWT retire du volume <projet>_<service>_data (cle id_rsa conservee), conteneur recree.
+# Les variables d'URL eventuelles (MINION_CHILD_*_URL) sont heritees de l'appelant.
+minion_reenroll() {
+  local svc="$1" issuer="$2" vol="${PROJECT}_${1//-/_}_data"
+  adm "$issuer" tokens create --role enrollment --hostname-pattern "^$svc\$" --expires "$TOKEN_TTL" 2>&1 \
+    | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t || true; [ -n "$t" ] || fail "jeton $svc ($issuer) non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret "$svc.env"; }
+  dc stop "$svc" >/dev/null
+  ctr run --rm -v "$vol:/d" \
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
-    sh -c 'rm -f /d/token.jwt' || fail "retrait du JWT de minion-child impossible (volume ${PROJECT}_minion_child_data)"
-  dc up -d --force-recreate --no-deps minion-child
+    sh -c 'rm -f /d/token.jwt' || fail "retrait du JWT de $svc impossible (volume $vol)"
+  dc up -d --force-recreate --no-deps "$svc"
 }
+minion_child_retarget() { minion_reenroll minion-child "$1"; }   # $1 conteneur qui mint le jeton (noeud vise)
 minion_child_seen_more() { [ $(( $(hook_count "$1" minion-child UP) + $(hook_count "$1" minion-child RECONNECT) )) -gt "$2" ]; }
 rerouted() {
   docker_only rerouted; verify_images; need INVENTORY_BIN
@@ -974,6 +1006,7 @@ failover_3_levels() {
   local m f0 u0; m="$(master)" || fail "pas de maitre sur la racine"
   connected "$C_CHILD" relays dmz2 4
   f0="$(hook_count "$m" dmz2 FAILOVER)"; u0="$(hook_count "$C_CHILD" dmz2 RELAY_UP)"
+  local rd0; rd0="$(hook_count "$C_CHILD" dmz2 RELAY_DISCOVER)"
   echo "== redemarrage de dmz2 : relay.failover dmz2 attendu au maitre de la racine $m (via dmz1)"
   dc restart secagent-grandchild >/dev/null
   wait_for "petit-enfant dmz2 healthy" 120 all_health healthy "$C_GRAND" >/dev/null
@@ -982,6 +1015,7 @@ failover_3_levels() {
   [ "$(events_log "$m" | awk '$2=="FAILOVER" && $3=="dmz2" {c=$4} END{print c}')" = start ] || fail "relay.failover dmz2 : cause start attendue"
   wait_for "relay.up dmz2 journalise par dmz1" 90 hook_more "$C_CHILD" dmz2 RELAY_UP "$u0" >/dev/null
   connected "$C_CHILD" relays dmz2 4
+  [ "$(hook_count "$C_CHILD" dmz2 RELAY_DISCOVER)" = "$rd0" ] || fail "relay.discover dmz2 au redemarrage de dmz2 (deja decouvert, #266)"
   smoke
   echo "failover-3-levels OK"
 }
@@ -996,6 +1030,7 @@ lost_during_failover() {
   if [ "$m" = "$C_A" ]; then s="$C_B"; else s="$C_A"; fi
   connected "$m" minions minion-root 2
   dn0="$(hook_count "$s" minion-root DOWN)"; up0="$(hook_count "$s" minion-root UP)"
+  local di0; di0="$(kind_count "$s" DISCOVER)"
   echo "== kill du maitre $m, puis arret de minion-root pendant la fenetre de reprise"
   ctr kill "$m" >/dev/null
   dc stop minion-root >/dev/null
@@ -1008,11 +1043,174 @@ lost_during_failover() {
   echo "aucun host.down minion-root au nouveau maitre (conforme a #247 option A)"
   dc start minion-root >/dev/null
   wait_for "host.up minion-root (nouveau processus) au nouveau maitre $s" 150 hook_more "$s" minion-root UP "$up0" >/dev/null
+  [ "$(kind_count "$s" DISCOVER)" = "$di0" ] || fail "host.discover au nouveau maitre $s (aucun attendu : deja decouvert, #266)"
   ctr start "$m" >/dev/null
   wait_for "ancien maitre healthy" 120 all_health healthy "$m" >/dev/null
   is_silent "$m" || fail "l'ancien maitre ecoute alors qu'il y a un maitre"
   smoke
   echo "lost-during-failover OK"
+}
+
+# --- Cycle de vie d'inventaire LOT-3.3 (#266) : host.removed / relay.removed, aucun sur une revocation -------------------
+# Les compteurs sont releves AVANT chaque action (journaux persistants). host.deleted est DEPRECIE (v3.0.6, retire en
+# v3.0.7) : hooks.json s'y abonne expres, ce qui doit produire au chargement le [WARN] « deprecated since v3.0.6 » ;
+# il reste LOCAL (non propage).
+
+# Scenario removed : suppression de minion-root (agent direct) au maitre -> REMOVED minion-root deleted + DELETED (local) ;
+# puis reenrolement -> DISCOVER minion-root (nouveau first_seen) AVANT UP. Docker seulement (reenrolement).
+removed() {
+  docker_only removed; verify_images; need INVENTORY_BIN
+  local m r0 x0 d0 u0 fs0; m="$(master)" || fail "pas de maitre sur la racine"
+  connected "$m" minions minion-root 2
+  r0="$(hook_count "$m" minion-root REMOVED)"; x0="$(hook_count "$m" minion-root DELETED)"
+  d0="$(hook_count "$m" minion-root DISCOVER)"; u0="$(hook_count "$m" minion-root UP)"
+  fs0="$(hook_last_kv "$m" minion-root DISCOVER first_seen)"
+  echo "== suppression de minion-root au maitre $m : host.removed (deleted) + host.deleted (deprecie, local)"
+  adm "$m" minions delete minion-root --yes >/dev/null || fail "minions delete minion-root refuse"
+  wait_for "host.removed minion-root au maitre $m" 30 hook_more "$m" minion-root REMOVED "$r0" >/dev/null
+  echo "removed : $(hook_last "$m" minion-root REMOVED)"
+  [ "$(events_log "$m" | awk '$2=="REMOVED" && $3=="minion-root" {c=$4} END{print c}')" = deleted ] || fail "host.removed minion-root : cause deleted attendue"
+  wait_for "host.deleted minion-root (deprecie) au maitre $m" 30 hook_more "$m" minion-root DELETED "$x0" >/dev/null
+  { adm "$m" minions list 2>/dev/null || true; } | awk '$1=="minion-root" {f=1} END{exit f}' || fail "minion-root encore dans minions list apres la suppression"
+  echo "== reenrolement de minion-root : host.discover (nouveau first_seen) puis host.up"
+  minion_reenroll minion-root "$m"
+  connected "$m" minions minion-root 2
+  wait_for "host.discover minion-root (reenrole) au maitre $m" 90 hook_more "$m" minion-root DISCOVER "$d0" >/dev/null
+  wait_for "host.up minion-root (reenrole) au maitre $m" 90 hook_more "$m" minion-root UP "$u0" >/dev/null
+  events_log "$m" | awk -v d="$d0" -v u="$u0" '$3=="minion-root" && $2=="DISCOVER" {nd++; if (nd==d+1) id=NR} $3=="minion-root" && $2=="UP" {nu++; if (nu==u+1) iu=NR} END{exit !(id && iu && id<iu)}' \
+    || fail "host.discover du reenrolement apres son host.up au maitre $m"
+  [ "$(hook_last_kv "$m" minion-root DISCOVER first_seen)" != "$fs0" ] || fail "first_seen de minion-root inchange apres suppression et reenrolement (nouveau noeud attendu)"
+  smoke
+  echo "removed OK"
+}
+
+# Scenario removed-indirect : suppression de minion-child chez l'enfant dmz1 -> enfant : REMOVED + DELETED ; maitre :
+# REMOVED minion-child deleted chain=dmz1 (propage) et AUCUN DELETED (local) ; reenrolement -> DISCOVER a l'enfant ET au
+# maitre. Docker seulement.
+removed_indirect() {
+  docker_only removed-indirect; verify_images; need INVENTORY_BIN
+  local m cr0 cx0 mr0 mx0 cd0 md0; m="$(master)" || fail "pas de maitre sur la racine"
+  connected "$C_CHILD" minions minion-child 2
+  cr0="$(hook_count "$C_CHILD" minion-child REMOVED)"; cx0="$(hook_count "$C_CHILD" minion-child DELETED)"
+  mr0="$(hook_count "$m" minion-child REMOVED)"; mx0="$(hook_count "$m" minion-child DELETED)"
+  cd0="$(hook_count "$C_CHILD" minion-child DISCOVER)"; md0="$(hook_count "$m" minion-child DISCOVER)"
+  echo "== suppression de minion-child chez dmz1 : removed a l'enfant et au maitre (propage), deleted a l'enfant seulement"
+  adm "$C_CHILD" minions delete minion-child --yes >/dev/null || fail "minions delete minion-child (dmz1) refuse"
+  wait_for "host.removed minion-child chez dmz1" 30 hook_more "$C_CHILD" minion-child REMOVED "$cr0" >/dev/null
+  wait_for "host.deleted minion-child chez dmz1" 30 hook_more "$C_CHILD" minion-child DELETED "$cx0" >/dev/null
+  wait_for "host.removed minion-child propage au maitre $m" 60 hook_more "$m" minion-child REMOVED "$mr0" >/dev/null
+  echo "removed-indirect : $(hook_last "$m" minion-child REMOVED)"
+  [ "$(hook_last_kv "$m" minion-child REMOVED chain)" = dmz1 ] || fail "host.removed minion-child au maitre : chain=dmz1 attendu"
+  sleep 5
+  [ "$(hook_count "$m" minion-child DELETED)" = "$mx0" ] || fail "host.deleted minion-child au maitre (local a dmz1, jamais propage)"
+  echo "== reenrolement de minion-child chez dmz1 : host.discover a l'enfant et au maitre"
+  minion_reenroll minion-child "$C_CHILD"
+  connected "$C_CHILD" minions minion-child 2
+  wait_for "host.discover minion-child (reenrole) chez dmz1" 90 hook_more "$C_CHILD" minion-child DISCOVER "$cd0" >/dev/null
+  wait_for "host.discover minion-child (reenrole) au maitre $m" 90 hook_more "$m" minion-child DISCOVER "$md0" >/dev/null
+  smoke
+  echo "removed-indirect OK"
+}
+
+# Scenario revoke-no-removed : une REVOCATION n'est pas une suppression : `minions revoke minion-root` au maitre puis
+# `relays revoke dmz2` chez dmz1 (3 niveaux) -> AUCUN REMOVED ni RELAY_REMOVED (relay.down reason=revoked chez dmz1).
+# Remise en etat ensuite (suppression + reenrolement de minion-root ; dmz2 retire, re-declare, nouveau jeton, recree) :
+# ces suppressions-la emettent bien removed, releve APRES la verification.
+revoke_no_removed() {
+  docker_only revoke-no-removed; verify_images; need INVENTORY_BIN
+  local m c rm0 rr0 cr0 crr0 dd0; m="$(master)" || fail "pas de maitre sur la racine"
+  connected "$m" minions minion-root 2
+  rm0="$(kind_count "$m" REMOVED)"; rr0="$(kind_count "$m" RELAY_REMOVED)"
+  cr0="$(kind_count "$C_CHILD" REMOVED)"; crr0="$(kind_count "$C_CHILD" RELAY_REMOVED)"
+  dd0="$(hook_count "$C_CHILD" dmz2 RELAY_DOWN)"
+  echo "== revocation de minion-root au maitre $m"
+  adm "$m" minions revoke minion-root >/dev/null || fail "minions revoke minion-root refuse"
+  if level3; then
+    echo "== revocation de dmz2 chez dmz1 : relay.down revoked attendu chez dmz1"
+    connected "$C_CHILD" relays dmz2 4
+    adm "$C_CHILD" relays revoke dmz2 --yes >/dev/null || fail "relays revoke dmz2 (dmz1) refuse"
+    wait_for "relay.down dmz2 chez dmz1" 60 hook_more "$C_CHILD" dmz2 RELAY_DOWN "$dd0" >/dev/null
+    echo "relay.down : $(hook_last "$C_CHILD" dmz2 RELAY_DOWN)"
+    [ "$(events_log "$C_CHILD" | awk '$2=="RELAY_DOWN" && $3=="dmz2" {r=$4} END{print r}')" = revoked ] || fail "relay.down dmz2 : raison revoked attendue"
+  fi
+  sleep 10
+  for c in "$m" "$C_CHILD"; do
+    [ "$(kind_count "$c" REMOVED)" = "$([ "$c" = "$m" ] && echo "$rm0" || echo "$cr0")" ] || fail "host.removed apres une revocation sur $c (aucun attendu, #266)"
+    [ "$(kind_count "$c" RELAY_REMOVED)" = "$([ "$c" = "$m" ] && echo "$rr0" || echo "$crr0")" ] || fail "relay.removed apres une revocation sur $c (aucun attendu, #266)"
+  done
+  echo "aucun removed apres les revocations (conforme a #266)"
+  echo "== remise en etat"
+  adm "$m" minions delete minion-root --yes >/dev/null || fail "minions delete minion-root (remise en etat) refuse"
+  minion_reenroll minion-root "$m"
+  connected "$m" minions minion-root 2
+  if level3; then grand_redeclare; fi
+  smoke
+  echo "revoke-no-removed OK"
+}
+# dmz2 revoque ou supprime chez dmz1 : retire (si encore declare), re-declare, nouveau jeton (racine, --aud dmz1), recree.
+grand_redeclare() {
+  local m; m="$(master)" || fail "pas de maitre sur la racine"
+  adm "$C_CHILD" relays remove dmz2 --yes >/dev/null 2>&1 || true
+  adm "$C_CHILD" relays add --id dmz2 --description "chain grandchild" >/dev/null || fail "relays add dmz2 (sur dmz1) refuse"
+  link_mint_grand "$m" dmz1
+  recreate_grand
+  connected "$C_CHILD" relays dmz2 4
+}
+
+# Scenario relay-removed (3 niveaux) : chez dmz1, `relays revoke dmz2` puis `relays remove dmz2` -> dmz1 : RELAY_REMOVED
+# dmz2 deleted mode=pull et RELAY_DOWN dmz2 revoked ; maitre : RELAY_REMOVED dmz2 propage ; AUCUN REMOVED minion-grand
+# (pas de cascade, Q4). Puis re-declaration + recreation : RELAY_DISCOVER dmz2 a nouveau chez dmz1 (nouveau noeud) puis
+# RELAY_UP.
+relay_removed() {
+  need_level3 relay-removed; verify_images; need INVENTORY_BIN
+  local m crr0 mrr0 dd0 g0 mg0 rd0 ru0; m="$(master)" || fail "pas de maitre sur la racine"
+  connected "$C_CHILD" relays dmz2 4
+  crr0="$(hook_count "$C_CHILD" dmz2 RELAY_REMOVED)"; mrr0="$(hook_count "$m" dmz2 RELAY_REMOVED)"
+  dd0="$(hook_count "$C_CHILD" dmz2 RELAY_DOWN)"
+  g0="$(hook_count "$C_CHILD" minion-grand REMOVED)"; mg0="$(hook_count "$m" minion-grand REMOVED)"
+  rd0="$(hook_count "$C_CHILD" dmz2 RELAY_DISCOVER)"; ru0="$(hook_count "$C_CHILD" dmz2 RELAY_UP)"
+  echo "== chez dmz1 : revocation puis suppression de dmz2"
+  adm "$C_CHILD" relays revoke dmz2 --yes >/dev/null || fail "relays revoke dmz2 (dmz1) refuse"
+  adm "$C_CHILD" relays remove dmz2 --yes >/dev/null || fail "relays remove dmz2 (dmz1) refuse"
+  wait_for "relay.removed dmz2 chez dmz1" 30 hook_more "$C_CHILD" dmz2 RELAY_REMOVED "$crr0" >/dev/null
+  echo "relay-removed : $(hook_last "$C_CHILD" dmz2 RELAY_REMOVED)"
+  [ "$(events_log "$C_CHILD" | awk '$2=="RELAY_REMOVED" && $3=="dmz2" {c=$4} END{print c}')" = deleted ] || fail "relay.removed dmz2 : cause deleted attendue"
+  [ "$(hook_last_kv "$C_CHILD" dmz2 RELAY_REMOVED mode)" = pull ] || fail "relay.removed dmz2 : mode=pull attendu"
+  wait_for "relay.down dmz2 (revoked) chez dmz1" 60 hook_more "$C_CHILD" dmz2 RELAY_DOWN "$dd0" >/dev/null
+  wait_for "relay.removed dmz2 propage au maitre $m" 60 hook_more "$m" dmz2 RELAY_REMOVED "$mrr0" >/dev/null
+  sleep 5
+  [ "$(hook_count "$C_CHILD" minion-grand REMOVED)" = "$g0" ] && [ "$(hook_count "$m" minion-grand REMOVED)" = "$mg0" ] \
+    || fail "host.removed minion-grand apres relay.removed dmz2 (pas de cascade, #266 Q4)"
+  echo "== re-declaration de dmz2 : relay.discover (nouveau noeud) puis relay.up chez dmz1"
+  grand_redeclare
+  wait_for "relay.discover dmz2 (re-declare) chez dmz1" 90 hook_more "$C_CHILD" dmz2 RELAY_DISCOVER "$rd0" >/dev/null
+  wait_for "relay.up dmz2 (re-declare) chez dmz1" 90 hook_more "$C_CHILD" dmz2 RELAY_UP "$ru0" >/dev/null
+  smoke
+  echo "relay-removed OK"
+}
+
+# Scenario rollback-refused (optionnel) : l'etat v3.0.6 du maitre (avec first_seen_at) est REFUSE par `state verify` d'un
+# serveur v3.0.5 (decodeur strict) : prouve la regle de retour arriere de DEPLOYMENT.md (restaurer la sauvegarde d'avant
+# montee). ROLLBACK_IMAGE obligatoire (image serveur v3.0.5 epinglee par digest, jamais devinee ici). Copie de l'etat dans
+# un volume jetable (10001, 0400), jamais sur le poste ; rien n'est ecrit dans l'etat vivant. Docker seulement.
+rollback_refused() {
+  docker_only rollback-refused; need ROLLBACK_IMAGE
+  [[ $ROLLBACK_IMAGE =~ @sha256:[0-9a-f]{64}$ ]] || refuse "ROLLBACK_IMAGE='$ROLLBACK_IMAGE' : reference epinglee par digest attendue (<image>:v3.0.5@sha256:<64 hex>)"
+  local vol="${PROJECT}_rollback_probe" out rc=0
+  ctr volume create "$vol" >/dev/null
+  # shellcheck disable=SC2064   # vol fixe ici
+  trap "ctr volume rm '$vol' >/dev/null 2>&1 || true" EXIT
+  ctr run --rm -v "${PROJECT}_secagent_state:/data:ro" -v "$vol:/b" \
+    alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
+    sh -c 'set -e; cp /data/relay.state /b/relay.state; chown 10001:10001 /b/relay.state; chmod 0400 /b/relay.state' \
+    || fail "copie de relay.state impossible"
+  out="$(ctr run --rm --user 10001:10001 -v "${SECAGENT_SECRETS_VOLUME:-${PROJECT}_secrets}:/run/secagent-secrets:ro" -v "$vol:/b:ro" \
+    -e RSA_MASTER_KEY_FILE=/run/secagent-secrets/rsa_master_key "$ROLLBACK_IMAGE" state verify /b/relay.state 2>&1)" || rc=$?
+  ctr volume rm "$vol" >/dev/null 2>&1 || true; trap - EXIT
+  printf '%s\n' "$out" | tail -5
+  [ "$rc" != 0 ] || fail "state verify v3.0.5 a ACCEPTE un etat v3.0.6 avec first_seen_at (retour arriere non bloque)"
+  printf '%s' "$out" | grep -q first_seen_at || fail "state verify v3.0.5 refuse (code $rc) sans citer first_seen_at"
+  echo "rollback-refused OK (v3.0.5 refuse l'etat v3.0.6 : code $rc, first_seen_at cite)"
 }
 
 # --- Essai CA negatif (#197 item 2) : service Compose `minion-negca`, profil `negative` -----------------------------
@@ -1075,6 +1273,11 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     relay-rerouted) relay_rerouted ;;
     failover-3-levels) failover_3_levels ;;
     lost-during-failover) lost_during_failover ;;
+    removed) removed ;;
+    removed-indirect) removed_indirect ;;
+    revoke-no-removed) revoke_no_removed ;;
+    relay-removed) relay_removed ;;
+    rollback-refused) rollback_refused ;;
     negative-ca) negative_ca ;;
     admission-503) admission_503 ;;
     down) guard_project
@@ -1091,6 +1294,6 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
             ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_LINK_GRAND_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" $(events_volumes) >/dev/null 2>&1 || true
           fi
           chain_dir_clean ;;   # jetons volatils du poste (garde chain_dir_check avant tout rm)
-    *) sed -n '2,47p' "$0"; exit 2 ;;
+    *) sed -n '2,53p' "$0"; exit 2 ;;
   esac
 fi
