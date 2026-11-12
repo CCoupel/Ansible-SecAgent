@@ -158,7 +158,7 @@ func (n *Node) emitConverged(selfID string, connected, missing int) {
 	ctx := n.dispatchCtx
 	// let the relay.up / relay.reconnect events already handed to the dispatcher reach the journal first
 	for deadline := time.Now().Add(convergenceSettle); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-		if st := n.dispatcher.Stats(); st.QueueDepth == 0 && st.Inflight == 0 {
+		if n.dispatcher.Pending() == 0 { // Pending, not QueueDepth+Inflight: a job just taken from its queue is counted
 			break
 		}
 		if ctx != nil && ctx.Err() != nil {

@@ -4,12 +4,15 @@
 package hooks
 
 import (
+	"context"
 	"encoding/json"
 	"log"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // host.rerouted / relay.rerouted: old_relay / new_relay are the LAST element of the top-down chains,
@@ -89,5 +92,29 @@ func TestConfigWarnsAboutTheDeprecatedHostDeleted(t *testing.T) {
 	}
 	if strings.Count(got, "host.removed") != 1 { // only the message names it, once
 		t.Errorf("host.removed must not be warned about:\n%s", got)
+	}
+}
+
+// Pending counts an event from its acceptance to the end of its actions, a job running included (the
+// relay.converged settle wait relies on it: QueueDepth+Inflight had a window where a taken job was counted nowhere).
+func TestDispatcher_PendingCoversQueuedAndRunningJobs(t *testing.T) {
+	out := t.TempDir() + "/o.log"
+	d := NewDispatcher(nil, 100)
+	d.SetConfig(&HooksConfig{Hooks: []HookDef{{Event: "host.up", Actions: []ActionDef{
+		{Type: "shell", Cmd: "/bin/sh", Args: []string{"-c", "sleep 0.3; echo x >> " + out}, TimeoutSeconds: 5}}}}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.Start(ctx)
+	d.Dispatch("host.up", "h1", "connected", "")
+	time.Sleep(100 * time.Millisecond) // the job has been taken by its worker and is running
+	if d.Pending() != 1 {
+		t.Errorf("Pending = %d while the action runs, want 1", d.Pending())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for d.Pending() != 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if b, _ := os.ReadFile(out); len(b) == 0 {
+		t.Error("the action did not complete before Pending reached 0")
 	}
 }

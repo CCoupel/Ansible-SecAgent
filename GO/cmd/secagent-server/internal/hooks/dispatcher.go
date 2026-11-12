@@ -408,6 +408,11 @@ func (d *Dispatcher) actionsOf(job dispatchJob) int {
 	return 0
 }
 
+// Pending is the number of events accepted and not fully processed yet (queued or running): unlike
+// Stats().QueueDepth + Inflight it has no window in which a job was taken from its queue but is not counted
+// as running.
+func (d *Dispatcher) Pending() int64 { return d.pending.Load() }
+
 // Drain stops accepting events and waits, at most timeout, until everything already accepted is
 // processed. It returns the number of events still pending when the delay is over (0 = flushed).
 // Call it on a clean stop, before cancelling the context given to Start.
