@@ -387,7 +387,7 @@ func TestReroutedRefusal_IsAggregatedAndDropsTheEvent(t *testing.T) {
 	}
 	fwd.Unlock()
 	rerouteRefuseAgg.Flush()
-	if n := strings.Count(out.String(), "re-route event refused"); n != 1 || !strings.Contains(out.String(), "5 event(s)") {
+	if n := strings.Count(out.String(), "host.rerouted: host without known route): 5 event(s)"); n != 1 {
 		t.Errorf("want ONE aggregated line for 5 refusals:\n%s", out.String())
 	}
 }

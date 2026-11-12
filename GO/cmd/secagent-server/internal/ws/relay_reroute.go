@@ -283,7 +283,17 @@ var (
 )
 
 func noteRerouteRefused(relayID, event, reason string) {
-	key := relayID + ": " + event + ": " + reason
+	noteHostRefused(relayID, event, reason, reason != reasonNoKnownRoute && reason != reasonLateElsewhere)
+}
+
+// noteHostRefused counts a refused event; severe ones are logged as [SECURITY WARNING], the transient ones
+// (a route this node does not know yet) as [RELAY], once per minute and per (relay, kind, reason).
+func noteHostRefused(relayID, event, reason string, severe bool) {
+	level := "R|"
+	if severe {
+		level = "S|"
+	}
+	key := level + relayID + ": " + event + ": " + reason
 	rerouteRefuseMu.Lock()
 	if _, known := rerouteRefusals[key]; known || len(rerouteRefusals) < 256 {
 		rerouteRefusals[key]++
@@ -298,12 +308,53 @@ func flushRerouteRefusals(int64) {
 	rerouteRefusals = map[string]int64{}
 	rerouteRefuseMu.Unlock()
 	for k, n := range r {
-		prefix := "[SECURITY WARNING]"
-		if strings.HasSuffix(k, ": "+reasonNoKnownRoute) || strings.HasSuffix(k, ": "+reasonLateElsewhere) {
-			prefix = "[RELAY]" // normal after the restart of a parent: its route memory is empty
+		prefix := "[RELAY]"
+		if strings.HasPrefix(k, "S|") {
+			prefix = "[SECURITY WARNING]"
 		}
-		log.Printf("%s re-route event refused (%s): %d event(s) in the last minute", prefix, k, n)
+		log.Printf("%s event refused (%s): %d event(s) in the last minute", prefix, k[2:], n)
 	}
+}
+
+// hostSubtreeRefusal applies the T34 rule to a host event received from a child: the host must be in the
+// subtree of that child. It returns the reason ("" = accepted) and whether it is a security alarm.
+//   - a host connected HERE or routed through ANOTHER peer is out of the child's path: alarm ([SECURITY WARNING]);
+//   - a host this node has no route for is refused too, but at [RELAY] level (normal after a restart of the
+//     parent, before its snapshot, or while a relay is reparented): the route comes with the snapshot, the
+//     agent_list or the host.up of the owner;
+//   - host.conflict is informative and concerns relays BELOW the child: this node may never have routed the
+//     host, so an unrouted host is accepted (routed elsewhere or local: refused);
+//   - host.discover is the other exception: it precedes host.up (the route does not exist yet), so an UNROUTED
+//     host is accepted if its relay_chain is coherent with the sender (already checked by handleEventForward:
+//     it ends at the authenticated peer, every other element is a relay the peer declared). This grants the
+//     child nothing it did not have (it can already claim any unrouted host with host.up) and the discover
+//     writes no route and no state; it is still refused when the host is routed elsewhere or local.
+//
+// The route owner is the store's route, else the last route this process saw (the store forgets a host at the
+// next agent_list of its relay).
+func hostSubtreeRefusal(conn *RelayConnection, m RelayMessage) (string, bool) {
+	if _, err := GetConnection(m.Hostname); err == nil {
+		return "host connected on this node", true
+	}
+	owner, _ := lookupHostRoute(m.Hostname)
+	if owner == "" {
+		rerouteMemMu.Lock()
+		owner = lastRoutes[m.Hostname].relayID
+		rerouteMemMu.Unlock()
+	}
+	if owner == "" {
+		if m.Event == "host.discover" || m.Event == "host.conflict" {
+			return "", false
+		}
+		return reasonNoKnownRoute, false
+	}
+	if owner == conn.RelayID {
+		return "", false
+	}
+	if _, mine := conn.descendants[owner]; mine {
+		return "", false
+	}
+	return "host routed through another relay", true
 }
 
 // reroutedRefusal returns why a host.rerouted / relay.rerouted received from a child must be refused

@@ -2200,49 +2200,27 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 			}
 		}
 		return true
-	case "host.down", "host.discover", "host.removed", "host.rerouted":
-		if msg.Event == "host.rerouted" {
+	case "host.down", "host.discover", "host.removed", "host.rerouted", "host.suspended", "host.resumed", "host.conflict":
+		// A relay only reports events for the hosts of ITS OWN subtree (T34): never for a host connected here,
+		// routed through another peer, or (but host.discover, which precedes host.up) without any route this
+		// node knows. Refused events are neither dispatched nor forwarded; the refusal is counted and logged
+		// once per minute. The same rule applies to replayed (late) events.
+		if why, severe := hostSubtreeRefusal(conn, msg); why != "" {
+			noteHostRefused(conn.RelayID, msg.Event, why, severe)
+			return false
+		}
+		switch msg.Event {
+		case "host.rerouted":
 			if why := reroutedRefusal(conn, msg); why != "" {
 				noteRerouteRefused(conn.RelayID, msg.Event, why)
 				return false
 			}
+		case "host.suspended", "host.resumed":
+			// The flag is informative: it is never used to refuse a task (the relay holding the agent decides).
+			recordHostSuspended(msg.Hostname, msg.Event == "host.suspended")
+		case "host.conflict":
+			emitConflict(HostConflict{Hostname: msg.Hostname, OldRelay: msg.OldRelay, NewRelay: msg.NewRelay, RelayChain: chain}, true)
 		}
-		// A child may only report the going down of a host of its own subtree: never of a host
-		// connected here nor routed through another peer (no alert spam / no spoofing).
-		if _, err := GetConnection(msg.Hostname); err == nil {
-			log.Printf("[SECURITY WARNING] event_forward host.down refused: relay_id=%q hostname=%q is connected locally", conn.RelayID, msg.Hostname)
-			return false
-		}
-		if prev, err := lookupHostRoute(msg.Hostname); err == nil && prev != "" && prev != conn.RelayID {
-			if _, mine := conn.descendants[prev]; !mine {
-				log.Printf("[SECURITY WARNING] event_forward host.down refused: relay_id=%q hostname=%q is routed through another relay", conn.RelayID, msg.Hostname)
-				return false
-			}
-		}
-		return true
-	case "host.suspended", "host.resumed":
-		// Same rule as host.down: a child only reports on a host of its OWN subtree, never on a host
-		// connected here nor routed through another peer. The flag is informative: it is never used to
-		// refuse a task (the relay holding the agent decides).
-		if _, err := GetConnection(msg.Hostname); err == nil {
-			log.Printf("[SECURITY WARNING] event_forward %s refused: relay_id=%q hostname=%q is connected locally", msg.Event, conn.RelayID, msg.Hostname)
-			return false
-		}
-		prev, err := lookupHostRoute(msg.Hostname)
-		if err != nil || prev == "" {
-			log.Printf("[SECURITY WARNING] event_forward %s refused: relay_id=%q hostname=%q has no route", msg.Event, conn.RelayID, msg.Hostname)
-			return false
-		}
-		if prev != conn.RelayID {
-			if _, mine := conn.descendants[prev]; !mine {
-				log.Printf("[SECURITY WARNING] event_forward %s refused: relay_id=%q hostname=%q is routed through another relay", msg.Event, conn.RelayID, msg.Hostname)
-				return false
-			}
-		}
-		recordHostSuspended(msg.Hostname, msg.Event == "host.suspended")
-		return true
-	case "host.conflict":
-		emitConflict(HostConflict{Hostname: msg.Hostname, OldRelay: msg.OldRelay, NewRelay: msg.NewRelay, RelayChain: chain}, true)
 		return true
 	case "relay.failover", "relay.discover", "relay.up", "relay.reconnect", "relay.down",
 		"relay.rerouted", "relay.removed", "relay.converged":
