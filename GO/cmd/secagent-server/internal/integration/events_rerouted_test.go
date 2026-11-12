@@ -119,33 +119,6 @@ func TestRelayRerouted_ReparentGivesOneEventPerMovedRelay_NoHostRerouted(t *test
 	}
 }
 
-// (3) fail-over a -> b: the routes are rebuilt from the child's snapshot, nothing moved: 0 host.rerouted, 0 relay.rerouted.
-func TestRerouted_RootFailoverGivesNoRerouteEvent(t *testing.T) {
-	parallel(t)
-	addrA, addrB := newNodeAddrs(t), newNodeAddrs(t)
-	a := startNode(t, nodeSpec{ID: "root", Env: addrA.env(), Hooks: lot32Hooks})
-	tok := a.registerChild("relay1")
-	b := a.sibling()
-	b.launchSecondary(addrB.env())
-	t.Cleanup(b.stop)
-	waitFor(t, "the standby polls the lock", b.localStatusPolled)
-	child := startNode(t, nodeSpec{ID: "relay1", ParentURL: "wss://" + addrA.ws + ",wss://" + addrB.ws, ParentToken: tok})
-	waitFor(t, "the child is linked to the active root", func() bool { return child.upstreamState() == "connected" })
-	connectMinion(t, child, "leaf-host")
-	waitFor(t, "the master routes the leaf", func() bool { return a.hasHost("leaf-host") })
-
-	a.killNow()
-	if !b.awaitPromotion(30 * time.Second) {
-		t.Fatalf("the passive root never took over; logs:\n%s", b.logs.String())
-	}
-	waitFor(t, "the new master routes the leaf again", func() bool { return b.hasHost("leaf-host") })
-	waitFor(t, "the child reconnected (relay.reconnect)", func() bool { return len(b.eventsOf("relay.reconnect", map[string]string{"relay": "relay1"})) >= 1 })
-	time.Sleep(settle)
-	if n, m := len(b.eventsOf("host.rerouted", nil)), len(b.eventsOf("relay.rerouted", nil)); n != 0 || m != 0 {
-		t.Errorf("fail-over: %d host.rerouted / %d relay.rerouted, want 0 / 0 (volatile routes, no known chain)", n, m)
-	}
-}
-
 // (5) contested: relay FB claims a host that relay FA still owns. host.conflict, THEN host.rerouted, once each.
 func TestHostRerouted_ContestedGivesConflictThenRerouted(t *testing.T) {
 	parallel(t)
@@ -212,39 +185,5 @@ func TestHostRerouted_DirectThenIndirect(t *testing.T) {
 	}
 	if n := len(root.eventsOf("host.rerouted", map[string]string{"host": "nomad", "cause": "moved"})); n != 0 {
 		t.Errorf("%d moved events for a host that only alternated direct / indirect, want 0", n)
-	}
-}
-
-// (7) two levels: the host.rerouted decided below travels up and runs the hooks of every ancestor EXACTLY once per node
-// (the root must not count it twice: once forwarded by mid, once decided by its own route memory).
-func TestHostRerouted_PropagatesUpTwoLevels_ExactlyOncePerNode(t *testing.T) {
-	parallel(t)
-	root, mid, leafA, leafB := threeLevelTree(t, "trav")
-	tokA, tokB := leafA.enrolled["trav"], leafB.enrolled["trav"]
-	a := connectMinionWithToken(t, leafA.node, "trav", tokA)
-	waitFor(t, "root routes trav", func() bool { return root.hasHost("trav") })
-	_ = a.conn.Close()
-	waitFor(t, "leafA released trav", func() bool { return leafA.logs.count("Agent disconnected: hostname=trav") >= 1 })
-	agentListMark(mid, "leafA")(t)
-	agentListMark(root, "mid")(t)
-	connectMinionWithToken(t, leafB.node, "trav", tokB)
-
-	want := map[string]string{"host": "trav", "cause": "moved"}
-	for _, n := range []*node{mid, root} {
-		n := n
-		waitFor(t, n.id+": host.rerouted", func() bool { return len(n.eventsOf("host.rerouted", want)) >= 1 })
-	}
-	time.Sleep(settle)
-	for _, n := range []*node{mid, root} {
-		ev := n.eventsOf("host.rerouted", want)
-		if len(ev) != 1 {
-			t.Fatalf("%s: %d host.rerouted for trav, want exactly 1: %v", n.id, len(ev), ev)
-		}
-		if e := ev[0]; e["old"] != "leafA" || e["new"] != "leafB" || e["oldc"] == "" || e["newc"] == "" {
-			t.Errorf("%s: host.rerouted must carry old=leafA new=leafB and both chains, got %v", n.id, e)
-		}
-	}
-	if got := len(leafA.eventsOf("host.rerouted", nil)) + len(leafB.eventsOf("host.rerouted", nil)); got != 0 {
-		t.Errorf("the leaves emitted %d host.rerouted, want 0 (they never saw the move)", got)
 	}
 }

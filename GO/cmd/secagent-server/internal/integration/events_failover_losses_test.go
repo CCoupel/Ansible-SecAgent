@@ -12,36 +12,6 @@ import (
 // LOT-3.2 (#247 option A, #246 remark, T21, T22) — what a switch-over loses and what it does not, a known-but-empty
 // variable rendered empty, and the orderly stop of a child.
 
-// (10) #247: a brutal stop of the master (kill -9) while a direct agent dies during the window: NO host.down anywhere
-// (documented loss, option A), and the agent that is still alive comes back as host.reconnect.
-func TestFailoverLosses_BrutalStopGivesNoHostDownForAnAgentLostInTheWindow(t *testing.T) {
-	parallel(t)
-	addrA, addrB := newNodeAddrs(t), newNodeAddrs(t)
-	a := startNode(t, nodeSpec{ID: "root", Env: addrA.env(), Hooks: lot32Hooks})
-	b := a.sibling()
-	b.launchSecondary(addrB.env())
-	t.Cleanup(b.stop)
-	waitFor(t, "the standby polls the lock", b.localStatusPolled)
-
-	tokAlive, tokDead := a.enrollAgent("alive-host"), a.enrollAgent("dead-host")
-	connectMinionWithToken(t, a, "alive-host", tokAlive)
-	dead := connectMinionWithToken(t, a, "dead-host", tokDead)
-	waitFor(t, "host.up of both", func() bool { return len(a.eventsOf("host.up", nil)) >= 2 })
-
-	a.killNow()
-	_ = dead.conn.Close() // the agent dies during the window: nobody is there to say host.down
-	if !b.awaitPromotion(30 * time.Second) {
-		t.Fatalf("the passive root never took over; logs:\n%s", b.logs.String())
-	}
-	seq := "2"
-	dialAgentSeq(t, b, tokAlive, &seq) // the live agent reconnects to the new master
-	waitFor(t, "host.reconnect of the live agent", func() bool { return len(b.eventsOf("host.reconnect", map[string]string{"host": "alive-host"})) >= 1 })
-	time.Sleep(settle)
-	if got := len(b.eventsOf("host.down", nil)); got != 0 {
-		t.Errorf("%d host.down after a brutal stop, want 0 (nobody can tell the agent lost in the window is gone):\n%s", got, strings.Join(b.hookLines(), "\n"))
-	}
-}
-
 // (10) orderly stop of the master: the host.down of its direct agents are drained (<= 10 s) before it exits.
 func TestFailoverLosses_OrderlyStopDrainsHostDownOfDirectAgents(t *testing.T) {
 	parallel(t)
@@ -122,19 +92,5 @@ func TestRelayDown_OrderlyStopOfAPullChildIsPeerClosed1001(t *testing.T) {
 	waitFor(t, "relay.down", func() bool { return len(root.eventsOf("relay.down", map[string]string{"relay": "relay1"})) >= 1 })
 	if e := root.eventsOf("relay.down", map[string]string{"relay": "relay1"})[0]; e["reason"] != "peer_closed:1001" {
 		t.Errorf("relay.down of an orderly child stop: reason = %q, want peer_closed:1001", e["reason"])
-	}
-}
-
-// (T22) same for a PUSH child (serveParentLink): the parent that dials it sees peer_closed:1001 when it stops in order.
-func TestRelayDown_OrderlyStopOfAPushChildIsPeerClosed1001(t *testing.T) {
-	parallel(t)
-	root := startNode(t, nodeSpec{ID: "root", Hooks: lot32Hooks})
-	relay1 := startNode(t, nodeSpec{ID: "relay1", Root: root})
-	linkPush(t, root, relay1)
-	waitFor(t, "relay.up (push)", func() bool { return len(root.eventsOf("relay.up", map[string]string{"relay": "relay1"})) == 1 })
-	relay1.stop()
-	waitFor(t, "relay.down (push)", func() bool { return len(root.eventsOf("relay.down", map[string]string{"relay": "relay1"})) >= 1 })
-	if e := root.eventsOf("relay.down", map[string]string{"relay": "relay1"})[0]; e["reason"] != "peer_closed:1001" {
-		t.Errorf("relay.down of an orderly push child stop: reason = %q, want peer_closed:1001", e["reason"])
 	}
 }

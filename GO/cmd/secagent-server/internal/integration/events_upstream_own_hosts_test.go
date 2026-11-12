@@ -102,27 +102,3 @@ func testOwnHostsReplayed(t *testing.T, mode string) {
 }
 
 func TestOwnHostEvents_PullChildReplaysThemAfterTheCut(t *testing.T) { testOwnHostsReplayed(t, "pull") }
-func TestOwnHostEvents_PushChildReplaysThemAfterTheCut(t *testing.T) { testOwnHostsReplayed(t, "push") }
-
-// Queue forced to 256: the loss is exact and counted.
-func TestOwnHostEvents_FullQueueLossIsExactAndCounted(t *testing.T) {
-	if testing.Short() {
-		t.Skip("replay")
-	}
-	parallel(t)
-	root, child, tokens := ownHostsTree(t, "pull", "RELAY_UPSTREAM_QUEUE_SIZE=256")
-	before := ownCount(root)
-	cutAndBack(t, root, child, func() { produceOwn(t, child, tokens) })
-	produced := ownCount(child)
-	want := produced - 256
-	waitFor(t, "the counter reaches the exact loss", func() bool {
-		v, _ := child.statusField("upstream_dropped_events")
-		return int(v) == want
-	})
-	rootBack(t, root, child, "pull")
-	waitFor(t, "the 256 queued events are replayed", func() bool { return ownCount(root)-before >= 256 })
-	time.Sleep(settle)
-	if got := ownCount(root) - before; got != 256 {
-		t.Errorf("the root received %d own events, want exactly 256 (the queue's content; %d lost, produced %d)", got, want, produced)
-	}
-}

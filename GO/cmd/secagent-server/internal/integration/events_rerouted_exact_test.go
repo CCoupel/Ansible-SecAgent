@@ -22,33 +22,6 @@ func agentListMark(parent *node, child string) func(t *testing.T) {
 	}
 }
 
-type enrolledNode struct {
-	*node
-	enrolled map[string]string // host -> agent token on this node
-}
-
-// threeLevelTree: root <- mid <- leafA, root <- mid <- leafB (pull links, lot32 hooks everywhere). The given hosts are
-// enrolled on both leaves while they have no parent (a real enrollment is a host.new that would move routes).
-func threeLevelTree(t *testing.T, hosts ...string) (root, mid *node, leafA, leafB *enrolledNode) {
-	t.Helper()
-	root = startNode(t, nodeSpec{ID: "root", Hooks: lot32Hooks})
-	mid = startNode(t, nodeSpec{ID: "mid", Root: root, Hooks: lot32Hooks})
-	mid.linkTo(root)
-	waitFor(t, "mid linked", func() bool { return mid.upstreamState() == "connected" })
-	mk := func(id string) *enrolledNode {
-		n := startNode(t, nodeSpec{ID: id, Root: root, Hooks: lot32Hooks})
-		e := &enrolledNode{node: n, enrolled: map[string]string{}}
-		for _, h := range hosts {
-			e.enrolled[h] = n.enrollAgent(h)
-		}
-		n.linkTo(mid)
-		return e
-	}
-	leafA, leafB = mk("leafA"), mk("leafB")
-	waitFor(t, "leaves linked", func() bool { return leafA.upstreamState() == "connected" && leafB.upstreamState() == "connected" })
-	return
-}
-
 // (MAJEUR-1) three levels, a host goes from a grandchild to the child: cause=direct, EXACTLY one host.rerouted per node
 // that sees it (the child that receives the host, the root above), none at the grandchild that lost it.
 func TestHostRerouted_ThreeLevels_GrandchildToChildIsDirectExactlyOncePerNode(t *testing.T) {
@@ -121,17 +94,5 @@ func TestRelayRerouted_ReparentOldParentWithdrawsBeforeTheNewLink_ExactlyOne(t *
 		t.Fatal("the root refused the withdrawal snapshot of dmz1")
 	}
 	newFakeChild(t, root, "dmz2") // dmz2 re-pointed to the root: its own link
-	assertOneRelayRerouted(t, root)
-}
-
-// (MAJEUR-2) order 2: the NEW link exists first, the old parent's withdrawal arrives afterwards: still exactly one.
-func TestRelayRerouted_ReparentNewLinkBeforeTheOldParentWithdraws_ExactlyOne(t *testing.T) {
-	parallel(t)
-	root, dmz1 := reparentTree(t)
-	newFakeChild(t, root, "dmz2")
-	waitFor(t, "relay.rerouted for the new link", func() bool { return len(root.eventsOf("relay.rerouted", map[string]string{"relay": "dmz2"})) >= 1 })
-	if !dmz1.snapshotAcked() {
-		t.Fatal("the root refused the withdrawal snapshot of dmz1")
-	}
 	assertOneRelayRerouted(t, root)
 }

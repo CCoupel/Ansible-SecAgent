@@ -50,13 +50,20 @@ func switchOver(t *testing.T, a, b *node) {
 
 // (8) two declared children, both reconnect: ONE relay.converged with exact counts, after relay.failover.
 func TestRelayConverged_TwoChildrenBackGivesOneEventWithExactCounts(t *testing.T) {
+	twoChildrenBack(t, settle)
+}
+
+// twoChildrenBack runs the scenario; `noSecond` is how long it waits to prove that no second event follows (the slow
+// variant waits longer than RELAY_CONVERGENCE_TIMEOUT: the timer must not emit again).
+func twoChildrenBack(t *testing.T, noSecond time.Duration) {
+	t.Helper()
 	parallel(t)
 	a, b := convergedPair(t, []string{"relay1", "relay2"}, 2)
 	before := len(b.eventsOf("relay.converged", ownConverged)) // a's own start already emitted one (0 child connected then)
 	switchOver(t, a, b)
 
 	waitFor(t, "relay.converged after the switch-over", func() bool { return len(b.eventsOf("relay.converged", ownConverged)) == before+1 })
-	time.Sleep(7 * time.Second) // longer than RELAY_CONVERGENCE_TIMEOUT (5s): the timer must not emit a second one
+	time.Sleep(noSecond)
 	all := b.eventsOf("relay.converged", ownConverged)
 	if len(all) != before+1 {
 		t.Fatalf("%d relay.converged in total, want %d (exactly one per promotion)", len(all), before+1)
@@ -80,32 +87,8 @@ func TestRelayConverged_TwoChildrenBackGivesOneEventWithExactCounts(t *testing.T
 			lastRe = i
 		}
 	}
-	if !(fo >= 0 && fo < lastRe && lastRe < cv) {
+	if fo < 0 || fo >= lastRe || lastRe >= cv {
 		t.Errorf("order must be failover < children back < converged (%d, %d, %d):\n%s", fo, lastRe, cv, strings.Join(lines, "\n"))
-	}
-}
-
-// (8) one declared child never comes back: relay.converged at the timeout, relays_missing=1.
-func TestRelayConverged_AbsentChildGivesEventAtTheTimeoutWithMissingOne(t *testing.T) {
-	parallel(t)
-	a, b := convergedPair(t, []string{"relay1", "relay2"}, 1) // relay2 declared, never started
-	before := len(b.eventsOf("relay.converged", ownConverged))
-	switchOver(t, a, b)
-	t0 := time.Now()
-
-	waitFor(t, "relay.converged at the timeout", func() bool { return len(b.eventsOf("relay.converged", ownConverged)) == before+1 })
-	if d := time.Since(t0); d < 3*time.Second {
-		t.Errorf("relay.converged after %s with one child missing: it must wait for RELAY_CONVERGENCE_TIMEOUT (5s)", d)
-	}
-	all := b.eventsOf("relay.converged", ownConverged)
-	e := all[len(all)-1]
-	if e["rc"] != "1" || e["rm"] != "1" {
-		t.Errorf("relay.converged counts: want rc=1 rm=1, got %v", e)
-	}
-	// the late child does not make a second event
-	time.Sleep(7 * time.Second)
-	if got := len(b.eventsOf("relay.converged", ownConverged)); got != before+1 {
-		t.Errorf("%d relay.converged, want %d (never re-emitted)", got, before+1)
 	}
 }
 

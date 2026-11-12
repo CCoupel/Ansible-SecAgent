@@ -123,12 +123,16 @@ func TestUpstreamQueue_300EventsWhileCut_AllReplayedNoneDropped(t *testing.T) {
 	}
 }
 
-// (6) full queue: RELAY_UPSTREAM_QUEUE_SIZE=256 (the minimum), 300 produced while cut => the loss is COUNTED exactly,
-// reported by ONE aggregated [WARN] and ONE `upstream_dropped` journal entry (never a line per event).
-func TestUpstreamQueue_FullQueue_ExactCounterOneWarnOneJournalEntry(t *testing.T) {
-	if testing.Short() {
-		t.Skip("waits for the aggregated report")
-	}
+// (6) full queue: RELAY_UPSTREAM_QUEUE_SIZE=256 (the minimum), 300 produced while cut => the loss is COUNTED exactly and
+// the 256 events kept are replayed (the ONE aggregated [WARN] and ONE `upstream_dropped` entry: slow suite, same scenario).
+func TestUpstreamQueue_FullQueue_ExactCounterAndReplayOfTheKeptEvents(t *testing.T) {
+	fullQueue(t, false)
+}
+
+// fullQueue is the full-queue scenario. withReport also waits (up to 75 s: the report is aggregated per minute) for the
+// ONE [WARN] line and the ONE `upstream_dropped` journal entry: that part runs in the slow suite only.
+func fullQueue(t *testing.T, withReport bool) {
+	t.Helper()
 	parallel(t)
 	c := newCutTree(t, 300, "RELAY_UPSTREAM_QUEUE_SIZE=256")
 	c.cut(t)
@@ -145,19 +149,21 @@ func TestUpstreamQueue_FullQueue_ExactCounterOneWarnOneJournalEntry(t *testing.T
 		dropped, _ = c.child.statusField("upstream_dropped_events")
 		return int(dropped) == wantDropped
 	})
-	// the aggregated report comes once per minute: wait for it (up to 75 s), then check there is exactly one
-	deadline := time.Now().Add(75 * time.Second)
-	for !c.child.logs.has("event(s) dropped in the last minute") && time.Now().Before(deadline) {
-		time.Sleep(500 * time.Millisecond)
-	}
-	if n := c.child.logs.count("event(s) dropped in the last minute"); n != 1 {
-		t.Errorf("%d aggregated [WARN] lines, want exactly 1 (never one line per lost event)", n)
-	}
 	if n := c.child.logs.count("upstream event queue full, event"); n != 0 {
 		t.Errorf("%d per-event \"queue full\" lines, want 0 (aggregated report only)", n)
 	}
-	if n := strings.Count(c.child.hookJournal("*", 200), `"upstream_dropped"`); n != 1 {
-		t.Errorf("%d `upstream_dropped` journal entries, want exactly 1:\n%s", n, c.child.hookJournal("*", 200))
+	if withReport {
+		// the aggregated report comes once per minute: wait for it, then check there is exactly one
+		deadline := time.Now().Add(75 * time.Second)
+		for !c.child.logs.has("event(s) dropped in the last minute") && time.Now().Before(deadline) {
+			time.Sleep(500 * time.Millisecond)
+		}
+		if n := c.child.logs.count("event(s) dropped in the last minute"); n != 1 {
+			t.Errorf("%d aggregated [WARN] lines, want exactly 1 (never one line per lost event)", n)
+		}
+		if n := strings.Count(c.child.hookJournal("*", 200), `"upstream_dropped"`); n != 1 {
+			t.Errorf("%d `upstream_dropped` journal entries, want exactly 1:\n%s", n, c.child.hookJournal("*", 200))
+		}
 	}
 	if v, _ := c.child.statusField("upstream_dropped_events"); int(v) != wantDropped {
 		t.Errorf("upstream_dropped_events = %v, want %d (produced %d - capacity 256)", v, wantDropped, produced)
