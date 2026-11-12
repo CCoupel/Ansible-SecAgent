@@ -169,3 +169,46 @@ func TestImmediateRefusalLog_IsBoundedAndPurged(t *testing.T) {
 		t.Errorf("%d entries left after the purge, want 1", n)
 	}
 }
+
+// A late host.down of the relay a host JUST LEFT is the echo of a legitimate move: [RELAY], not an alarm. An
+// unrelated relay claiming the host keeps the [SECURITY WARNING].
+func TestSubtreeRule_RecentMoveIsNotAnAlarm(t *testing.T) {
+	resetRerouteMemory(t)
+	setHostRoutes(t, map[string]string{"moved-host": "other-peer", "stolen-host": "other-peer"})
+	conn := &RelayConnection{RelayID: "dmz1", descendants: map[string]struct{}{"zone-a": {}}}
+	noteSnapshotRoute("moved-host", "zone-a", []string{"dmz1", "zone-a"}) // it lived below dmz1 ...
+	noteSnapshotRoute("moved-host", "other-peer", []string{"other-peer"}) // ... and moved to another peer
+	down := func(h string) RelayMessage {
+		return RelayMessage{Event: "host.down", Hostname: h, Status: "disconnected", RelayChain: []string{"dmz1"}}
+	}
+	if why, severe := hostSubtreeRefusal(conn, down("moved-host")); why != reasonElsewhere || severe {
+		t.Errorf("late down of the former carrier: %q severe=%v, want refused at [RELAY] level", why, severe)
+	}
+	if why, severe := hostSubtreeRefusal(conn, down("stolen-host")); why != reasonElsewhere || !severe {
+		t.Errorf("down of a host dmz1 never held: %q severe=%v, want the alarm", why, severe)
+	}
+	// the memory of the move is not eternal
+	rerouteMemMu.Lock()
+	l := leftCarriers["moved-host"]
+	l.at = time.Now().Add(-2 * recentMoveWindow)
+	leftCarriers["moved-host"] = l
+	rerouteMemMu.Unlock()
+	if _, severe := hostSubtreeRefusal(conn, down("moved-host")); !severe {
+		t.Error("an old move must no longer excuse the event")
+	}
+}
+
+// Past 256 live triplets a new refusal is not logged one by one but COUNTED, and the overflow is reported.
+func TestRefusals_BeyondTheTrackedTripletsAreCounted(t *testing.T) {
+	rerouteRefuseAgg.Flush()
+	out := &lockedLog{}
+	log.SetOutput(out)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	for i := 0; i < maxRefusalTriplets+40; i++ {
+		noteHostRefused(fmt.Sprintf("relay-%d", i), "host.down", "h", reasonElsewhere, true)
+	}
+	rerouteRefuseAgg.Flush()
+	if !strings.Contains(out.String(), "40 refused event(s) in the last minute beyond the 256 tracked") {
+		t.Errorf("the overflow was not reported:\n%s", out.String())
+	}
+}

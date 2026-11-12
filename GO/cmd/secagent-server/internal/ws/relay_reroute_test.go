@@ -52,7 +52,7 @@ func resetRerouteMemory(t *testing.T) {
 	t.Helper()
 	clear := func() {
 		rerouteMemMu.Lock()
-		lastRoutes, recentlyLocal = map[string]hostRoute{}, map[string]struct{}{}
+		lastRoutes, recentlyLocal, leftCarriers = map[string]hostRoute{}, map[string]struct{}{}, map[string]leftCarrier{}
 		rerouteMemMu.Unlock()
 		relayChainMemMu.Lock()
 		lastRelayChains = map[string][]string{}

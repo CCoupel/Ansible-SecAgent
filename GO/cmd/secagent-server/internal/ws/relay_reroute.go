@@ -48,8 +48,19 @@ type hostRoute struct {
 	chain   []string
 }
 
+// leftCarrier remembers, for a host that moved away from a relay (to another carrier, or to this node), the
+// relay it left and when: a late host.down / host.removed of THAT relay is a legitimate echo of the move, not
+// an attack, so its refusal is logged at [RELAY] level (recentMoveWindow).
+type leftCarrier struct {
+	relayID string
+	at      time.Time
+}
+
+const recentMoveWindow = 10 * time.Minute
+
 var (
 	rerouteMemMu  sync.Mutex
+	leftCarriers  = map[string]leftCarrier{}
 	lastRoutes    = map[string]hostRoute{} // host -> last route seen by THIS process (survives the route's removal from the store)
 	recentlyLocal = map[string]struct{}{}  // hosts that were connected HERE and are not any more
 )
@@ -72,9 +83,18 @@ func boundLocked[V any](m map[string]V) {
 // host.rerouted: a reparent is one relay.rerouted per relay).
 func noteSnapshotRoute(hostname, relayID string, chain []string) {
 	rerouteMemMu.Lock()
+	rememberLeftLocked(hostname, relayID)
 	boundLocked(lastRoutes)
 	lastRoutes[hostname] = hostRoute{relayID: relayID, chain: append([]string(nil), chain...)}
 	rerouteMemMu.Unlock()
+}
+
+// rememberLeftLocked records the carrier a host is leaving when its route changes to another one.
+func rememberLeftLocked(hostname, newRelay string) {
+	if prev, ok := lastRoutes[hostname]; ok && prev.relayID != newRelay {
+		boundLocked(leftCarriers)
+		leftCarriers[hostname] = leftCarrier{relayID: prev.relayID, at: time.Now()}
+	}
 }
 
 // noteRoute records the route of a host that came up (host.up/new/reconnect) or was listed by a relay
@@ -84,6 +104,7 @@ func noteSnapshotRoute(hostname, relayID string, chain []string) {
 func noteRoute(hostname, relayID string, chain []string) (string, []string) {
 	rerouteMemMu.Lock()
 	prev, had := lastRoutes[hostname]
+	rememberLeftLocked(hostname, relayID)
 	boundLocked(lastRoutes)
 	lastRoutes[hostname] = hostRoute{relayID: relayID, chain: append([]string(nil), chain...)}
 	_, wasLocal := recentlyLocal[hostname]
@@ -122,6 +143,10 @@ func noteRoute(hostname, relayID string, chain []string) (string, []string) {
 func noteLocalConnect(hostname string) {
 	rerouteMemMu.Lock()
 	prev, had := lastRoutes[hostname]
+	if had {
+		boundLocked(leftCarriers)
+		leftCarriers[hostname] = leftCarrier{relayID: prev.relayID, at: time.Now()}
+	}
 	delete(lastRoutes, hostname)
 	delete(recentlyLocal, hostname)
 	rerouteMemMu.Unlock()
@@ -344,18 +369,31 @@ func noteHostRefused(relayID, event, subject, reason string, severe bool) {
 		log.Printf("%s event_forward %s refused: relay_id=%q subject=%q %s", prefix, event, relayID, subject, reason)
 	}
 	rerouteRefuseMu.Lock()
-	if _, known := rerouteRefusals[key]; known || len(rerouteRefusals) < 256 {
+	if _, known := rerouteRefusals[key]; known || len(rerouteRefusals) < maxRefusalTriplets {
 		rerouteRefusals[key]++
+	} else {
+		rerouteRefuseOverflow++ // a refusal that does not fit the tracked triplets is still COUNTED
 	}
 	rerouteRefuseMu.Unlock()
 	rerouteRefuseAgg.Add(1)
 }
 
+// maxRefusalTriplets bounds the (relay, kind, reason) triplets tracked per minute; beyond it refusals are
+// counted in one overflow counter.
+const maxRefusalTriplets = 256
+
+var rerouteRefuseOverflow int64
+
 func flushRerouteRefusals(int64) {
 	rerouteRefuseMu.Lock()
 	r := rerouteRefusals
 	rerouteRefusals = map[string]int64{}
+	overflow := rerouteRefuseOverflow
+	rerouteRefuseOverflow = 0
 	rerouteRefuseMu.Unlock()
+	if overflow > 0 {
+		log.Printf("[SECURITY WARNING] %d refused event(s) in the last minute beyond the %d tracked (relay, kind, reason) triplets: counted here only", overflow, maxRefusalTriplets)
+	}
 	for k, n := range r {
 		prefix := "[RELAY]"
 		if strings.HasPrefix(k, "S|") {
@@ -383,7 +421,7 @@ func flushRerouteRefusals(int64) {
 // next agent_list of its relay).
 func hostSubtreeRefusal(conn *RelayConnection, m RelayMessage) (string, bool) {
 	if _, err := GetConnection(m.Hostname); err == nil {
-		return reasonLocal, true
+		return reasonLocal, !leftBy(conn, m.Hostname)
 	}
 	owner, _ := lookupHostRoute(m.Hostname)
 	if owner == "" {
@@ -403,7 +441,23 @@ func hostSubtreeRefusal(conn *RelayConnection, m RelayMessage) (string, bool) {
 	if _, mine := conn.descendants[owner]; mine {
 		return "", false
 	}
-	return reasonElsewhere, true
+	return reasonElsewhere, !leftBy(conn, m.Hostname)
+}
+
+// leftBy reports whether the host recently moved away from the sender or from a relay below it: its late
+// events are then the echo of a legitimate move.
+func leftBy(conn *RelayConnection, hostname string) bool {
+	rerouteMemMu.Lock()
+	l, ok := leftCarriers[hostname]
+	rerouteMemMu.Unlock()
+	if !ok || time.Since(l.at) > recentMoveWindow {
+		return false
+	}
+	if l.relayID == conn.RelayID {
+		return true
+	}
+	_, below := conn.descendants[l.relayID]
+	return below
 }
 
 // reroutedRefusal returns why a host.rerouted / relay.rerouted received from a child must be refused
