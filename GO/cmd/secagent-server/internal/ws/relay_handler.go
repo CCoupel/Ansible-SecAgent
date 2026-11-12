@@ -1088,7 +1088,7 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 			}
 		}
 		if RelayRoutingBulkUpsertFunc != nil {
-			if err := RelayRoutingBulkUpsertFunc(conn.RelayID, withRecentEventRoutes(conn.RelayID, hostnames)); err != nil {
+			if err := RelayRoutingBulkUpsertFunc(conn.RelayID, withRecentEventRoutes(conn.RelayID, hostnames, applyAgentListRoutes)); err != nil {
 				log.Printf("agent_list routing update error: relay_id=%q err=%v", conn.RelayID, err)
 			}
 		}
@@ -1852,6 +1852,15 @@ func emitRelayUp(conn *RelayConnection, msg RelayMessage) {
 	notifyLinkEstablished(conn.RelayID, msg.Relays) // relay.converged tracker, after relay.up / relay.reconnect
 }
 
+// applyAgentListRoutes rewrites the routes of relay from an agent_list (deferred expiry of kept routes).
+func applyAgentListRoutes(relayID string, hostnames []string) {
+	if fn := RelayRoutingBulkUpsertFunc; fn != nil {
+		if err := fn(relayID, hostnames); err != nil {
+			log.Printf("agent_list routing expiry error: relay_id=%q err=%v", relayID, err)
+		}
+	}
+}
+
 // handleEventForward validates an ascending event (HAUT-1) and propagates it upstream.
 func handleEventForward(conn *RelayConnection, msg RelayMessage) {
 	if !conn.helloDone {
@@ -2220,6 +2229,8 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 			return false
 		}
 		switch msg.Event {
+		case "host.down":
+			dropRecentEventRoute(msg.Hostname, conn.RelayID) // a host that just went down is no longer protected
 		case "host.rerouted":
 			if why := reroutedRefusal(conn, msg); why != "" {
 				noteRerouteRefused(conn.RelayID, msg.Event, msg.Hostname+msg.RelayID, why)

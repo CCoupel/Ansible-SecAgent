@@ -596,7 +596,7 @@ func flushTimestampClamped(int64) {
 // relay, and is computed before the event it overtakes: the empty list a relay built just before one of its
 // agents connected used to wipe the route the host.new had just created, until the host.up (the next, paced,
 // event) restored it; an exec landing in that window failed with host_not_found. It is a variable for tests.
-var recentEventRouteGrace = 2 * time.Second
+var recentEventRouteGrace = 300 * time.Millisecond
 
 type recentEventRoute struct {
 	host, relay string
@@ -628,29 +628,92 @@ func pruneRecentRoutesLocked(now time.Time) {
 	}
 }
 
+// agentListVersion numbers the agent_lists of each relay: a deferred expiry only applies if no newer list came.
+var (
+	agentListVersionMu sync.Mutex
+	agentListVersion   = map[string]uint64{}
+	agentListKept      = map[string][]string{} // relay -> its last agent_list, while a recent event route is being kept
+)
+
 // withRecentEventRoutes returns the agent_list of relay completed with the hosts an event routed to it less
-// than recentEventRouteGrace ago (the list is the truth, but it can be older than the event).
-func withRecentEventRoutes(relay string, listed []string) []string {
+// than recentEventRouteGrace ago (the list is the truth, but it can be older than the event). When hosts were
+// kept this way, the route is dropped when the grace ends even if no further list arrives (the list of a quiet
+// relay can be minutes away): staleness is bounded by the grace, never by the list interval.
+func withRecentEventRoutes(relay string, listed []string, apply func(relay string, hosts []string)) []string {
 	recentRoutesMu.Lock()
-	defer recentRoutesMu.Unlock()
 	now := time.Now()
 	pruneRecentRoutesLocked(now)
-	if len(recentEventRoutes) == 0 {
-		return listed
-	}
-	have := make(map[string]struct{}, len(listed))
-	for _, h := range listed {
-		have[h] = struct{}{}
-	}
 	out := listed
-	for _, r := range recentEventRoutes {
-		if r.relay != relay {
-			continue
+	kept := false
+	if len(recentEventRoutes) > 0 {
+		have := make(map[string]struct{}, len(listed))
+		for _, h := range listed {
+			have[h] = struct{}{}
 		}
-		if _, ok := have[r.host]; !ok {
-			have[r.host] = struct{}{}
-			out = append(out[:len(out):len(out)], r.host)
+		for _, r := range recentEventRoutes {
+			if r.relay != relay {
+				continue
+			}
+			if _, ok := have[r.host]; !ok {
+				have[r.host] = struct{}{}
+				out = append(out[:len(out):len(out)], r.host)
+				kept = true
+			}
 		}
+	}
+	recentRoutesMu.Unlock()
+
+	agentListVersionMu.Lock()
+	agentListVersion[relay]++
+	v := agentListVersion[relay]
+	agentListVersionMu.Unlock()
+	if kept {
+		original := append([]string(nil), listed...)
+		agentListVersionMu.Lock()
+		agentListKept[relay] = original
+		agentListVersionMu.Unlock()
+		time.AfterFunc(recentEventRouteGrace+20*time.Millisecond, func() {
+			agentListVersionMu.Lock()
+			newer := agentListVersion[relay] != v
+			if !newer {
+				delete(agentListKept, relay)
+			}
+			agentListVersionMu.Unlock()
+			if !newer && IsRelayConnected(relay) {
+				apply(relay, original) // the grace is over and no newer list came: the list stands as it was
+			}
+		})
 	}
 	return out
+}
+
+// dropRecentEventRoute ends the protection of a route when the relay reports the host DOWN: the host that has
+// just disconnected must not stay routed for the rest of the grace. If the route was being kept, the relay's last
+// agent_list is applied at once.
+func dropRecentEventRoute(host, relay string) {
+	recentRoutesMu.Lock()
+	found := false
+	out := recentEventRoutes[:0]
+	for _, r := range recentEventRoutes {
+		if r.host == host && r.relay == relay {
+			found = true
+			continue
+		}
+		out = append(out, r)
+	}
+	recentEventRoutes = out
+	recentRoutesMu.Unlock()
+	if !found {
+		return
+	}
+	agentListVersionMu.Lock()
+	list, kept := agentListKept[relay]
+	if kept {
+		delete(agentListKept, relay)
+		agentListVersion[relay]++ // the deferred expiry is now useless
+	}
+	agentListVersionMu.Unlock()
+	if kept && IsRelayConnected(relay) {
+		applyAgentListRoutes(relay, list)
+	}
 }

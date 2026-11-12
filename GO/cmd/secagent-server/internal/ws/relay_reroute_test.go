@@ -815,9 +815,65 @@ func TestAgentList_DoesNotWipeARouteCreatedByARecentEvent(t *testing.T) {
 	if got := last(); len(got) != 2 {
 		t.Errorf("a complete list must stay as it is: %v", got)
 	}
+	agentList("fresh", "other")
 	time.Sleep(600 * time.Millisecond) // past the grace
 	agentList()
 	if got := last(); len(got) != 0 {
 		t.Errorf("after the grace an unlisted host must be dropped again: %v", got)
+	}
+	// QUIET relay: no further list comes after a kept route; the grace itself must drop it (not the list interval)
+	_ = c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: "quiet", Status: "connected", RelayChain: []string{"dmz1"}})
+	agentList() // stale: keeps "quiet"
+	if got := last(); len(got) != 1 || got[0] != "quiet" {
+		t.Fatalf("kept route missing: %v", got)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := last(); len(got) == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("a kept route outlived the grace although no further agent_list came: %v", last())
+}
+
+// A host reported DOWN by its relay is no longer protected: the kept route goes at once (a host that moves to
+// another relay right after must not be taken for a conflict).
+func TestAgentList_HostDownEndsTheProtection(t *testing.T) {
+	resetRerouteMemory(t)
+	prev := recentEventRouteGrace
+	recentEventRouteGrace = 5 * time.Second // long: only the host.down can end it
+	t.Cleanup(func() { recentEventRouteGrace = prev })
+	recentRoutesMu.Lock()
+	recentEventRoutes = nil
+	recentRoutesMu.Unlock()
+	var mu sync.Mutex
+	var lists [][]string
+	setRoutingHook(t, func(relayID string, hostnames []string) error {
+		if relayID == "dmz1" {
+			mu.Lock()
+			lists = append(lists, append([]string(nil), hostnames...))
+			mu.Unlock()
+		}
+		return nil
+	})
+	setTreeHooks(t, "central", nil, nil, nil)
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
+	handshake(t, c, "dmz1")
+	sendSnapshot(t, c, nil, nil)
+	readMsg(t, c)
+	_ = c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: "leaving", Status: "connected", RelayChain: []string{"dmz1"}})
+	_ = c.WriteJSON(RelayMessage{Type: "agent_list", Agents: nil})
+	readMsg(t, c)
+	_ = c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.down", Hostname: "leaving", Status: "disconnected", RelayChain: []string{"dmz1"}})
+	_ = c.WriteJSON(RelayMessage{Type: "heartbeat"})
+	readMsg(t, c)
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if n := len(lists); n < 2 || len(lists[n-1]) != 0 {
+		t.Errorf("lists = %v, want the kept route dropped as soon as the host.down arrived", lists)
 	}
 }
