@@ -82,6 +82,7 @@ func TestUplink_EventForAnUndeclaredRelayWaitsForItsSnapshot(t *testing.T) {
 	var mu sync.Mutex
 	relays := []TopoRelay{}
 	topo := make(chan struct{}, 1)
+	_ = topo
 	events := make(chan Event, 4)
 	frames := servedFrames(t, Options{
 		Events: events, TopologyChanged: topo, TopologyDebounce: 20 * time.Millisecond, TopologyMinGap: 50 * time.Millisecond,
@@ -93,19 +94,13 @@ func TestUplink_EventForAnUndeclaredRelayWaitsForItsSnapshot(t *testing.T) {
 	})
 	waitFrames(t, frames, 1) // the first snapshot: nothing declared
 
-	events <- Event{Event: "relay.up", Hostname: "gc-ev", RelayID: "gc", RelayChain: []string{"gc"}}
-	events <- Event{Event: "host.up", Hostname: "own-ev", RelayChain: nil} // own host: nothing to wait for... but FIFO behind the held one
-	time.Sleep(300 * time.Millisecond)
-	for _, f := range frames() {
-		if strings.HasPrefix(f, "event:") {
-			t.Fatalf("event sent before the snapshot that declares gc: %v", frames())
-		}
-	}
+	// the node now knows gc (its store has the row), but the snapshot already SENT does not list it
 	mu.Lock()
 	relays = []TopoRelay{{RelayID: "gc", RelayChain: []string{"child", "gc"}}}
 	mu.Unlock()
-	topo <- struct{}{}
-	got := waitFrames(t, frames, 5) // snapshots: initial, the one the hold asked for, the declaring one; 2 events
+	events <- Event{Event: "relay.up", Hostname: "gc-ev", RelayID: "gc", RelayChain: []string{"gc"}}
+	events <- Event{Event: "host.up", Hostname: "own-ev", RelayChain: nil}
+	got := waitFrames(t, frames, 4) // initial snapshot, the snapshot the hold asked for, then the two events
 	idx := func(f string) int {
 		for i, g := range got {
 			if g == f {
@@ -135,4 +130,104 @@ func TestUplink_HeldEventIsSentAfterTheHoldDelay(t *testing.T) {
 	if f := frames(); f[len(f)-1] != "event:ghost-ev" {
 		t.Errorf("frames = %v, want the held event sent after the delay", f)
 	}
+}
+
+// An event for a relay that stays undeclared is held ONCE: after the snapshot it is sent anyway and the next
+// ones are not held, so a queue of N of them drains in bounded time (not N x the hold delay).
+func TestUplink_ManyEventsOfAnUndeclaredRelayDrainInBoundedTime(t *testing.T) {
+	events := make(chan Event, 300)
+	frames := servedFrames(t, Options{
+		Events: events, TopologyDebounce: 20 * time.Millisecond, TopologyMinGap: 50 * time.Millisecond,
+		Snapshot: func() Snapshot { return Snapshot{} },
+	})
+	waitFrames(t, frames, 1)
+	const n = 200
+	for i := 0; i < n; i++ {
+		events <- Event{Event: "host.down", Hostname: "h", RelayChain: []string{"never-declared"}}
+	}
+	t0 := time.Now()
+	waitFrames(t, frames, 1+n) // the initial snapshot, at least one asked by the hold, and every event
+	if d := time.Since(t0); d > 3*time.Second {
+		t.Errorf("%d events of an undeclared relay took %v to drain (held once, then released)", n, d)
+	}
+}
+
+// Relays declared earlier on the session are never held again, even when a later snapshot no longer lists them
+// (an event of a relay that fell, relay.removed of a deleted child, a replay after a failover).
+func TestUplink_EventsOfAFormerlyDeclaredRelayAreNotHeld(t *testing.T) {
+	var mu sync.Mutex
+	relays := []TopoRelay{{RelayID: "gone", RelayChain: []string{"child", "gone"}}}
+	topo := make(chan struct{}, 1)
+	events := make(chan Event, 1100)
+	frames := servedFrames(t, Options{
+		Events: events, TopologyChanged: topo, TopologyDebounce: 20 * time.Millisecond, TopologyMinGap: 50 * time.Millisecond,
+		Snapshot: func() Snapshot {
+			mu.Lock()
+			defer mu.Unlock()
+			return Snapshot{Relays: append([]TopoRelay(nil), relays...)}
+		},
+	})
+	waitFrames(t, frames, 1)
+	mu.Lock()
+	relays = nil // the relay is gone: the next snapshot no longer lists it
+	mu.Unlock()
+	topo <- struct{}{}
+	waitFrames(t, frames, 2)
+	const n = 1000
+	for i := 0; i < n; i++ {
+		events <- Event{Event: "host.down", Hostname: "h", RelayChain: []string{"gone"}}
+	}
+	t0 := time.Now()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) && len(frames()) < 2+n {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := len(frames()); got < 2+n {
+		t.Fatalf("only %d frames, want %d: events of a formerly declared relay were held", got, 2+n)
+	}
+	if d := time.Since(t0); d > 10*time.Second {
+		t.Errorf("%d events took %v", n, d)
+	}
+}
+
+// A held event still pending when the session ends is counted as lost.
+func TestUplink_HeldEventAtTheEndOfTheSessionIsCounted(t *testing.T) {
+	var lost sync.Mutex
+	n := 0
+	events := make(chan Event, 1)
+	up := NewUplink("child", Options{
+		Events: events, TopologyDebounce: time.Hour, TopologyMinGap: time.Hour,
+		Snapshot:    func() Snapshot { return Snapshot{} },
+		OnEventLost: func(k int64) { lost.Lock(); n += int(k); lost.Unlock() },
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		_ = up.Serve(ctx, c)
+	}))
+	defer srv.Close()
+	c, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, _, _ = c.ReadMessage() // the snapshot
+	events <- Event{Event: "relay.up", RelayID: "ghost", RelayChain: []string{"ghost"}}
+	time.Sleep(200 * time.Millisecond) // held (the next snapshot is an hour away)
+	cancel()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		lost.Lock()
+		got := n
+		lost.Unlock()
+		if got == 1 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Error("the event held when the session ended was not counted as lost")
 }

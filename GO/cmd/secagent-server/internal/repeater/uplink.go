@@ -34,7 +34,7 @@ type Uplink struct {
 	cur       *websocket.Conn
 	states    map[string]json.RawMessage // last link_state frame per relay_id (own and relayed), re-sent after each snapshot
 	revoked   atomic.Bool                // the token of THIS link was revoked by the root (link_revocations)
-	declared  map[string]struct{}        // relay ids of the last topology_snapshot SENT on the current link
+	declared  map[string]struct{}        // relays ever declared (or given up on) in a topology_snapshot SENT on the current link session
 }
 
 // ErrUplinkBusy is returned by Serve when a parent link is already active (single parent).
@@ -126,6 +126,7 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 	u.revoked.Store(false)
 	u.mu.Lock()
 	u.cur = conn
+	u.declared = map[string]struct{}{} // a new session of the link: the parent starts from nothing
 	u.mu.Unlock()
 	defer func() {
 		u.mu.Lock()
@@ -203,8 +204,15 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 	// An event about a relay the parent has not been told about yet is HELD (not taken further) until the
 	// snapshot that declares it has been sent, at most HoldEventsForSnapshotAfter.
 	var held *Event
+	var heldAt time.Time
+	var heldTotal time.Duration // cumulative time events were held on this session (safety net)
 	var holdTimer *time.Timer
 	var holdC <-chan time.Time
+	defer func() {
+		if held != nil { // the session ends with an event still held: lost, but counted
+			u.eventLost(1)
+		}
+	}()
 	defer func() {
 		if evTimer != nil {
 			evTimer.Stop()
@@ -235,6 +243,8 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 		}
 		ev := *held
 		held = nil
+		heldTotal += time.Since(heldAt)
+		u.markDeclared(ev.RelayChain) // held once per relay: after a snapshot it is declared, or the parent decides
 		if holdTimer != nil {
 			holdTimer.Stop()
 			holdTimer, holdC = nil, nil
@@ -296,7 +306,7 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 			}
 			u.resendLinkStates(conn)
 			lastSnap = time.Now()
-			if err := releaseHeld(false); err != nil {
+			if err := releaseHeld(true); err != nil { // a snapshot has just gone out: nothing is worth waiting for any more
 				return true, u.preferRead(err, readErr)
 			}
 		case <-u.changed():
@@ -308,9 +318,9 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 				evCh = nil
 				continue
 			}
-			if !u.releasable(ev) {
+			if !u.releasable(ev) && heldTotal < maxHoldTotal {
 				// hold it and make sure a snapshot that declares the relay goes out soon (debounced like any change)
-				held, evCh = &ev, nil
+				held, heldAt, evCh = &ev, time.Now(), nil
 				holdTimer = time.NewTimer(holdEventsFor)
 				holdC = holdTimer.C
 				if topoTimer == nil {
@@ -389,14 +399,34 @@ func (u *Uplink) sendSnapshot(conn *websocket.Conn) error {
 	if err := u.write(conn, snapshotMessage{Type: "topology_snapshot", Relays: snap.Relays, Agents: snap.Agents, GroupVars: u.opts.GroupVars}); err != nil {
 		return fmt.Errorf("send topology_snapshot: %w", err)
 	}
-	declared := make(map[string]struct{}, len(snap.Relays))
+	ids := make([]string, 0, len(snap.Relays))
 	for _, r := range snap.Relays {
-		declared[r.RelayID] = struct{}{}
+		ids = append(ids, r.RelayID)
 	}
-	u.mu.Lock()
-	u.declared = declared
-	u.mu.Unlock()
+	u.markDeclared(ids)
 	return nil
+}
+
+// maxDeclared bounds the set of relays remembered per link session; maxHoldTotal bounds the cumulative time
+// events may be held on one session (past it nothing is held: the parent decides, as before).
+const (
+	maxDeclared  = 100000
+	maxHoldTotal = 30 * time.Second
+)
+
+// markDeclared remembers relays as declared (or as already waited for once) on this link session.
+func (u *Uplink) markDeclared(ids []string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.declared == nil {
+		u.declared = map[string]struct{}{}
+	}
+	for _, id := range ids {
+		if len(u.declared) >= maxDeclared {
+			return
+		}
+		u.declared[id] = struct{}{}
+	}
 }
 
 // HoldEventsForSnapshotAfter bounds how long an event about a relay the parent has not been told about yet
@@ -406,7 +436,7 @@ const HoldEventsForSnapshotAfter = 5 * time.Second
 // holdEventsFor is HoldEventsForSnapshotAfter, a variable so that a test can shorten it.
 var holdEventsFor = HoldEventsForSnapshotAfter
 
-// releasable reports whether the parent already knows every relay of the event's chain: it validates each
+// releasable reports whether every relay of the event's chain was already declared (or waited for once) on this link session: it checks each
 // element of relay_chain (but the sender, appended last) against the descendants of the last snapshot it got.
 // An event for a relay declared only by a snapshot still to come (a grandchild that has just linked) would be
 // refused as "unknown descendant" and its lifecycle event lost.
