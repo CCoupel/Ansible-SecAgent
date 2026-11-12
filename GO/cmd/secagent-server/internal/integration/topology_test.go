@@ -64,6 +64,10 @@ func TestTopology_UnlinkingRelay_HostsAreNoLongerRoutableAndRelinkRoutesAgain(t 
 	waitFor(t, "the relay is linked again", func() bool { return leaf2.upstreamState() == "connected" })
 	waitFor(t, "mid learns the relay again", func() bool { return mid.logs.count("topology_snapshot: relay_id=leaf") >= 2 })
 	m := connectMinion(t, leaf2, "leaf-host")
+	// The ENROLLMENT (host.new) is enough for the root to route the host (~5 ms, same on v3.0.5): the client returns
+	// from its dial before the relay has registered the connection, so wait for the relay to hold the agent before
+	// the exec, or it can reach the relay in that window (503 host_not_found).
+	waitFor(t, "the relay holds the agent", func() bool { return leaf2.logs.count("Agent connected: hostname=leaf-host") >= 1 })
 	waitFor(t, "root routes the host again", func() bool { return root.hasHost("leaf-host") })
 	if r := root.exec("leaf-host", execBody("id")); r.Code != http.StatusOK || len(m.received()) != 1 {
 		t.Errorf("exec after the relay came back = %d %v", r.Code, r.Body)
