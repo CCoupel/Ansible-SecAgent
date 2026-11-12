@@ -130,6 +130,18 @@ func emitEvent(ev hooks.Event) {
 	}
 }
 
+// firstSeenFn marks the first handshake of a host (storage.MarkFirstSeen) and returns its enrollment date.
+var firstSeenFn atomic.Pointer[func(hostname string) (first bool, firstSeen, enrolledAt time.Time)]
+
+// SetFirstSeenFunc wires the first-seen mark (#266). nil disables host.discover.
+func SetFirstSeenFunc(fn func(hostname string) (first bool, firstSeen, enrolledAt time.Time)) {
+	if fn == nil {
+		firstSeenFn.Store(nil)
+		return
+	}
+	firstSeenFn.Store(&fn)
+}
+
 // ParseConnSeq reads a conn_seq: a decimal integer 1..2^31. Anything else (absent, empty, zero,
 // negative, not decimal, out of range) is 1: fail-safe, it announces a new process (host.up /
 // relay.up) rather than a reconnection.
@@ -194,6 +206,17 @@ func RegisterConnection(hostname string, conn *AgentConnection, connSeq int) {
 	connectionsMu.Unlock()
 	log.Printf("Agent connected: hostname=%q", hostname)
 
+	// host.discover (#266): the FIRST handshake of the host, before host.up (same hostname worker: FIFO).
+	if fn := firstSeenFn.Load(); fn != nil {
+		if first, firstSeen, enrolledAt := (*fn)(hostname); first {
+			d := hooks.Detail{FirstSeenAt: firstSeen.UTC().Format(time.RFC3339)}
+			ev := hooks.Event{Name: "host.discover", Hostname: hostname, Detail: d}
+			if !enrolledAt.IsZero() {
+				ev.EnrolledAt = enrolledAt.UTC().Format(time.RFC3339)
+			}
+			emitEvent(ev)
+		}
+	}
 	name := "host.up"
 	seq := normConnSeq(connSeq)
 	if seq > 1 {

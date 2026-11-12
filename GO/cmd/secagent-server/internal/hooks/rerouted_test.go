@@ -5,8 +5,10 @@ package hooks
 
 import (
 	"encoding/json"
+	"log"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -65,5 +67,27 @@ func TestRerouted_OtherEventsHaveNoChange(t *testing.T) {
 	}
 	if (Detail{}).OldRelay() != "" || (Detail{}).NewRelay() != "" {
 		t.Error("empty chains: empty relay")
+	}
+}
+
+// #266 / Q2: a hook on host.deleted is accepted but warned about (deprecated since v3.0.6, removed in v3.0.7).
+func TestConfigWarnsAboutTheDeprecatedHostDeleted(t *testing.T) {
+	var out strings.Builder
+	var mu sync.Mutex
+	prev := log.Writer()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) { mu.Lock(); defer mu.Unlock(); return out.Write(p) }))
+	defer log.SetOutput(prev)
+	cfg := &HooksConfig{Hooks: []HookDef{{Event: "host.deleted"}, {Event: "host.removed"}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got := out.String()
+	mu.Unlock()
+	if !strings.Contains(got, "deprecated since v3.0.6, removed in v3.0.7, use host.removed") {
+		t.Errorf("no deprecation warning:\n%s", got)
+	}
+	if strings.Count(got, "host.removed") != 1 { // only the message names it, once
+		t.Errorf("host.removed must not be warned about:\n%s", got)
 	}
 }

@@ -595,3 +595,40 @@ func TestLateHostUp_IsHistoryOnly(t *testing.T) {
 		t.Errorf("late events raised %d conflicts / %d host.rerouted, want 0 / 0", conflicts, len(rec.named("host.rerouted")))
 	}
 }
+
+// #266: host.discover is emitted at the FIRST handshake, BEFORE host.up, once; never on a reconnection.
+func TestRegisterConnection_DiscoverBeforeUpOnlyOnce(t *testing.T) {
+	resetState()
+	rec := &recEvents{}
+	SetEventFunc(rec.add)
+	t.Cleanup(func() { SetEventFunc(nil); SetFirstSeenFunc(nil) })
+	seen := map[string]bool{}
+	var mu sync.Mutex
+	SetFirstSeenFunc(func(h string) (bool, time.Time, time.Time) {
+		mu.Lock()
+		defer mu.Unlock()
+		if seen[h] {
+			return false, time.Time{}, time.Time{}
+		}
+		seen[h] = true
+		return true, time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC), time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	})
+	RegisterConnection("disc-host", &AgentConnection{Hostname: "disc-host"}, 1)
+	UnregisterConnection("disc-host")
+	RegisterConnection("disc-host", &AgentConnection{Hostname: "disc-host"}, 2) // same process: host.reconnect
+	UnregisterConnection("disc-host")
+	rec.mu.Lock()
+	var names []string
+	for _, e := range rec.evs {
+		names = append(names, e.Name)
+	}
+	first := rec.evs[0]
+	rec.mu.Unlock()
+	want := []string{"host.discover", "host.up", "host.down", "host.reconnect", "host.down"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("events = %v, want %v", names, want)
+	}
+	if first.Hostname != "disc-host" || first.Detail.FirstSeenAt != "2026-11-12T10:00:00Z" || first.EnrolledAt != "2026-11-01T09:00:00Z" {
+		t.Errorf("host.discover = %+v", first)
+	}
+}

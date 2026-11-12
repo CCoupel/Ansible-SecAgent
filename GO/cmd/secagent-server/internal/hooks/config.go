@@ -62,6 +62,9 @@ func (c *HooksConfig) Validate() error {
 		if !KnownEvent(h.Event) {
 			log.Printf("[WARN] hooks: hook[%d] listens to %q, which this server never emits (typo, or an event of a later version)", i, h.Event)
 		}
+		if h.Event == "host.deleted" {
+			log.Printf("[WARN] hooks: hook[%d] listens to host.deleted: deprecated since v3.0.6, removed in v3.0.7, use host.removed", i)
+		}
 		if h.Filter != nil {
 			if h.Filter.RelayChainContains == "" {
 				return fmt.Errorf("hook[%d] (%s): empty filter: set relay_chain_contains or remove the filter", i, h.Event)

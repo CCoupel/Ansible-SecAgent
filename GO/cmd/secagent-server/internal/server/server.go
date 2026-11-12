@@ -510,6 +510,18 @@ func Build(cfg Config) (node *Node, err error) {
 		}
 		return chains
 	})
+	store.SetFirstSeenFlush(storage.FirstSeenFlushFromEnv())
+	ws.SetFirstSeenFunc(func(hostname string) (bool, time.Time, time.Time) {
+		first, at := store.MarkFirstSeen(hostname)
+		if !first {
+			return false, time.Time{}, time.Time{}
+		}
+		var enrolled time.Time
+		if rec, _ := store.GetAgent(context.Background(), hostname); rec != nil {
+			enrolled = rec.EnrolledAt
+		}
+		return true, at, enrolled
+	})
 	ws.SetRelayLinkEstablishedFunc(n.linkEstablished)
 	ws.SetRelayChainFunc(func(relayID string, chain []string) error {
 		_, err := store.SetRelayChain(relayID, chain)
