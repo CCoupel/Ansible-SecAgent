@@ -759,3 +759,65 @@ func TestHookEvent_ClampsAnOutOfBoundsTimestamp(t *testing.T) {
 		t.Errorf("no log:\n%s", out.String())
 	}
 }
+
+// An agent_list REPLACES the routes of its relay; one built BEFORE a host.up it overtakes (here: empty, sent right
+// after the event) must not wipe the route that event just created: it is completed with the hosts routed by an
+// event less than the grace ago, and only after the grace is the host dropped if still unlisted.
+func TestAgentList_DoesNotWipeARouteCreatedByARecentEvent(t *testing.T) {
+	resetRerouteMemory(t)
+	prev := recentEventRouteGrace
+	recentEventRouteGrace = 400 * time.Millisecond
+	t.Cleanup(func() { recentEventRouteGrace = prev })
+	recentRoutesMu.Lock()
+	recentEventRoutes = nil
+	recentRoutesMu.Unlock()
+
+	var mu sync.Mutex
+	var lists [][]string
+	setRoutingHook(t, func(relayID string, hostnames []string) error {
+		if relayID == "dmz1" {
+			mu.Lock()
+			lists = append(lists, append([]string(nil), hostnames...))
+			mu.Unlock()
+		}
+		return nil
+	})
+	setTreeHooks(t, "central", nil, nil, nil)
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	c := dialRelay(t, srv, makeRelayJWT("dmz1", "relay"))
+	handshake(t, c, "dmz1")
+	sendSnapshot(t, c, nil, nil)
+	readMsg(t, c)
+	last := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return lists[len(lists)-1]
+	}
+	agentList := func(hosts ...string) {
+		t.Helper()
+		var ag []RelayAgentInfo
+		for _, h := range hosts {
+			ag = append(ag, RelayAgentInfo{Hostname: h, Status: "connected"})
+		}
+		if err := c.WriteJSON(RelayMessage{Type: "agent_list", Agents: ag}); err != nil {
+			t.Fatal(err)
+		}
+		readMsg(t, c) // agent_list_ack: processed
+	}
+
+	_ = c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.new", Hostname: "fresh", Status: "disconnected", RelayChain: []string{"dmz1"}})
+	agentList() // stale: built before the agent connected
+	if got := last(); len(got) != 1 || got[0] != "fresh" {
+		t.Fatalf("the stale empty agent_list wiped the route of the host an event had just routed: %v", got)
+	}
+	agentList("fresh", "other") // the truth, now complete
+	if got := last(); len(got) != 2 {
+		t.Errorf("a complete list must stay as it is: %v", got)
+	}
+	time.Sleep(600 * time.Millisecond) // past the grace
+	agentList()
+	if got := last(); len(got) != 0 {
+		t.Errorf("after the grace an unlisted host must be dropped again: %v", got)
+	}
+}

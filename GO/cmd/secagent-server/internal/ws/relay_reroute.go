@@ -588,3 +588,69 @@ func flushTimestampClamped(int64) {
 		log.Printf("[RELAY] %s: %d event(s) in the last minute had a timestamp out of bounds (beyond now+%s, or older than %s and not replayed): replaced by the arrival time", ev, n, timestampFutureSkew, timestampMaxAge)
 	}
 }
+
+// ── Routes created by an event survive a stale agent_list ────────────────────
+
+// recentEventRouteGrace is how long a route created by a host.up / host.new / host.reconnect of a relay is kept
+// when that relay's next agent_list does not list the host yet. An agent_list REPLACES all the routes of its
+// relay, and is computed before the event it overtakes: the empty list a relay built just before one of its
+// agents connected used to wipe the route the host.new had just created, until the host.up (the next, paced,
+// event) restored it; an exec landing in that window failed with host_not_found. It is a variable for tests.
+var recentEventRouteGrace = 2 * time.Second
+
+type recentEventRoute struct {
+	host, relay string
+	at          time.Time
+}
+
+var (
+	recentRoutesMu    sync.Mutex
+	recentEventRoutes []recentEventRoute // in arrival order, pruned from the front
+)
+
+// noteEventRoute remembers that a host.up / host.new / host.reconnect of relay just routed host.
+func noteEventRoute(host, relay string) {
+	recentRoutesMu.Lock()
+	defer recentRoutesMu.Unlock()
+	pruneRecentRoutesLocked(time.Now())
+	if len(recentEventRoutes) < maxRerouteMemory {
+		recentEventRoutes = append(recentEventRoutes, recentEventRoute{host: host, relay: relay, at: time.Now()})
+	}
+}
+
+func pruneRecentRoutesLocked(now time.Time) {
+	i := 0
+	for i < len(recentEventRoutes) && now.Sub(recentEventRoutes[i].at) >= recentEventRouteGrace {
+		i++
+	}
+	if i > 0 {
+		recentEventRoutes = append(recentEventRoutes[:0], recentEventRoutes[i:]...)
+	}
+}
+
+// withRecentEventRoutes returns the agent_list of relay completed with the hosts an event routed to it less
+// than recentEventRouteGrace ago (the list is the truth, but it can be older than the event).
+func withRecentEventRoutes(relay string, listed []string) []string {
+	recentRoutesMu.Lock()
+	defer recentRoutesMu.Unlock()
+	now := time.Now()
+	pruneRecentRoutesLocked(now)
+	if len(recentEventRoutes) == 0 {
+		return listed
+	}
+	have := make(map[string]struct{}, len(listed))
+	for _, h := range listed {
+		have[h] = struct{}{}
+	}
+	out := listed
+	for _, r := range recentEventRoutes {
+		if r.relay != relay {
+			continue
+		}
+		if _, ok := have[r.host]; !ok {
+			have[r.host] = struct{}{}
+			out = append(out[:len(out):len(out)], r.host)
+		}
+	}
+	return out
+}

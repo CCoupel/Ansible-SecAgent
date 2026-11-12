@@ -1088,7 +1088,7 @@ func handleRelayMessage(conn *RelayConnection, msg RelayMessage) {
 			}
 		}
 		if RelayRoutingBulkUpsertFunc != nil {
-			if err := RelayRoutingBulkUpsertFunc(conn.RelayID, hostnames); err != nil {
+			if err := RelayRoutingBulkUpsertFunc(conn.RelayID, withRecentEventRoutes(conn.RelayID, hostnames)); err != nil {
 				log.Printf("agent_list routing update error: relay_id=%q err=%v", conn.RelayID, err)
 			}
 		}
@@ -2208,6 +2208,7 @@ func applyEventRouting(conn *RelayConnection, msg RelayMessage) bool {
 				log.Printf("event_forward: route update host=%q: %v", msg.Hostname, err)
 			}
 		}
+		noteEventRoute(msg.Hostname, origin) // a stale agent_list must not wipe this route at once
 		return true
 	case "host.down", "host.discover", "host.removed", "host.rerouted", "host.suspended", "host.resumed", "host.conflict":
 		// A relay only reports events for the hosts of ITS OWN subtree (T34): never for a host connected here,
