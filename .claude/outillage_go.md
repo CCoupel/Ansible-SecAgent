@@ -20,6 +20,21 @@ Poste de travail depuis 2026-11-09 : **Linux natif** (Ubuntu 26.04, conteneur ; 
   si un jour `~/.local/go` n'est plus en 1.27.4, `GOTOOLCHAIN=auto` téléchargerait le toolchain dans `~/go` : c'est
   la cause de l'écriture hors scratchpad constatée en v3.0.4. Le bloc le télécharge alors **dans le scratchpad**
   (`GOTOOLCHAIN=go1.27.4`, amorce = le `go` du PATH, base de sommes ACTIVE : toolchain vérifié par sum.golang.org).
+- **Téléchargement d'office au démarrage du poste (constaté le 2026-11-12, palliatif dans `env.yaml`)** : le `setup` du
+  conteneur joue, dans un seul script `bash -e`, les étapes du launcher, puis du template, puis du projet
+  (Claude-Launcher NG2 : `backend.go:189`, `bootstrap.sh:110-118`). L'étape Go de `env-template.yaml` (`V=1.27.3`
+  codé en dur) réinstalle la 1.27.3, puis `(cd GO && go mod download)` tourne avec elle : `GO/go.work` exigeant 1.27.4
+  et `GOTOOLCHAIN` valant `auto`, Go **télécharge d'office la toolchain 1.27.4** dans `~/go/pkg/mod` (~250 Mo). Ensuite
+  seulement, l'étape d'`env.yaml` relève `~/.local/go` en 1.27.4. Le launcher ne permet ni de remplacer une étape du
+  template, ni de passer avant elle, ni de lui fournir une variable : la même étape d'`env.yaml` **supprime donc, en fin
+  de setup, cette toolchain et elle seule** (`~/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.*`, rendue inscriptible
+  puis retirée, et `cache/download/golang.org/toolchain/@v/v0.0.1-go1.27.*`). C'est idempotent, et rien d'autre n'est
+  touché. Le téléchargement réseau (~75 Mo) a encore lieu à chaque démarrage. **Ce n'est pas une violation de la règle du
+  scratchpad** : l'écriture est faite par le bootstrap du poste (étape du template), pas par un agent, et le palliatif ne
+  fait que la défaire. `GOTOOLCHAIN=local` n'est **pas** posé : il ferait échouer ce `go mod download` (1.27.3) et donc
+  tout le setup. Correction durable, hors de ce dépôt : clé `env:` ou étapes nommées dans le launcher, ou étape Go du
+  template lisant la version dans `go.work` (`_work/reports/infra-gotoolchain-local-20261112.md` §5) ; le palliatif sera
+  alors à retirer.
 - **CGO / `-race`** : `go test -race` exige un compilateur C. Le 2026-11-09 le poste n'en avait pas (`gcc` absent,
   `go env CGO_ENABLED` = 0) ; `gcc` et les en-têtes libc (`libc6-dev` sous apt) sont désormais **déclarés dans
   `.claude-launcher/env.yaml`** (`packages`, `packages_by_manager`). **`-race` local disponible une fois le poste
