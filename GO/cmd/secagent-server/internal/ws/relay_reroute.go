@@ -488,3 +488,49 @@ func rememberRelayChains(after map[string][]string) {
 		lastRelayChains[id] = append([]string(nil), c...)
 	}
 }
+
+// ── Timestamp of origin of a received event ──────────────────────────────────
+
+// Bounds of an accepted timestamp of origin: not beyond now + timestampFutureSkew; and, for an event that is
+// not a replay (late), not older than timestampMaxAge (a replayed event legitimately waited for the cut link).
+const (
+	timestampFutureSkew = 5 * time.Minute
+	timestampMaxAge     = 7 * 24 * time.Hour
+)
+
+// originTimestamp returns the origin date of an event, normalized to RFC 3339 UTC, and whether it is usable.
+func originTimestamp(raw string, late bool, now time.Time) (string, bool) {
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return "", false
+	}
+	if t.After(now.Add(timestampFutureSkew)) || (!late && t.Before(now.Add(-timestampMaxAge))) {
+		return "", false
+	}
+	return t.UTC().Format(time.RFC3339), true
+}
+
+var (
+	timestampClampMu  sync.Mutex
+	timestampClamped  = map[string]int64{} // event kind -> count since the last report
+	timestampClampAgg = dropreport.New(time.Minute, flushTimestampClamped)
+)
+
+func noteTimestampClamped(event string) {
+	timestampClampMu.Lock()
+	if _, known := timestampClamped[event]; known || len(timestampClamped) < 64 {
+		timestampClamped[event]++
+	}
+	timestampClampMu.Unlock()
+	timestampClampAgg.Add(1)
+}
+
+func flushTimestampClamped(int64) {
+	timestampClampMu.Lock()
+	c := timestampClamped
+	timestampClamped = map[string]int64{}
+	timestampClampMu.Unlock()
+	for ev, n := range c {
+		log.Printf("[RELAY] %s: %d event(s) in the last minute had a timestamp out of bounds (beyond now+%s, or older than %s and not replayed): replaced by the arrival time", ev, n, timestampFutureSkew, timestampMaxAge)
+	}
+}

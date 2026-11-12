@@ -717,3 +717,45 @@ func TestHookEvent_CarriesTheOriginTimestamp(t *testing.T) {
 		t.Errorf("no timestamp: got %q", got)
 	}
 }
+
+func TestOriginTimestamp_Bounds(t *testing.T) {
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	f := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339) }
+	for _, c := range []struct {
+		name string
+		ts   string
+		late bool
+		ok   bool
+	}{
+		{"now", f(0), false, true},
+		{"4 min in the future (skew)", f(4 * time.Minute), false, true},
+		{"6 min in the future", f(6 * time.Minute), false, false},
+		{"6 min in the future, late", f(6 * time.Minute), true, false},
+		{"6 days old", f(-6 * 24 * time.Hour), false, true},
+		{"8 days old, live event", f(-8 * 24 * time.Hour), false, false},
+		{"8 days old, replayed (late)", f(-8 * 24 * time.Hour), true, true},
+		{"year 1970", "1970-01-01T00:00:00Z", false, false},
+		{"malformed", "yesterday", false, false},
+		{"empty", "", false, false},
+	} {
+		if _, ok := originTimestamp(c.ts, c.late, now); ok != c.ok {
+			t.Errorf("%s: usable = %v, want %v", c.name, ok, c.ok)
+		}
+	}
+}
+
+// An out-of-bounds timestamp is replaced by the arrival time (hookEvent leaves it empty) and counted/logged.
+func TestHookEvent_ClampsAnOutOfBoundsTimestamp(t *testing.T) {
+	out := &lockedLog{}
+	log.SetOutput(out)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	timestampClampAgg.Flush()
+	m := RelayMessage{Event: "host.down", Hostname: "h", RelayChain: []string{"dmz1"}, Timestamp: "2999-01-01T00:00:00Z"}
+	if got := m.hookEvent().Timestamp; got != "" {
+		t.Errorf("a far-future timestamp must be dropped, got %q", got)
+	}
+	timestampClampAgg.Flush()
+	if !strings.Contains(out.String(), "host.down: 1 event(s) in the last minute had a timestamp out of bounds") {
+		t.Errorf("no log:\n%s", out.String())
+	}
+}
