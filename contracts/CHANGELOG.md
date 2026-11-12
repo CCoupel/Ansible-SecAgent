@@ -25,6 +25,7 @@
 - **[DEPRECATED]** hook `host.deleted` : toujours émis en v3.0.6 (après `host.removed`), `[WARN]` au chargement d'une config qui s'y abonne, **retiré en v3.0.7 ([BREAKING])** : utiliser `host.removed`.
 - **[ADDED]** hooks `relay.discover` (premier snapshot d'un relais déclaré, par son parent direct, avant `relay.up`, une seule fois) et `relay.removed` (`DELETE /api/admin/relays/{id}`, avant `relay.down reason=revoked`, sans cascade, `hosts_routed` informatif ; jamais sur une révocation), propagés ; `GET /api/admin/relays` : champ additif `first_seen_at` (#266).
 - **[CHANGED]** `event_forward` d'hôte (T34, #266) — un nœud refuse (ni distribué ni remonté, alarme agrégée par minute) un `host.down/discover/removed/rerouted/suspended/resumed/conflict` d'un enfant pour un hôte hors du sous-arbre de cet enfant (connecté ici, routé par un autre pair, ou sans route connue : `[RELAY]` ; exceptions sans route : `host.discover` et `host.conflict`). Avant, un hôte sans route était accepté.
+- **[CHANGED]** `event_forward` (#266) — événements d'un nouveau descendant retenus jusqu'à l'envoi du snapshot qui le déclare (≤ 5 s) : le `relay.discover`/`relay.up` d'un petit-enfant n'est plus perdu à l'ancêtre ; l'horodatage d'origine (`timestamp`) est celui des hooks du récepteur, y compris pour un événement rejoué (`late`) ; `relay.removed` porte sa `relay_chain`.
 - Compatibilité : un parent v3.0.5 jette les kinds inconnus (`unsupported event kind`) sans fermer le lien ; monter les parents d'abord (T9).
 - Aucun changement BREAKING.
 

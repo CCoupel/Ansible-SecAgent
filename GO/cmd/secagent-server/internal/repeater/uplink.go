@@ -34,6 +34,7 @@ type Uplink struct {
 	cur       *websocket.Conn
 	states    map[string]json.RawMessage // last link_state frame per relay_id (own and relayed), re-sent after each snapshot
 	revoked   atomic.Bool                // the token of THIS link was revoked by the root (link_revocations)
+	declared  map[string]struct{}        // relay ids of the last topology_snapshot SENT on the current link
 }
 
 // ErrUplinkBusy is returned by Serve when a parent link is already active (single parent).
@@ -199,18 +200,68 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 	evCh := u.events()
 	var evTimer *time.Timer
 	var evTick <-chan time.Time
+	// An event about a relay the parent has not been told about yet is HELD (not taken further) until the
+	// snapshot that declares it has been sent, at most HoldEventsForSnapshotAfter.
+	var held *Event
+	var holdTimer *time.Timer
+	var holdC <-chan time.Time
 	defer func() {
 		if evTimer != nil {
 			evTimer.Stop()
 		}
+		if holdTimer != nil {
+			holdTimer.Stop()
+		}
 	}()
+	// sendEvent forwards one event and applies the replay cadence.
+	sendEvent := func(ev Event) error {
+		if err := u.forwardEvent(conn, ev); err != nil {
+			return err
+		}
+		if evInterval > 0 {
+			if evTimer == nil {
+				evTimer = time.NewTimer(evInterval)
+			} else {
+				evTimer.Reset(evInterval)
+			}
+			evTick, evCh = evTimer.C, nil
+		}
+		return nil
+	}
+	// releaseHeld sends the held event when its relays are now declared (or when force is set).
+	releaseHeld := func(force bool) error {
+		if held == nil || (!force && !u.releasable(*held)) {
+			return nil
+		}
+		ev := *held
+		held = nil
+		if holdTimer != nil {
+			holdTimer.Stop()
+			holdTimer, holdC = nil, nil
+		}
+		if err := sendEvent(ev); err != nil {
+			return err
+		}
+		if evInterval <= 0 {
+			evCh = u.events()
+		}
+		return nil
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return true, ctx.Err()
 		case <-evTick:
-			evTick, evCh = nil, u.events()
+			evTick = nil
+			if held == nil {
+				evCh = u.events()
+			}
+		case <-holdC:
+			holdTimer, holdC = nil, nil
+			if err := releaseHeld(true); err != nil {
+				return true, u.preferRead(err, readErr)
+			}
 		case err := <-readErr:
 			if u.revoked.Load() { // the root revoked our own link token: never reconnect with it
 				return true, &refusedError{reason: "link token revoked by the root (operator action required)", permanent: true}
@@ -245,6 +296,9 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 			}
 			u.resendLinkStates(conn)
 			lastSnap = time.Now()
+			if err := releaseHeld(false); err != nil {
+				return true, u.preferRead(err, readErr)
+			}
 		case <-u.changed():
 			if err := u.sendAgentList(conn); err != nil {
 				return true, u.preferRead(err, readErr)
@@ -254,16 +308,23 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 				evCh = nil
 				continue
 			}
-			if err := u.forwardEvent(conn, ev); err != nil {
-				return true, u.preferRead(err, readErr)
-			}
-			if evInterval > 0 {
-				if evTimer == nil {
-					evTimer = time.NewTimer(evInterval)
-				} else {
-					evTimer.Reset(evInterval)
+			if !u.releasable(ev) {
+				// hold it and make sure a snapshot that declares the relay goes out soon (debounced like any change)
+				held, evCh = &ev, nil
+				holdTimer = time.NewTimer(holdEventsFor)
+				holdC = holdTimer.C
+				if topoTimer == nil {
+					delay := u.opts.TopologyDebounce
+					if wait := u.opts.TopologyMinGap - time.Since(lastSnap); wait > delay {
+						delay = wait
+					}
+					topoTimer = time.NewTimer(delay)
+					topoC = topoTimer.C
 				}
-				evTick, evCh = evTimer.C, nil
+				continue
+			}
+			if err := sendEvent(ev); err != nil {
+				return true, u.preferRead(err, readErr)
 			}
 		}
 	}
@@ -328,7 +389,42 @@ func (u *Uplink) sendSnapshot(conn *websocket.Conn) error {
 	if err := u.write(conn, snapshotMessage{Type: "topology_snapshot", Relays: snap.Relays, Agents: snap.Agents, GroupVars: u.opts.GroupVars}); err != nil {
 		return fmt.Errorf("send topology_snapshot: %w", err)
 	}
+	declared := make(map[string]struct{}, len(snap.Relays))
+	for _, r := range snap.Relays {
+		declared[r.RelayID] = struct{}{}
+	}
+	u.mu.Lock()
+	u.declared = declared
+	u.mu.Unlock()
 	return nil
+}
+
+// HoldEventsForSnapshotAfter bounds how long an event about a relay the parent has not been told about yet
+// waits for the snapshot that declares it (after that it is sent anyway: the parent will log and refuse it).
+const HoldEventsForSnapshotAfter = 5 * time.Second
+
+// holdEventsFor is HoldEventsForSnapshotAfter, a variable so that a test can shorten it.
+var holdEventsFor = HoldEventsForSnapshotAfter
+
+// releasable reports whether the parent already knows every relay of the event's chain: it validates each
+// element of relay_chain (but the sender, appended last) against the descendants of the last snapshot it got.
+// An event for a relay declared only by a snapshot still to come (a grandchild that has just linked) would be
+// refused as "unknown descendant" and its lifecycle event lost.
+func (u *Uplink) releasable(ev Event) bool {
+	if len(ev.RelayChain) == 0 || u.opts.Snapshot == nil { // no snapshot source: nothing to wait for (tests)
+		return true
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for _, id := range ev.RelayChain {
+		if id == u.id {
+			continue
+		}
+		if _, ok := u.declared[id]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // changed/events return nil channels (block forever) when unset.
