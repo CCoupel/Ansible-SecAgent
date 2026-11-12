@@ -47,9 +47,13 @@ func FirstSeenFlushFromEnv() time.Duration {
 type firstSeenState struct {
 	agents map[string]time.Time
 	relays map[string]time.Time
-	timer  *time.Timer
-	every  time.Duration
-	closed bool
+	// flushing: the marks being written by the mutation in progress. They stay visible to Mark* and to
+	// pending* until the write ends, so a handshake racing with it is not "first" a second time.
+	flushingAgents map[string]time.Time
+	flushingRelays map[string]time.Time
+	timer          *time.Timer
+	every          time.Duration
+	closed         bool
 }
 
 // SetFirstSeenFlush sets the maximum delay before pending marks are written (tests, RELAY_FIRST_SEEN_FLUSH).
@@ -74,6 +78,9 @@ func (s *Store) MarkFirstSeen(hostname string) (first bool, at time.Time) {
 	if _, pending := s.fs.agents[hostname]; pending || len(s.fs.agents)+len(s.fs.relays) >= maxPendingFirstSeen {
 		return false, time.Time{}
 	}
+	if _, writing := s.fs.flushingAgents[hostname]; writing {
+		return false, time.Time{}
+	}
 	at = nowUTC()
 	if s.fs.agents == nil {
 		s.fs.agents = map[string]time.Time{}
@@ -95,6 +102,9 @@ func (s *Store) MarkRelayFirstSeen(relayID string) (first bool, at time.Time) {
 		return false, time.Time{}
 	}
 	if _, pending := s.fs.relays[relayID]; pending || len(s.fs.agents)+len(s.fs.relays) >= maxPendingFirstSeen {
+		return false, time.Time{}
+	}
+	if _, writing := s.fs.flushingRelays[relayID]; writing {
 		return false, time.Time{}
 	}
 	at = nowUTC()
@@ -161,7 +171,10 @@ func (s *Store) reapFirstSeen() {
 func (s *Store) pendingFirstSeen(hostname string) (time.Time, bool) {
 	s.fsMu.Lock()
 	defer s.fsMu.Unlock()
-	t, ok := s.fs.agents[hostname]
+	if t, ok := s.fs.agents[hostname]; ok {
+		return t, true
+	}
+	t, ok := s.fs.flushingAgents[hostname]
 	return t, ok
 }
 
@@ -169,7 +182,10 @@ func (s *Store) pendingFirstSeen(hostname string) (time.Time, bool) {
 func (s *Store) pendingRelayFirstSeen(relayID string) (time.Time, bool) {
 	s.fsMu.Lock()
 	defer s.fsMu.Unlock()
-	t, ok := s.fs.relays[relayID]
+	if t, ok := s.fs.relays[relayID]; ok {
+		return t, true
+	}
+	t, ok := s.fs.flushingRelays[relayID]
 	return t, ok
 }
 
@@ -188,10 +204,13 @@ func (s *Store) FlushFirstSeen() {
 	s.fs.timer = nil
 	agents, relays := s.fs.agents, s.fs.relays
 	s.fs.agents, s.fs.relays = map[string]time.Time{}, map[string]time.Time{}
-	s.fsMu.Unlock()
 	if len(agents) == 0 && len(relays) == 0 {
+		s.fsMu.Unlock()
 		return
 	}
+	s.fs.flushingAgents, s.fs.flushingRelays = agents, relays // still "marked" until the write has ended
+	closing := s.fs.closed
+	s.fsMu.Unlock()
 	err := s.mutate(func(tx *state.Tx) error {
 		for h, at := range agents {
 			if a, ok := tx.Agent(h); ok && a.FirstSeenAt == nil {
@@ -213,7 +232,15 @@ func (s *Store) FlushFirstSeen() {
 		}
 		return nil
 	})
+	s.fsMu.Lock()
+	s.fs.flushingAgents, s.fs.flushingRelays = nil, nil // the snapshot of the state now holds them (or they go back below)
 	if err == nil {
+		s.fsMu.Unlock()
+		return
+	}
+	s.fsMu.Unlock()
+	if closing {
+		log.Printf("[WARN] first_seen_at: %d agent mark(s) and %d relay mark(s) could not be written at shutdown and are LOST: host.discover / relay.discover will be emitted again at the next first connection: %v", len(agents), len(relays), err)
 		return
 	}
 	log.Printf("[WARN] first_seen_at: %d agent mark(s) and %d relay mark(s) not written (kept, retried): %v", len(agents), len(relays), err)

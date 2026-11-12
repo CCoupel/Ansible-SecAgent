@@ -7,6 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -254,3 +257,69 @@ func TestFirstSeenFlushFromEnv(t *testing.T) {
 		}
 	}
 }
+
+// A handshake racing with the write of the marks is NOT "first" a second time (the marks being written stay
+// visible until the mutation has ended).
+func TestFirstSeen_NoSecondFirstWhileTheMarkIsBeingWritten(t *testing.T) {
+	s := newTestStore(t)
+	s.SetFirstSeenFlush(time.Hour)
+	enroll(t, s, "h1")
+	if f, _ := s.MarkFirstSeen("h1"); !f {
+		t.Fatal("first")
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	s.SetWriteGuard(func() error { // the guard runs inside the mutation: hold the write here
+		select {
+		case <-entered:
+		default:
+			close(entered)
+		}
+		<-release
+		return nil
+	})
+	done := make(chan struct{})
+	go func() { s.FlushFirstSeen(); close(done) }()
+	<-entered // the mutation is in progress: the pending map was emptied, the state does not hold the mark yet
+	if f, _ := s.MarkFirstSeen("h1"); f {
+		t.Error("a second first mark was granted while the first was being written (double host.discover)")
+	}
+	if rec, _ := s.GetAgent(context.Background(), "h1"); rec == nil || rec.FirstSeenAt == nil {
+		t.Error("the mark being written must stay visible")
+	}
+	close(release)
+	<-done
+	if persistedFirstSeen(t, s, "h1") == nil {
+		t.Error("not persisted after the flush")
+	}
+	if f, _ := s.MarkFirstSeen("h1"); f {
+		t.Error("first again after the flush")
+	}
+}
+
+// At shutdown a mark that cannot be written is lost: the message says so (it is not "kept, retried").
+func TestFirstSeen_CloseWithARefusedWriteSaysTheMarkIsLost(t *testing.T) {
+	var out syncBuf
+	log.SetOutput(&out)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	s, err := OpenTemp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetFirstSeenFlush(time.Hour)
+	enroll(t, s, "h1")
+	s.MarkFirstSeen("h1")
+	s.SetWriteGuard(func() error { return errors.New("lock lost") })
+	_ = s.Close()
+	got := out.String()
+	if !strings.Contains(got, "LOST") || !strings.Contains(got, "emitted again at the next first connection") || strings.Contains(got, "kept, retried") {
+		t.Errorf("shutdown message:\n%s", got)
+	}
+}
+
+type syncBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
+func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
