@@ -625,6 +625,10 @@ link_revoke() {
 # simple presence.
 EVENTS_LOG_HINT="docker exec <conteneur> cat /var/log/secagent-events/events.log"
 
+# Relais attendus par la racine apres une promotion (#246, server/convergence.go:139-147) : TOUS ses relay_nodes valides,
+# y compris les DESCENDANTS appris par snapshot (relay_handler.go:1707-1712) : dmz1, et dmz2 avec CHAIN_LEVEL3=1.
+expected_relays() { if level3; then echo 2; else echo 1; fi; }
+
 # Compteurs de la file amont de $1 (`server status`) : "<depth> <capacity> <dropped>" (vides si absents).
 upstream_counters() {
   adm "$1" server status 2>/dev/null | awk '$1=="upstream_queue_depth" {d=$2; c=$4} $1=="upstream_dropped_events" {x=$2} END{print d, c, x}'
@@ -698,12 +702,14 @@ check_hooks_after_failover() { # $1 cause attendue (start | takeover) ; $2 conne
   n=$(( $(hook_count "$m" "$ROOT_RELAY_ID" CONVERGED) - $(before "$m $ROOT_RELAY_ID CONVERGED") ))
   [ "$n" = 1 ] || fail "relay.converged : $n nouvelle(s) ligne(s) au nouveau maitre $m (une seule attendue)"
   echo "relay.converged : $(hook_last "$m" "$ROOT_RELAY_ID" CONVERGED)"
+  local want; want="$(expected_relays)"
   if [ "$conv" = connected ]; then
-    converged_is "$m" relays_connected 1 && converged_is "$m" relays_missing 0 \
-      || fail "relay.converged : relays_connected=1 relays_missing=0 attendus"
+    converged_is "$m" relays_connected "$want" && converged_is "$m" relays_missing 0 \
+      || fail "relay.converged : relays_connected=$want relays_missing=0 attendus (dmz1$(level3 && echo ' + dmz2'))"
   else
-    converged_is "$m" relays_connected 0 && converged_is "$m" relays_missing 1 \
-      || fail "relay.converged au delai : relays_connected=0 relays_missing=1 attendus"
+    # dmz1 arrete : dmz2 (derriere lui) manque aussi
+    converged_is "$m" relays_connected 0 && converged_is "$m" relays_missing "$want" \
+      || fail "relay.converged au delai : relays_connected=0 relays_missing=$want attendus (dmz1$(level3 && echo ' + dmz2') absents)"
   fi
   in_order "$m" FAILOVER CONVERGED || fail "relay.converged journalise avant relay.failover au maitre $m"
   kind_more "$m" REROUTED "$(before "$m *REROUTED")" && fail "host.rerouted journalise par $m apres la bascule (aucun attendu, #244)"
@@ -743,7 +749,9 @@ relay_down() {
 
 # Scenario converged-timeout (#246) : l'enfant est ARRETE, puis bascule a->b (arret propre) : le nouveau maitre attend dmz1
 # (declare) qui ne vient pas -> UN relay.converged au delai RELAY_CONVERGENCE_TIMEOUT (qualif 30 s) avec
-# relays_connected=0 relays_missing=1 ; l'enfant redemarre -> relay.up dmz1 (nouveau processus), PAS de second converged.
+# relays_connected=0 relays_missing=1 (2 avec CHAIN_LEVEL3=1 : dmz2 est derriere dmz1) ; l'enfant redemarre -> relay.up
+# dmz1 (nouveau processus), PAS de second converged. La bascule ne (re)demarre QUE la racine (FAILOVER_UP_SERVICES) :
+# sans cela `up -d` de failover-test.sh relancait l'enfant arrete (QUALIF 2026-11-12, 09:18:11 -> 09:18:14).
 converged_timeout() {
   require_ansible_version; verify_images; need INVENTORY_BIN; control_env
   local m up0 cv; m="$(master)" || fail "pas de maitre sur la racine"
@@ -751,7 +759,9 @@ converged_timeout() {
   echo "== arret de l'enfant, puis bascule de la racine (dmz1 attendu mais absent)"
   dc stop secagent-child >/dev/null
   hooks_snapshot
-  bash "$HERE/failover-test.sh" run stop   # attend relay.failover puis relay.converged (<= 45 s) sur le nouveau maitre
+  # attend relay.failover puis relay.converged (<= 45 s) sur le nouveau maitre ; l'enfant reste ARRETE
+  FAILOVER_UP_SERVICES="secagent-server-a secagent-server-b" bash "$HERE/failover-test.sh" run stop
+  ctr inspect -f '{{.State.Running}}' "$C_CHILD" 2>/dev/null | grep -qx false || fail "l'enfant a redemarre pendant la bascule (scenario invalide)"
   check_hooks_after_failover start missing
   m="$(master)" || fail "pas de maitre apres la bascule"
   up0="$(hook_count "$m" dmz1 RELAY_UP)"; cv="$(hook_count "$m" "$ROOT_RELAY_ID" CONVERGED)"
@@ -769,22 +779,44 @@ converged_timeout() {
 # Scenario rerouted (#244, cause direct puis indirect) : minion-child (enrole derriere dmz1) est re-pointe vers la racine
 # (MINION_CHILD_*_URL) : le maitre journalise `REROUTED minion-child direct` (route relais -> connexion locale) ; puis retour
 # derriere dmz1 : `REROUTED minion-child indirect`. L'enfant ne journalise aucun REROUTED. Docker seulement.
+# Identifiants : chaque noeud signe les JWT de SES agents avec son propre secret (`state init` en tire un au hasard :
+# state/init.go:89-93,114) : le JWT emis par dmz1 est refuse par la racine (401 « signature is invalid », QUALIF
+# 2026-11-12) et l'inverse. A chaque re-pointage le minion est donc REENROLE aupres du noeud vise : jeton d'enrolement mine
+# sur CE noeud (minion-child.env), ancien JWT retire du volume du minion (sa cle id_rsa est conservee). Le maitre doit
+# avoir vu passer minion-child par dmz1 DEPUIS sa promotion (memoire des routes en RAM, relay_reroute.go:84-118) : le
+# minion est d'abord redemarre derriere dmz1.
+minion_child_retarget() { # $1 conteneur qui mint le jeton d'enrolement (noeud vise) ; URL dans MINION_CHILD_*_URL
+  local issuer="$1"
+  adm "$issuer" tokens create --role enrollment --hostname-pattern '^minion-child$' --expires "$TOKEN_TTL" 2>&1 \
+    | extract 'secagent_enr_[0-9a-f]{64}' | { read -r t; [ -n "$t" ] || fail "jeton minion-child ($issuer) non extrait"; printf 'RELAY_ENROLLMENT_TOKEN=%s\n' "$t" | write_secret minion-child.env; }
+  dc stop minion-child >/dev/null
+  ctr run --rm -v "${PROJECT}_minion_child_data:/d" \
+    alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
+    sh -c 'rm -f /d/token.jwt' || fail "retrait du JWT de minion-child impossible (volume ${PROJECT}_minion_child_data)"
+  dc up -d --force-recreate --no-deps minion-child
+}
+minion_child_seen_more() { [ $(( $(hook_count "$1" minion-child UP) + $(hook_count "$1" minion-child RECONNECT) )) -gt "$2" ]; }
 rerouted() {
   docker_only rerouted; verify_images; need INVENTORY_BIN
-  local m d0 c0; m="$(master)" || fail "pas de maitre sur la racine"
+  local m d0 c0 s0; m="$(master)" || fail "pas de maitre sur la racine"
   connected "$C_CHILD" minions minion-child 2
+  echo "== minion-child redemarre derriere dmz1 : le maitre $m apprend sa route (memoire des routes)"
+  s0=$(( $(hook_count "$m" minion-child UP) + $(hook_count "$m" minion-child RECONNECT) ))
+  dc restart minion-child >/dev/null
+  connected "$C_CHILD" minions minion-child 2
+  wait_for "host.up/reconnect minion-child via dmz1 au maitre $m" 90 minion_child_seen_more "$m" "$s0" >/dev/null
   d0="$(hook_count "$m" minion-child REROUTED)"; c0="$(kind_count "$C_CHILD" REROUTED)"
-  echo "== minion-child re-pointe vers la racine : host.rerouted direct attendu au maitre $m"
+  echo "== minion-child re-pointe vers la racine (reenrole aupres de $m) : host.rerouted direct attendu au maitre $m"
   MINION_CHILD_SERVER_URL="https://secagent-server-a:7770,https://secagent-server-b:7770" \
   MINION_CHILD_WS_URL="wss://secagent-server-a:7772/ws/agent,wss://secagent-server-b:7772/ws/agent" \
-    dc up -d --force-recreate --no-deps minion-child
+    minion_child_retarget "$m"
   connected "$m" minions minion-child 2
   wait_for "host.rerouted minion-child (direct) au maitre $m" 90 hook_more "$m" minion-child REROUTED "$d0" >/dev/null
   echo "rerouted : $(hook_last "$m" minion-child REROUTED)"
   [ "$(events_log "$m" | awk '$2=="REROUTED" && $3=="minion-child" {c=$4} END{print c}')" = direct ] || fail "host.rerouted minion-child : cause direct attendue"
   d0="$(hook_count "$m" minion-child REROUTED)"
-  echo "== retour derriere dmz1 : host.rerouted indirect attendu au maitre $m"
-  dc up -d --force-recreate --no-deps minion-child
+  echo "== retour derriere dmz1 (reenrole aupres de dmz1) : host.rerouted indirect attendu au maitre $m"
+  minion_child_retarget "$C_CHILD"
   connected "$C_CHILD" minions minion-child 2
   wait_for "host.rerouted minion-child (indirect) au maitre $m" 90 hook_more "$m" minion-child REROUTED "$d0" >/dev/null
   echo "rerouted : $(hook_last "$m" minion-child REROUTED)"

@@ -345,7 +345,10 @@ setup_ci() {
 
 up_and_identify() {
   guard_remote_binds
-  QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$CI_TLS_DIR}" dc up -d
+  # FAILOVER_UP_SERVICES (liste, optionnel) : ne (re)demarrer QUE ces services. Sans elle, `up -d` demarre TOUT le Compose,
+  # y compris un service qu'un scenario vient d'arreter expres (chain-test.sh converged-timeout : l'enfant).
+  # shellcheck disable=SC2086   # liste de services separes par des espaces
+  QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$CI_TLS_DIR}" dc up -d ${FAILOVER_UP_SERVICES:-}
   wait_for "les deux conteneurs healthy" 120 all_health healthy "$C_A" "$C_B" >/dev/null
   sleep 3
   local ma=0 mb=0

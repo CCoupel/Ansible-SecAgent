@@ -63,6 +63,18 @@ run_guard "$TMPD/tls-ok"
 chk "run : cert present => la garde ne refuse pas (REFUS: absent)" "$(if printf '%s' "$out" | grep -q 'REFUS:'; then echo 1; else echo 0; fi)"
 chk "run : ca.crt non exige (setup_ci ne le produit pas)" "$(if printf '%s' "$out" | grep -q 'ca.crt'; then echo 1; else echo 0; fi)"
 
+# --- v3.0.6 : FAILOVER_UP_SERVICES restreint le `up -d` de run (l'enfant arrete par converged-timeout reste arrete) ---
+up_call() { # $1 valeur de FAILOVER_UP_SERVICES (vide = non definie) ; sortie : la ligne `docker compose ... up -d ...` tracee
+  : > "$TMPD/docker.log"
+  env -u TLS_MODE -u DOCKER_HOST -u SECAGENT_ENDPOINT_HOST -u CONTROL_HOST ${1:+FAILOVER_UP_SERVICES="$1"} SECAGENT_PRIVATE_DIR="$TMPD/priv" QUALIF_TLS_DIR="$TMPD/tls-ok" bash -c '
+    source "'"$F"'"
+    docker() { echo "docker $*" >> "'"$TMPD"'/docker.log"; return 1; }
+    run stop' >/dev/null 2>&1
+  grep -m1 ' up -d' "$TMPD/docker.log"
+}
+chk "run : FAILOVER_UP_SERVICES => up -d de ces services seulement" "$(up_call 'secagent-server-a secagent-server-b' | grep -q ' up -d secagent-server-a secagent-server-b$'; echo $?)"
+chk "run : sans FAILOVER_UP_SERVICES => up -d de tout le Compose" "$(up_call '' | grep -q ' up -d$'; echo $?)"
+
 # --- v3.0.6 : lecture du journal des hooks (events_log via faux `docker exec`), compteurs, surcharge des hooks ---
 LOG="$TMPD/events.log"
 cat > "$LOG" <<'EOF'
