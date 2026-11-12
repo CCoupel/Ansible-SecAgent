@@ -161,7 +161,8 @@ func TestLifecycleSlow_HostEventsClimbTwoLevelsWithTheirChain(t *testing.T) {
 	}
 }
 
-// (9) three levels: relay.discover / relay.removed of dmz2 (a child of dmz1) reach the root through dmz1 with the chain;
+// (9) three levels: relay.discover / relay.removed of dmz2 (a child of dmz1) reach the root through dmz1 with the chain
+// (relay_chain of an EVENT is ORIGIN FIRST: dmz2,dmz1, unlike the top-down chains stored for routes);
 // NO cascade: deleting dmz2 raises ONE relay.removed, none for dmz3 below it and no host.removed for its host.
 func TestLifecycleSlow_RelayEventsClimbThreeLevelsWithoutCascade(t *testing.T) {
 	root := startNode(t, nodeSpec{ID: "root", Hooks: lot33Hooks})
@@ -185,8 +186,8 @@ func TestLifecycleSlow_RelayEventsClimbThreeLevelsWithoutCascade(t *testing.T) {
 
 	d2 := map[string]string{"relay": "dmz2"}
 	waitFor(t, "relay.discover of dmz2 at the root", func() bool { return len(root.eventsOf("relay.discover", d2)) >= 1 })
-	if e := root.eventsOf("relay.discover", d2)[0]; e["chain"] != "dmz1,dmz2" {
-		t.Errorf("root: relay.discover of dmz2 must carry relay_chain=dmz1,dmz2, got %v", e)
+	if e := root.eventsOf("relay.discover", d2)[0]; e["chain"] != "dmz2,dmz1" {
+		t.Errorf("root: relay.discover of dmz2 must carry relay_chain=dmz2,dmz1, got %v", e)
 	}
 
 	if code, raw := dmz1.admin("DELETE", "/api/admin/relays/"+id2, nil); code >= 300 {
@@ -194,8 +195,8 @@ func TestLifecycleSlow_RelayEventsClimbThreeLevelsWithoutCascade(t *testing.T) {
 	}
 	waitFor(t, "relay.removed of dmz2 at the root", func() bool { return len(root.eventsOf("relay.removed", d2)) >= 1 })
 	time.Sleep(settle * 2)
-	if r := root.eventsOf("relay.removed", nil); len(r) != 1 || r[0]["relay"] != "dmz2" || r[0]["chain"] != "dmz1,dmz2" {
-		t.Errorf("root: want exactly ONE relay.removed (dmz2, chain dmz1,dmz2), got %v", r)
+	if r := root.eventsOf("relay.removed", nil); len(r) != 1 || r[0]["relay"] != "dmz2" || r[0]["chain"] != "dmz2,dmz1" {
+		t.Errorf("root: want exactly ONE relay.removed (dmz2, chain dmz2,dmz1), got %v", r)
 	}
 	for _, n := range []*node{root, dmz1} {
 		if got := len(n.eventsOf("host.removed", nil)); got != 0 {
