@@ -161,4 +161,17 @@ grep -q "# archive" "$P/QUALIF/srv3/cyril/secagent/release/docker-compose.server
 [ "$(NODE_SOURCE_DIR="$T/arch" VERIFY_LOCAL=1 rc_of bash "$D/verify-node-files.sh" qualif srv3)" = 0 ] && ok "verify avec la meme archive conforme" || ko "verify archive"
 [ "$(VERIFY_LOCAL=1 rc_of bash "$D/verify-node-files.sh" qualif srv3)" = 2 ] && ok "verify contre le depot (archive differente) refuse" || ko "verify depot vs archive"
 
+# --- PROD depuis la VRAIE archive de release (build_compose_archive.sh, digest factice) : NODE_SOURCE_DIR = archive extraite
+FAKE="sha256:$(printf '0%.0s' $(seq 64))"
+( cd "$HERE/../.." && STAGE_DIR="$T/rstage" bash scripts/ci/build_compose_archive.sh v3.0.6 3.0.6 "$FAKE" "$T/rout" ) >/dev/null 2>&1 \
+  && mkdir -p "$T/rx" && tar -xzf "$T/rout/secagent-compose-3.0.6.tar.gz" -C "$T/rx" && ok "archive de release fabriquee et extraite" || ko "archive de release"
+RX="$T/rx/secagent-compose-3.0.6"
+[ "$(SECAGENT_VERSION=v3.0.6 NODE_SOURCE_DIR="$RX" rc_of stage prod srv1)" = 0 ] && ok "stage prod srv1 depuis l'archive extraite (surcharge Podman presente)" || ko "stage prod depuis l'archive : $(SECAGENT_VERSION=v3.0.6 NODE_SOURCE_DIR="$RX" stage prod srv1 2>&1 | tail -1)"
+PB="$P/PROD/srv1/cyril/secagent"
+cmp -s "$RX/docker-compose.podman.yml" "$PB/release/docker-compose.podman.yml" && ok "release/ : docker-compose.podman.yml de l'archive" || ko "surcharge Podman absente ou differente dans release/"
+grep -q "image: ghcr.io/ccoupel/secagent-server:v3.0.6@$FAKE" "$PB/release/docker-compose.server.yml" && ok "release/ : Compose serveur epingle tag@digest (archive)" || ko "Compose serveur non epingle"
+[ "$(SECAGENT_VERSION=v3.0.6 NODE_SOURCE_DIR="$RX" VERIFY_LOCAL=1 rc_of bash "$D/verify-node-files.sh" prod srv1)" = 0 ] && ok "verify prod srv1 contre la meme archive conforme" || ko "verify prod srv1 archive"
+rm -f "$RX/docker-compose.podman.yml"
+[ "$(SECAGENT_VERSION=v3.0.6 NODE_SOURCE_DIR="$RX" rc_of stage prod srv1)" = 2 ] && ok "archive sans surcharge Podman : stage prod refuse" || ko "archive sans surcharge Podman acceptee"
+
 exit $bad

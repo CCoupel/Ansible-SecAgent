@@ -40,5 +40,16 @@ chk "sans LICENSE dans le depot, l'archive est refusee" $([ $? -ne 0 ] && grep -
 cp "$REPO/LICENSE" "$T/nolic/LICENSE"
 ( cd "$T/nolic" && REPO="$T/nolic" SRC_DIR="$REAL/DEPLOYMENT/prod" STAGE_DIR="$T/stagent" bash "$REAL/scripts/ci/build_compose_archive.sh" v0.0.0 0.0.0 "$FAKE" "$T/outnt" ) >"$T/nt.log" 2>&1
 chk "sans THIRD_PARTY_NOTICES.md dans le depot, l'archive est refusee" $([ $? -ne 0 ] && grep -q "THIRD_PARTY_NOTICES.md absente" "$T/nt.log" && echo 1 || echo 0)
+# Surcharge Podman de PROD (#267) : dans l'archive, a l'identique du depot (aucune image reecrite), 644
+chk "docker-compose.podman.yml dans l'archive (644)" $([ "$(mode_of docker-compose.podman.yml)" = "-rw-r--r--" ] && echo 1 || echo 0)
+chk "docker-compose.podman.yml de l'archive identique a celle du depot" $(cmp -s "$REPO/DEPLOYMENT/podman/docker-compose.podman.yml" "$T/secagent-compose-0.0.0/docker-compose.podman.yml" && echo 1 || echo 0)
+# sans la surcharge Podman dans le depot, la fabrication est refusee
+mkdir -p "$T/nopod/scripts/ci" && cp "$REPO/scripts/ci/check_compose.py" "$T/nopod/scripts/ci/" && cp "$REPO/LICENSE" "$REPO/THIRD_PARTY_NOTICES.md" "$T/nopod/"
+( cd "$T/nopod" && REPO="$T/nopod" SRC_DIR="$REAL/DEPLOYMENT/prod" STAGE_DIR="$T/stagenp" bash "$REAL/scripts/ci/build_compose_archive.sh" v0.0.0 0.0.0 "$FAKE" "$T/outnp" ) >"$T/np.log" 2>&1
+chk "sans docker-compose.podman.yml dans le depot, l'archive est refusee" $([ $? -ne 0 ] && grep -q "docker-compose.podman.yml absente" "$T/np.log" && echo 1 || echo 0)
+# une surcharge Podman qui porterait une image est refusee (elle masquerait l'image epinglee)
+mkdir -p "$T/nopod/DEPLOYMENT/podman" && { cat "$REPO/DEPLOYMENT/podman/docker-compose.podman.yml"; printf '    image: ghcr.io/ccoupel/secagent-server:v0.0.0@%s\n' "$FAKE"; } > "$T/nopod/DEPLOYMENT/podman/docker-compose.podman.yml"
+( cd "$T/nopod" && REPO="$T/nopod" SRC_DIR="$REAL/DEPLOYMENT/prod" STAGE_DIR="$T/stagepi" bash "$REAL/scripts/ci/build_compose_archive.sh" v0.0.0 0.0.0 "$FAKE" "$T/outpi" ) >"$T/pi.log" 2>&1
+chk "surcharge Podman avec une image : archive refusee" $([ $? -ne 0 ] && grep -q "porte une image" "$T/pi.log" && echo 1 || echo 0)
 chk "archive reproductible (2 builds, meme sha256)" $([ "$(sha256sum < "$A")" = "$(sha256sum < "$T/out2/secagent-compose-0.0.0.tar.gz")" ] && echo 1 || echo 0)
 exit $FAIL

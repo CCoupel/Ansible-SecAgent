@@ -23,6 +23,11 @@ for lic in LICENSE THIRD_PARTY_NOTICES.md; do
   cp "$REPO/$lic" "$D/$lic"
 done
 rm -f "$D"/prod.env "$D"/.env
+# Surcharge Podman rootless de PROD (#267, LOT-4) : stage-node-files.sh prod la prend PAR SON NOM dans l'archive extraite
+# (NODE_SOURCE_DIR, node-lib.sh). Sans `image:` (userns_mode seulement) : non touchee par la reecriture tag@digest.
+PODMAN_OVERLAY="$REPO/DEPLOYMENT/podman/docker-compose.podman.yml"
+[ -f "$PODMAN_OVERLAY" ] || { echo "::error::$PODMAN_OVERLAY absente : l'archive Compose doit la contenir (Podman PROD)"; exit 1; }
+cp "$PODMAN_OVERLAY" "$D/docker-compose.podman.yml"
 mkdir -p "$D/tools"; cp "$REPO/scripts/ci/check_compose.py" "$D/tools/check_compose.py"
 for f in "$D"/docker-compose*.yml; do
   sed -i -E "s#^([[:space:]]*image:[[:space:]]*)ghcr\.io/ccoupel/secagent-server:.*#\1ghcr.io/ccoupel/secagent-server:${TAG}@${SRV}#" "$f"
@@ -37,6 +42,10 @@ if grep -rniE --exclude-dir=tools 'nats|jetstream' "$D"; then
 fi
 grep -qE "image: ghcr.io/ccoupel/secagent-server:${TAG}@sha256:[0-9a-f]{64}\$" "$D/docker-compose.server.yml" \
   || { echo "::error::docker-compose.server.yml : image non epinglee en tag@digest"; exit 1; }
+# la surcharge Podman ne doit jamais porter d'image (elle masquerait l'image epinglee du Compose de base)
+if grep -qE '^[[:space:]]*image:' "$D/docker-compose.podman.yml"; then
+  echo "::error::docker-compose.podman.yml porte une image : la surcharge ne doit fixer que userns_mode"; exit 1
+fi
 # Modes explicites (independants du systeme de fichiers source) : 755 pour les dossiers, tools/*.py et TOUS les scripts
 # *.sh (ex. preflight-secrets.sh, documente comme `./preflight-secrets.sh` avant chaque `docker compose up`), 644 sinon
 find "$D" -type d -exec chmod 755 {} +
