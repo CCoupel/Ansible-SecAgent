@@ -19,6 +19,10 @@
 - **[CHANGED]** `host.rerouted` / `relay.rerouted` (revue LOT-3.2) — un seul `host.rerouted` par changement sur un arbre à 3 niveaux (un nœud n'émet que s'il est l'ancêtre commun des deux routes) ; `relay.rerouted` exactement une fois par reparent quel que soit l'ordre d'arrivée ; chaînes d'un `host.rerouted` d'un enfant relatives à cet enfant.
 - **[CHANGED]** `WSS /ws/relay` événements locaux d'un enfant (T24, #246 #247) — un nœud non racine met ses `host.*` propres dans la file amont bornée quand son lien est coupé (avant : jetés, seuls les `relay.*` étaient mis en file), pull et push ; rejoués après le snapshot et l'`agent_list`, cadencés. **[ADDED]** `event_forward.late` (un événement resté en file > 10 s) : historique pour le parent, sans effet sur les routes ni conflits. Débordement compté (`upstream_dropped_events`).
 - **[CHANGED]** `host.rerouted` (#244, QUALIF) — plus de `host.rerouted` quand le relais porteur de l'hôte est inchangé et que seule la chaîne au-dessus change (reparent du porteur) : un reparent donne uniquement des `relay.rerouted`. `moved|direct|indirect` pour les vrais changements de porteur.
+- **[ADDED]** `relay.state` : champ optionnel `first_seen_at` (Agent, RelayNode ; `schema_version` inchangée = 2) — date du premier handshake / premier snapshot. **Retour arrière v3.0.6 → v3.0.5 bloquant** (décodeur strict) : restaurer la sauvegarde d'avant la montée (STATE_SPEC). Variable `RELAY_FIRST_SEEN_FLUSH` (défaut 1 s, 100 ms..10 s).
+- **[ADDED]** `GET /api/admin/minions`, `GET /api/admin/minions/{hostname}` : champ `first_seen_at` (additif).
+- **[ADDED]** hooks `host.discover` (premier handshake, avant `host.up`, une seule fois) et `host.removed` (suppression admin ; cause `deleted`), propagés (`event_forward`) ; `late` sans effet.
+- **[DEPRECATED]** hook `host.deleted` : toujours émis en v3.0.6 (après `host.removed`), `[WARN]` au chargement d'une config qui s'y abonne, **retiré en v3.0.7 ([BREAKING])** : utiliser `host.removed`.
 - Compatibilité : un parent v3.0.5 jette les kinds inconnus (`unsupported event kind`) sans fermer le lien ; monter les parents d'abord (T9).
 - Aucun changement BREAKING.
 

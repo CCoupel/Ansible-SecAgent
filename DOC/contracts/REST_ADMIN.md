@@ -45,7 +45,7 @@ Authorization: Bearer <ADMIN_TOKEN>
 
 ### `GET /api/admin/minions/{hostname}` — Détail d'un agent
 
-**Réponse 200 :** `hostname`, `status`, `last_seen`, `suspended`, `revoked`, `enrolled_at`, `key_fingerprint` (début de la clef publique, 16 caractères + `...`) et `vars` (variables Ansible de l'hôte) — `MinionDetail`, `handlers/admin.go`. La clef publique complète n'est pas renvoyée. `revoked` (booléen, additif en v3.0.5) : l'hôte est révoqué (`minions revoke`) ; `minions delete` s'en sert pour avertir que la suppression lève la révocation. **`status` suit la connexion WebSocket vivante** (`connected` si l'agent est connecté à ce nœud, comme la liste `GET /api/admin/minions`), sinon le dernier statut de l'état (v3.0.5, #233 : il valait avant le seul statut persisté, `disconnected` pour un agent connecté).
+**Réponse 200 :** `hostname`, `status`, `last_seen`, `suspended`, `revoked`, `enrolled_at`, `first_seen_at` (v3.0.6, #266 : date du premier handshake réussi, absent tant que l'hôte ne s'est jamais connecté), `key_fingerprint` (début de la clef publique, 16 caractères + `...`) et `vars` (variables Ansible de l'hôte) — `MinionDetail`, `handlers/admin.go`. La clef publique complète n'est pas renvoyée. `revoked` (booléen, additif en v3.0.5) : l'hôte est révoqué (`minions revoke`) ; `minions delete` s'en sert pour avertir que la suppression lève la révocation. **`status` suit la connexion WebSocket vivante** (`connected` si l'agent est connecté à ce nœud, comme la liste `GET /api/admin/minions`), sinon le dernier statut de l'état (v3.0.5, #233 : il valait avant le seul statut persisté, `disconnected` pour un agent connecté).
 
 **Codes d'erreur :**
 
