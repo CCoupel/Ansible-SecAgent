@@ -416,7 +416,8 @@ smoke() {
   printf '#!/bin/sh\nRELAY_TOKEN="$(cat "%s")" exec "%s" "$@"\n' "$RELAY_TOKEN_FILE" "$INVENTORY_BIN" | write_secret inventory.sh
   chmod 700 "$inv_script"
   ANSIBLE_CONNECTION_PLUGINS="$REPO/SECAGENT-PYTHON/ansible_plugins/connection_plugins" ANSIBLE_HOST_KEY_CHECKING=False \
-    "${ANSIBLE_BIN:-ansible}" all -i "$inv_script" -m ping | tee "$CHAIN_DIR/ping.log"
+    "${ANSIBLE_BIN:-ansible}" all -i "$inv_script" -m ping | ( umask 077; tee "$CHAIN_DIR/ping.log" )
+  chmod 600 "$CHAIN_DIR/ping.log"   # un ancien fichier garderait son mode (tee tronque sans le changer)
   local want=2; level3 && want=3
   [ "$(count_lines SUCCESS < "$CHAIN_DIR/ping.log")" -ge "$want" ] || fail "ansible -m ping : moins de $want hotes SUCCESS"
   echo "smoke OK"
@@ -515,10 +516,12 @@ push_link_key() { # $1 volume (defaut $SECAGENT_LINK_VOLUME, lien de dmz1 ; $SEC
 link_anchor_prepare() {
   local m="$1" rid
   # stdout = PEM (fichier) ; stderr = "root_id=<id> kid=<kid>" (capture), jamais de cle privee.
-  rid="$({ adm "$m" keys link-pubkey 2>&1 >"$CHAIN_DIR/root-link.pub" || true; } | sed -n 's/^root_id=\([^ ]*\) .*/\1/p')"
+  # cree directement en 0600 (umask 077) : fichier local du poste, lu seulement par push_link_key (meme uid) ; c'est le
+  # depot dans le volume qui le rend 0644 (lu par l'uid 10001 du conteneur)
+  rid="$(umask 077; { adm "$m" keys link-pubkey 2>&1 >"$CHAIN_DIR/root-link.pub" || true; } | sed -n 's/^root_id=\([^ ]*\) .*/\1/p')"
   [ -n "$rid" ] || fail "root_id non releve (keys link-pubkey)"
   grep -q 'BEGIN PUBLIC KEY' "$CHAIN_DIR/root-link.pub" || fail "keys link-pubkey n'a pas produit de PEM public"
-  chmod 644 "$CHAIN_DIR/root-link.pub"
+  chmod 600 "$CHAIN_DIR/root-link.pub"
   printf '%s' "$rid" | write_secret root-id
   printf 'REPEATER_ROOT_ID=%s\n' "$rid" | write_secret child.env
   # le depot dans le volume est fait par link_mint_child (cle publique et jeton ensemble)
