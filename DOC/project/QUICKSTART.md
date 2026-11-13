@@ -217,8 +217,9 @@ Pour déployer sur des nœuds Podman rootless (srv1-srv4, compte `cyril`, sans D
 ```bash
 DEPLOYMENT/podman/prepare-node-files.sh <env> <srvX>          # poste (une fois)
 #   puis, sur le nœud : install-node.sh en sudo (une fois, voir DEPLOYMENT/podman/README.md)
-DEPLOYMENT/podman/stage-node-files.sh <env> <srvX>             # poste, à chaque release
-DEPLOYMENT/podman/verify-node-files.sh --pin <env> <srvX>      # poste : intégrité + épinglage (code 0 exigé)
+# stage ET verify : mêmes variables SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (et SECAGENT_VERSION en PROD), sinon REFUS
+SECAGENT_IMAGE=… SECAGENT_MINION_IMAGE=… DEPLOYMENT/podman/stage-node-files.sh <env> <srvX>        # poste, à chaque release
+SECAGENT_IMAGE=… SECAGENT_MINION_IMAGE=… DEPLOYMENT/podman/verify-node-files.sh --pin <env> <srvX> # intégrité + épinglage (code 0 exigé)
 systemctl --user enable secagent-<env>-<srvX>.service          # nœud, en cyril, SANS --now
 CONTAINER_CLI=podman bash DEPLOYMENT/qualif/chain-test.sh bootstrap   # QUALIF : state init puis démarrage des racines
 ```

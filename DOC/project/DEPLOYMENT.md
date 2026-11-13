@@ -374,7 +374,7 @@ Un relais enfant garde les événements de son sous-arbre dans une file bornée 
 
 ## Plateforme Podman rootless (v3.0.6, #267)
 
-Cibles : **QUALIF** srv3 `192.168.1.213` (racine a) et srv4 `192.168.1.214` (racine b, enfant `dmz1`, minions de test) ; **PROD** srv1 `192.168.1.211` (racine a) et srv2 `192.168.1.212` (racine b). Compte `cyril` (uid 1000), **sans démon Docker**, aucune connexion entrante hors SSH. L'hôte Docker `192.168.1.218` reste la PROD jusqu'à la recréation sur cette plateforme. Les nœuds portent aussi RKE2 et des chunkservers MooseFS : la plateforme n'y touche jamais. Détail et fichiers : `DEPLOYMENT/podman/README.md` ; risques : `DOC/security/SECURITY.md` §13.
+Cibles : **QUALIF** srv3 `192.168.1.213` (racine a) et srv4 `192.168.1.214` (racine b, enfant `dmz1`, minions de test) ; **PROD** srv1 `192.168.1.211` (racine a) et srv2 `192.168.1.212` (racine b). Compte `cyril` (uid 1000), **sans démon Docker de la plateforme**, administration par SSH seulement (les racines écoutent leurs ports 7770/7771/7772). L'hôte Docker `192.168.1.218` reste la PROD jusqu'à la recréation sur cette plateforme. Les nœuds portent aussi RKE2 et des chunkservers MooseFS : la plateforme n'y touche jamais. Détail et fichiers : `DEPLOYMENT/podman/README.md` ; risques : `DOC/security/SECURITY.md` §13.
 
 **Séquence d'un nœud** (poste de contrôle, `<env>` = `qualif` | `prod`, `<srvX>` = `srv1`..`srv4`) :
 
@@ -384,7 +384,8 @@ DEPLOYMENT/podman/prepare-node-files.sh <env> <srvX>                         # p
 ssh … cyril@<ip> sudo -n bash -s -- <env> <srvX> < DEPLOYMENT/podman/install-node.sh   # nœud : contrôles, linger ; rien n'est installé
 # 2. à chaque release : dépôt puis vérification épinglée (code 0 exigé)
 SECAGENT_IMAGE=…@sha256:… [SECAGENT_MINION_IMAGE=…] DEPLOYMENT/podman/stage-node-files.sh <env> <srvX>
-SECAGENT_IMAGE=… DEPLOYMENT/podman/verify-node-files.sh --pin <env> <srvX>
+# verify exige les MÊMES variables que stage (SECAGENT_IMAGE, SECAGENT_MINION_IMAGE, SECAGENT_VERSION en PROD), sinon REFUS : release.env attendu différent
+SECAGENT_IMAGE=… [SECAGENT_MINION_IMAGE=… SECAGENT_VERSION=…] DEPLOYMENT/podman/verify-node-files.sh --pin <env> <srvX>
 # 3. sur le nœud, en cyril, sans sudo (jamais `systemctl --user link`)
 systemctl --user enable --now podman.socket && systemctl --user daemon-reload
 systemctl --user enable secagent-<env>-<srvX>.service                          # SANS --now
@@ -399,7 +400,7 @@ systemctl --user enable secagent-<env>-<srvX>.service                          #
 
 **Relancer une racine arrêtée** : l'unité est `Type=oneshot` + `RemainAfterExit=yes` : elle reste `active` même si le conteneur est arrêté (`podman stop`/`kill`), et `systemctl --user start` seul est **sans effet**. Relance : `systemctl --user stop secagent-<env>-<srvX>.service` **puis** `start` (ou `restart`) ; si l'unité est `failed`, `reset-failed` d'abord. Vérifier le **conteneur** (`podman ps`, healthy), pas seulement l'état de l'unité. Un crash réel du processus est relancé par la politique du conteneur ; un arrêt volontaire laisse l'autre nœud prendre le verrou à la péremption (≈ 278 s mesurés en recette). Suivi de l'état réel de l'unité : #279.
 
-**Après une indisponibilité du partage** : au boot, si l'autofs n'est pas joignable, `ExecStartPre` échoue et **aucun conteneur ne démarre** (fail-closed) ; `Restart=on-failure` réessaie 3 fois en 600 s. Partage revenu : `systemctl --user reset-failed secagent-<env>-<srvX>.service ; systemctl --user start …`. Un échec d'empreinte ou de liste de fichiers signifie que le partage a été modifié depuis la vérification : **ne pas** rejouer `--pin` sans comprendre l'écart. Un conteneur démarré avant un remontage de l'autofs garde l'ancien montage : `systemctl --user restart …`.
+**Après une indisponibilité du partage** : au boot, si l'autofs n'est pas joignable, `ExecStartPre` échoue et **aucun conteneur ne démarre** (fail-closed) ; `Restart=on-failure` réessaie 3 fois en 600 s. Partage revenu : `systemctl --user reset-failed secagent-<env>-<srvX>.service ; systemctl --user start …`. Ce comportement est **conforme à la conception mais non éprouvé en recette** (aucun test sur MooseFS ni reboot). Un échec d'empreinte ou de liste de fichiers signifie que le partage a été modifié depuis la vérification : **ne pas** rejouer `--pin` sans comprendre l'écart. Un conteneur démarré avant un remontage de l'autofs garde l'ancien montage : `systemctl --user restart …`.
 
 **Dépendance à MooseFS** : l'état (`PRIVATE/<ENV>/state`), les secrets et la PKI sont sur le partage. Master MooseFS injoignable : les démarrages sont refusés et les nœuds en marche perdent l'accès à l'état (HMAC, verrou) : **indisponibilité, jamais de corruption**. Superviser MooseFS ; ne jamais copier l'état PROD sur le poste.
 
@@ -408,7 +409,7 @@ systemctl --user enable secagent-<env>-<srvX>.service                          #
 - `state-backup` : scénario sans perte simulée : `state verify` sur le nœud, copie 0600 hors partage (`~/secagent-backup/<horodatage>/relay.state` de `cyril`), restauration vérifiée sur une copie. Les sauvegardes sont à supprimer après la recette.
 - `push-tls` et `backup-restore` ne s'appliquent pas sous Podman.
 
-**Renouvellement de la PKI de QUALIF avant le 2027-02-11** (certificats de 90 jours) : sauvegarder `pki/` et `pki-ca/` en `*.old-<date>`, puis `PKI_DAYS=90 PKI_EXTRA_SAN=IP:192.168.1.213,IP:192.168.1.214,IP:192.168.1.218 bash DEPLOYMENT/qualif/pki/gen.sh`, redéployer par `stage-node-files` puis `verify-node-files --pin` sur srv3 et srv4 (et `push-tls` sur `.218` tant que la QUALIF Docker sert encore), puis relancer les racines. Purger les anciennes générations (`pki.old-*`, `pki-ca.old-*`) après validation.
+**Renouvellement de la PKI de QUALIF avant le 2027-02-11** (certificats de 90 jours) : sauvegarder `pki/` et `pki-ca/` en `*.old-<date>`, puis `PKI_DAYS=90 PKI_EXTRA_SAN=IP:192.168.1.213,IP:192.168.1.214,IP:192.168.1.218 bash DEPLOYMENT/qualif/pki/gen.sh`, redéployer par `stage-node-files` puis `verify-node-files --pin` sur srv3 et srv4 (et `push-tls` sur `.218` tant que la QUALIF Docker sert encore), puis relancer les racines. Les minions montent le **fichier** `ca.crt` : le remplacer crée un nouvel inode et le conteneur garde l'ancienne CA (échec TLS) : **recréer l'enfant et les minions** (`chain-test.sh down` puis `bootstrap`, ou suppression des conteneurs puis `test-services-up`), puis `smoke`. Purger les anciennes générations (`pki.old-*`, `pki-ca.old-*`) après validation.
 
 **Retour arrière** : le retour vers v3.0.5 est bloqué par `first_seen_at` (voir « Cycle de vie : `first_seen_at`, retour arrière bloquant »).
 
