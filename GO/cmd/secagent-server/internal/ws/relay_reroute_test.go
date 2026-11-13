@@ -57,6 +57,13 @@ func resetRerouteMemory(t *testing.T) {
 		relayChainMemMu.Lock()
 		lastRelayChains = map[string][]string{}
 		relayChainMemMu.Unlock()
+		// the "recent event routes" guard of agent_list (#266): routes kept for 300 ms, per-relay list versions and kept lists
+		recentRoutesMu.Lock()
+		recentEventRoutes = nil
+		recentRoutesMu.Unlock()
+		agentListVersionMu.Lock()
+		agentListVersion, agentListKept = map[string]uint64{}, map[string][]string{}
+		agentListVersionMu.Unlock()
 	}
 	clear()
 	t.Cleanup(clear)

@@ -96,6 +96,7 @@ func TestGetConnectionNotFound(t *testing.T) {
 
 func TestRegisterConnectionReplacesStale(t *testing.T) {
 	resetState()
+	t.Cleanup(resetState) // a "live local agent" left in the global map makes later relay tests drop host-a from agent_list
 
 	// Directly set conn in map (nil Conn avoids Close() panic)
 	conn1 := &AgentConnection{Hostname: "host-a"}
