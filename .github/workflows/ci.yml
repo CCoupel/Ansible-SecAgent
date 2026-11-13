@@ -233,6 +233,9 @@ jobs:
           # montage) est vu ici, jamais sur srv3/srv4.
           "$RUNNER_TEMP/guard-venv/bin/python" -m pip install --quiet --no-deps --require-hashes --only-binary=:all: -r .github/ci/requirements-podman-compose.txt
           PODMAN_COMPOSE="$RUNNER_TEMP/guard-venv/bin/podman-compose" bash scripts/ci/podman_compose_replay.sh </dev/null
+          # Ordre n°24 (CI 43436496433) : meme rejeu pour Docker (vrai docker compose du runner pour le rendu, faux moteur qui
+          # exige les volumes EXTERNES avant up/run) : chain-test.sh bootstrap (TLS bind et volume), failover-test.sh setup-ci.
+          bash scripts/ci/docker_compose_replay.sh </dev/null
 
       # LOT-7 / #237 (D17) : en-tete SPDX AGPL-3.0-or-later sur chaque source .go/.py/.sh suivie (exclusions dans la garde).
       # Garde stdlib seule ; elle est elle-meme testee AVANT de juger l'arbre. Correction locale : check_spdx.py --fix.

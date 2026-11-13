@@ -430,10 +430,12 @@ setup_ci() {
 root_unit() { printf 'secagent-qualif-%s.service' "$(node_name "$1")"; }
 root_up() {
   if [ "$CONTAINER_CLI" != podman ]; then
-    # FAILOVER_UP_SERVICES (liste, optionnel) : ne (re)demarrer QUE ces services. Sans elle, `up -d` demarre TOUT le Compose,
-    # y compris un service qu'un scenario vient d'arreter expres (chain-test.sh converged-timeout : l'enfant).
+    # FAILOVER_UP_SERVICES (liste, optionnel) : ne (re)demarrer QUE ces services. Par defaut : la RACINE seulement (a, b),
+    # comme sous Podman. Jamais `up -d` sans service : il demarrerait TOUT le Compose de la chaine, y compris l'enfant avant
+    # que bootstrap n'ait cree son volume externe `link` (CI 43436496433 : « external volume secagent-qualif_link not
+    # found »), ou un service qu'un scenario vient d'arreter expres (converged-timeout : l'enfant).
     # shellcheck disable=SC2086   # liste de services separes par des espaces
-    QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$CI_TLS_DIR}" dc up -d ${FAILOVER_UP_SERVICES:-}
+    QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$CI_TLS_DIR}" dc up -d ${FAILOVER_UP_SERVICES:-secagent-server-a secagent-server-b}
     return
   fi
   local n

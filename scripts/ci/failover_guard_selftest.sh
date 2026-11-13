@@ -73,7 +73,10 @@ up_call() { # $1 valeur de FAILOVER_UP_SERVICES (vide = non definie) ; sortie : 
   grep -m1 ' up -d' "$TMPD/docker.log"
 }
 chk "run : FAILOVER_UP_SERVICES => up -d de ces services seulement" "$(up_call 'secagent-server-a secagent-server-b' | grep -q ' up -d secagent-server-a secagent-server-b$'; echo $?)"
-chk "run : sans FAILOVER_UP_SERVICES => up -d de tout le Compose" "$(up_call '' | grep -q ' up -d$'; echo $?)"
+# Ordre n°24 (CI 43436496433) : sans FAILOVER_UP_SERVICES, la RACINE seulement ; jamais `up -d` de tout le Compose (la chaine
+# demarrerait l'enfant avant la creation de son volume externe `link`)
+chk "run : sans FAILOVER_UP_SERVICES => up -d de la racine (a, b) seulement" "$(up_call '' | grep -q ' up -d secagent-server-a secagent-server-b$'; echo $?)"
+chk "run : jamais up -d sans service" "$(up_call '' | grep -q ' up -d$' && echo 1 || echo 0)"
 
 # --- v3.0.6 : comptages sous `set -euo pipefail` (upstream-queue sortait en rc 1 SANS message, QUALIF 2026-11-12) ---
 pf() { # $1 script apres `source` execute sous set -euo pipefail ; sortie = stdout ; code = celui du script
