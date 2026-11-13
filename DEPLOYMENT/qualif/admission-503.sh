@@ -52,9 +52,30 @@ adm503_cleanup() { # sortie de l'etape (succes ou echec) : plus de tache en fond
 
 adm503_uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || python3 -c 'import uuid;print(uuid.uuid4())'; }
 
-adm503_base() { # URL de l'API du maitre courant (a : 7770, b : 8770, voir docker-compose.server.yml)
+ADM503_BASE=""                       # URL de l'API du maitre, resolue UNE fois par adm503_set_base (jamais dans les taches de fond)
+
+adm503_base_of() { # $1 conteneur maitre -> URL de son API (a : port d'hote 7770, b : 8770, voir docker-compose.server.yml)
+  # Podman (#267, T48) : a sur le noeud A, b sur le noeud B, joints par l'adresse de leur noeud (comme control_env) ;
+  # ENDPOINT_HOST (127.0.0.1 par defaut) ne designe pas les noeuds : HTTP 000 depuis le poste.
+  # ADM503_PORT_A / ADM503_PORT_B : ports d'hote de a et b (defauts du Compose ; autres valeurs : banc isole seulement)
+  local pa="${ADM503_PORT_A:-7770}" pb="${ADM503_PORT_B:-8770}"
+  if [ "${CONTAINER_CLI:-docker}" = podman ]; then
+    if [ "$1" = "$C_A" ]; then echo "https://$(node_addr A):$pa"; else echo "https://$(node_addr B):$pb"; fi
+  elif [ "$1" = "$C_A" ]; then echo "https://${ENDPOINT_HOST}:$pa"; else echo "https://${ENDPOINT_HOST}:$pb"; fi
+}
+adm503_api_up() { # 0 si l'API HTTPS du maitre repond (tout code HTTP, 404 compris : ecoute et TLS valides)
+  local c; c="$(curl -sS --cacert "$QUALIF_TLS_DIR/ca.crt" -o /dev/null -w '%{http_code}' --max-time 5 "$ADM503_BASE/" 2>/dev/null)" || c=000
+  [ "$c" != 000 ]
+}
+# Maitre elu et API joignable depuis le poste, apres chaque recreation de la racine. Resolu ICI, une seule fois : les
+# requetes paralleles (adm503_fill, sondes) n'ouvrent aucune session SSH (10 `master` en parallele saturaient le
+# multiplexage SSH, MaxSessions, T48 : « Session open refused by peer »).
+adm503_set_base() {
+  wait_for "maitre elu sur la racine" 60 master >/dev/null
   local m; m="$(master)" || fail "pas de maitre sur la racine"
-  if [ "$m" = "$C_A" ]; then echo "https://${ENDPOINT_HOST}:7770"; else echo "https://${ENDPOINT_HOST}:8770"; fi
+  ADM503_BASE="$(adm503_base_of "$m")"
+  wait_for "API du maitre $m ($ADM503_BASE)" 60 adm503_api_up >/dev/null
+  echo "maitre $m, API $ADM503_BASE joignable"
 }
 
 # $1 hote cible, $2 task_id, $3 commande, $4 delai max (s), $5 prefixe des fichiers de sortie (.hdr .body) ; affiche
@@ -64,7 +85,7 @@ adm503_exec() {
   body="$(printf '{"task_id":"%s","cmd":"%s","stdin":"eA==","timeout":%s,"become":false}' "$2" "$3" "$4")"
   code="$(curl -sS --cacert "$QUALIF_TLS_DIR/ca.crt" -H "@$CHAIN_DIR/plugin.header" -H 'Content-Type: application/json' \
     -X POST --max-time "$(( $4 + 15 ))" -D "$5.hdr" -o "$5.body" -w '%{http_code}' -d "$body" \
-    "$(adm503_base)/api/exec/$1" 2>/dev/null)" || code=000
+    "${ADM503_BASE:?adm503_set_base non appele}/api/exec/$1" 2>/dev/null)" || code=000
   echo "$code"
 }
 
@@ -135,6 +156,7 @@ adm503_recreate_root() {
   connected "$m" relays dmz1 4
   connected "$m" minions minion-root 2
   connected "$C_CHILD" minions minion-child 2
+  adm503_set_base   # maitre elu + API joignable ; URL figee pour les requetes paralleles
 }
 
 adm503_env_of() { ctr exec "$1" printenv MAX_STDOUT_BUFFER_TOTAL 2>/dev/null || true; }  # $1 conteneur : valeur ou vide

@@ -36,6 +36,7 @@ out="$(PATH="$T/bin:$PATH" CHAIN_DIR="$T/chain" QUALIF_TLS_DIR=/ca ENDPOINT_HOST
   fail() { echo "FAIL $*"; exit 1; }
   master() { echo c-a; }
   source "'"$ROOT"'/DEPLOYMENT/qualif/admission-503.sh"
+  ADM503_BASE="$(adm503_base_of c-a)"
   ADM503_DIR="$CHAIN_DIR/adm"; mkdir -p "$ADM503_DIR"; echo "Authorization: Bearer SECRET-VALUE" > "$CHAIN_DIR/plugin.header"
   adm503_fill fill 2 minion-child minion-child minion-root
   adm503_lot_alive && echo "alive"
@@ -44,7 +45,7 @@ out="$(PATH="$T/bin:$PATH" CHAIN_DIR="$T/chain" QUALIF_TLS_DIR=/ca ENDPOINT_HOST
   grep -q memory_budget_exhausted "$ADM503_DIR/p.body" && echo "body"
   adm503_lot_wait; adm503_lot_all_ok fill 3; echo "lot-ok"
   echo "denied=$(adm503_exec minion-root "$(adm503_uuid)" deny 20 "$ADM503_DIR/d")"
-  echo "base=$(adm503_base)"
+  echo "base=$(adm503_base_of c-a)"
 ' 2>&1)" || { ko "scenario : $out"; }
 for want in alive probe=503 retry-after body lot-ok denied=429 base=https://h:7770; do
   case "$out" in *"$want"*) ok "faux curl : $want" ;; *) ko "faux curl : '$want' absent de : $out" ;; esac
@@ -54,6 +55,31 @@ check "le jeton ne figure pas dans la ligne de commande de curl" "$(if grep -q '
 check "CA de test utilisee (--cacert)" "$(grep -q -- '--cacert /ca/ca.crt' "$STUB_LOG"; echo $?)"
 check "verification TLS non desactivee (ni -k ni --insecure)" "$(if grep -q -- ' -k\| --insecure' "$STUB_LOG"; then echo 1; else echo 0; fi)"
 
+# T48 (ordre n°22) : URL du maitre sous Podman (adresse du noeud, pas ENDPOINT_HOST), resolue une fois ; aucune
+# session SSH (master/ctr) dans les requetes paralleles ; attente du maitre elu et de l'API apres recreation
+# shellcheck disable=SC2016
+res="$(PATH="$T/bin:$PATH" CHAIN_DIR="$T/chain" QUALIF_TLS_DIR=/ca ENDPOINT_HOST=127.0.0.1 C_A=c-a CONTAINER_CLI=podman bash -c '
+  set -euo pipefail
+  fail() { echo "FAIL $*"; exit 1; }
+  node_addr() { case "$1" in A) echo 10.0.0.3 ;; B) echo 10.0.0.4 ;; esac; }
+  source "'"$ROOT"'/DEPLOYMENT/qualif/admission-503.sh"
+  echo "pa=$(adm503_base_of c-a) pb=$(adm503_base_of c-b)"
+  echo "port=$(ADM503_PORT_A=17770 adm503_base_of c-a)"
+  calls="'"$T"'/ssh-calls"; : > "$calls"
+  master() { echo master >> "'"$T"'/ssh-calls"; echo c-b; }; ctr() { echo ctr >> "'"$T"'/ssh-calls"; }
+  wait_for() { shift 2; "$@"; }
+  adm503_set_base; : > "$calls"
+  ADM503_DIR="$CHAIN_DIR/adm5"; mkdir -p "$ADM503_DIR"
+  adm503_fill f 1 minion-root minion-child minion-root; adm503_lot_wait
+  echo "ssh-dans-le-fond=$(wc -l < "$calls")"
+' 2>&1)" || true
+case "$res" in *"pa=https://10.0.0.3:7770 pb=https://10.0.0.4:8770"*) ok "Podman : a joint par l'adresse du noeud A:7770, b par B:8770 (pas ENDPOINT_HOST)" ;; *) ko "URL Podman : $res" ;; esac
+case "$res" in *"port=https://10.0.0.3:17770"*) ok "ADM503_PORT_A : port d'hote parametrable (banc isole)" ;; *) ko "ADM503_PORT_A : $res" ;; esac
+case "$res" in *"maitre c-b, API https://10.0.0.4:8770 joignable"*) ok "adm503_set_base : maitre elu (b) puis API joignable" ;; *) ko "adm503_set_base : $res" ;; esac
+case "$res" in *"ssh-dans-le-fond=0"*) ok "requetes paralleles : aucune session SSH (master/ctr) dans les taches de fond" ;; *) ko "SSH dans les taches de fond : $res" ;; esac
+grep -q 'adm503_set_base   # maitre elu' "$ROOT/DEPLOYMENT/qualif/admission-503.sh" && sed -n '/^adm503_recreate_root() {/,/^}/p' "$ROOT/DEPLOYMENT/qualif/admission-503.sh" | grep -q adm503_set_base \
+  && ok "adm503_recreate_root : attente du maitre et de l'API apres chaque recreation" || ko "adm503_recreate_root sans adm503_set_base"
+
 # un exec de fond refuse (429) fait echouer adm503_lot_all_ok avec le code observe
 set +e
 res="$(PATH="$T/bin:$PATH" CHAIN_DIR="$T/chain" QUALIF_TLS_DIR=/ca ENDPOINT_HOST=h C_A=c-a bash -c '
@@ -61,6 +87,7 @@ res="$(PATH="$T/bin:$PATH" CHAIN_DIR="$T/chain" QUALIF_TLS_DIR=/ca ENDPOINT_HOST
   fail() { echo "FAIL $*"; exit 1; }
   master() { echo c-a; }
   source "'"$ROOT"'/DEPLOYMENT/qualif/admission-503.sh"
+  ADM503_BASE="$(adm503_base_of c-a)"
   ADM503_DIR="$CHAIN_DIR/adm2"; mkdir -p "$ADM503_DIR"
   printf minion-root > "$ADM503_DIR/x-1.host"; printf 429 > "$ADM503_DIR/x-1.code"; echo "{\"error\":\"agent_busy\"}" > "$ADM503_DIR/x-1.body"
   adm503_lot_all_ok x 1
@@ -86,6 +113,7 @@ res="$(PATH="$T/bin:$PATH" CHAIN_DIR="$T/chain" QUALIF_TLS_DIR=/ca ENDPOINT_HOST
   fail() { echo "FAIL $*"; exit 1; }
   master() { echo c-a; }
   source "'"$ROOT"'/DEPLOYMENT/qualif/admission-503.sh"
+  ADM503_BASE="$(adm503_base_of c-a)"
   ADM503_DIR="$CHAIN_DIR/adm3"; mkdir -p "$ADM503_DIR"
   sleep 300 & other=$!      # processus etranger a l etape : ne doit pas etre touche
   adm503_fill hang 300 minion-root minion-child
@@ -108,6 +136,7 @@ res="$(PATH="$T/bin:$PATH" CHAIN_DIR="$T/chain" QUALIF_TLS_DIR=/ca ENDPOINT_HOST
   fail() { echo "FAIL $*"; exit 1; }
   master() { echo c-a; }
   source "'"$ROOT"'/DEPLOYMENT/qualif/admission-503.sh"
+  ADM503_BASE="$(adm503_base_of c-a)"
   ADM503_DIR="$CHAIN_DIR/adm4"; mkdir -p "$ADM503_DIR"
   adm503_fill a 1 minion-root minion-root
   adm503_lot_wait
