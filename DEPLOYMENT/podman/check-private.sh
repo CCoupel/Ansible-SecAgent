@@ -61,6 +61,11 @@ for f in "$P"/pki/* "$P"/pki/.[!.]*; do
   case "${f##*/}" in ca.crt|tls.crt|tls.key) [ -f "$f" ] && [ ! -L "$f" ] || refuse "$f n'est pas un fichier ordinaire" ;;
     *) refuse "$f : entree inattendue dans pki/ (seuls ca.crt, tls.crt, tls.key ; pki/ est monte sur /certs)" ;; esac
 done
+# cle privee TLS : jamais lisible par le groupe ni les autres (0600 au plus ; metadonnee seulement, aucun contenu lu)
+if [ -e "$P/pki/tls.key" ]; then
+  km="$(stat -c %a "$P/pki/tls.key")"
+  [ $((8#$km & 8#077)) -eq 0 ] || refuse "$P/pki/tls.key en $km : 0600 au plus (lisible par le groupe ou les autres)"
+fi
 if [ -n "$pin" ]; then
   [[ $pin =~ ^/[A-Za-z0-9_./-]+$ && ! /$pin/ =~ /\.\./ ]] || refuse "manifeste epingle '$pin' : chemin absolu [A-Za-z0-9_./-] sans .. attendu"
   [ -f "$pin" ] && [ ! -L "$pin" ] || refuse "manifeste epingle $pin absent ou lien : relancer verify-node-files.sh --pin $env $node depuis le poste"

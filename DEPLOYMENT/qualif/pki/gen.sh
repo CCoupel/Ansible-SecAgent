@@ -29,6 +29,12 @@ PRIVATE_DIR="${SECAGENT_PRIVATE_DIR:-$REPO/PRIVATE}"
 PRIVATE_DIR="${PRIVATE_DIR%/}"
 OUT="${1:-${PKI_OUT:-$PRIVATE_DIR/QUALIF/pki}}"
 DAYS="${PKI_DAYS:-30}"
+# Mode de tls.key (securite LOT-4, T47) : 0600 par defaut (Podman keep-id : l'uid 10001 du conteneur EST le proprietaire,
+# PRIVATE/QUALIF/pki ; ou depot dans un volume par push-tls, qui pose lui-meme 10001 0600). 0644 UNIQUEMENT sur demande
+# explicite, pour un bind mount Docker ou le proprietaire (utilisateur du runner) n'est pas l'uid 10001 du conteneur (CI).
+# Toute autre valeur est refusee. ca.crt et tls.crt sont PUBLICS : 0644 (lus aussi par les minions, autre uid).
+KEY_MODE="${PKI_MODE:-0600}"
+case "$KEY_MODE" in 0600|0644) ;; *) echo "ERREUR : PKI_MODE=$KEY_MODE : 0600 (defaut) ou 0644 (bind mount Docker seulement) attendu." >&2; exit 1 ;; esac
 # Garde FAIL-CLOSED (#250) : la racine PRIVATE/ n'est jamais creee ici (copie ephemere du depot = refus) ; une racine
 # RELATIVE est refusee (elle dependrait du repertoire courant et contournerait la comparaison des chemins).
 case "$PRIVATE_DIR" in /*) ;; *) echo "ERREUR : SECAGENT_PRIVATE_DIR=$PRIVATE_DIR n'est pas un chemin absolu : refus (exporter SECAGENT_PRIVATE_DIR=<checkout>/PRIVATE en chemin absolu)." >&2; exit 1 ;; esac
@@ -85,9 +91,14 @@ EXT
 openssl x509 -req -in tls.csr -CA ca.crt -CAkey "$CA_OUT/ca.key" -CAcreateserial -days "$DAYS" -extfile san.ext -out tls.crt 2>/dev/null
 rm -f tls.csr san.ext ca.srl ca.cnf
 # CLE DE TEST JETABLE, generee dans le runner/poste de test, jamais versionnee (garde ci-dessus), JAMAIS POUR LA
-# PRODUCTION. 0644 car le conteneur tourne en UID 10001 (autre proprietaire que l'utilisateur du runner) : pas
-# d'alternative simple (chown impossible sans root, group_add dependrait du GID du runner) pour une cle de 30 jours.
-chmod 644 tls.key tls.crt ca.crt
+# PRODUCTION. Mode de tls.key : PKI_MODE (0600 par defaut ; 0644 seulement pour un bind mount Docker ou le conteneur,
+# UID 10001, n'est pas le proprietaire : chown impossible sans root, group_add dependrait du GID du runner).
+chmod 644 tls.crt ca.crt
+chmod "$KEY_MODE" tls.key
+# controle (refus) : jamais plus permissif que le mode demande ; en 0600, aucun droit pour le groupe/les autres
+km="$(stat -c %a tls.key)"
+if [ "$KEY_MODE" = 0600 ] && [ $((8#$km & 8#077)) -ne 0 ]; then echo "ERREUR : tls.key en $km (0600 attendu)" >&2; exit 1; fi
+[ "$KEY_MODE" = 0600 ] || echo "ATTENTION : tls.key en $km (PKI_MODE=0644, bind mount Docker uniquement : jamais sur un partage)" >&2
 chmod 600 "$CA_OUT/ca.key"   # la cle de la CA reste dans pki-ca/ et n'est montee nulle part
 rm -f ca.key                   # ancienne disposition (< v3.0.6) : plus jamais a cote des fichiers montes
 echo "PKI de test ecrite dans $OUT (ca.crt, tls.crt, tls.key) ; ca.key dans $CA_OUT (0600)"

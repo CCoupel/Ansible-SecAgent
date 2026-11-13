@@ -143,8 +143,12 @@ guard_refus "garde : sauvegarde cachee dans pki/ (.ca.key.bak)" ': > "$T/private
 guard_refus "garde : sous-dossier dans pki/" 'mkdir "$T/private/QUALIF/pki/old"' "entree inattendue dans pki/"
 guard_refus "garde : pki/tls.key lien symbolique" 'ln -s /etc/hostname "$T/private/QUALIF/pki/tls.key"' "n'est pas un fichier ordinaire"
 reset_env; mkstubs 5.7.0 1.5.0 pasta
-: > "$T/private/QUALIF/pki/ca.crt"; : > "$T/private/QUALIF/pki/tls.crt"; : > "$T/private/QUALIF/pki/tls.key"
-expect_rc 0 "garde : pki/ = ca.crt, tls.crt, tls.key accepte" "fichiers de srv3 presents" qualif srv3
+: > "$T/private/QUALIF/pki/ca.crt"; : > "$T/private/QUALIF/pki/tls.crt"; ( umask 077; : > "$T/private/QUALIF/pki/tls.key" )
+expect_rc 0 "garde : pki/ = ca.crt, tls.crt (0644), tls.key (0600) accepte" "fichiers de srv3 presents" qualif srv3
+guard_refus "garde : pki/tls.key en 0644 (lisible par tous)" ': > "$T/private/QUALIF/pki/tls.key"; chmod 644 "$T/private/QUALIF/pki/tls.key"' "tls.key en 644 : 0600 au plus"
+guard_refus "garde : pki/tls.key en 0640 (lisible par le groupe)" ': > "$T/private/QUALIF/pki/tls.key"; chmod 640 "$T/private/QUALIF/pki/tls.key"' "tls.key en 640 : 0600 au plus"
+reset_env; mkstubs 5.7.0 1.5.0 pasta; ( umask 077; : > "$T/private/QUALIF/pki/tls.key" ); chmod 400 "$T/private/QUALIF/pki/tls.key"
+expect_rc 0 "garde : pki/tls.key en 0400 accepte" "fichiers de srv3 presents" qualif srv3
 guard_refus "garde : pki lien symbolique" 'rmdir "$T/private/QUALIF/pki"; mkdir -m 700 "$T/autre"; ln -s "$T/autre" "$T/private/QUALIF/pki"' "pki absent, non repertoire ou lien"
 reset_env; mkstubs 5.7.0 1.5.0 pasta
 XFST=fuseblk expect_rc 2 "garde : systeme de fichiers non FUSE (repertoire local)" "attendu MooseFS/FUSE" qualif srv3

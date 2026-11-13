@@ -295,7 +295,9 @@ load_images() {
 
 ci_prepare() {
   require_private_dir "$QUALIF_TLS_DIR" "$SECRETS_DIR"   # fail-closed (#250) avant toute generation
-  bash "$HERE/pki/gen.sh" "$QUALIF_TLS_DIR"
+  # tls.key en 0600 (Podman keep-id, volume push-tls), 0644 seulement pour le bind mount Docker local/CI (TLS_MODE=bind)
+  local km=0600; [ "$CONTAINER_CLI" = docker ] && [ "${TLS_MODE:-bind}" = bind ] && km=0644
+  PKI_MODE="$km" bash "$HERE/pki/gen.sh" "$QUALIF_TLS_DIR"
   gen_secrets   # $SECRETS_DIR (defaut PRIVATE/QUALIF/secrets) : jwt_secret_key, admin_token, rsa_master_key en fichiers 0400
 }
 

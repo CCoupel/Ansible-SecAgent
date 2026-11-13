@@ -63,6 +63,16 @@ fi
 [ "$(ls -A "$P" | LC_ALL=C sort | tr '\n' ' ')" = "ca.crt tls.crt tls.key " ] && ok "gen.sh : pki/ ne contient que ca.crt, tls.crt, tls.key (ca.cnf retire)" \
   || ko "gen.sh : contenu de pki/ : $(ls -A "$P")"
 [ -f "$T/QUALIF/pki-ca/ca.key" ] && ok "gen.sh : ca.key dans pki-ca/" || ko "gen.sh : ca.key absente de pki-ca/"
+[ "$(stat -c %a "$P/tls.key")" = 600 ] && [ "$(stat -c %a "$P/tls.crt")" = 644 ] && [ "$(stat -c %a "$P/ca.crt")" = 644 ] \
+  && ok "gen.sh : tls.key 0600 par defaut, certificats publics 0644" || ko "gen.sh : modes $(stat -c '%a %n' "$P"/*)"
+P44="$T/QUALIF44/pki"; mkdir -p "$T/QUALIF44"
+SECAGENT_PRIVATE_DIR="$T" PKI_MODE=0644 bash "$Q/pki/gen.sh" "$P44" > /dev/null 2> "$T/g44.err" \
+  && [ "$(stat -c %a "$P44/tls.key")" = 644 ] && grep -q "bind mount Docker uniquement" "$T/g44.err" \
+  && ok "gen.sh : PKI_MODE=0644 explicite (bind mount Docker) avec avertissement" || ko "gen.sh PKI_MODE=0644"
+for badmode in 0640 0666 0700 600; do
+  if SECAGENT_PRIVATE_DIR="$T" PKI_MODE="$badmode" bash "$Q/pki/gen.sh" "$T/QUALIFbad/pki" > /dev/null 2>&1; then ko "gen.sh : PKI_MODE=$badmode accepte"; else ok "gen.sh : PKI_MODE=$badmode refuse"; fi
+done
+[ ! -e "$T/QUALIFbad/pki/tls.key" ] && ok "gen.sh : PKI_MODE invalide => aucune cle ecrite" || ko "gen.sh : cle ecrite malgre un PKI_MODE invalide"
 has "CA" "$P/ca.crt" basicConstraints "critical CA:TRUE, pathlen:0"
 has "CA" "$P/ca.crt" keyUsage "critical Certificate Sign, CRL Sign"
 has "CA" "$P/ca.crt" subjectKeyIdentifier "Subject Key Identifier"
