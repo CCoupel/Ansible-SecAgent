@@ -112,6 +112,8 @@ Au lancement, tu dois rester en IDLE. N'engage AUCUNE action autonome. N'exécut
 3. `chain-test.sh down` : arrête d'abord les unités, puis retire les conteneurs (jamais `-v`).
 4. Après un **redémarrage de nœud** (T49) : la racine revient seule par l'unité ; les services de test se relancent par `CONTAINER_CLI=podman bash chain-test.sh test-services-up`.
 
+**Ce que lisent les unités** (racine seulement), et qui existe avant `root_up` : l'état `PRIVATE/QUALIF/state/root` (`state init` juste avant, dans `bootstrap`), les secrets `PRIVATE/QUALIF/secrets` et la PKI `PRIVATE/QUALIF/pki` (partage), les volumes `hooks` et `events-*` (`push_hooks` / `push_events`, en tête de `bootstrap`), et `release/release.env` (`stage`). La racine ne lit **aucun jeton** de `$CHAIN_DIR` : ceux-ci ne servent qu'à l'enfant et aux minions, démarrés par `chain-test.sh` après la racine. Le `CHAIN_DIR` de `release.env` est le même que celui de `chain-test.sh` sous Podman (`PRIVATE/QUALIF/<srv4>/cyril/secagent/run`). Le **démarrage autonome** est donc prouvé dès le `bootstrap`, puisque la racine y est démarrée par ses unités ; au **boot** (T49), la racine revient par l'unité, puis `test-services-up` relance l'enfant et les minions. Pas d'étape « arrêt puis `start-units` » : il n'y a jamais de racine créée par podman-compose à remplacer.
+
 À ne **jamais** faire : `systemctl --user start` d'une unité **avant** le `state init` (démarrage refusé, nouvelles tentatives `Restart=`) ; `podman-compose up` de a/b à la main ; ajouter l'enfant ou des minions à une unité. Le 3e niveau (`CHAIN_LEVEL3`) reste Docker seulement.
 
 ### Démarrage refusé après une indisponibilité du partage
