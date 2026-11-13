@@ -154,6 +154,20 @@ dc() {
   fi
   [ ${#svcA[@]} -eq 0 ] || dc_on A "${pre[@]}" "$sub" "${opts[@]}" "${svcA[@]}"
   [ ${#svcB[@]} -eq 0 ] || dc_on B "${pre[@]}" "$sub" "${opts[@]}" "${svcB[@]}"
+  # podman-compose up/start/restart rend 0 MEME si la creation ou le demarrage d'un conteneur echoue (T48) : etat verifie.
+  # DC_NOCHECK=1 : service dont l'echec est attendu (negative-ca).
+  case "$sub" in up|start|restart) [ "${DC_NOCHECK:-0}" = 1 ] || require_running "${svcA[@]}" "${svcB[@]}" ;; esac
+}
+# Echoue si un service Compose n'a pas de conteneur EN COURS (etiquettes Compose, posees par docker compose et
+# podman-compose) sur son noeud : jamais se fier au code retour de podman-compose (T48).
+require_running() { # $@ services Compose
+  local s n
+  for s in "$@"; do
+    n="$(node_of "$s")"
+    [ -n "$(CTR_NODE="${n:-B}" ctr ps -q --filter "label=com.docker.compose.project=$PROJECT" \
+            --filter "label=com.docker.compose.service=$s" --filter status=running 2>/dev/null)" ] \
+      || fail "service $s : aucun conteneur en cours sur le noeud ${n:-B} apres le demarrage (podman-compose rend 0 meme en cas d'echec)"
+  done
 }
 # Garde FAIL-CLOSED (incident du 2026-11-03 : secrets generes dans une copie ephemere puis perdus) : un chemin situe
 # sous $PRIVATE_DIR n'est jamais ecrit si la racine n'existe pas ; la racine n'est JAMAIS creee par les scripts.
@@ -400,6 +414,7 @@ root_up() {
       || fail "unite $(root_unit "$n") non demarree sur le noeud $n : deposee et epinglee ? (stage-node-files.sh + verify-node-files.sh --pin qualif $(node_name "$n"), puis daemon-reload)"
   done
   ctr start "$C_A" >/dev/null; ctr start "$C_B" >/dev/null
+  require_running secagent-server-a secagent-server-b   # l'unite (oneshot) peut etre « active » sans conteneur
 }
 # Recree a et b avec la configuration PAR DEFAUT apres un scenario qui les a reconfigures (admission-503). Podman : arret des
 # unites, suppression des conteneurs, redemarrage des unites (c'est l'unite qui recree). Docker : compose force-recreate.

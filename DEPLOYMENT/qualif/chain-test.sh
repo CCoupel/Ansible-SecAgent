@@ -37,7 +37,7 @@
 #   chain-test.sh admission-503  # refus 503 memory_budget_exhausted en reel (#241) : plafond abaisse, voir admission-503.sh
 #   chain-test.sh paths        # chemins prives resolus (sans docker) ; echec si la racine PRIVATE/ manque
 #   chain-test.sh logs | down  # down : conteneurs, volumes externes ET $CHAIN_DIR (jetons volatils, apres la garde)
-#   chain-test.sh reset-state  # Podman, apres down : vide PRIVATE/QUALIF/state/{root,child} (l'etat survit a down)
+#   chain-test.sh reset-state  # Podman, apres down, RESET_STATE_CONFIRM=<projet> : sauvegarde puis vide PRIVATE/QUALIF/state/{root,child}
 #
 # Variables : SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (obligatoires, references promues ou locales),
 #   SECAGENT_PRIVATE_DIR (racine des donnees privees, defaut <depot>/PRIVATE, jamais creee : chemin ABSOLU du
@@ -314,17 +314,44 @@ chain_paths() {
 # (jamais `down -v`) ; `state init` refuserait (« relay.state already exists »). Repartir de zero = down, puis reset-state.
 state_dirs() { printf '%s\n' "$PRIVATE_DIR/QUALIF/state/root" "$PRIVATE_DIR/QUALIF/state/child"; }
 state_present() { local d; for d in $(state_dirs); do [ -z "$(find "$d" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ] || return 0; done; return 1; }
+# Podman : l'etat est sur le partage, vu du poste au meme chemin : `state init` doit y avoir ecrit relay.state (le code
+# retour de `podman-compose run` n'est pas une preuve suffisante, T48). Docker : volume du demon, rien a verifier ici.
+state_written() { # $1 root|child
+  [ "$CONTAINER_CLI" = podman ] || return 0
+  [ -f "$PRIVATE_DIR/QUALIF/state/$1/relay.state" ] || fail "state init ($1) : relay.state absent de $PRIVATE_DIR/QUALIF/state/$1"
+}
+# reset-state : EFFACE l'etat de QUALIF sur le partage. Garde-fous (jamais appele par down ni par bootstrap) :
+#   - QUALIF seulement : refus si SECAGENT_ENV != qualif, ou si un chemin (texte ou reel) passe par un dossier PROD ;
+#   - confirmation explicite : RESET_STATE_CONFIRM=<nom du projet> ($PROJECT) ;
+#   - aucun conteneur de la racine ni de l'enfant (lancer down d'abord) ;
+#   - sauvegarde prealable 0700/0600 dans PRIVATE/QUALIF/state-backups/<horodatage UTC>/ (a purger a la main).
 reset_state() {
   [ "$CONTAINER_CLI" = podman ] || refuse "reset-state : Podman seulement (sous Docker, down -v retire l'etat)"
+  [ "${SECAGENT_ENV:-qualif}" = qualif ] || refuse "reset-state : environnement '${SECAGENT_ENV}' refuse (QUALIF seulement, jamais PROD)"
   guard_project
-  local n c d
+  [ "${RESET_STATE_CONFIRM:-}" = "$PROJECT" ] \
+    || refuse "reset-state efface l'etat de $PRIVATE_DIR/QUALIF/state/{root,child} : confirmer par RESET_STATE_CONFIRM=$PROJECT"
+  local n c d real bk
+  for d in $(state_dirs); do
+    case "/$d/" in */PROD/*|*/prod/*) refuse "reset-state : chemin $d sous un dossier PROD : refus" ;; esac
+    [ -d "$d" ] && [ ! -L "$d" ] || refuse "$d absent, non repertoire ou lien"
+    real="$(cd "$d" && pwd -P)" || refuse "$d illisible"
+    [ "$real" = "$d" ] || refuse "reset-state : $d passe par un lien symbolique ($real) : refus"
+  done
   for n in A B; do
     for c in $(CTR_NODE=$n ctr ps -a --format '{{.Names}}'); do
       case "$c" in "$C_A"|"$C_B"|"$C_CHILD"|"$C_GRAND") refuse "reset-state : conteneur $c present sur le noeud $n : lancer d'abord chain-test.sh down" ;; esac
     done
   done
+  bk="$PRIVATE_DIR/QUALIF/state-backups/$(date -u +%Y%m%dT%H%M%SZ)"
+  ( umask 077; mkdir -p "$bk" ) || fail "sauvegarde : creation de $bk impossible"
+  chmod 700 "$PRIVATE_DIR/QUALIF/state-backups" "$bk"
   for d in $(state_dirs); do
-    [ -d "$d" ] && [ ! -L "$d" ] || refuse "$d absent, non repertoire ou lien"
+    ( umask 077; cp -a -- "$d" "$bk/${d##*/}" ) || fail "sauvegarde de $d impossible : etat NON efface"
+  done
+  find "$bk" -type d -exec chmod 700 {} + && find "$bk" -type f -exec chmod 600 {} + || fail "sauvegarde : modes non appliques : etat NON efface"
+  echo "etat sauvegarde : $bk (0700/0600)"
+  for d in $(state_dirs); do
     find "$d" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
     echo "etat vide : $d"
   done
@@ -333,7 +360,7 @@ reset_state() {
 bootstrap() {
   need SECAGENT_IMAGE; need SECAGENT_MINION_IMAGE
   if [ "$CONTAINER_CLI" = podman ] && state_present; then
-    refuse "etat existant sous $PRIVATE_DIR/QUALIF/state (lie au partage, survit a down) : chain-test.sh down puis reset-state pour repartir de zero"
+    refuse "etat existant sous $PRIVATE_DIR/QUALIF/state (lie au partage, survit a down) : pour repartir de zero, chain-test.sh down puis RESET_STATE_CONFIRM=$PROJECT chain-test.sh reset-state (sauvegarde puis efface)"
   fi
   verify_images
   chain_dir
@@ -342,6 +369,7 @@ bootstrap() {
   push_secrets   # secrets serveur -> volume ${PROJECT}_secrets (10001, 0400) ; lus via *_FILE
   echo "== etat initial (racine)"
   dc run --rm --no-deps secagent-server-a state init
+  state_written root
   echo "== racine : demarrage et identification du maitre"
   root_up   # Docker : compose ; Podman : unites secagent-qualif-<srvX> (seul chemin pour a/b), apres le state init
   wait_for "racine healthy" 120 all_health healthy "$C_A" "$C_B" >/dev/null
@@ -354,6 +382,7 @@ bootstrap() {
   link_anchor_prepare "$m"
   link_mint_child "$m"
   dc run --rm --no-deps secagent-child state init
+  state_written child
   dc up -d secagent-child
   wait_for "enfant healthy" 120 all_health healthy "$C_CHILD" >/dev/null
   echo "== jetons d'enrolement (un par minion, hostname exact) et jeton plugin (FICHIER 0600)"
@@ -1258,7 +1287,7 @@ negative_ca() {
   verify_images
   local m; m="$(master)" || fail "pas de maitre sur la racine"
   echo "== minion sans la CA privee (store systeme seul) : doit etre REFUSE"
-  dc --profile negative up -d --no-deps minion-negca
+  DC_NOCHECK=1 dc --profile negative up -d --no-deps minion-negca   # echec TLS attendu : pas d'exigence « running »
   local ok=0
   for _ in $(seq 1 30); do
     if dc --profile negative logs minion-negca 2>&1 | grep -Eiq 'x509|certificate|unknown authority'; then ok=1; break; fi

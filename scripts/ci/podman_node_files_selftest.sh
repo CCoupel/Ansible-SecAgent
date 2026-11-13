@@ -44,6 +44,8 @@ cmp -s "$HERE/../../DEPLOYMENT/podman/check-private.sh" "$B/bin/check-private.sh
   && ok "stage : garde bin/check-private.sh re-ecrite depuis le depot (0700)" || ko "stage : garde bin/ differente du depot"
 grep -q "^ExecStart=/usr/bin/podman-compose -p secagent-qualif -f docker-compose.chain.yml -f docker-compose.hooks.yml -f docker-compose.podman.qualif.yml up -d secagent-server-b$" "$U" \
   && ok "unite srv4 : racine b SEULEMENT (enfant et minions : chain-test.sh)" || ko "unite ExecStart : $(grep '^ExecStart=' "$U")"
+[ "$(grep '^ExecStartPost=' "$U")" = "ExecStartPost=/bin/sh -c '/usr/bin/podman ps -q --filter label=com.docker.compose.project=secagent-qualif --filter label=com.docker.compose.service=secagent-server-b --filter status=running | grep -q .'" ] \
+  && ok "unite : ExecStartPost exige le conteneur de b EN COURS (podman-compose up rend 0 meme en echec)" || ko "unite ExecStartPost : $(grep '^ExecStartPost=' "$U")"
 grep -qE "secagent-child|minion-" "$U" && ko "unite srv4 demarre un service de test (enfant/minion)" || ok "unite srv4 : aucun service de test (pas de double chemin)"
 grep -q "^StartLimitBurst=3$" "$U" && grep -q "^Restart=on-failure$" "$U" && grep -q "^After=network-online.target$" "$U" \
   && ok "unite : redemarrage borne, apres le reseau" || ko "unite : limites absentes"

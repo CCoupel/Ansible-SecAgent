@@ -54,11 +54,16 @@ case "${1:-}" in
   network)
     case "$2" in exists) [ -e "$st/net/$3" ]; exit ;; create) touch "$st/net/${@: -1}" ;; esac; exit 0 ;;
   run|create)
-    sub="$1"; shift; name=""; rmflag=0; prev=""; pod=""; userns=""
+    sub="$1"; shift; name=""; rmflag=0; prev=""; pod=""; userns=""; labels=""; datavol=""; init=0; prevarg=""
     for a in "$@"; do
-      case "$prev" in --name) name="$a" ;; --pod) pod="$a" ;; --userns) userns="$a" ;; esac
+      case "$prev" in --name) name="$a" ;; --pod) pod="$a" ;; --userns) userns="$a" ;; --label) labels+="$a"$'\n' ;; esac
+      case "$prev" in -v|--volume) case "$a" in *:/data|*:/data:*) datavol="${a%%:*}" ;; esac ;; esac
+      case "$a" in *type=volume,*destination=/data*|*type=volume,*target=/data*) datavol="${a#*source=}"; datavol="${datavol%%,*}" ;; esac
+      [ "$prevarg $a" = "state init" ] && init=1; prevarg="$a"
       case "$a" in
         --rm) rmflag=1 ;;
+        --name=*) name="${a#--name=}" ;;
+        --label=*) labels+="${a#--label=}"$'\n' ;;
         --pod=*) pod="${a#--pod=}" ;;
         --userns=*) userns="${a#--userns=}" ;;
         uid=*|gid=*|*,uid=*|*,gid=*|*:uid=*|*:gid=*) [ "$prev" = --tmpfs ] && die "unknown mount option \"${a#*:}\": invalid mount option" ;;
@@ -72,10 +77,23 @@ case "${1:-}" in
     # meme refus que podman 5.7 (T48, 2026-11-13) : un conteneur dans un pod ne choisit pas son espace de noms utilisateur
     [ -n "$pod" ] && [ -n "$userns" ] && die "--userns and --pod cannot be set together"
     [ -t 0 ] || cat >/dev/null
-    [ "$rmflag" = 1 ] || [ -z "$name" ] || touch "$st/ctr/$name"
+    # `state init` : ecrit relay.state dans le repertoire lie au volume /data (comme le vrai serveur, sur le partage)
+    if [ "$init" = 1 ] && [ -n "$datavol" ] && [ -e "$st/vol/$datavol" ]; then
+      dev="$(sed -n 's/.*device=\([^ ]*\).*/\1/p' "$st/vol/$datavol")"; [ -z "$dev" ] || : > "$dev/relay.state"
+    fi
+    [ "$rmflag" = 1 ] || [ -z "$name" ] || printf '%s' "$labels" > "$st/ctr/$name"   # etiquettes : ps --filter
     exit 0 ;;
   rm) shift; for c in "$@"; do case "$c" in -*) ;; *) rm -f "$st/ctr/$c" ;; esac; done; exit 0 ;;
-  ps|pod|images) case "$*" in *json*) echo "[]" ;; esac; exit 0 ;;
+  ps)
+    case "$*" in *json*) echo "[]"; exit 0 ;; esac
+    # ps -q / --format {{.Names}} avec --filter label=K=V (tous les conteneurs crees sont « running » ici)
+    want=(); prev=""; for a in "$@"; do [ "$prev" = --filter ] && case "$a" in label=*) want+=("${a#label=}") ;; esac; prev="$a"; done
+    for c in "$st"/ctr/*; do
+      [ -e "$c" ] || continue; m=1
+      for w in "${want[@]}"; do grep -qxF -- "$w" "$c" || m=0; done
+      [ "$m" = 1 ] && basename "$c"
+    done; exit 0 ;;
+  pod|images) case "$*" in *json*) echo "[]" ;; esac; exit 0 ;;
   inspect)
     for a in "$@"; do case "$a" in *Health.Status*) echo healthy; exit 0 ;; esac; done; echo "[]"; exit 0 ;;
   exec)
@@ -99,10 +117,15 @@ cat > "$T/bin/systemctl" <<'EOF'
 u="$(ls "$FAKE_SHARE"/PRIVATE/*/*/cyril/secagent/systemd/"$unit" 2>/dev/null | head -1)"
 [ -n "$u" ] || { echo "Unit $unit not found." >&2; exit 5; }
 wd="$(sed -n 's/^WorkingDirectory=//p' "$u")"; ef="$(sed -n 's/^EnvironmentFile=//p' "$u")"
-case "$act" in start) key=ExecStart ;; stop) key=ExecStop ;; *) exit 0 ;; esac
-cmd="$(sed -n "s/^$key=//p" "$u")"; cmd="${cmd/\/usr\/bin\/podman-compose/$PODMAN_COMPOSE}"
-echo "systemctl $act $unit -> $cmd" >> "$FAKE_PODMAN_STATE/calls.log"
-cd "$wd" && env -i PATH="$PATH" HOME="$HOME" FAKE_PODMAN_STATE="$FAKE_PODMAN_STATE" $(grep -v '^#' "$ef") bash -c "$cmd"
+case "$act" in start) keys="ExecStart ExecStartPost" ;; stop) keys=ExecStop ;; *) exit 0 ;; esac
+for key in $keys; do
+  while IFS= read -r cmd; do
+    cmd="${cmd/\/usr\/bin\/podman-compose/$PODMAN_COMPOSE}"; cmd="${cmd//\/usr\/bin\/podman /podman }"
+    echo "systemctl $act $unit -> $cmd" >> "$FAKE_PODMAN_STATE/calls.log"
+    ( cd "$wd" && env -i PATH="$PATH" HOME="$HOME" FAKE_PODMAN_STATE="$FAKE_PODMAN_STATE" $(grep -v '^#' "$ef") bash -c "$cmd" ) \
+      || { echo "unite $unit : $key en echec" >&2; exit 1; }   # comme systemd : ExecStartPost en echec = unite en echec
+  done < <(sed -n "s/^$key=//p" "$u")
+done
 EOF
 chmod +x "$T/bin/podman" "$T/bin/systemctl"
 ln -s "$PC" "$T/bin/podman-compose"   # dc_on (chain-test.sh) l'appelle par son nom, comme sur le noeud
@@ -125,8 +148,8 @@ run_bootstrap() {
     echo "== bootstrap apres down avec un etat present sur le partage : refus attendu"
     touch "$PRIVATE_DIR/QUALIF/state/root/relay.state"
     if ( bootstrap ) >/dev/null 2>&1; then echo "KO bootstrap accepte malgre un etat existant"; exit 1; fi
-    echo "refus OK ; reset-state"
-    reset_state
+    echo "refus OK ; reset-state (confirmation explicite)"
+    RESET_STATE_CONFIRM=secagent-qualif reset_state
     echo "== second bootstrap apres down + reset-state (volume des secrets deja present)"
     bootstrap
     echo "REJEU COMPLET OK"

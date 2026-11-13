@@ -66,13 +66,20 @@ release_env() { # $1 env, $2 noeud (node_topology deja appele)
 # verification, HORS partage dans ~/.config/systemd/user/ par `verify-node-files.sh --pin` : systemd ne lit donc jamais
 # une unite modifiable depuis le partage (une unite liee serait relue telle quelle au boot, ExecStartPre compris).
 node_unit() { # $1 env, $2 noeud (node_topology deja appele)
+  local post="" svc
+  # podman-compose `up -d` rend 0 MEME si la creation du conteneur echoue (T48) : l'unite verifie ensuite, par service,
+  # qu'un conteneur du projet est EN COURS (etiquettes Compose) ; sinon echec de l'unite, et Restart= reessaie.
+  for svc in $NODE_SERVICES; do
+    post+="ExecStartPost=/bin/sh -c '/usr/bin/podman ps -q --filter label=com.docker.compose.project=$PROJECT_NAME --filter label=com.docker.compose.service=$svc --filter status=running | grep -q .'"$'\n'
+  done
   cat <<EOF
 # Genere par DEPLOYMENT/podman/stage-node-files.sh (#267) : conteneurs secagent $1 du noeud $2 (Podman rootless).
 # Copiee hors partage par verify-node-files.sh --pin (jamais liee). A CHAQUE demarrage (boot, Restart=, relance), avant
 # tout : 1) empreintes de bin/, release/ et systemd/ du partage comparees au manifeste epingle HORS partage
 # (%h/$PIN_REL, ecrit par verify-node-files.sh --pin apres verification contre le depot) ; 2) garde check-private.sh
 # (desormais verifiee) : partage, modes, pki/, et liste EXACTE des fichiers = celle du manifeste (rien en trop, ex. .env).
-# Partage absent : 1) echoue (fail-closed), nouvel essai par Restart= (3 en 600 s).
+# Partage absent : 1) echoue (fail-closed), nouvel essai par Restart= (3 en 600 s). Apres up -d : ExecStartPost exige
+# un conteneur EN COURS par service (podman-compose rend 0 meme si la creation echoue).
 [Unit]
 Description=secagent $1 ($2) : conteneurs Podman rootless
 Wants=network-online.target
@@ -88,7 +95,7 @@ EnvironmentFile=$NODE_BASE/release/release.env
 ExecStartPre=/usr/bin/sha256sum --quiet --strict -c %h/$PIN_REL
 ExecStartPre=$NODE_BASE/bin/check-private.sh $1 $2 %h/$PIN_REL
 ExecStart=/usr/bin/podman-compose -p $PROJECT_NAME $COMPOSE_ARGS up -d $NODE_SERVICES
-ExecStop=/usr/bin/podman-compose -p $PROJECT_NAME $COMPOSE_ARGS stop $NODE_SERVICES
+${post}ExecStop=/usr/bin/podman-compose -p $PROJECT_NAME $COMPOSE_ARGS stop $NODE_SERVICES
 Restart=on-failure
 RestartSec=30
 TimeoutStartSec=600

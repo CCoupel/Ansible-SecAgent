@@ -31,6 +31,8 @@ cat > "$T/bin/ssh" <<EOF
 n=oui; tgt=""; cmd=""
 while [ \$# -gt 0 ]; do case "\$1" in -n) n=non ;; -i|-o) shift ;; *) if [ -z "\$tgt" ]; then tgt="\$1"; else cmd="\$1"; fi ;; esac; shift; done
 echo "\$tgt | \$cmd | stdin=\$n" >> "$T/ssh.log"
+# require_running : un conteneur « en cours » par service, sauf FAKE_PS_EMPTY=1 (creation echouee malgre le rc 0)
+case "\$cmd" in *"podman ps -q --filter label=com.docker.compose"*) [ "\${FAKE_PS_EMPTY:-0}" = 1 ] || echo c0ffee ;; esac
 EOF
 chmod +x "$T/bin/ssh"
 P=/share/MFS/ROOT/essai/PRIVATE
@@ -40,7 +42,7 @@ run() { : > "$T/ssh.log"; env -i "${ENVV[@]}" "$@" bash -c 'source "$1"; set +e;
 last() { cat "$T/ssh.log"; }
 chk() { # $1 nom, $2 commande, $3 motif grep -E attendu (ensemble des appels), $4 nombre d'appels attendu
   CMD="$2" run CMD="$2"
-  local n; n="$(grep -c . "$T/ssh.log")"
+  local n; n="$(grep -vc 'podman ps -q --filter label=com.docker.compose' "$T/ssh.log")"   # controles d'etat : a part
   if [ "$n" = "$4" ] && grep -qE -- "$3" "$T/ssh.log"; then ok "$1"; else ko "$1 (appels=$n) : $(last | tr '\n' '#')"; fi
 }
 A='cyril@192.168.1.213'; B='cyril@192.168.1.214'
@@ -97,6 +99,19 @@ run CMD=root_up; grep -qE "^$B \| systemctl --user start secagent-qualif-srv4.se
 grep -q "podman-compose" "$T/ssh.log" && ko "root_up : podman-compose appele pour a/b (double chemin)" || ok "root_up : aucun podman-compose pour a/b"
 run CMD=root_reset; [ "$(grep -c 'systemctl --user stop' "$T/ssh.log")" = 2 ] && grep -q "podman rm -f secagent-qualif-a" "$T/ssh.log" && grep -q "podman rm -f secagent-qualif-b" "$T/ssh.log" && [ "$(grep -c 'systemctl --user start' "$T/ssh.log")" = 2 ] && ! grep -q podman-compose "$T/ssh.log" \
   && ok "root_reset : stop des unites, rm a/b, start des unites (recree par l'unite)" || ko "root_reset : $(last | tr '\n' '#')"
+# --- T48 : jamais se fier au rc de podman-compose : etat verifie apres up/start/restart et root_up ---
+run CMD='dc up -d secagent-server-a secagent-child'
+grep -qE "^$A \| podman ps -q --filter label=com.docker.compose.project=secagent-qualif --filter label=com.docker.compose.service=secagent-server-a --filter status=running" "$T/ssh.log" \
+  && grep -qE "^$B \| podman ps -q .*service=secagent-child --filter status=running" "$T/ssh.log" \
+  && ok "dc up : conteneur en cours exige par service, sur son noeud" || ko "dc up sans controle d'etat : $(last | tr '\n' '#')"
+run CMD='dc start minion-root'; grep -qE "^$B \| podman ps -q .*service=minion-root --filter status=running" "$T/ssh.log" && ok "dc start : etat verifie" || ko "dc start : $(last | tr '\n' '#')"
+: > "$T/ssh.log"; env -i "${ENVV[@]}" FAKE_PS_EMPTY=1 CMD='dc up -d secagent-child' bash -c 'source "$1"; eval "$CMD"' _ "$F" > "$T/o" 2>&1; rc=$?
+[ "$rc" = 1 ] && grep -q "service secagent-child : aucun conteneur en cours" "$T/o" && ok "dc up : creation echouee (rc 0 de podman-compose) -> echec" || ko "dc up rc=$rc sans conteneur : $(cat "$T/o")"
+: > "$T/ssh.log"; env -i "${ENVV[@]}" FAKE_PS_EMPTY=1 CMD='root_up' bash -c 'source "$1"; eval "$CMD"' _ "$F" > "$T/o" 2>&1; rc=$?
+[ "$rc" = 1 ] && grep -q "service secagent-server-a : aucun conteneur en cours" "$T/o" && ok "root_up : unite active sans conteneur -> echec" || ko "root_up rc=$rc sans conteneur : $(cat "$T/o")"
+run CMD='DC_NOCHECK=1 dc --profile negative up -d --no-deps minion-negca'; grep -q "podman ps -q" "$T/ssh.log" && ko "DC_NOCHECK=1 : controle fait quand meme" || ok "DC_NOCHECK=1 (negative-ca) : pas de controle d'etat"
+grep -q 'DC_NOCHECK=1 dc --profile negative up -d --no-deps minion-negca' "$HERE/../../DEPLOYMENT/qualif/chain-test.sh" \
+  && [ "$(grep -c 'DC_NOCHECK=1 dc' "$HERE/../../DEPLOYMENT/qualif/chain-test.sh")" = 1 ] && ok "DC_NOCHECK : seulement negative-ca" || ko "DC_NOCHECK utilise ailleurs"
 FS="$HERE/../../DEPLOYMENT/qualif/failover-test.sh"
 CT="$HERE/../../DEPLOYMENT/qualif/chain-test.sh"   # bootstrap (Docker ET Podman) : a/b par root_up ; backup_restore est Docker seulement
 sed -n '/^bootstrap() {/,/^}/p' "$CT" | grep -q 'dc up -d secagent-server-a' && ko "chain-test.sh bootstrap : dc up de a/b (double chemin sous Podman)" || ok "chain-test.sh bootstrap : a/b demarres par root_up seulement"
