@@ -9,13 +9,15 @@ differents est refusee (« can't merge value of [child_state] of type NoneType a
 l'accepte. Ce script :
   1. refuse toute ressource de premier niveau (volumes, networks, secrets, configs) declaree avec une valeur NULLE
      (`nom:` sans valeur) : ecrire `nom: {}` ;
-  2. reproduit la fusion de podman-compose sur une combinaison de fichiers (-f, dans l'ordre, `include:` compris) et
-     refuse tout conflit de types.
+  2. reproduit la fusion de podman-compose sur une combinaison de fichiers, dans SON ordre (-f, puis les `include:`
+     ajoutes a la fin), et refuse tout conflit de types ;
+  3. refuse toute valeur qu'un fichier INCLUS ecraserait sur une surcharge -f (podman-compose fusionne les inclus en
+     dernier, docker compose non) : cas T48 de `external` / `name` d'un volume.
 Usage :
   check_compose_merge.py --no-null <fichier.yml>...        regle 1 sur chaque fichier
   check_compose_merge.py -f a.yml -f b.yml [-f c.yml]...    regle 2 sur la combinaison (et regle 1 sur ses fichiers)
 Code 0 = conforme, 1 = non conforme, 2 = usage."""
-import os, sys
+import copy, os, sys
 
 try:
     import yaml
@@ -66,30 +68,74 @@ def rec_merge_one(target, source, path=""):
     return target
 
 
-def expand(files):
-    """Fichiers dans l'ordre de fusion : chaque fichier puis ses `include:` (chemins relatifs a lui)."""
+def include_paths(doc, base):
     out = []
-    for f in files:
-        doc = load(f)
-        out.append((f, doc))
-        for inc in doc.get("include") or []:
-            p = inc if isinstance(inc, str) else (inc.get("path") if isinstance(inc, dict) else None)
-            if isinstance(p, list):
-                p = p[0] if p else None
-            if p:
-                out.extend(expand([os.path.join(os.path.dirname(f), p)]))
+    for inc in doc.get("include") or []:
+        p = inc if isinstance(inc, str) else (inc.get("path") if isinstance(inc, dict) else None)
+        if isinstance(p, list):
+            p = p[0] if p else None
+        if p:
+            out.append(os.path.join(os.path.dirname(base), p))
     return out
+
+
+def expand(files):
+    """Ordre REEL de podman-compose 1.5 (podman_compose.py:2289-2292) : les fichiers -f dans l'ordre, puis les fichiers
+    `include:` AJOUTES A LA FIN de la liste (un fichier inclus est donc fusionne APRES toutes les surcharges -f, a
+    l'inverse de docker compose). Retourne [(nom, document, inclus?)]."""
+    queue = [(f, False) for f in files]
+    out, i = [], 0
+    while i < len(queue):
+        f, inc = queue[i]
+        doc = load(f)
+        out.append((f, doc, inc))
+        queue.extend((p, True) for p in include_paths(doc, f))
+        i += 1
+    return out
+
+
+def leaves(doc, path=()):
+    """Valeurs scalaires (et dicts vides) par chemin ; les listes sont concatenees par podman-compose : ignorees."""
+    if isinstance(doc, dict):
+        if not doc and path:
+            return
+        for k, v in doc.items():
+            yield from leaves(v, path + (str(k),))
+    elif not isinstance(doc, list):
+        yield path, doc
+
+
+def include_overrides(order):
+    """Valeurs qu'un fichier INCLUS ecraserait sous podman-compose (fusionne en dernier) alors qu'un fichier -f les fixe
+    autrement : docker compose garderait la surcharge, podman-compose la valeur incluse (cas T48 : secagent_secrets
+    `external: false` de la surcharge Podman ecrase par `external: true` de docker-compose.server.yml)."""
+    over = {}
+    for name, doc, inc in order:
+        if not inc:
+            for p, v in leaves({k: v for k, v in doc.items() if k != "include"}):
+                over[p] = (name, v)
+    errs = []
+    for name, doc, inc in order:
+        if not inc:
+            continue
+        for p, v in leaves({k: v for k, v in doc.items() if k != "include"}):
+            if p in over and over[p][1] != v:
+                errs.append(f"{'.'.join(p)} : {over[p][0]} fixe {over[p][1]!r} mais {name} (include:, fusionne EN DERNIER par "
+                            f"podman-compose 1.5) impose {v!r} : la surcharge serait ignoree sous Podman")
+    return errs
 
 
 def check_merge(files):
     errs, merged = [], {}
-    for name, doc in expand(files):
+    order = expand(files)
+    for name, doc, _inc in order:
         errs += null_resources(doc, name)
-        body = {k: v for k, v in doc.items() if k != "include"}
+        body = copy.deepcopy({k: v for k, v in doc.items() if k != "include"})   # la fusion mute ses entrees
         try:
             rec_merge_one(merged, body)
         except MergeError as e:
             errs.append(f"{' + '.join(files)} : {e} (en fusionnant {name})")
+    errs += include_overrides(order)
     return errs
 
 

@@ -227,6 +227,11 @@ jobs:
           git ls-files -z 'DEPLOYMENT/*docker-compose*.yml' | xargs -0 "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_compose_merge.py --no-null
           "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_compose_merge.py -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml -f DEPLOYMENT/podman/docker-compose.podman.qualif.yml
           "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_compose_merge.py -f DEPLOYMENT/prod/docker-compose.server.yml -f DEPLOYMENT/prod/docker-compose.child.yml -f DEPLOYMENT/podman/docker-compose.podman.yml
+          # T48 (#267) : rejeu du chemin `chain-test.sh bootstrap` sous Podman avec le VRAI podman-compose des noeuds (1.5.0,
+          # version et somme epinglees) et un faux `podman` a etat : un refus de podman-compose (fusion, volume externe,
+          # montage) est vu ici, jamais sur srv3/srv4.
+          "$RUNNER_TEMP/guard-venv/bin/python" -m pip install --quiet --no-deps --require-hashes --only-binary=:all: -r .github/ci/requirements-podman-compose.txt
+          PODMAN_COMPOSE="$RUNNER_TEMP/guard-venv/bin/podman-compose" bash scripts/ci/podman_compose_replay.sh </dev/null
 
       # LOT-7 / #237 (D17) : en-tete SPDX AGPL-3.0-or-later sur chaque source .go/.py/.sh suivie (exclusions dans la garde).
       # Garde stdlib seule ; elle est elle-meme testee AVANT de juger l'arbre. Correction locale : check_spdx.py --fix.

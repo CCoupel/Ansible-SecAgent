@@ -1,0 +1,5 @@
+# Rejeu du chemin bootstrap Podman (scripts/ci/podman_compose_replay.sh, job lint de ci.yml, #267 T48) : podman-compose
+# EXACTEMENT celui des noeuds srv1-srv4 (1.5.0) et sa dependance python-dotenv ; PyYAML vient de requirements-guard.txt.
+# Sommes = digests sha256 publies par PyPI (roues) ; installe avec --no-deps --require-hashes --only-binary=:all:.
+podman-compose==1.5.0 --hash=sha256:f0b9d35f4da1b309172adf208a5cb7a882b532a834c2202666c1988b6f147546
+python-dotenv==1.2.4 --hash=sha256:42269a8a5b3fd54ffa6f3d84b18abed50064717576b4ecf03dc4a55d8aa04fdc

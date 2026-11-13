@@ -77,6 +77,12 @@ systemctl --user enable --now podman.socket
 systemctl --user daemon-reload && systemctl --user enable secagent-qualif-srv3.service   # SANS --now : voir ci-dessous
 ```
 
+**Volumes sous podman-compose 1.5 (T48)** : les fichiers `include:` sont fusionnés **après** les `-f` (l'inverse de
+docker compose) ; une surcharge Podman ne redéfinit donc jamais une ressource du Compose inclus (`secagent_secrets`, externe :
+créé en bind par `chain-test.sh push-secrets`) ; aucune ressource déclarée nulle (`{}`) ; la section `x-podman` est réservée à
+podman-compose (notre documentation : `x-secagent-podman`). Contrôles : `scripts/ci/check_compose_merge.py` et le rejeu
+`scripts/ci/podman_compose_replay.sh` (vrai podman-compose 1.5.0, faux `podman`), tous deux en CI.
+
 **Un seul chemin par service (T48)** : l'unité ne démarre que la **racine** du nœud (`secagent-server-a` sur srv3,
 `secagent-server-b` sur srv4) ; l'enfant et les minions de QUALIF sont des services de test, démarrés par
 `chain-test.sh` seulement. Le **premier** démarrage de la racine suit le `state init` : en QUALIF, c'est

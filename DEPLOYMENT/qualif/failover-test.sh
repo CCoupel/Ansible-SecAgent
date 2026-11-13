@@ -51,7 +51,11 @@ if [ "$CONTAINER_CLI" = podman ]; then
   SECRET_OWNER_UID="${SECRET_OWNER_UID:-1000}"
   # Les noeuds voient PRIVATE/ au MEME chemin absolu que le poste (autofs /share/MFS/ROOT) : sinon les chemins passes a
   # podman-compose (CHAIN_DIR, QUALIF_TLS_DIR, etat) designeraient autre chose sur le noeud.
-  case "$PRIVATE_DIR" in /share/MFS/ROOT/*) ;; *) refuse "CONTAINER_CLI=podman : SECAGENT_PRIVATE_DIR=$PRIVATE_DIR hors de /share/MFS/ROOT (chemin vu par les noeuds)" ;; esac
+  # PODMAN_SHARE_ROOT : racine du partage vue par les noeuds (defaut /share/MFS/ROOT ; autre valeur : essais locaux seulement,
+  # scripts/ci/podman_compose_replay.sh). Chemin absolu sans `..`.
+  SHARE_ROOT="${PODMAN_SHARE_ROOT:-/share/MFS/ROOT}"
+  [[ $SHARE_ROOT =~ ^/[A-Za-z0-9_./-]+$ && ! /$SHARE_ROOT/ =~ /\.\./ ]] || refuse "PODMAN_SHARE_ROOT='$SHARE_ROOT' invalide"
+  case "$PRIVATE_DIR" in "${SHARE_ROOT%/}"/*) ;; *) refuse "CONTAINER_CLI=podman : SECAGENT_PRIVATE_DIR=$PRIVATE_DIR hors de $SHARE_ROOT (chemin vu par les noeuds)" ;; esac
   [[ $PRIVATE_DIR =~ ^/[A-Za-z0-9_./-]+$ && ! /$PRIVATE_DIR/ =~ /\.\./ ]] || refuse "CONTAINER_CLI=podman : SECAGENT_PRIVATE_DIR='$PRIVATE_DIR' : caracteres [A-Za-z0-9_./-] sans .. attendus (transmis aux noeuds)"
   export QUALIF_NODE_A QUALIF_NODE_B CONTAINER_HOST_A CONTAINER_HOST_B CONTAINER_SSHKEY CONTAINER_KNOWN_HOSTS SECRET_OWNER_UID
 else
@@ -306,15 +310,31 @@ gen_secrets() {
     done )
 }
 
+# Podman (T48) : le volume nomme des secrets ($SECAGENT_SECRETS_VOLUME, declare EXTERNE par docker-compose.server.yml) est
+# CREE sur chaque noeud en bind sur $SECRETS_DIR (= PRIVATE/QUALIF/secrets, partage vu au meme chemin) : rien n'est copie,
+# les fichiers restent 0400 / uid 1000 sur le partage. Idempotent ; un volume existant qui pointe ailleurs est REFUSE.
+# Etape faite par bootstrap (push-secrets) AVANT le state init et tout `up` (podman-compose exige qu'un volume externe existe).
+podman_secrets_volume() {
+  local CTR_NODE dev
+  for CTR_NODE in A B; do
+    if ctr volume inspect "$SECAGENT_SECRETS_VOLUME" >/dev/null 2>&1; then
+      dev="$(ctr volume inspect --format '{{.Options.device}}' "$SECAGENT_SECRETS_VOLUME" 2>/dev/null || true)"
+      [ "$dev" = "$SECRETS_DIR" ] || refuse "volume $SECAGENT_SECRETS_VOLUME (noeud $CTR_NODE) lie a '$dev' et non a $SECRETS_DIR : le retirer (podman volume rm) puis relancer"
+    else
+      ctr volume create --driver local --opt type=none --opt o=bind --opt "device=$SECRETS_DIR" "$SECAGENT_SECRETS_VOLUME" >/dev/null \
+        || fail "creation du volume $SECAGENT_SECRETS_VOLUME (noeud $CTR_NODE) impossible"
+    fi
+    echo "volume des secrets $SECAGENT_SECRETS_VOLUME -> $SECRETS_DIR (bind, noeud $CTR_NODE)"
+  done
+}
+
 # Depose les fichiers de secret de $1 (repertoire, defaut $SECRETS_DIR) dans le volume $2 (defaut
 # $SECAGENT_SECRETS_VOLUME) de l'hote Docker (distant ou non) par un conteneur ephemere (flux tar sur stdin, image alpine
 # epinglee) : proprietaire 10001 (uid du conteneur), mode 0400, repertoire 0755. Aucun bind mount, aucune valeur affichee.
 # Meme modele que les volumes tls / hooks / link : fonctionne contre un demon distant.
 # shellcheck disable=SC2120   # arguments optionnels, passes par chain-test.sh (backup-restore)
 push_secrets() {
-  if [ "$CONTAINER_CLI" = podman ]; then
-    echo "push-secrets : sans objet sous Podman (secrets lies depuis $SECRETS_DIR, proprietaire $SECRET_OWNER_UID, 0400)"; return 0
-  fi
+  if [ "$CONTAINER_CLI" = podman ]; then podman_secrets_volume; return; fi
   local d="${1:-$SECRETS_DIR}" vol="${2:-$SECAGENT_SECRETS_VOLUME}" n files=""
   for n in jwt_secret_key admin_token rsa_master_key; do
     [ -f "$d/$n" ] && files="$files $n"

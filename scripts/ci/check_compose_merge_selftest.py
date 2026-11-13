@@ -55,4 +55,18 @@ with tempfile.TemporaryDirectory() as t:
             f.write(open(D("qualif", inc), encoding="utf-8").read())
     errs = check_merge([old, CHAIN[1], D("podman", "docker-compose.podman.qualif.yml")])
     expect("temoin : child_state nul + surcharge Podman refuse", any("child_state" in e and "NoneType and dict" in e for e in errs))
+# temoin T48 n°2 : l'ancienne redefinition de secagent_secrets (external: false + bind) dans la surcharge Podman est
+# ecrasee par l'include (external: true) => refus ; et un include qui fixe la MEME valeur que la surcharge est accepte
+with tempfile.TemporaryDirectory() as t:
+    podman_old = os.path.join(t, "docker-compose.podman.qualif.yml")
+    with open(podman_old, "w", encoding="utf-8") as f:
+        f.write(open(D("podman", "docker-compose.podman.qualif.yml"), encoding="utf-8").read()
+                + "  secagent_secrets:\n    external: false\n    name: ${SECAGENT_SECRETS_VOLUME:-secagent-qualif_secrets}\n"
+                  "    driver: local\n")
+    errs = check_merge(CHAIN + [podman_old])
+    expect("temoin : secagent_secrets external:false ecrase par l'include (external:true) refuse",
+           any("volumes.secagent_secrets.external" in e and "EN DERNIER" in e for e in errs))
+from check_compose_merge import expand  # noqa: E402
+names = [os.path.basename(n) + ("(inclus)" if inc else "") for n, _d, inc in expand(CHAIN + [D("podman", "docker-compose.podman.qualif.yml")])]
+expect("ordre podman-compose : include ajoute APRES les -f", names[-1] == "docker-compose.server.yml(inclus)" and names[:3] == ["docker-compose.chain.yml", "docker-compose.hooks.yml", "docker-compose.podman.qualif.yml"])
 sys.exit(1 if bad else 0)

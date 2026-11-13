@@ -15,7 +15,7 @@
 #   chain-test.sh push-tls     # TLS_MODE=volume : copie les certificats dans le volume Docker (hote distant)
 #   chain-test.sh push-hooks    # hooks.json -> volume ${PROJECT}_hooks (fait par bootstrap)
 #   chain-test.sh push-events   # volumes du journal des hooks ${PROJECT}_events-{a,b,child} (10001, 0700 ; fait par bootstrap)
-#   chain-test.sh push-secrets  # SECRETS_DIR -> volume ${PROJECT}_secrets, 10001 0400 (fait par bootstrap)
+#   chain-test.sh push-secrets  # SECRETS_DIR -> volume ${PROJECT}_secrets, 10001 0400 ; Podman : volume cree en bind sur le partage (fait par bootstrap)
 #   chain-test.sh push-link-key  # cle publique racine (+ jeton de lien s'il existe) -> volume ${PROJECT}_link
 #   chain-test.sh link-rotation  # rotation de la cle de lien, confirmation, nouveau jeton, retire-link-previous (v3.0.4)
 #   chain-test.sh link-revoke    # revocation du lien d'un enfant : fermeture 4010, pas de reconnexion, puis remise en etat
@@ -1263,6 +1263,28 @@ failover() { # $1 stop (defaut : arret propre) | kill (crash : reprise apres per
   check_hooks_after_failover "$([ "$mode" = kill ] && echo takeover || echo start)"
 }
 
+# Retrait de la chaine (commande `down`) ; fonction pour etre rejouee par scripts/ci/podman_compose_replay.sh.
+# Podman : le volume des secrets (bind sur le partage, cree par push-secrets) est CONSERVE : les unites, toujours activees
+# pour le boot, en ont besoin ; il ne contient rien (les fichiers sont sur le partage).
+chain_down() {
+  guard_project
+  if [ "$CONTAINER_CLI" = podman ]; then
+    # unites de la racine arretees d'abord (sinon elles resteraient « actives » sans conteneur) ; puis les services de
+    # test et la racine sont retires. JAMAIS `down -v` sous Podman : etat et secrets sont lies au partage PRIVATE (#267)
+    for CTR_NODE in A B; do node_ssh "$CTR_NODE" nostdin systemctl --user stop "$(root_unit "$CTR_NODE")" >/dev/null 2>&1 || true; done
+    dc down
+    # shellcheck disable=SC2046   # events_volumes : noms sans espace
+    for CTR_NODE in A B; do ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" $(events_volumes) >/dev/null 2>&1 || true; done
+  else
+    export COMPOSE_PROFILES=level3   # retire aussi dmz2 et minion-grand, meme sans CHAIN_LEVEL3=1
+    dc down -v
+    # le volume du jeton de lien est EXTERNE (non supprime par down -v) et contient un secret : retrait explicite
+    # shellcheck disable=SC2046   # events_volumes : noms sans espace
+    ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_LINK_GRAND_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" $(events_volumes) >/dev/null 2>&1 || true
+  fi
+  chain_dir_clean   # jetons volatils du poste (garde chain_dir_check avant tout rm)
+}
+
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
     ci-prepare) ci_prepare ;;
@@ -1297,22 +1319,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     rollback-refused) rollback_refused ;;
     negative-ca) negative_ca ;;
     admission-503) admission_503 ;;
-    down) guard_project
-          if [ "$CONTAINER_CLI" = podman ]; then
-            # unites de la racine arretees d'abord (sinon elles resteraient « actives » sans conteneur) ; puis les services de
-            # test et la racine sont retires. JAMAIS `down -v` sous Podman : etat et secrets sont lies au partage PRIVATE (#267)
-            for CTR_NODE in A B; do node_ssh "$CTR_NODE" nostdin systemctl --user stop "$(root_unit "$CTR_NODE")" >/dev/null 2>&1 || true; done
-            dc down
-            # shellcheck disable=SC2046   # events_volumes : noms sans espace
-            for CTR_NODE in A B; do ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" $(events_volumes) >/dev/null 2>&1 || true; done
-          else
-            export COMPOSE_PROFILES=level3   # retire aussi dmz2 et minion-grand, meme sans CHAIN_LEVEL3=1
-            dc down -v
-            # le volume du jeton de lien est EXTERNE (non supprime par down -v) et contient un secret : retrait explicite
-            # shellcheck disable=SC2046   # events_volumes : noms sans espace
-            ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_LINK_GRAND_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" $(events_volumes) >/dev/null 2>&1 || true
-          fi
-          chain_dir_clean ;;   # jetons volatils du poste (garde chain_dir_check avant tout rm)
+    down) chain_down ;;
     *) sed -n '2,54p' "$0"; exit 2 ;;
   esac
 fi
