@@ -73,8 +73,8 @@ out="$(SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-other VERIFY_LOCAL=1 b
 # --- --pin : copie locale de l'unite + manifeste epingle, verifies a CHAQUE demarrage (ExecStartPre simules) ---------
 PH="$T/home-srv4"; FST="$(stat -f -c %T "$T")"
 mkdir -p "$P/QUALIF/state/root" "$P/QUALIF/state/child" "$P/QUALIF/secrets" "$P/QUALIF/pki"
-chmod 700 "$P/QUALIF/state" "$P/QUALIF/state/root" "$P/QUALIF/state/child" "$P/QUALIF/secrets" "$P/QUALIF/pki"
-: > "$P/QUALIF/pki/ca.crt"
+chmod 700 "$P/QUALIF/state" "$P/QUALIF/state/root" "$P/QUALIF/state/child" "$P/QUALIF/secrets"; chmod 711 "$P/QUALIF/pki"
+: > "$P/QUALIF/pki/ca.crt"; chmod 644 "$P/QUALIF/pki/ca.crt"
 pin() { VERIFY_LOCAL=1 PIN_HOME="$PH" bash "$D/verify-node-files.sh" --pin qualif srv4; }
 PINF="$PH/.config/secagent/qualif-srv4.sha256"; LU="$PH/.config/systemd/user/secagent-qualif-srv4.service"
 start_pre() { # execute les ExecStartPre de l'unite COPIEE, %h = PIN_HOME (comme systemd --user) ; code du premier echec

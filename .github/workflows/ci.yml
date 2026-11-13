@@ -376,6 +376,7 @@ jobs:
           bash scripts/ci/chain_verify_images_selftest.sh
           bash scripts/ci/failover_guard_selftest.sh
           python3 scripts/ci/check_no_binds_selftest.py
+          python3 -I scripts/ci/check_podman_certs_selftest.py
           bash scripts/ci/admission_503_selftest.sh
           bash scripts/ci/ansible_version_selftest.sh
           python3 -I DEPLOYMENT/qualif/tools/test_ghcr_image_archive.py
@@ -453,6 +454,10 @@ jobs:
           QUALIF_PRIVATE_DIR="$PQ" QUALIF_TLS_DIR="$PQ/pki" QUALIF_NODE_A_ADDR=192.168.1.213 \
             docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml -f DEPLOYMENT/podman/docker-compose.podman.qualif.yml config --format json > render/podman-qualif-chain.json
           python3 scripts/ci/check_compose.py --require-memory-limit --require-secret-files --require-userns-keepid render/podman-prod-root.json render/podman-prod-child.json render/podman-qualif-chain.json
+          # Hypotheses de la garde check-private.sh (QUALIF pki/ en 0711, tls.key 0600) : seuls les SERVEURS sont en keep-id
+          # (uid 10001 = proprietaire : lisent tls.key) ; les MINIONS restent sans keep-id (uid `relay` != proprietaire : ne
+          # lisent que les certificats publics) et montent /certs en lecture seule.
+          python3 scripts/ci/check_podman_certs.py render/podman-qualif-chain.json
           # Binds (y compris les volumes driver_opts) limites aux sous-chemins permis de PRIVATE/QUALIF ; jamais ca.key ni poste-cyril
           python3 scripts/ci/check_no_binds.py --allow-prefix "$PQ" < render/podman-qualif-chain.json
           # Rendu destine a un demon Docker DISTANT (qualif reelle) : aucun chemin du client (bind, secret/config file:, build).

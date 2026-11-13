@@ -32,6 +32,10 @@ obligatoires (contrôle CI `--require-memory-limit`, délégation cgroup `memory
   1000 de l'hôte = propriétaire des fichiers du partage). Secrets : propriétaire **1000**, 0400 (`SECRET_OWNER_UID=1000`).
 - **TLS** : `pki/` ne contient que `ca.crt`, `tls.crt`, `tls.key` (monté sur `/certs`) ; `ca.key` est dans `pki-ca/`,
   jamais monté (`check_no_binds.py` et `check-private.sh` le refusent).
+  Modes exigés par la garde : `tls.key` 0600 au plus ; QUALIF : `pki/` en **0711** (traversable, non listable) et
+  `ca.crt`/`tls.crt` en 0644, car les minions colocalisés gardent le mapping rootless par défaut (uid `relay` ≠ propriétaire)
+  et doivent lire `ca.crt` sans jamais pouvoir lire `tls.key` ; seuls les serveurs sont en keep-id (rendu contrôlé en CI :
+  `scripts/ci/check_podman_certs.py`). PROD : `pki/` en 0700 (aucun minion sur les nœuds).
 - **Intégrité** : `verify-node-files.sh --pin` recalcule le contenu attendu **depuis le dépôt** (garde `bin/`,
   `release/`, `systemd/`), le compare à ce que lit le nœud, puis écrit **hors partage** (home de `cyril`, 0600) la
   **copie** de l'unité (`~/.config/systemd/user/`, jamais un lien : systemd relirait une unité modifiable au boot) et le

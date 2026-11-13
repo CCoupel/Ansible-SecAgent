@@ -78,6 +78,7 @@ reset_env() {
   mkdir -m 700 "$T/private"
   local d; for d in QUALIF QUALIF/state QUALIF/state/root QUALIF/state/child QUALIF/secrets QUALIF/pki \
                     PROD PROD/state PROD/state/root PROD/secrets PROD/pki; do mkdir -m 700 "$T/private/$d"; done
+  chmod 711 "$T/private/QUALIF/pki"   # QUALIF : traversable par l'uid des minions (ca.crt), non listable
   # fichiers de deploiement des noeuds, prepares DEPUIS LE POSTE (prepare-node-files.sh)
   for d in "qualif srv3" "qualif srv4" "prod srv1"; do
     # shellcheck disable=SC2086
@@ -143,10 +144,16 @@ guard_refus "garde : sauvegarde cachee dans pki/ (.ca.key.bak)" ': > "$T/private
 guard_refus "garde : sous-dossier dans pki/" 'mkdir "$T/private/QUALIF/pki/old"' "entree inattendue dans pki/"
 guard_refus "garde : pki/tls.key lien symbolique" 'ln -s /etc/hostname "$T/private/QUALIF/pki/tls.key"' "n'est pas un fichier ordinaire"
 reset_env; mkstubs 5.7.0 1.5.0 pasta
-: > "$T/private/QUALIF/pki/ca.crt"; : > "$T/private/QUALIF/pki/tls.crt"; ( umask 077; : > "$T/private/QUALIF/pki/tls.key" )
-expect_rc 0 "garde : pki/ = ca.crt, tls.crt (0644), tls.key (0600) accepte" "fichiers de srv3 presents" qualif srv3
+: > "$T/private/QUALIF/pki/ca.crt"; : > "$T/private/QUALIF/pki/tls.crt"; chmod 644 "$T/private/QUALIF/pki/ca.crt"; chmod 444 "$T/private/QUALIF/pki/tls.crt"; ( umask 077; : > "$T/private/QUALIF/pki/tls.key" )
+expect_rc 0 "garde : pki/ = ca.crt (0644), tls.crt (0444), tls.key (0600) accepte" "fichiers de srv3 presents" qualif srv3
 guard_refus "garde : pki/tls.key en 0644 (lisible par tous)" ': > "$T/private/QUALIF/pki/tls.key"; chmod 644 "$T/private/QUALIF/pki/tls.key"' "tls.key en 644 : 0600 au plus"
 guard_refus "garde : pki/tls.key en 0640 (lisible par le groupe)" ': > "$T/private/QUALIF/pki/tls.key"; chmod 640 "$T/private/QUALIF/pki/tls.key"' "tls.key en 640 : 0600 au plus"
+guard_refus "garde : QUALIF pki/ en 0700 (minions sans keep-id : ca.crt illisible)" 'chmod 700 "$T/private/QUALIF/pki"' "pki en 700, attendu 0711"
+guard_refus "garde : QUALIF pki/ en 0755 (listable)" 'chmod 755 "$T/private/QUALIF/pki"' "pki en 755, attendu 0711"
+guard_refus "garde : QUALIF ca.crt en 0600 (illisible par les minions)" ': > "$T/private/QUALIF/pki/ca.crt"; chmod 600 "$T/private/QUALIF/pki/ca.crt"' "ca.crt en 600 : 0644 attendu"
+guard_refus "garde : QUALIF tls.crt en 0666 (inscriptible par d'autres)" ': > "$T/private/QUALIF/pki/tls.crt"; chmod 666 "$T/private/QUALIF/pki/tls.crt"' "tls.crt en 666 : 0644 attendu"
+reset_env; mkstubs 5.7.0 1.5.0 pasta; chmod 711 "$T/private/PROD/pki"
+XNODE=srv1 expect_rc 2 "garde : PROD pki/ en 0711 refuse (aucun minion PROD : 0700)" "pki en 711, attendu 0700" prod srv1
 reset_env; mkstubs 5.7.0 1.5.0 pasta; ( umask 077; : > "$T/private/QUALIF/pki/tls.key" ); chmod 400 "$T/private/QUALIF/pki/tls.key"
 expect_rc 0 "garde : pki/tls.key en 0400 accepte" "fichiers de srv3 presents" qualif srv3
 guard_refus "garde : pki lien symbolique" 'rmdir "$T/private/QUALIF/pki"; mkdir -m 700 "$T/autre"; ln -s "$T/autre" "$T/private/QUALIF/pki"' "pki absent, non repertoire ou lien"

@@ -28,9 +28,14 @@ UIDX="${SECAGENT_NODE_UID:-1000}"
 [[ $UIDX =~ ^[0-9]{1,10}$ ]] || refuse "SECAGENT_NODE_UID='$UIDX' invalide"
 
 env="${1:-}" node="${2:-}" pin="${3:-}"
+# PKI_DIR_MODE : mode exige de pki/. QUALIF : 0711 (traversable, NON listable) car les minions colocalises (srv4) gardent
+# le mapping rootless par defaut (pas de keep-id) et lisent /certs/ca.crt sous l'uid `relay` (su-exec), un uid secondaire
+# de l'hote : avec 0700 ils ne pourraient pas lire ca.crt. tls.key reste 0600 (proprietaire seul : jamais lu par
+# `relay`) ; PRIVATE/ et PRIVATE/QUALIF/ restent 0700 (aucun utilisateur de l'hote n'y gagne d'acces). PROD : 0700
+# (aucun minion sur les noeuds PROD).
 case "$env:$node" in
-  qualif:srv3|qualif:srv4) E=QUALIF; SUBS="state/root state/child secrets pki" ;;
-  prod:srv1|prod:srv2) E=PROD; SUBS="state/root secrets pki" ;;
+  qualif:srv3|qualif:srv4) E=QUALIF; SUBS="state/root state/child secrets pki"; PKI_DIR_MODE=711 ;;
+  prod:srv1|prod:srv2) E=PROD; SUBS="state/root secrets pki"; PKI_DIR_MODE=700 ;;
   *) refuse "couple '$env $node' : attendu qualif srv3|srv4 ou prod srv1|srv2" ;;
 esac
 here="${SECAGENT_NODE_NAME:-$(uname -n)}"; here="${here%%.*}"
@@ -50,7 +55,8 @@ for d in "" $SUBS "$node" "$node/cyril" "$node/cyril/secagent"; do
   p="$P${d:+/$d}"
   [ -d "$p" ] && [ ! -L "$p" ] || refuse "$p absent, non repertoire ou lien"
   [ "$(stat -c %u "$p")" = "$UIDX" ] || refuse "$p n'appartient pas a l'uid $UIDX"
-  [ "$(stat -c %a "$p")" = 700 ] || refuse "$p en $(stat -c %a "$p"), attendu 0700"
+  want=700; [ "$d" = pki ] && want="$PKI_DIR_MODE"
+  [ "$(stat -c %a "$p")" = "$want" ] || refuse "$p en $(stat -c %a "$p"), attendu 0$want$([ "$d" = pki ] && [ "$want" = 711 ] && echo ' (QUALIF : traversable par les minions pour ca.crt, chmod 711)')"
 done
 # ca.key de la CA rangee a part (pki-ca/, #267) : jamais dans pki/, qui est monte EN ENTIER dans les conteneurs (/certs).
 # pki/ ne contient QUE ca.crt, tls.crt, tls.key (noms seulement, aucun contenu lu) : toute autre entree (ca.key, cle de
@@ -65,6 +71,15 @@ done
 if [ -e "$P/pki/tls.key" ]; then
   km="$(stat -c %a "$P/pki/tls.key")"
   [ $((8#$km & 8#077)) -eq 0 ] || refuse "$P/pki/tls.key en $km : 0600 au plus (lisible par le groupe ou les autres)"
+fi
+# QUALIF : certificats PUBLICS lisibles par les minions (uid `relay`, autre que $UIDX) : 0644 ; jamais inscriptibles par d'autres
+if [ "$E" = QUALIF ]; then
+  for f in "$P/pki/ca.crt" "$P/pki/tls.crt"; do
+    [ -e "$f" ] || continue
+    cm="$(stat -c %a "$f")"
+    [ $((8#$cm & 8#444)) -eq $((8#444)) ] && [ $((8#$cm & 8#033)) -eq 0 ] \
+      || refuse "$f en $cm : 0644 attendu (certificat public lu par les minions, inscriptible par le seul proprietaire)"
+  done
 fi
 if [ -n "$pin" ]; then
   [[ $pin =~ ^/[A-Za-z0-9_./-]+$ && ! /$pin/ =~ /\.\./ ]] || refuse "manifeste epingle '$pin' : chemin absolu [A-Za-z0-9_./-] sans .. attendu"

@@ -95,6 +95,9 @@ rm -f tls.csr san.ext ca.srl ca.cnf
 # UID 10001, n'est pas le proprietaire : chown impossible sans root, group_add dependrait du GID du runner).
 chmod 644 tls.crt ca.crt
 chmod "$KEY_MODE" tls.key
+# repertoire : 0711 en 0600 (Podman QUALIF : traversable par l'uid `relay` des minions pour ca.crt, non listable ; la
+# garde check-private.sh l'exige), inchange en 0644 (bind mount Docker, repertoire du runner)
+[ "$KEY_MODE" = 0644 ] || chmod 711 .
 # controle (refus) : jamais plus permissif que le mode demande ; en 0600, aucun droit pour le groupe/les autres
 km="$(stat -c %a tls.key)"
 if [ "$KEY_MODE" = 0600 ] && [ $((8#$km & 8#077)) -ne 0 ]; then echo "ERREUR : tls.key en $km (0600 attendu)" >&2; exit 1; fi

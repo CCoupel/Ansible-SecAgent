@@ -65,6 +65,7 @@ fi
 [ -f "$T/QUALIF/pki-ca/ca.key" ] && ok "gen.sh : ca.key dans pki-ca/" || ko "gen.sh : ca.key absente de pki-ca/"
 [ "$(stat -c %a "$P/tls.key")" = 600 ] && [ "$(stat -c %a "$P/tls.crt")" = 644 ] && [ "$(stat -c %a "$P/ca.crt")" = 644 ] \
   && ok "gen.sh : tls.key 0600 par defaut, certificats publics 0644" || ko "gen.sh : modes $(stat -c '%a %n' "$P"/*)"
+[ "$(stat -c %a "$P")" = 711 ] && ok "gen.sh : pki/ en 0711 (traversable par les minions, non listable)" || ko "gen.sh : pki/ en $(stat -c %a "$P")"
 P44="$T/QUALIF44/pki"; mkdir -p "$T/QUALIF44"
 SECAGENT_PRIVATE_DIR="$T" PKI_MODE=0644 bash "$Q/pki/gen.sh" "$P44" > /dev/null 2> "$T/g44.err" \
   && [ "$(stat -c %a "$P44/tls.key")" = 644 ] && grep -q "bind mount Docker uniquement" "$T/g44.err" \
