@@ -168,6 +168,9 @@ admission_503() {
   [ "$slots" -ge 2 ] || fail "ADM503_BUDGET=$ADM503_BUDGET trop bas (moins de 2 taches)"
   [ "$slots" -le 20 ] || fail "ADM503_BUDGET=$ADM503_BUDGET : $slots taches > 2 x MAX_TASKS_PER_AGENT, le refus serait un 429 et non un 503"
   chain_dir   # garde de CHAIN_DIR (lien, proprietaire, 0700) avant d'y ecrire
+  # Fichiers de l'etape (codes, corps, en-tetes, inventaire, journal Ansible) crees en 0600 (T49 R4 : 0664 constate) ;
+  # umask d'origine restauree en fin d'etape (succes) ; un echec termine le script.
+  local adm503_umask; adm503_umask="$(umask)"; umask 077
   ADM503_DIR="$CHAIN_DIR/admission-503"; rm -rf "$ADM503_DIR"; mkdir -p "$ADM503_DIR"; chmod 700 "$ADM503_DIR"
   trap adm503_cleanup EXIT
   # 0. jeton plugin frais -> en-tete d'autorisation en fichier 0600 (jamais affiche)
@@ -240,12 +243,15 @@ admission_503() {
   echo "== 5. plugin Ansible reel : 12 forks > plafond ($slots)"
   control_env
   local inv="$CHAIN_DIR/admission-503-inventory.ini" out="$CHAIN_DIR/admission-503-ansible.log"
+  rm -f "$inv" "$out"   # un fichier existant garderait son ancien mode (0664 avant T49 R4) : recree en 0600 (umask 077)
   { echo "[all]"
     for n in $(seq 1 6); do echo "adm-root-$n ansible_host=minion-root ansible_connection=relay"; done
     for n in $(seq 1 6); do echo "adm-child-$n ansible_host=minion-child ansible_connection=relay"; done
   } > "$inv"
+  chmod 600 "$inv"
   ANSIBLE_CONNECTION_PLUGINS="$REPO/SECAGENT-PYTHON/ansible_plugins/connection_plugins" \
     "${ANSIBLE_BIN:-ansible}" all -i "$inv" -f 12 -m command -a "sleep 20" > "$out" 2>&1 || true   # rc != 0 attendu (UNREACHABLE)
+  chmod 600 "$out"
   local unreach ok_hosts
   unreach="$(grep -c 'UNREACHABLE!' "$out" || true)"; ok_hosts="$(grep -c 'CHANGED\|SUCCESS' "$out" || true)"
   [ "$unreach" -ge 1 ] || fail "admission-503 : aucun hote UNREACHABLE avec 12 forks et un plafond de $slots (voir $out)"
@@ -271,5 +277,6 @@ admission_503() {
   smoke
   trap - EXIT
   rm -rf "$ADM503_DIR"
+  umask "$adm503_umask"
   echo "admission-503 OK ($slots taches admises, la suivante refusee en 503 memory_budget_exhausted avec Retry-After, rien envoye au minion, liberation constatee, plugin explicite, defaut restaure)"
 }

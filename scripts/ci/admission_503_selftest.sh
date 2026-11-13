@@ -80,6 +80,13 @@ case "$res" in *"ssh-dans-le-fond=0"*) ok "requetes paralleles : aucune session 
 grep -q 'adm503_set_base   # maitre elu' "$ROOT/DEPLOYMENT/qualif/admission-503.sh" && sed -n '/^adm503_recreate_root() {/,/^}/p' "$ROOT/DEPLOYMENT/qualif/admission-503.sh" | grep -q adm503_set_base \
   && ok "adm503_recreate_root : attente du maitre et de l'API apres chaque recreation" || ko "adm503_recreate_root sans adm503_set_base"
 
+# T49 R4 : fichiers de l'etape en 0600 (umask 077 dans admission_503, inventaire et journal Ansible recrees et chmod 600)
+fn="$(sed -n '/^admission_503() {/,/^}/p' "$ROOT/DEPLOYMENT/qualif/admission-503.sh")"
+grep -q 'umask 077' <<< "$fn" && grep -q 'rm -f "$inv" "$out"' <<< "$fn" && grep -q 'chmod 600 "$inv"' <<< "$fn" && grep -q 'chmod 600 "$out"' <<< "$fn" \
+  && grep -q 'umask "$adm503_umask"' <<< "$fn" && ok "R4 : umask 077, inventaire et journal Ansible en 0600, umask restauree" || ko "R4 : modes des fichiers de l'etape"
+res="$(cd "$T" && bash -c 'umask 002; f() { local u; u="$(umask)"; umask 077; ( : > r4.ini ); umask "$u"; }; f; stat -c %a r4.ini; umask')"
+[ "$res" = $'600\n0002' ] && ok "R4 : fichier cree en 0600 sous umask 077, umask d'origine restauree" || ko "R4 essai : $res"
+
 # un exec de fond refuse (429) fait echouer adm503_lot_all_ok avec le code observe
 set +e
 res="$(PATH="$T/bin:$PATH" CHAIN_DIR="$T/chain" QUALIF_TLS_DIR=/ca ENDPOINT_HOST=h C_A=c-a bash -c '

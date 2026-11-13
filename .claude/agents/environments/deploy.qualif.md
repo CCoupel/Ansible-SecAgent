@@ -141,5 +141,21 @@ d'un secondaire refuserait un état plus ancien.
 Banc réel srv3 (ordre n°21) : le verdict de la copie et du restauré est « OK (authentic and valid) » ; `state/root` est
 inchangé (mêmes fichiers, même empreinte de `relay.state`).
 
+### Relancer une racine arrêtée (unité `oneshot`) — T49 R5
+L'unité `secagent-<env>-<srvX>.service` est `Type=oneshot` + `RemainAfterExit=yes` : elle reste **`active`** même si le
+conteneur de la racine ne tourne plus (`podman kill`, `podman stop`, arrêt manuel, crash que la politique du conteneur
+ne relance pas). Dans ce cas, **`systemctl --user start` seul est SANS EFFET** (l'unité est déjà « active » : rien n'est
+exécuté). `Restart=on-failure` ne couvre que l'**échec du démarrage** (ExecStartPre, ExecStart ou ExecStartPost), pas
+l'arrêt ultérieur du conteneur. Relance, en `cyril` sur le nœud :
+```
+systemctl --user stop secagent-<env>-<srvX>.service     # ExecStop (podman-compose stop), l'unite passe inactive
+systemctl --user start secagent-<env>-<srvX>.service    # ExecStartPre (empreintes + garde), up -d, ExecStartPost
+systemctl --user status secagent-<env>-<srvX>.service   # active (exited) ET conteneur running/healthy (podman ps)
+```
+`systemctl --user restart` fait la même chose (stop puis start). Si l'unité est `failed` (3 échecs en 600 s) : `reset-failed`
+d'abord. Toujours vérifier ensuite le conteneur lui-même (`podman ps --filter label=com.docker.compose.service=<service>`),
+jamais l'état de l'unité seul. Après un `kill` du maître, le passif ne prend la main qu'à la péremption du verrou
+(≈ 278 s mesurés en T49 avec b en attente) : relancer l'ancien maître ne raccourcit pas ce délai.
+
 ### Démarrage refusé après une indisponibilité du partage
 Au boot, si l'autofs n'est pas joignable, l'unité (copie locale) est chargée mais `ExecStartPre` échoue (fichiers introuvables) : aucun conteneur ne démarre (fail-closed) ; `Restart=on-failure` réessaie 3 fois en 600 s. Partage revenu plus tard : `ssh … cyril@<ip> 'systemctl --user reset-failed secagent-<env>-<srvX>.service; systemctl --user start secagent-<env>-<srvX>.service'` (aucune ré-vérification depuis le poste nécessaire : le manifeste épinglé fait foi), puis `systemctl --user status` ; un échec d'empreinte (`sha256sum`) ou de liste (`check-private.sh`) ⇒ **BLOQUE** (partage modifié depuis la vérification), jamais de `--pin` pour « débloquer » sans comprendre l'écart ; un conteneur démarré avant un remontage de l'autofs garde l'ancien montage : `systemctl --user restart secagent-<env>-<srvX>.service`.
