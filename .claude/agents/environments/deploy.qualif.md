@@ -124,5 +124,22 @@ Au lancement, tu dois rester en IDLE. N'engage AUCUNE action autonome. N'exécut
 
 À ne **jamais** faire : `systemctl --user start` d'une unité **avant** le `state init` (démarrage refusé, nouvelles tentatives `Restart=`) ; `podman-compose up` de a/b à la main ; ajouter l'enfant ou des minions à une unité. Le 3e niveau (`CHAIN_LEVEL3`) reste Docker seulement.
 
+### Sauvegarde de l'état sans perte simulée — `state-backup` (Podman, décision Q4)
+`backup-restore` (perte simulée du volume) reste réservé à Docker : sous Podman, l'état **est** `PRIVATE/QUALIF/state/root`.
+`CONTAINER_CLI=podman bash chain-test.sh state-backup` prouve la **procédure de sauvegarde PROD** sans toucher à cet état.
+Toutes les étapes se font sur le nœud du **maître** :
+1. `state verify` de l'état en service (`podman exec` dans le maître) ;
+2. copie **hors partage** par `podman cp` dans `~cyril/secagent-backup/<horodatage UTC>/relay.state`, en 0600 (dossiers en 0700, créés neufs ; refus si `~/secagent-backup` est un lien) ;
+3. `state verify` de la **copie**, dans un conteneur éphémère : keep-id 10001, lecture seule, `--network none`, `cap_drop ALL` ; la copie est montée en ro et le volume des secrets en ro (clé RSA) ;
+4. `state restore --from` la copie dans un `STATE_DIR` **temporaire** (`restore-check/`, 0700), puis `state verify` du résultat ;
+5. `restore-check/` est retiré ; la copie est **gardée** (vraie sauvegarde, à purger à la main).
+
+Jamais de montage de `state/root`, de `secagent_state` ni du partage (vérifié par `scripts/ci/state_backup_selftest.sh`, en CI).
+**Pour la PROD**, même procédure sur le nœud du maître, puis copie de la sauvegarde hors du nœud. Une restauration réelle
+exige d'arrêter **toutes** les instances avant `state restore` : le serveur le rappelle, car le garde `write_seq` en mémoire
+d'un secondaire refuserait un état plus ancien.
+Banc réel srv3 (ordre n°21) : le verdict de la copie et du restauré est « OK (authentic and valid) » ; `state/root` est
+inchangé (mêmes fichiers, même empreinte de `relay.state`).
+
 ### Démarrage refusé après une indisponibilité du partage
 Au boot, si l'autofs n'est pas joignable, l'unité (copie locale) est chargée mais `ExecStartPre` échoue (fichiers introuvables) : aucun conteneur ne démarre (fail-closed) ; `Restart=on-failure` réessaie 3 fois en 600 s. Partage revenu plus tard : `ssh … cyril@<ip> 'systemctl --user reset-failed secagent-<env>-<srvX>.service; systemctl --user start secagent-<env>-<srvX>.service'` (aucune ré-vérification depuis le poste nécessaire : le manifeste épinglé fait foi), puis `systemctl --user status` ; un échec d'empreinte (`sha256sum`) ou de liste (`check-private.sh`) ⇒ **BLOQUE** (partage modifié depuis la vérification), jamais de `--pin` pour « débloquer » sans comprendre l'écart ; un conteneur démarré avant un remontage de l'autofs garde l'ancien montage : `systemctl --user restart secagent-<env>-<srvX>.service`.

@@ -33,6 +33,7 @@
 #   chain-test.sh revoke-no-removed  # revocations (minion-root ; dmz2 a 3 niveaux) : aucun removed, puis remise en etat (#266)
 #   chain-test.sh relay-removed  # CHAIN_LEVEL3=1 : dmz2 revoque puis supprime chez dmz1 : relay.removed, pas de cascade (#266)
 #   chain-test.sh rollback-refused  # ROLLBACK_IMAGE (v3.0.5 par digest) : state verify refuse l'etat v3.0.6 (first_seen_at)
+#   chain-test.sh state-backup  # Podman : verify, copie 0600 hors partage (~cyril/secagent-backup/), restore sur une COPIE (Q4)
 #   chain-test.sh negative-ca  # essai CA negatif (profil Compose `negative`) : un minion sans la CA est refuse (#197)
 #   chain-test.sh admission-503  # refus 503 memory_budget_exhausted en reel (#241) : plafond abaisse, voir admission-503.sh
 #   chain-test.sh paths        # chemins prives resolus (sans docker) ; echec si la racine PRIVATE/ manque
@@ -1282,6 +1283,47 @@ rollback_refused() {
   echo "rollback-refused OK (v3.0.5 refuse l'etat v3.0.6 : code $rc, first_seen_at cite)"
 }
 
+# --- Sauvegarde de l'etat sous Podman SANS perte simulee (decision Q4 de l'utilisateur, ordre infra n°21) ---------------
+# Prouve la procedure de sauvegarde PROD sans toucher state/root : sur le noeud du MAITRE, 1) `state verify` de l'etat en
+# service ; 2) copie 0600 HORS partage dans ~cyril/secagent-backup/<horodatage>/ (0700, cree neuf) par `podman cp` ;
+# 3) `state verify` de la COPIE (conteneur ephemere, copie en lecture seule) ; 4) `state restore --from` la copie dans un
+# STATE_DIR TEMPORAIRE (restore-check/, 0700) puis `state verify` du resultat ; 5) restore-check/ retire, la copie GARDEE
+# (sauvegarde reelle, a purger a la main). Conteneurs ephemeres : keep-id 10001, lecture seule, sans reseau, cap_drop ALL ;
+# seuls montages : la copie, le STATE_DIR temporaire et le volume des secrets (ro, cle RSA). Jamais state/root ni secagent_state.
+# shellcheck disable=SC2016   # script execute SUR LE NOEUD (bash -c), variables developpees la-bas
+STATE_BACKUP_NODE_SCRIPT='set -euo pipefail
+ts="$1"; c="$2"; img="$3"; sec="$4"
+umask 077
+b="$HOME/secagent-backup"; d="$b/$ts"; r="$d/restore-check"
+[ ! -L "$b" ] || { echo "REFUS: $b est un lien symbolique" >&2; exit 2; }
+mkdir -p "$b"; chmod 700 "$b"
+mkdir "$d"; chmod 700 "$d"
+podman cp "$c:/data/relay.state" "$d/relay.state"
+chmod 600 "$d/relay.state"
+eph() { podman run --rm --userns keep-id:uid=10001,gid=10001 --user 10001:10001 --read-only --tmpfs /tmp:U,mode=1777 \
+          --cap-drop ALL --security-opt no-new-privileges --network none \
+          -v "$sec:/run/secagent-secrets:ro" -e RSA_MASTER_KEY_FILE=/run/secagent-secrets/rsa_master_key "$@"; }
+eph -v "$d:/backup:ro" "$img" state verify /backup/relay.state
+mkdir "$r"; chmod 700 "$r"
+eph -v "$d:/backup:ro" -v "$r:/data" -e STATE_DIR=/data "$img" state restore --from /backup/relay.state
+eph -v "$r:/data:ro" "$img" state verify /data/relay.state
+rm -rf -- "$r"
+echo "copie : $(stat -c "%a %n" "$b" "$d" "$d/relay.state" | tr "\n" " ")"'
+state_backup() {
+  [ "$CONTAINER_CLI" = podman ] || refuse "state-backup : Podman seulement (sous Docker : backup-restore)"
+  need SECAGENT_IMAGE
+  local m n ts
+  m="$(master)" || fail "pas de maitre sur la racine"
+  n="$(node_of "$m")"
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  echo "== state verify de l'etat en service ($m, noeud $n)"
+  ctr exec "$m" /app/secagent-server state verify /data/relay.state >/dev/null || fail "etat en service refuse par state verify"
+  echo "== copie hors partage, state verify de la copie, state restore sur un STATE_DIR temporaire (noeud $n)"
+  node_ssh "$n" nostdin bash -c "$STATE_BACKUP_NODE_SCRIPT" _ "$ts" "$m" "$SECAGENT_IMAGE" "$SECAGENT_SECRETS_VOLUME" \
+    || fail "state-backup : echec sur le noeud $n"
+  echo "state-backup OK : ~cyril/secagent-backup/$ts/relay.state sur $(node_name "$n") (0600, dossier 0700), restauration verifiee sur une copie"
+}
+
 # --- Essai CA negatif (#197 item 2) : service Compose `minion-negca`, profil `negative` -----------------------------
 negative_ca() {
   verify_images
@@ -1373,10 +1415,11 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     revoke-no-removed) revoke_no_removed ;;
     relay-removed) relay_removed ;;
     rollback-refused) rollback_refused ;;
+    state-backup) state_backup ;;
     negative-ca) negative_ca ;;
     admission-503) admission_503 ;;
     down) chain_down ;;
     reset-state) reset_state ;;
-    *) sed -n '2,56p' "$0"; exit 2 ;;
+    *) sed -n '2,57p' "$0"; exit 2 ;;
   esac
 fi

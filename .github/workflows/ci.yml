@@ -404,6 +404,7 @@ jobs:
           bash scripts/ci/podman_cli_selftest.sh
           bash scripts/ci/podman_node_files_selftest.sh
           bash scripts/ci/reset_state_selftest.sh
+          bash scripts/ci/state_backup_selftest.sh
           python3 scripts/ci/check_scripts.py .github/workflows/*.yml
 
       # Variables d'exemple NON secretes : uniquement pour que `docker compose config` puisse interpoler.
