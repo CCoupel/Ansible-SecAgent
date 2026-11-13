@@ -74,8 +74,15 @@ SECAGENT_IMAGE=… SECAGENT_MINION_IMAGE=… DEPLOYMENT/podman/verify-node-files
 
 # 3. sur le nœud, en cyril (sans sudo) ; jamais `systemctl --user link` (unité copiée par --pin)
 systemctl --user enable --now podman.socket
-systemctl --user daemon-reload && systemctl --user enable --now secagent-qualif-srv3.service
+systemctl --user daemon-reload && systemctl --user enable secagent-qualif-srv3.service   # SANS --now : voir ci-dessous
 ```
+
+**Un seul chemin par service (T48)** : l'unité ne démarre que la **racine** du nœud (`secagent-server-a` sur srv3,
+`secagent-server-b` sur srv4) ; l'enfant et les minions de QUALIF sont des services de test, démarrés par
+`chain-test.sh` seulement. Le **premier** démarrage de la racine suit le `state init` : en QUALIF, c'est
+`CONTAINER_CLI=podman chain-test.sh bootstrap` qui le fait (`root_up` = `systemctl --user start` des unités) ; en PROD,
+`systemctl --user start` après le `state init`. Aucun `podman-compose up` de la racine à la main. Détail et ordre :
+`.claude/agents/environments/deploy.qualif.md`, « Qui démarre quoi sous Podman ».
 
 QUALIF : la recette (`chain-test.sh bootstrap|smoke|failover|…`) se lance avec `CONTAINER_CLI=podman` (voir
 `DEPLOYMENT/qualif/README.md`) ; `push-tls` et `backup-restore` ne s'appliquent pas sous Podman.

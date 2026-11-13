@@ -40,8 +40,9 @@ U="$B/systemd/secagent-qualif-srv4.service"
   && ok "unite : ExecStartPre = empreintes epinglees PUIS garde (avec liste exacte)" || ko "unite ExecStartPre : $(grep ExecStartPre "$U")"
 cmp -s "$HERE/../../DEPLOYMENT/podman/check-private.sh" "$B/bin/check-private.sh" && [ "$(stat -c %a "$B/bin/check-private.sh")" = 700 ] \
   && ok "stage : garde bin/check-private.sh re-ecrite depuis le depot (0700)" || ko "stage : garde bin/ differente du depot"
-grep -q "^ExecStart=/usr/bin/podman-compose -p secagent-qualif -f docker-compose.chain.yml -f docker-compose.hooks.yml -f docker-compose.podman.qualif.yml up -d secagent-server-b secagent-child minion-root minion-child$" "$U" \
-  && ok "unite : services de srv4 seulement" || ko "unite ExecStart : $(grep '^ExecStart=' "$U")"
+grep -q "^ExecStart=/usr/bin/podman-compose -p secagent-qualif -f docker-compose.chain.yml -f docker-compose.hooks.yml -f docker-compose.podman.qualif.yml up -d secagent-server-b$" "$U" \
+  && ok "unite srv4 : racine b SEULEMENT (enfant et minions : chain-test.sh)" || ko "unite ExecStart : $(grep '^ExecStart=' "$U")"
+grep -qE "secagent-child|minion-" "$U" && ko "unite srv4 demarre un service de test (enfant/minion)" || ok "unite srv4 : aucun service de test (pas de double chemin)"
 grep -q "^StartLimitBurst=3$" "$U" && grep -q "^Restart=on-failure$" "$U" && grep -q "^After=network-online.target$" "$U" \
   && ok "unite : redemarrage borne, apres le reseau" || ko "unite : limites absentes"
 grep -q "secagent-server-a" "$U" && ko "unite srv4 demarre a" || ok "unite srv4 ne demarre pas a"

@@ -89,6 +89,18 @@ out="$(env -i "${ENVV[@]}" bash -c 'source "$1"; echo "$SECRET_OWNER_UID $QUALIF
 [ "$out" = "1000 $P/QUALIF/pki" ] && ok "Podman : SECRET_OWNER_UID=1000, TLS = PRIVATE/QUALIF/pki" || ko "defauts Podman : $out"
 out="$(env -i PATH="$T/bin:$T/sys" SECAGENT_PRIVATE_DIR="$P" bash -c 'source "$1"; echo "$CONTAINER_CLI $SECRET_OWNER_UID"; docker() { echo "DOCKER $*"; }; ctr ps -a' _ "$F" 2>&1)"
 [ "$out" = $'docker 10001\nDOCKER ps -a' ] && ok "Docker (defaut) : ctr = docker, SECRET_OWNER_UID=10001" || ko "mode docker : $out"
+# --- T48 : racine (a, b) par les UNITES seulement sous Podman (aucun podman-compose up pour a/b) ---
+chk "root_up : start des 2 unites puis ctr start a, b (4 appels)" 'root_up' \
+  "^$A \\| systemctl --user start secagent-qualif-srv3.service" 4
+run CMD=root_up; grep -qE "^$B \| systemctl --user start secagent-qualif-srv4.service" "$T/ssh.log" && grep -qE "^$A \| podman start secagent-qualif-a" "$T/ssh.log" && grep -qE "^$B \| podman start secagent-qualif-b" "$T/ssh.log" \
+  && ok "root_up : unite srv4 sur B, ctr start a sur A et b sur B" || ko "root_up : $(last | tr '\n' '#')"
+grep -q "podman-compose" "$T/ssh.log" && ko "root_up : podman-compose appele pour a/b (double chemin)" || ok "root_up : aucun podman-compose pour a/b"
+run CMD=root_reset; [ "$(grep -c 'systemctl --user stop' "$T/ssh.log")" = 2 ] && grep -q "podman rm -f secagent-qualif-a" "$T/ssh.log" && grep -q "podman rm -f secagent-qualif-b" "$T/ssh.log" && [ "$(grep -c 'systemctl --user start' "$T/ssh.log")" = 2 ] && ! grep -q podman-compose "$T/ssh.log" \
+  && ok "root_reset : stop des unites, rm a/b, start des unites (recree par l'unite)" || ko "root_reset : $(last | tr '\n' '#')"
+FS="$HERE/../../DEPLOYMENT/qualif/failover-test.sh"
+CT="$HERE/../../DEPLOYMENT/qualif/chain-test.sh"   # bootstrap (Docker ET Podman) : a/b par root_up ; backup_restore est Docker seulement
+sed -n '/^bootstrap() {/,/^}/p' "$CT" | grep -q 'dc up -d secagent-server-a' && ko "chain-test.sh bootstrap : dc up de a/b (double chemin sous Podman)" || ok "chain-test.sh bootstrap : a/b demarres par root_up seulement"
+grep -q 'up_and_identify() {' "$FS" && sed -n '/^up_and_identify() {/,/^}/p' "$FS" | grep -q root_up && ok "failover-test.sh up_and_identify : root_up" || ko "up_and_identify sans root_up"
 out="$(env -i "${ENVV[@]}" bash -c 'source "$1"; teardown_ok=0; guard_project' _ "$F" 2>&1)"; rc=$?
 [ "$rc" = 0 ] && ok "guard_project : secagent-qualif accepte sous Podman" || ko "guard_project : $out"
 out="$(env -i "${ENVV[@]}" PROJECT=secagent-chain bash -c 'source "$1"; guard_project' _ "$F" 2>&1)"; rc=$?

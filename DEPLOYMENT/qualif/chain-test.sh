@@ -20,6 +20,7 @@
 #   chain-test.sh link-rotation  # rotation de la cle de lien, confirmation, nouveau jeton, retire-link-previous (v3.0.4)
 #   chain-test.sh link-revoke    # revocation du lien d'un enfant : fermeture 4010, pas de reconnexion, puis remise en etat
 #   chain-test.sh hooks        # journal des hooks apres bootstrap : relay.failover, relay.up dmz1, host.up (#197, #225, #245, hooks.json)
+#   chain-test.sh test-services-up  # relance l'enfant et les minions (apres un redemarrage de noeud sous Podman : la racine revient par ses unites)
 #   chain-test.sh relay-down   # arret puis redemarrage de l'enfant : relay.down peer_closed:1001 puis relay.up de dmz1 (#245, T22)
 #   chain-test.sh converged-timeout   # enfant arrete puis bascule : relay.converged au delai (relays_missing=1), un seul (#246)
 #   chain-test.sh rerouted     # minion-child re-pointe vers la racine puis retour : host.rerouted direct puis indirect (#244)
@@ -318,7 +319,7 @@ bootstrap() {
   echo "== etat initial (racine)"
   dc run --rm --no-deps secagent-server-a state init
   echo "== racine : demarrage et identification du maitre"
-  dc up -d secagent-server-a secagent-server-b
+  root_up   # Docker : compose ; Podman : unites secagent-qualif-<srvX> (seul chemin pour a/b), apres le state init
   wait_for "racine healthy" 120 all_health healthy "$C_A" "$C_B" >/dev/null
   sleep 3
   local m; m="$(master)" || fail "pas de maitre sur la racine"
@@ -639,6 +640,15 @@ link_revoke() {
   connected "$m" relays dmz1 4
   smoke
   echo "link-revoke OK (lien ferme et non retabli avec le jeton revoque ; retabli avec un nouveau jeton)"
+}
+
+# Services de TEST (enfant, minions ; 3e niveau si CHAIN_LEVEL3=1) relances tels quels (`start` des conteneurs existants),
+# ex. apres un redemarrage de noeud sous Podman : la racine revient par ses unites, ces services par ce chemin seul.
+test_services_up() {
+  local s=(secagent-child minion-root minion-child); level3 && s+=(secagent-grandchild minion-grand)
+  dc start "${s[@]}"
+  wait_for "enfant healthy" 120 all_health healthy "$C_CHILD" >/dev/null
+  echo "services de test relances : ${s[*]}"
 }
 
 # --- Hooks en reel (#197 item 1) -----------------------------------------------------------------------------------
@@ -1273,6 +1283,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     link-revoke) link_revoke ;;
     hooks) check_hooks ;;
     relay-down) relay_down ;;
+    test-services-up) test_services_up ;;
     converged-timeout) converged_timeout ;;
     rerouted) rerouted ;;
     upstream-queue) upstream_queue ;;
@@ -1288,7 +1299,9 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     admission-503) admission_503 ;;
     down) guard_project
           if [ "$CONTAINER_CLI" = podman ]; then
-            # JAMAIS `down -v` sous Podman : etat et secrets sont des volumes lies au partage PRIVATE (#267)
+            # unites de la racine arretees d'abord (sinon elles resteraient « actives » sans conteneur) ; puis les services de
+            # test et la racine sont retires. JAMAIS `down -v` sous Podman : etat et secrets sont lies au partage PRIVATE (#267)
+            for CTR_NODE in A B; do node_ssh "$CTR_NODE" nostdin systemctl --user stop "$(root_unit "$CTR_NODE")" >/dev/null 2>&1 || true; done
             dc down
             # shellcheck disable=SC2046   # events_volumes : noms sans espace
             for CTR_NODE in A B; do ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" $(events_volumes) >/dev/null 2>&1 || true; done
@@ -1300,6 +1313,6 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
             ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_LINK_GRAND_VOLUME" "$SECAGENT_HOOKS_VOLUME" "$SECAGENT_SECRETS_VOLUME" $(events_volumes) >/dev/null 2>&1 || true
           fi
           chain_dir_clean ;;   # jetons volatils du poste (garde chain_dir_check avant tout rm)
-    *) sed -n '2,53p' "$0"; exit 2 ;;
+    *) sed -n '2,54p' "$0"; exit 2 ;;
   esac
 fi

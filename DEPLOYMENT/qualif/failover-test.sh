@@ -356,12 +356,39 @@ setup_ci() {
   echo "QUALIF_TLS_DIR=$d"
 }
 
+# --- Racine (a, b) : UN SEUL chemin de creation/demarrage par plateforme (T48) ---------------------------------------
+# Docker : Compose (`dc up -d`). Podman : les unites --user secagent-qualif-<srvX> (posees par verify-node-files.sh --pin,
+# daemon-reload fait) : jamais podman-compose pour a/b. Un conteneur arrete par un scenario (ctr stop/kill) est relance
+# tel quel (`ctr start`) : l'unite oneshot reste active et ne recree rien.
+root_unit() { printf 'secagent-qualif-%s.service' "$(node_name "$1")"; }
+root_up() {
+  if [ "$CONTAINER_CLI" != podman ]; then
+    # FAILOVER_UP_SERVICES (liste, optionnel) : ne (re)demarrer QUE ces services. Sans elle, `up -d` demarre TOUT le Compose,
+    # y compris un service qu'un scenario vient d'arreter expres (chain-test.sh converged-timeout : l'enfant).
+    # shellcheck disable=SC2086   # liste de services separes par des espaces
+    QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$CI_TLS_DIR}" dc up -d ${FAILOVER_UP_SERVICES:-}
+    return
+  fi
+  local n
+  for n in A B; do
+    node_ssh "$n" nostdin systemctl --user start "$(root_unit "$n")" \
+      || fail "unite $(root_unit "$n") non demarree sur le noeud $n : deposee et epinglee ? (stage-node-files.sh + verify-node-files.sh --pin qualif $(node_name "$n"), puis daemon-reload)"
+  done
+  ctr start "$C_A" >/dev/null; ctr start "$C_B" >/dev/null
+}
+# Recree a et b avec la configuration PAR DEFAUT apres un scenario qui les a reconfigures (admission-503). Podman : arret des
+# unites, suppression des conteneurs, redemarrage des unites (c'est l'unite qui recree). Docker : compose force-recreate.
+root_reset() {
+  if [ "$CONTAINER_CLI" != podman ]; then dc up -d --no-deps --force-recreate secagent-server-a secagent-server-b; return; fi
+  local n
+  for n in A B; do node_ssh "$n" nostdin systemctl --user stop "$(root_unit "$n")" || true; done
+  ctr rm -f "$C_A" >/dev/null 2>&1 || true; ctr rm -f "$C_B" >/dev/null 2>&1 || true
+  root_up
+}
+
 up_and_identify() {
   guard_remote_binds
-  # FAILOVER_UP_SERVICES (liste, optionnel) : ne (re)demarrer QUE ces services. Sans elle, `up -d` demarre TOUT le Compose,
-  # y compris un service qu'un scenario vient d'arreter expres (chain-test.sh converged-timeout : l'enfant).
-  # shellcheck disable=SC2086   # liste de services separes par des espaces
-  QUALIF_TLS_DIR="${QUALIF_TLS_DIR:-$CI_TLS_DIR}" dc up -d ${FAILOVER_UP_SERVICES:-}
+  root_up
   wait_for "les deux conteneurs healthy" 120 all_health healthy "$C_A" "$C_B" >/dev/null
   sleep 3
   local ma=0 mb=0

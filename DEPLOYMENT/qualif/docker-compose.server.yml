@@ -90,7 +90,7 @@ services:
 volumes:
   # Volume local partage par les 2 conteneurs (meme hote). Pour tester un vrai partage reseau (NFS),
   # remplacer par un volume `driver_opts type=nfs` : voir DEPLOYMENT/prod/README.md.
-  secagent_state:
+  secagent_state: {}
   # Volume EXTERNE des secrets serveur (cree et alimente par `failover-test.sh setup-ci` / `chain-test.sh bootstrap`) :
   # JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY en fichiers 0400 (10001). Retire par `down` / `teardown`.
   secagent_secrets:

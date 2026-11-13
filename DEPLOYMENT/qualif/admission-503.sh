@@ -45,7 +45,7 @@ adm503_cleanup() { # sortie de l'etape (succes ou echec) : plus de tache en fond
   ADM503_PIDS=()
   if [ -n "$ADM503_OVERRIDE" ] && [ -f "$ADM503_OVERRIDE" ]; then
     echo "== nettoyage : plafond memoire par defaut restaure" >&2
-    dc up -d --no-deps --force-recreate secagent-server-a secagent-server-b >/dev/null 2>&1 || true
+    root_reset >/dev/null 2>&1 || true   # Podman : recree par les unites ; Docker : compose force-recreate
     rm -f "$ADM503_OVERRIDE"
   fi
 }
@@ -127,7 +127,7 @@ adm503_recreate_root() {
   if [ "$1" = with ]; then
     dc -f "$ADM503_OVERRIDE" up -d --no-deps --force-recreate secagent-server-a secagent-server-b
   else
-    dc up -d --no-deps --force-recreate secagent-server-a secagent-server-b
+    root_reset   # configuration par defaut ; Podman : recree par les unites (seul chemin de a/b hors du test)
   fi
   wait_for "racine healthy" 120 all_health healthy "$C_A" "$C_B" >/dev/null
   sleep 3

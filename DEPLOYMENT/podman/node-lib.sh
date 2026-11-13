@@ -15,7 +15,10 @@ node_topology() {
   [[ $PRIVATE_DIR =~ ^/[A-Za-z0-9_./-]+$ && ! /$PRIVATE_DIR/ =~ /\.\./ ]] || refuse "SECAGENT_PRIVATE_DIR='$PRIVATE_DIR' : chemin absolu [A-Za-z0-9_./-] sans .. attendu"
   case "$1:$2" in
     qualif:srv3) ENV=QUALIF; NODE_IP=192.168.1.213; NODE_SERVICES="secagent-server-a" ;;
-    qualif:srv4) ENV=QUALIF; NODE_IP=192.168.1.214; NODE_SERVICES="secagent-server-b secagent-child minion-root minion-child" ;;
+    # Unite = racine SEULEMENT (a sur srv3, b sur srv4) : seul chemin de creation/demarrage de a et b (boot, Restart=,
+    # chain-test.sh root_up). L'enfant et les minions de QUALIF sont des services de TEST, crees et demarres par
+    # chain-test.sh seulement (bootstrap) : jamais par l'unite (pas de double chemin pour un meme service, T48).
+    qualif:srv4) ENV=QUALIF; NODE_IP=192.168.1.214; NODE_SERVICES="secagent-server-b" ;;
     prod:srv1) ENV=PROD; NODE_IP=192.168.1.211; NODE_SERVICES="secagent-server" ;;
     prod:srv2) ENV=PROD; NODE_IP=192.168.1.212; NODE_SERVICES="secagent-server" ;;
     *) refuse "couple '$1 $2' : attendu qualif srv3|srv4 ou prod srv1|srv2" ;;

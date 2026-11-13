@@ -246,12 +246,14 @@ volumes:
   secagent_link:
     external: true
     name: ${SECAGENT_LINK_VOLUME:-secagent-qualif_link}
+  # Volumes locaux declares `{}` (jamais une valeur nulle) : la surcharge Podman les redefinit en dict, ce que
+  # podman-compose 1.5 refuse de fusionner avec une valeur nulle (« can't merge ... NoneType and dict », T48 2026-11-13).
   # Lien du 3e niveau (dmz2) : meme modele que secagent_link, volume distinct (jeton --sub dmz2).
   secagent_link_grand:
     external: true
     name: ${SECAGENT_LINK_GRAND_VOLUME:-secagent-qualif_link_grand}
-  child_state:
-  grandchild_state:
-  minion_root_data:
-  minion_child_data:
-  minion_grand_data:
+  child_state: {}
+  grandchild_state: {}
+  minion_root_data: {}
+  minion_child_data: {}
+  minion_grand_data: {}
