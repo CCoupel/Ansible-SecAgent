@@ -66,10 +66,21 @@ func TestRender_KnownButEmptyVariableIsRenderedEmpty_InAFileHook(t *testing.T) {
 	b.launchSecondary(addrB.env())
 	t.Cleanup(b.stop)
 	waitFor(t, "the standby polls the lock", b.localStatusPolled)
+	// the takeover needs a master that is on record in the lock: kill it only once its lock says so (a slow runner can be
+	// late), otherwise the new master would have no previous instance to take over from
+	waitFor(t, "the first master holds the lock with its instance id", func() bool {
+		l, ok := readLock(a.stateDir)
+		return ok && l.Role == "master" && l.InstanceID == instA
+	})
 	a.killNow()
 	if !b.awaitPromotion(30 * time.Second) {
 		t.Fatalf("the passive root never took over; logs:\n%s", b.logs.String())
 	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("journal of the hooks (shared by both instances):\n%s", strings.Join(b.hookLines(), "\n"))
+		}
+	})
 	waitFor(t, "relay.failover (takeover) rendered by the new master", func() bool { return b.hookHas("FAILOVER cause=takeover ") })
 	var take string
 	for _, l := range b.hookLines() {

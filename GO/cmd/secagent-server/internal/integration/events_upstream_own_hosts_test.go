@@ -80,10 +80,10 @@ func testOwnHostsReplayed(t *testing.T, mode string) {
 	root, child, tokens := ownHostsTree(t, mode)
 	before := ownCount(root)
 	cutAndBack(t, root, child, func() { produceOwn(t, child, tokens) })
+	// the child's hooks run asynchronously behind its dispatcher queue: wait for its journal to hold every own event
+	// (state), do not read it right after the last connection (a slow runner lags)
+	waitFor(t, "the child journaled every own event it produced", func() bool { return ownCount(child) >= 2*ownHosts*ownCycles })
 	produced := ownCount(child)
-	if produced < 2*ownHosts*ownCycles {
-		t.Fatalf("the child journaled %d own events, want at least %d", produced, 2*ownHosts*ownCycles)
-	}
 	if v, _ := child.statusField("upstream_queue_depth"); int(v) < 2*ownHosts*ownCycles {
 		t.Errorf("upstream_queue_depth = %v while cut, want at least %d queued own events", v, 2*ownHosts*ownCycles)
 	}
