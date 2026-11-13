@@ -80,9 +80,9 @@ services:
         source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}
         target: /certs
         read_only: true
-    tmpfs:
-      - /run/secagent:uid=10001,gid=10001,mode=0700
-      - /tmp:uid=10001,gid=10001,mode=1777
+    tmpfs:   # SECAGENT_TMPFS_OPTS : voir docker-compose.server.yml
+      - /run/secagent:${SECAGENT_TMPFS_OPTS:-uid=10001,gid=10001},mode=0700
+      - /tmp:${SECAGENT_TMPFS_OPTS:-uid=10001,gid=10001},mode=1777
     ports:
       - "127.0.0.1:9771:7771"     # admin : boucle locale uniquement
     healthcheck:
@@ -181,9 +181,9 @@ services:
         source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}
         target: /certs
         read_only: true
-    tmpfs:
-      - /run/secagent:uid=10001,gid=10001,mode=0700
-      - /tmp:uid=10001,gid=10001,mode=1777
+    tmpfs:   # SECAGENT_TMPFS_OPTS : voir docker-compose.server.yml
+      - /run/secagent:${SECAGENT_TMPFS_OPTS:-uid=10001,gid=10001},mode=0700
+      - /tmp:${SECAGENT_TMPFS_OPTS:-uid=10001,gid=10001},mode=1777
     ports:
       - "127.0.0.1:9772:7771"     # admin : boucle locale uniquement
     healthcheck:

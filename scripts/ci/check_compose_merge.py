@@ -12,12 +12,21 @@ l'accepte. Ce script :
   2. reproduit la fusion de podman-compose sur une combinaison de fichiers, dans SON ordre (-f, puis les `include:`
      ajoutes a la fin), et refuse tout conflit de types ;
   3. refuse toute valeur qu'un fichier INCLUS ecraserait sur une surcharge -f (podman-compose fusionne les inclus en
-     dernier, docker compose non) : cas T48 de `external` / `name` d'un volume.
+     dernier, docker compose non) : cas T48 de `external` / `name` d'un volume ;
+  4. refuse une combinaison ou un service porte `userns_mode` sans `x-podman: {in_pod: false}` : podman-compose 1.5
+     place sinon le service dans `pod_<projet>` (--pod) et podman refuse « --userns and --pod cannot be set together »
+     (T48, 2026-11-13) ;
+  5. refuse un tmpfs a options `uid=` / `gid=` (podman 5.7 : « unknown mount option "uid=10001" », T48), apres
+     interpolation des variables par l'environnement (sous Podman : SECAGENT_TMPFS_OPTS=U, release.env et chain-test.sh) ;
+  6. refuse un `!override` d'un fichier -f sur une cle qu'un fichier inclus definit aussi : podman-compose le fusionne
+     AVANT l'inclus, l'etiquette est perdue et la liste concatenee (tmpfs de a/b, T48). Une liste simple (ajout, ex.
+     volumes de docker-compose.hooks.yml) reste permise : elle s'ajoute comme sous docker compose.
+Les etiquettes `!override` / `!reset` (podman-compose >= 1.1, docker compose) sont lues avec leur effet sur la fusion.
 Usage :
   check_compose_merge.py --no-null <fichier.yml>...        regle 1 sur chaque fichier
   check_compose_merge.py -f a.yml -f b.yml [-f c.yml]...    regle 2 sur la combinaison (et regle 1 sur ses fichiers)
 Code 0 = conforme, 1 = non conforme, 2 = usage."""
-import copy, os, sys
+import copy, os, re, sys
 
 try:
     import yaml
@@ -32,9 +41,57 @@ class MergeError(ValueError):
     pass
 
 
+class Override:
+    """Valeur etiquetee `!override` : remplace la valeur fusionnee au lieu de s'y ajouter (listes) ou d'y etre fusionnee."""
+    def __init__(self, value):
+        self.value = value
+
+    def __eq__(self, other):
+        return isinstance(other, Override) and other.value == self.value
+
+    def __repr__(self):
+        return f"!override {self.value!r}"
+
+
+class Reset:
+    """Valeur etiquetee `!reset` : retire la cle de la valeur fusionnee."""
+    def __eq__(self, other):
+        return isinstance(other, Reset)
+
+    def __repr__(self):
+        return "!reset"
+
+
+class Loader(yaml.SafeLoader):
+    pass
+
+
+def _override(loader, node):
+    if isinstance(node, yaml.SequenceNode):
+        return Override(loader.construct_sequence(node, deep=True))
+    if isinstance(node, yaml.MappingNode):
+        return Override(loader.construct_mapping(node, deep=True))
+    return Override(loader.construct_scalar(node))
+
+
+Loader.add_constructor("!override", _override)
+Loader.add_constructor("!reset", lambda loader, node: Reset())
+
+
+def plain(v):
+    """Valeur sans etiquette (resultat de la fusion)."""
+    if isinstance(v, Override):
+        return plain(v.value)
+    if isinstance(v, dict):
+        return {k: plain(x) for k, x in v.items() if not isinstance(x, Reset)}
+    if isinstance(v, list):
+        return [plain(x) for x in v]
+    return v
+
+
 def load(path):
     with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        return yaml.load(f, Loader=Loader) or {}  # noqa: S506 - SafeLoader + deux etiquettes Compose
 
 
 def null_resources(doc, name):
@@ -50,8 +107,14 @@ def rec_merge_one(target, source, path=""):
     """Meme regle que podman_compose.rec_merge_one (1.5) : type identique exige quand la cle existe des deux cotes."""
     for key, value2 in source.items():
         where = f"{path}.{key}" if path else key
+        if isinstance(value2, Reset):
+            target.pop(key, None)
+            continue
+        if isinstance(value2, Override):
+            target[key] = plain(value2)
+            continue
         if key not in target:
-            target[key] = value2
+            target[key] = plain(value2)
             continue
         value = target[key]
         if key in ("command", "entrypoint"):
@@ -96,6 +159,9 @@ def expand(files):
 
 def leaves(doc, path=()):
     """Valeurs scalaires (et dicts vides) par chemin ; les listes sont concatenees par podman-compose : ignorees."""
+    if isinstance(doc, (Override, Reset)):
+        yield path, doc
+        return
     if isinstance(doc, dict):
         if not doc and path:
             return
@@ -125,6 +191,82 @@ def include_overrides(order):
     return errs
 
 
+FALSY = ("false", "0", "no", "off", "n", "f")
+
+
+def userns_without_podless(merged):
+    """Regle 4 : meme lecture que PodmanCompose.resolve_pod_name (1.5) : x-podman.in_pod, vrai par defaut."""
+    users = sorted(n for n, s in (merged.get("services") or {}).items() if isinstance(s, dict) and s.get("userns_mode"))
+    in_pod = (merged.get("x-podman") or {}).get("in_pod", True)
+    podless = in_pod is False or (isinstance(in_pod, str) and in_pod.strip().lower() in FALSY)
+    if users and not podless:
+        return [f"services {', '.join(users)} : userns_mode sans `x-podman: {{in_pod: false}}` : podman-compose 1.5 les "
+                f"place dans pod_<projet> et podman refuse « --userns and --pod cannot be set together »"]
+    return []
+
+
+def interp(text):
+    """Interpolation Compose minimale (${VAR}, ${VAR:-defaut}, ${VAR-defaut}, ${VAR:?msg}) par os.environ."""
+    def sub(m):
+        name, op, arg = m.group(1), m.group(2) or "", m.group(3) or ""
+        val = os.environ.get(name)
+        if op in (":-", ":?") and not val:
+            return arg if op == ":-" else ""
+        if op == "-" and val is None:
+            return arg
+        return val or ""
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:-|:\?|-)([^}]*))?\}", sub, text)
+
+
+def tmpfs_uid_options(merged):
+    """Regle 5 : options tmpfs uid=/gid= refusees par podman (le rendu docker compose les accepte)."""
+    errs = []
+    for name, svc in sorted((merged.get("services") or {}).items()):
+        for t in (svc or {}).get("tmpfs") or [] if isinstance(svc, dict) else []:
+            t = interp(str(t))
+            opts = t.split(":", 1)[1].split(",") if ":" in t else []
+            bad = [o for o in opts if o.split("=", 1)[0] in ("uid", "gid")]
+            if bad:
+                errs.append(f"services.{name}.tmpfs '{t}' : options {','.join(bad)} refusees par podman (« unknown mount "
+                            f"option ») : sous Podman, SECAGENT_TMPFS_OPTS=U (release.env, chain-test.sh)")
+    return errs
+
+
+def overrides(doc, path=()):
+    """Chemins des valeurs `!override` d'un document."""
+    if isinstance(doc, Override):
+        yield path
+    elif isinstance(doc, dict):
+        for k, v in doc.items():
+            yield from overrides(v, path + (str(k),))
+
+
+def list_paths(doc, path=()):
+    if isinstance(doc, list):
+        yield path
+    elif isinstance(doc, dict):
+        for k, v in doc.items():
+            yield from list_paths(v, path + (str(k),))
+
+
+def include_list_overrides(order):
+    """Regle 6 : !override d'un -f sur une cle aussi definie par un fichier inclus (fusionne APRES)."""
+    inc_paths = set()
+    for name, doc, inc in order:
+        if inc:
+            body = plain({k: v for k, v in doc.items() if k != "include"})
+            inc_paths |= {p for p, _v in leaves(body)} | set(list_paths(body))
+    errs = []
+    for name, doc, inc in order:
+        if inc:
+            continue
+        for p in overrides({k: v for k, v in doc.items() if k != "include"}):
+            if p in inc_paths:
+                errs.append(f"{'.'.join(p)} : !override de {name} sur une cle d'un fichier inclus : podman-compose 1.5 "
+                            f"fusionne l'inclus EN DERNIER (!override perdu, liste concatenee) : passer par une variable")
+    return errs
+
+
 def check_merge(files):
     errs, merged = [], {}
     order = expand(files)
@@ -136,6 +278,9 @@ def check_merge(files):
         except MergeError as e:
             errs.append(f"{' + '.join(files)} : {e} (en fusionnant {name})")
     errs += include_overrides(order)
+    errs += userns_without_podless(merged)
+    errs += tmpfs_uid_options(merged)
+    errs += include_list_overrides(order)
     return errs
 
 

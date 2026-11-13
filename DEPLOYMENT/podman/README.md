@@ -79,8 +79,12 @@ systemctl --user daemon-reload && systemctl --user enable secagent-qualif-srv3.s
 
 **Volumes sous podman-compose 1.5 (T48)** : les fichiers `include:` sont fusionnés **après** les `-f` (l'inverse de
 docker compose) ; une surcharge Podman ne redéfinit donc jamais une ressource du Compose inclus (`secagent_secrets`, externe :
-créé en bind par `chain-test.sh push-secrets`) ; aucune ressource déclarée nulle (`{}`) ; la section `x-podman` est réservée à
-podman-compose (notre documentation : `x-secagent-podman`). Contrôles : `scripts/ci/check_compose_merge.py` et le rejeu
+créé en bind par `chain-test.sh push-secrets`), ni une valeur d'un service inclus (a/b : `tmpfs`, `container_name`) ;
+aucune ressource déclarée nulle (`{}`). La section `x-podman` ne sert qu'à `in_pod: false` (sinon podman-compose crée
+`pod_<projet>`, que podman refuse avec `--userns`) ; notre documentation est dans `x-secagent-podman`. Les tmpfs sans
+`uid=`/`gid=` (refusés par podman) : `SECAGENT_TMPFS_OPTS=U`, posé par `release.env` et `chain-test.sh`. Les volumes liés au
+partage ont `o: bind,uid=10001,gid=10001`, sinon podman applique au répertoire du partage le mode du `/data` de l'image (0755)
+au premier montage, et la garde refuse ensuite le démarrage. Contrôles : `scripts/ci/check_compose_merge.py` et le rejeu
 `scripts/ci/podman_compose_replay.sh` (vrai podman-compose 1.5.0, faux `podman`), tous deux en CI.
 
 **Un seul chemin par service (T48)** : l'unité ne démarre que la **racine** du nœud (`secagent-server-a` sur srv3,

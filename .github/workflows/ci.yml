@@ -225,7 +225,8 @@ jobs:
           # memes types des deux cotes) ; garde testee d'abord, puis chaque Compose livre et les combinaisons Podman.
           "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_compose_merge_selftest.py
           git ls-files -z 'DEPLOYMENT/*docker-compose*.yml' | xargs -0 "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_compose_merge.py --no-null
-          "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_compose_merge.py -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml -f DEPLOYMENT/podman/docker-compose.podman.qualif.yml
+          # SECAGENT_TMPFS_OPTS=U : valeur posee sous Podman par release.env (stage-node-files.sh) et chain-test.sh
+          SECAGENT_TMPFS_OPTS=U "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_compose_merge.py -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml -f DEPLOYMENT/podman/docker-compose.podman.qualif.yml
           "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_compose_merge.py -f DEPLOYMENT/prod/docker-compose.server.yml -f DEPLOYMENT/prod/docker-compose.child.yml -f DEPLOYMENT/podman/docker-compose.podman.yml
           # T48 (#267) : rejeu du chemin `chain-test.sh bootstrap` sous Podman avec le VRAI podman-compose des noeuds (1.5.0,
           # version et somme epinglees) et un faux `podman` a etat : un refus de podman-compose (fusion, volume externe,
@@ -462,7 +463,7 @@ jobs:
           docker compose -f DEPLOYMENT/prod/docker-compose.server.yml -f DEPLOYMENT/prod/docker-compose.child.yml -f DEPLOYMENT/podman/docker-compose.podman.yml config --format json > render/podman-prod-child.json
           # Chaine QUALIF repartie (srv3/srv4) : chemins du partage tels que vus par les noeuds (rien n'est lu ici)
           PQ=/share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/QUALIF
-          QUALIF_PRIVATE_DIR="$PQ" QUALIF_TLS_DIR="$PQ/pki" QUALIF_NODE_A_ADDR=192.168.1.213 \
+          QUALIF_PRIVATE_DIR="$PQ" QUALIF_TLS_DIR="$PQ/pki" QUALIF_NODE_A_ADDR=192.168.1.213 SECAGENT_TMPFS_OPTS=U \
             docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml -f DEPLOYMENT/podman/docker-compose.podman.qualif.yml config --format json > render/podman-qualif-chain.json
           python3 scripts/ci/check_compose.py --require-memory-limit --require-secret-files --require-userns-keepid render/podman-prod-root.json render/podman-prod-child.json render/podman-qualif-chain.json
           # Hypotheses de la garde check-private.sh (QUALIF pki/ en 0711, tls.key 0600) : seuls les SERVEURS sont en keep-id

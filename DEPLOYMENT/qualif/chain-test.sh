@@ -37,6 +37,7 @@
 #   chain-test.sh admission-503  # refus 503 memory_budget_exhausted en reel (#241) : plafond abaisse, voir admission-503.sh
 #   chain-test.sh paths        # chemins prives resolus (sans docker) ; echec si la racine PRIVATE/ manque
 #   chain-test.sh logs | down  # down : conteneurs, volumes externes ET $CHAIN_DIR (jetons volatils, apres la garde)
+#   chain-test.sh reset-state  # Podman, apres down : vide PRIVATE/QUALIF/state/{root,child} (l'etat survit a down)
 #
 # Variables : SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (obligatoires, references promues ou locales),
 #   SECAGENT_PRIVATE_DIR (racine des donnees privees, defaut <depot>/PRIVATE, jamais creee : chemin ABSOLU du
@@ -197,7 +198,7 @@ push_tls() {
   [ "$CONTAINER_CLI" = docker ] || refuse "push-tls : sans objet sous Podman (TLS lie depuis $QUALIF_TLS_DIR, partage PRIVATE)"
   [ "${TLS_MODE:-bind}" = volume ] || fail "push-tls exige TLS_MODE=volume"
   local f; for f in tls.crt tls.key ca.crt; do [ -f "$QUALIF_TLS_DIR/$f" ] || fail "$QUALIF_TLS_DIR/$f absent (lancer ci-prepare)"; done
-  ctr volume create "$SECAGENT_TLS_VOLUME" >/dev/null
+  vol_ensure "$SECAGENT_TLS_VOLUME"
   tar -C "$QUALIF_TLS_DIR" -cf - tls.crt tls.key ca.crt | ctr run --rm -i -v "$SECAGENT_TLS_VOLUME:/certs" \
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'set -e; tar -xf - -C /certs; chown 0:0 /certs /certs/tls.crt /certs/ca.crt; chmod 755 /certs; chmod 644 /certs/tls.crt /certs/ca.crt
@@ -217,7 +218,7 @@ fi
 push_hooks() {
   [ -f "$HERE/hooks.json" ] || fail "$HERE/hooks.json absent"
   local CTR_NODE; for CTR_NODE in $(nodes); do   # Podman : racine a (A) et b + enfant (B)
-  ctr volume create "$SECAGENT_HOOKS_VOLUME" >/dev/null
+  vol_ensure "$SECAGENT_HOOKS_VOLUME"
   tar -C "$HERE" -cf - hooks.json | ctr run --rm -i "${RUN_USERNS[@]}" -v "$SECAGENT_HOOKS_VOLUME:/hooks" \
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'set -e; tar -xf - -C /hooks; chown 0:0 /hooks /hooks/hooks.json; chmod 755 /hooks; chmod 644 /hooks/hooks.json'
@@ -231,7 +232,7 @@ EVENTS_SUFFIXES="a b child grandchild"   # grandchild : profil level3 (volume cr
 push_events() {
   local CTR_NODE sfx; for CTR_NODE in $(nodes); do   # Podman : les trois volumes sur chaque noeud (seuls ceux du noeud servent)
     for sfx in $EVENTS_SUFFIXES; do
-      ctr volume create "$SECAGENT_EVENTS_VOLUME-$sfx" >/dev/null
+      vol_ensure "$SECAGENT_EVENTS_VOLUME-$sfx"
       ctr run --rm "${RUN_USERNS[@]}" -v "$SECAGENT_EVENTS_VOLUME-$sfx:/events" \
         alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
         sh -c 'set -e; chown 10001:10001 /events; chmod 0700 /events; [ ! -e /events/events.log ] || chown 10001:10001 /events/events.log'
@@ -309,8 +310,31 @@ chain_paths() {
   printf 'PRIVATE_DIR=%s\nSECRETS_DIR=%s\nQUALIF_TLS_DIR=%s\nCHAIN_DIR=%s\n' "$PRIVATE_DIR" "$SECRETS_DIR" "$QUALIF_TLS_DIR" "$CHAIN_DIR"
 }
 
+# Podman : l'etat de la racine et de l'enfant est LIE au partage (PRIVATE/QUALIF/state/{root,child}) et survit a `down`
+# (jamais `down -v`) ; `state init` refuserait (« relay.state already exists »). Repartir de zero = down, puis reset-state.
+state_dirs() { printf '%s\n' "$PRIVATE_DIR/QUALIF/state/root" "$PRIVATE_DIR/QUALIF/state/child"; }
+state_present() { local d; for d in $(state_dirs); do [ -z "$(find "$d" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ] || return 0; done; return 1; }
+reset_state() {
+  [ "$CONTAINER_CLI" = podman ] || refuse "reset-state : Podman seulement (sous Docker, down -v retire l'etat)"
+  guard_project
+  local n c d
+  for n in A B; do
+    for c in $(CTR_NODE=$n ctr ps -a --format '{{.Names}}'); do
+      case "$c" in "$C_A"|"$C_B"|"$C_CHILD"|"$C_GRAND") refuse "reset-state : conteneur $c present sur le noeud $n : lancer d'abord chain-test.sh down" ;; esac
+    done
+  done
+  for d in $(state_dirs); do
+    [ -d "$d" ] && [ ! -L "$d" ] || refuse "$d absent, non repertoire ou lien"
+    find "$d" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+    echo "etat vide : $d"
+  done
+}
+
 bootstrap() {
   need SECAGENT_IMAGE; need SECAGENT_MINION_IMAGE
+  if [ "$CONTAINER_CLI" = podman ] && state_present; then
+    refuse "etat existant sous $PRIVATE_DIR/QUALIF/state (lie au partage, survit a down) : chain-test.sh down puis reset-state pour repartir de zero"
+  fi
   verify_images
   chain_dir
   push_hooks
@@ -441,7 +465,7 @@ backup_restore() {
   echo "== sauvegarde (etat) et sauvegarde distincte de RSA_MASTER_KEY"
   ctr exec "$m" /app/secagent-server state verify /data/relay.state >/dev/null || fail "etat source invalide"
   ( umask 077; ctr cp "$m:/data/relay.state" "$bk/relay.state" ); chmod 600 "$bk/relay.state"   # 0644 seulement DANS le volume (uid 10001)
-  ctr volume create "$bkvol" >/dev/null
+  vol_ensure "$bkvol"
   tar -C "$bk" -cf - relay.state | ctr run --rm -i -v "$bkvol:/backup" \
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'tar -xf - -C /backup && chmod 755 /backup && chmod 644 /backup/relay.state'
@@ -503,7 +527,7 @@ push_link_key() { # $1 volume (defaut $SECAGENT_LINK_VOLUME, lien de dmz1 ; $SEC
   [ -f "$CHAIN_DIR/root-link.pub" ] || fail "$CHAIN_DIR/root-link.pub absent (lancer bootstrap)"
   local files="root-link.pub" CTR_NODE=B   # Podman : volume de l'enfant, noeud B
   [ -f "$CHAIN_DIR/upstream-token" ] && files="root-link.pub upstream-token"
-  ctr volume create "$vol" >/dev/null
+  vol_ensure "$vol"
   # shellcheck disable=SC2086
   tar -C "$CHAIN_DIR" -cf - $files | ctr run --rm -i "${RUN_USERNS[@]}" -v "$vol:/link" \
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
@@ -1213,7 +1237,7 @@ rollback_refused() {
   docker_only rollback-refused; need ROLLBACK_IMAGE
   [[ $ROLLBACK_IMAGE =~ @sha256:[0-9a-f]{64}$ ]] || refuse "ROLLBACK_IMAGE='$ROLLBACK_IMAGE' : reference epinglee par digest attendue (<image>:v3.0.5@sha256:<64 hex>)"
   local vol="${PROJECT}_rollback_probe" out rc=0
-  ctr volume create "$vol" >/dev/null
+  vol_ensure "$vol"
   # shellcheck disable=SC2064   # vol fixe ici
   trap "ctr volume rm '$vol' >/dev/null 2>&1 || true" EXIT
   ctr run --rm -v "${PROJECT}_secagent_state:/data:ro" -v "$vol:/b" \
@@ -1273,8 +1297,11 @@ chain_down() {
     # test et la racine sont retires. JAMAIS `down -v` sous Podman : etat et secrets sont lies au partage PRIVATE (#267)
     for CTR_NODE in A B; do node_ssh "$CTR_NODE" nostdin systemctl --user stop "$(root_unit "$CTR_NODE")" >/dev/null 2>&1 || true; done
     dc down
-    # shellcheck disable=SC2046   # events_volumes : noms sans espace
-    for CTR_NODE in A B; do ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_HOOKS_VOLUME" $(events_volumes) >/dev/null 2>&1 || true; done
+    # volumes LOCAUX des services de test (identites des minions, etat de dmz2) : retires comme par `down -v` sous Docker,
+    # sinon un minion garderait son identite apres reset-state ; les volumes lies au partage (etat, secrets) sont gardes.
+    local test_vols="${PROJECT}_minion_root_data ${PROJECT}_minion_child_data ${PROJECT}_minion_grand_data ${PROJECT}_grandchild_state"
+    # shellcheck disable=SC2046,SC2086   # events_volumes, test_vols : noms sans espace
+    for CTR_NODE in A B; do ctr volume rm "$SECAGENT_LINK_VOLUME" "$SECAGENT_LINK_GRAND_VOLUME" "$SECAGENT_HOOKS_VOLUME" $(events_volumes) $test_vols >/dev/null 2>&1 || true; done
   else
     export COMPOSE_PROFILES=level3   # retire aussi dmz2 et minion-grand, meme sans CHAIN_LEVEL3=1
     dc down -v
@@ -1320,6 +1347,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     negative-ca) negative_ca ;;
     admission-503) admission_503 ;;
     down) chain_down ;;
-    *) sed -n '2,54p' "$0"; exit 2 ;;
+    reset-state) reset_state ;;
+    *) sed -n '2,56p' "$0"; exit 2 ;;
   esac
 fi

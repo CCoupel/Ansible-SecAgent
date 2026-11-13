@@ -53,7 +53,8 @@ release_env() { # $1 env, $2 noeud (node_topology deja appele)
     printf '%s=%s\n' "$v" "${!v}"
   done
   if [ "$1" = qualif ]; then
-    printf 'QUALIF_PRIVATE_DIR=%s\nQUALIF_TLS_DIR=%s\nQUALIF_NODE_A_ADDR=%s\nCHAIN_DIR=%s\n' \
+    # SECAGENT_TMPFS_OPTS=U : proprietaire des tmpfs sous Podman (uid=/gid= refuses par podman 5.7 ; docker-compose.server.yml)
+    printf 'QUALIF_PRIVATE_DIR=%s\nQUALIF_TLS_DIR=%s\nQUALIF_NODE_A_ADDR=%s\nCHAIN_DIR=%s\nSECAGENT_TMPFS_OPTS=U\n' \
       "$PRIVATE_DIR/QUALIF" "$PRIVATE_DIR/QUALIF/pki" 192.168.1.213 "$PRIVATE_DIR/QUALIF/srv4/cyril/secagent/run"
   else
     printf 'STATE_HOST_DIR=%s\nSECRETS_DIR=%s\nTLS_CERT_DIR=%s\n' \

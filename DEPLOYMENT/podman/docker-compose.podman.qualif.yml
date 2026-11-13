@@ -21,7 +21,17 @@
 #   (QUALIF_NODE_A_ADDR, port d'hote 7770/7772) et b par son nom de service ; l'IP du noeud B lui-meme n'est PAS utilisee
 #   (pasta : l'adresse de l'hote est recopiee dans le conteneur et ne mene pas a l'hote). SAN de la PKI QUALIF (T47) :
 #   IP de A, IP de B, noms secagent-server-a/-b, secagent-child.
-x-secagent-podman:   # documentation seulement ; JAMAIS `x-podman` (section de configuration de podman-compose : in_pod, pod_args...)
+# Configuration DE podman-compose (seule cle utilisee de `x-podman`) : pas de pod. podman-compose 1.5 place sinon tous
+# les services dans `pod_<projet>` (--pod), que podman refuse avec --userns (keep-id des serveurs) : « --userns and
+# --pod cannot be set together » (T48, 2026-11-13). Le pod par defaut (--infra=false --share=) ne partage rien :
+# reseaux Compose, volumes et unites systemd inchanges. Controle : check_compose_merge.py (userns_mode => in_pod: false).
+# tmpfs : podman 5.7 refuse les options uid=/gid= des Compose de base (« unknown mount option "uid=10001" », T48) : sous
+# Podman, SECAGENT_TMPFS_OPTS=U (release.env, chain-test.sh) ; JAMAIS une surcharge ici : a et b viennent de
+# docker-compose.server.yml (include:), fusionne par podman-compose 1.5 APRES ce fichier (liste concatenee, scalaire ecrase).
+x-podman:
+  in_pod: false
+
+x-secagent-podman:   # documentation seulement ; jamais dans `x-podman` (podman-compose avertit sur toute cle inconnue)
   host_uid: 1000
   secret_owner_uid: 1000
   container_host_a: ssh://cyril@192.168.1.213/run/user/1000/podman/podman.sock
@@ -37,6 +47,8 @@ services:
     userns_mode: "keep-id:uid=10001,gid=10001"
     environment:
       REPEATER_UPSTREAM_URL: wss://${QUALIF_NODE_A_ADDR:?QUALIF_NODE_A_ADDR est obligatoire (IP du noeud A)}:7772,wss://secagent-server-b:7772
+  secagent-grandchild:   # 3e niveau (profil level3) : meme mapping que l'enfant (tls.key 0600 du partage)
+    userns_mode: "keep-id:uid=10001,gid=10001"
   minion-root:
     environment:
       RELAY_SERVER_URL: https://${QUALIF_NODE_A_ADDR:?QUALIF_NODE_A_ADDR est obligatoire}:7770,https://secagent-server-b:7770
@@ -46,18 +58,21 @@ services:
       RELAY_SERVER_URL: https://${QUALIF_NODE_A_ADDR:?QUALIF_NODE_A_ADDR est obligatoire}:7770,https://secagent-server-b:7770
       RELAY_WS_URL: wss://${QUALIF_NODE_A_ADDR:?QUALIF_NODE_A_ADDR est obligatoire}:7772/ws/agent,wss://secagent-server-b:7772/ws/agent
 
+# Volumes lies au partage : `uid=,gid=` dans `o` (options propres a podman, retirees avant le mount) desactivent le
+# « chown » du premier montage, qui donnait au repertoire du partage le mode du /data de l'image (0755) : la garde
+# check-private.sh (0700 exige) refusait alors le demarrage suivant de l'unite (T48, banc srv3 2026-11-13).
 volumes:
   secagent_state:
     driver: local
     driver_opts:
       type: none
-      o: bind
+      o: bind,uid=10001,gid=10001   # uid/gid : podman ne retouche pas le repertoire (voir ci-dessus)
       device: ${QUALIF_PRIVATE_DIR:?QUALIF_PRIVATE_DIR est obligatoire (PRIVATE/QUALIF vu par le noeud)}/state/root
   child_state:
     driver: local
     driver_opts:
       type: none
-      o: bind
+      o: bind,uid=10001,gid=10001   # uid/gid : podman ne retouche pas le repertoire (voir ci-dessus)
       device: ${QUALIF_PRIVATE_DIR:?QUALIF_PRIVATE_DIR est obligatoire}/state/child
   # secagent_secrets n'est PAS redefini ici : declare EXTERNE par docker-compose.server.yml (inclus par la chaine), et
   # podman-compose 1.5 fusionne les fichiers `include:` APRES les -f (podman_compose.py:2289-2292) : une redefinition ici

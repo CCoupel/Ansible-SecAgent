@@ -17,7 +17,16 @@
 # A constater au deploiement : podman inspect -f '{{.HostConfig.Memory}}' <conteneur> != 0.
 # Exige Podman >= 4.3 (keep-id:uid=) et podman-compose >= 1.2 (transmet userns_mode) : controle par install-node.sh.
 # Secrets : `SECRET_OWNER_UID=1000 ./preflight-secrets.sh` (et non 10001) avant `up`.
-x-secagent-podman:   # documentation seulement ; JAMAIS `x-podman` (section de configuration de podman-compose : in_pod, pod_args...)
+# Configuration DE podman-compose (seule cle utilisee de `x-podman`) : pas de pod. podman-compose 1.5 place sinon tous
+# les services dans `pod_<projet>` (--pod), que podman refuse avec --userns (keep-id des serveurs) : « --userns and
+# --pod cannot be set together » (T48, 2026-11-13). Le pod par defaut (--infra=false --share=) ne partage rien :
+# reseaux Compose, volumes et unites systemd inchanges. Controle : check_compose_merge.py (userns_mode => in_pod: false).
+# tmpfs : podman 5.7 refuse les options uid=/gid= du Compose de base (« unknown mount option "uid=10001" », T48) ;
+# `U` donne le point de montage a l'utilisateur du conteneur (10001). `!override` remplace la liste (sinon concatenee).
+x-podman:
+  in_pod: false
+
+x-secagent-podman:   # documentation seulement ; jamais dans `x-podman` (podman-compose avertit sur toute cle inconnue)
   host_uid: 1000                 # cyril sur srv1-srv4 = proprietaire des fichiers de PRIVATE/<ENV>/
   secret_owner_uid: 1000         # valeur de SECRET_OWNER_UID pour preflight-secrets.sh
   container_host: ssh://cyril@<ip>/run/user/1000/podman/podman.sock
@@ -26,3 +35,4 @@ x-secagent-podman:   # documentation seulement ; JAMAIS `x-podman` (section de c
 services:
   secagent-server:
     userns_mode: "keep-id:uid=10001,gid=10001"
+    tmpfs: !override ["/run/secagent:U,mode=0700", "/tmp:U,mode=1777"]   # podman refuse uid=/gid= (voir en-tete)

@@ -34,6 +34,8 @@ done && ok "release/ : 4 Compose, release.env, SHA256SUMS"
 cmp -s "$HERE/../../DEPLOYMENT/qualif/docker-compose.chain.yml" "$B/release/docker-compose.chain.yml" && ok "Compose copie a l'identique du depot" || ko "Compose different du depot"
 grep -q "^SECAGENT_IMAGE=ghcr.io/ccoupel/secagent-server:sha-abc$" "$B/release/release.env" && grep -q "^QUALIF_NODE_A_ADDR=192.168.1.213$" "$B/release/release.env" \
   && ok "release.env : image et adresse de A" || ko "release.env : $(cat "$B/release/release.env")"
+grep -q "^SECAGENT_TMPFS_OPTS=U$" "$B/release/release.env" \
+  && ok "release.env : SECAGENT_TMPFS_OPTS=U (tmpfs sans uid=/gid=, refuses par podman)" || ko "release.env sans SECAGENT_TMPFS_OPTS=U"
 grep -qiE 'secret|token|key=' "$B/release/release.env" && ko "release.env contient un secret ?" || ok "release.env sans secret"
 U="$B/systemd/secagent-qualif-srv4.service"
 [ "$(grep '^ExecStartPre=' "$U" | tr '\n' '|')" = "ExecStartPre=/usr/bin/sha256sum --quiet --strict -c %h/.config/secagent/qualif-srv4.sha256|ExecStartPre=$B/bin/check-private.sh qualif srv4 %h/.config/secagent/qualif-srv4.sha256|" ] \

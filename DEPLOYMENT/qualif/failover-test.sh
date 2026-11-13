@@ -57,7 +57,9 @@ if [ "$CONTAINER_CLI" = podman ]; then
   [[ $SHARE_ROOT =~ ^/[A-Za-z0-9_./-]+$ && ! /$SHARE_ROOT/ =~ /\.\./ ]] || refuse "PODMAN_SHARE_ROOT='$SHARE_ROOT' invalide"
   case "$PRIVATE_DIR" in "${SHARE_ROOT%/}"/*) ;; *) refuse "CONTAINER_CLI=podman : SECAGENT_PRIVATE_DIR=$PRIVATE_DIR hors de $SHARE_ROOT (chemin vu par les noeuds)" ;; esac
   [[ $PRIVATE_DIR =~ ^/[A-Za-z0-9_./-]+$ && ! /$PRIVATE_DIR/ =~ /\.\./ ]] || refuse "CONTAINER_CLI=podman : SECAGENT_PRIVATE_DIR='$PRIVATE_DIR' : caracteres [A-Za-z0-9_./-] sans .. attendus (transmis aux noeuds)"
-  export QUALIF_NODE_A QUALIF_NODE_B CONTAINER_HOST_A CONTAINER_HOST_B CONTAINER_SSHKEY CONTAINER_KNOWN_HOSTS SECRET_OWNER_UID
+  # tmpfs des serveurs : `U` (podman 5.7 refuse uid=/gid= ; docker-compose.server.yml), comme release.env des unites
+  SECAGENT_TMPFS_OPTS=U
+  export SECAGENT_TMPFS_OPTS QUALIF_NODE_A QUALIF_NODE_B CONTAINER_HOST_A CONTAINER_HOST_B CONTAINER_SSHKEY CONTAINER_KNOWN_HOSTS SECRET_OWNER_UID
 else
   SECRET_OWNER_UID="${SECRET_OWNER_UID:-10001}"
 fi
@@ -104,8 +106,11 @@ ctr() {
   [ "${1:-}" = load ] && in=stdin
   node_ssh "${n:-${CTR_NODE:-B}}" "$in" podman "$@"
 }
+# Cree un volume nomme s'il manque (idempotent) : `podman volume create` refuse un volume existant (« already exists »),
+# a l'inverse de `docker volume create` ; un bootstrap rejoue (apres un echec, push-hooks seul...) ne doit pas echouer.
+vol_ensure() { ctr volume inspect "$1" >/dev/null 2>&1 || ctr volume create "$1" >/dev/null; }
 # Variables transmises a podman-compose sur le noeud (Compose interpole cote noeud) : liste FERMEE, valeurs non secretes.
-DC_ENV_VARS="SECAGENT_IMAGE SECAGENT_MINION_IMAGE SECAGENT_PULL_POLICY SECAGENT_MEM_LIMIT LOG_LEVEL GOMEMLIMIT QUALIF_TLS_DIR CHAIN_DIR SECAGENT_HOOKS_VOLUME SECAGENT_EVENTS_VOLUME SECAGENT_LINK_VOLUME SECAGENT_LINK_GRAND_VOLUME CHILD_UPSTREAM_QUEUE_SIZE MINION_CHILD_SERVER_URL MINION_CHILD_WS_URL GRANDCHILD_UPSTREAM_URL SECAGENT_SECRETS_VOLUME SECAGENT_TLS_VOLUME QUALIF_PRIVATE_DIR QUALIF_NODE_A_ADDR"
+DC_ENV_VARS="SECAGENT_TMPFS_OPTS SECAGENT_IMAGE SECAGENT_MINION_IMAGE SECAGENT_PULL_POLICY SECAGENT_MEM_LIMIT LOG_LEVEL GOMEMLIMIT QUALIF_TLS_DIR CHAIN_DIR SECAGENT_HOOKS_VOLUME SECAGENT_EVENTS_VOLUME SECAGENT_LINK_VOLUME SECAGENT_LINK_GRAND_VOLUME CHILD_UPSTREAM_QUEUE_SIZE MINION_CHILD_SERVER_URL MINION_CHILD_WS_URL GRANDCHILD_UPSTREAM_URL SECAGENT_SECRETS_VOLUME SECAGENT_TLS_VOLUME QUALIF_PRIVATE_DIR QUALIF_NODE_A_ADDR"
 release_dir() { printf '%s' "$PRIVATE_DIR/QUALIF/$(node_name "$1")/cyril/secagent/release"; }
 dc_on() { # $1 A|B, puis les arguments podman-compose
   local n="$1" v env=(); shift
@@ -321,7 +326,7 @@ podman_secrets_volume() {
       dev="$(ctr volume inspect --format '{{.Options.device}}' "$SECAGENT_SECRETS_VOLUME" 2>/dev/null || true)"
       [ "$dev" = "$SECRETS_DIR" ] || refuse "volume $SECAGENT_SECRETS_VOLUME (noeud $CTR_NODE) lie a '$dev' et non a $SECRETS_DIR : le retirer (podman volume rm) puis relancer"
     else
-      ctr volume create --driver local --opt type=none --opt o=bind --opt "device=$SECRETS_DIR" "$SECAGENT_SECRETS_VOLUME" >/dev/null \
+      ctr volume create --driver local --opt type=none --opt o=bind,uid=10001,gid=10001 --opt "device=$SECRETS_DIR" "$SECAGENT_SECRETS_VOLUME" >/dev/null \
         || fail "creation du volume $SECAGENT_SECRETS_VOLUME (noeud $CTR_NODE) impossible"
     fi
     echo "volume des secrets $SECAGENT_SECRETS_VOLUME -> $SECRETS_DIR (bind, noeud $CTR_NODE)"
@@ -340,7 +345,7 @@ push_secrets() {
     [ -f "$d/$n" ] && files="$files $n"
   done
   [ -n "$files" ] || fail "$d : aucun secret (jwt_secret_key, admin_token, rsa_master_key) ; lancer ci-prepare"
-  ctr volume create "$vol" >/dev/null
+  vol_ensure "$vol"
   # shellcheck disable=SC2086
   tar -C "$d" -cf - $files | ctr run --rm -i -v "$vol:/secrets" \
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \

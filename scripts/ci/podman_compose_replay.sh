@@ -54,11 +54,14 @@ case "${1:-}" in
   network)
     case "$2" in exists) [ -e "$st/net/$3" ]; exit ;; create) touch "$st/net/${@: -1}" ;; esac; exit 0 ;;
   run|create)
-    sub="$1"; shift; name=""; rmflag=0; prev=""
+    sub="$1"; shift; name=""; rmflag=0; prev=""; pod=""; userns=""
     for a in "$@"; do
-      case "$prev" in --name) name="$a" ;; esac
+      case "$prev" in --name) name="$a" ;; --pod) pod="$a" ;; --userns) userns="$a" ;; esac
       case "$a" in
         --rm) rmflag=1 ;;
+        --pod=*) pod="${a#--pod=}" ;;
+        --userns=*) userns="${a#--userns=}" ;;
+        uid=*|gid=*|*,uid=*|*,gid=*|*:uid=*|*:gid=*) [ "$prev" = --tmpfs ] && die "unknown mount option \"${a#*:}\": invalid mount option" ;;
         type=volume,*|*,type=volume,*) v="${a#*source=}"; v="${v%%,*}"; [ -e "$st/vol/$v" ] || die "volume $v absent (montage type=volume)" ;;
       esac
       if [ "$prev" = -v ] || [ "$prev" = --volume ]; then
@@ -66,6 +69,8 @@ case "${1:-}" in
       fi
       prev="$a"
     done
+    # meme refus que podman 5.7 (T48, 2026-11-13) : un conteneur dans un pod ne choisit pas son espace de noms utilisateur
+    [ -n "$pod" ] && [ -n "$userns" ] && die "--userns and --pod cannot be set together"
     [ -t 0 ] || cat >/dev/null
     [ "$rmflag" = 1 ] || [ -z "$name" ] || touch "$st/ctr/$name"
     exit 0 ;;
@@ -113,9 +118,16 @@ run_bootstrap() {
     wait_for() { shift 2; "$@"; }   # pas d attente : le faux podman repond tout de suite
     sleep() { :; }
     bootstrap
+    echo "== push-hooks / push-events rejoues sans down (volumes existants : podman volume create les refuse)"
+    push_hooks; push_events
     echo "== down (unites arretees, conteneurs retires, jamais -v)"
     chain_down
-    echo "== second bootstrap apres down (idempotence : volume des secrets deja present)"
+    echo "== bootstrap apres down avec un etat present sur le partage : refus attendu"
+    touch "$PRIVATE_DIR/QUALIF/state/root/relay.state"
+    if ( bootstrap ) >/dev/null 2>&1; then echo "KO bootstrap accepte malgre un etat existant"; exit 1; fi
+    echo "refus OK ; reset-state"
+    reset_state
+    echo "== second bootstrap apres down + reset-state (volume des secrets deja present)"
     bootstrap
     echo "REJEU COMPLET OK"
   ' _ "$REPO/DEPLOYMENT/qualif/chain-test.sh"
@@ -134,7 +146,7 @@ prod_ok=1
 SECAGENT_PRIVATE_DIR="$P" bash "$REPO/DEPLOYMENT/podman/prepare-node-files.sh" prod srv1 >/dev/null \
   && SECAGENT_PRIVATE_DIR="$P" SECAGENT_VERSION=v3.0.6 bash "$REPO/DEPLOYMENT/podman/stage-node-files.sh" prod srv1 >/dev/null || prod_ok=0
 mkdir -p "$T/C"; sed -i 's#PRIVATE/QUALIF/\*/#PRIVATE/*/*/#' "$T/bin/systemctl"
-if [ "$prod_ok" = 1 ] && FAKE_PODMAN_STATE="$T/C" systemctl --user start secagent-prod-srv1.service > "$T/prod.log" 2>&1 </dev/null && ! grep -q "WARNING:podman_compose" "$T/prod.log"; then
+if [ "$prod_ok" = 1 ] && FAKE_PODMAN_STATE="$T/C" systemctl --user start secagent-prod-srv1.service > "$T/prod.log" 2>&1 </dev/null && ! grep -qE "WARNING:podman_compose|^Error:" "$T/prod.log"; then   # podman-compose up rend 0 meme si un create echoue
   echo "ok   PROD : unite secagent-prod-srv1 (up -d secagent-server) acceptee par podman-compose"
 else
   echo "KO   PROD : unite secagent-prod-srv1"; tail -15 "$T/prod.log"; rc=1
