@@ -613,6 +613,14 @@ func noteEventRoute(host, relay string) {
 	recentRoutesMu.Lock()
 	defer recentRoutesMu.Unlock()
 	pruneRecentRoutesLocked(time.Now())
+	// another relay routes the host now: the protection granted to the previous one ends (the host MOVED)
+	out := recentEventRoutes[:0]
+	for _, r := range recentEventRoutes {
+		if r.host != host || r.relay == relay {
+			out = append(out, r)
+		}
+	}
+	recentEventRoutes = out
 	if len(recentEventRoutes) < maxRerouteMemory {
 		recentEventRoutes = append(recentEventRoutes, recentEventRoute{host: host, relay: relay, at: time.Now()})
 	}
@@ -654,6 +662,11 @@ func withRecentEventRoutes(relay string, listed []string, apply func(relay strin
 			if r.relay != relay {
 				continue
 			}
+			// only a route that still belongs to this relay is protected: a host that has moved to another
+			// relay must not be written back to this one (and then lost when the grace ends)
+			if owner, _ := lookupHostRoute(r.host); owner != "" && owner != relay {
+				continue
+			}
 			if _, ok := have[r.host]; !ok {
 				have[r.host] = struct{}{}
 				out = append(out[:len(out):len(out)], r.host)
@@ -666,20 +679,24 @@ func withRecentEventRoutes(relay string, listed []string, apply func(relay strin
 	agentListVersionMu.Lock()
 	agentListVersion[relay]++
 	v := agentListVersion[relay]
+	delete(agentListKept, relay) // a copy of an OLDER list must not survive a newer one
+	var original []string
+	if kept {
+		original = append([]string(nil), listed...)
+		agentListKept[relay] = original
+	}
 	agentListVersionMu.Unlock()
 	if kept {
-		original := append([]string(nil), listed...)
-		agentListVersionMu.Lock()
-		agentListKept[relay] = original
-		agentListVersionMu.Unlock()
 		time.AfterFunc(recentEventRouteGrace+20*time.Millisecond, func() {
+			// the check and the write are ONE step under the lock: a newer list increments the version under it
+			// BEFORE it writes, so it is never overwritten by this expiry
 			agentListVersionMu.Lock()
-			newer := agentListVersion[relay] != v
-			if !newer {
-				delete(agentListKept, relay)
+			defer agentListVersionMu.Unlock()
+			if agentListVersion[relay] != v {
+				return
 			}
-			agentListVersionMu.Unlock()
-			if !newer && IsRelayConnected(relay) {
+			delete(agentListKept, relay)
+			if IsRelayConnected(relay) {
 				apply(relay, original) // the grace is over and no newer list came: the list stands as it was
 			}
 		})

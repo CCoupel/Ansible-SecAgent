@@ -877,3 +877,67 @@ func TestAgentList_HostDownEndsTheProtection(t *testing.T) {
 		t.Errorf("lists = %v, want the kept route dropped as soon as the host.down arrived", lists)
 	}
 }
+
+// A host that MOVES from relay R to relay S in less than the grace must end up routed by S only: R's agent_list
+// must not write H -> R over H -> S, and the grace of R must not later leave H without a route.
+func TestAgentList_ProtectionEndsWhenTheHostMovedToAnotherRelay(t *testing.T) {
+	resetRerouteMemory(t)
+	prev := recentEventRouteGrace
+	recentEventRouteGrace = 400 * time.Millisecond
+	t.Cleanup(func() { recentEventRouteGrace = prev })
+	recentRoutesMu.Lock()
+	recentEventRoutes = nil
+	recentRoutesMu.Unlock()
+
+	var mu sync.Mutex
+	owner := map[string]string{} // the store: host -> relay (last write wins)
+	routes := map[string][]string{}
+	SetRelayRouteUpsertFunc(func(h, relayID string, _ []string) error { mu.Lock(); owner[h] = relayID; mu.Unlock(); return nil })
+	SetRelayHostRouteFunc(func(h string) (string, error) { mu.Lock(); defer mu.Unlock(); return owner[h], nil })
+	t.Cleanup(func() { SetRelayRouteUpsertFunc(nil); SetRelayHostRouteFunc(nil) })
+	setRoutingHook(t, func(relayID string, hostnames []string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		for h, o := range owner { // BulkUpsert REPLACES the routes of relayID
+			if o == relayID {
+				delete(owner, h)
+			}
+		}
+		for _, h := range hostnames {
+			owner[h] = relayID
+		}
+		routes[relayID] = append([]string(nil), hostnames...)
+		return nil
+	})
+	setTreeHooks(t, "central", nil, nil, nil)
+	srv := setupRelayTestServer(t)
+	defer srv.Close()
+	link := func(id string) *websocket.Conn {
+		c := dialRelay(t, srv, makeRelayJWT(id, "relay"))
+		handshake(t, c, id)
+		sendSnapshot(t, c, nil, nil)
+		readMsg(t, c)
+		return c
+	}
+	r, s := link("dmz1"), link("dmz2")
+	up := func(c *websocket.Conn, id string) {
+		_ = c.WriteJSON(RelayMessage{Type: "event_forward", Event: "host.up", Hostname: "mover-rs", Status: "connected", RelayChain: []string{id}})
+		_ = c.WriteJSON(RelayMessage{Type: "heartbeat"})
+		readMsg(t, c)
+	}
+	up(r, "dmz1")
+	up(s, "dmz2") // moved to S within the grace
+	_ = r.WriteJSON(RelayMessage{Type: "agent_list", Agents: nil})
+	readMsg(t, r) // R's stale (empty) list
+	mu.Lock()
+	if owner["mover-rs"] != "dmz2" {
+		t.Errorf("route owner = %q right after R's stale list, want dmz2 (the move must stand)", owner["mover-rs"])
+	}
+	mu.Unlock()
+	time.Sleep(700 * time.Millisecond) // past R's grace and its deferred expiry
+	mu.Lock()
+	defer mu.Unlock()
+	if owner["mover-rs"] != "dmz2" {
+		t.Errorf("route owner = %q after the grace, want dmz2: the expiry of R's protection must not drop the route of S", owner["mover-rs"])
+	}
+}
