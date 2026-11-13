@@ -197,7 +197,7 @@ func TestLogs_DialerNeverLeaksToken(t *testing.T) {
 		WouldLoop:  func(id string) bool { return id == "central" || id == "root" },
 		TLSConfig:  &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test server cert
 		MinBackoff: 5 * time.Millisecond, MaxBackoff: 10 * time.Millisecond,
-		Serve: func(ctx context.Context, conn *websocket.Conn, _ string) error {
+		Serve: func(ctx context.Context, conn *websocket.Conn, _ string, _ int) error {
 			if serves.Add(1) == 1 {
 				_ = conn.Close()
 				return errors.New("link dropped")

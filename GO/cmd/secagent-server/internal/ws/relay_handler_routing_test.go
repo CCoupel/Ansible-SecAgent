@@ -153,7 +153,7 @@ func TestRouting_AgentListReconnectSameNextHopIsSilent(t *testing.T) {
 func TestRouting_AgentListClaimOnLocalAgentIsConflict(t *testing.T) {
 	cl := recordConflicts(t)
 	setTreeHooks(t, "central", nil, nil, nil)
-	RegisterConnection("local-host", &AgentConnection{Hostname: "local-host"})
+	RegisterConnection("local-host", &AgentConnection{Hostname: "local-host"}, 1)
 	t.Cleanup(func() { UnregisterConnection("local-host") })
 	srv := setupRelayTestServer(t)
 	defer srv.Close()

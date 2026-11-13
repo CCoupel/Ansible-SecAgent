@@ -24,8 +24,10 @@ package hooks
 
 import (
 	"context"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -343,5 +345,121 @@ func TestDispatcher_multiple_actions(t *testing.T) {
 		if !indexes[want] {
 			t.Errorf("missing ActionIndex %d in log entries", want)
 		}
+	}
+}
+
+// #263: Wait returns only once the drop reporter has logged its last line, so nothing writes to the
+// log after a stop (Node.Close relies on it). A write after Wait returned, or a missing
+// "Dispatcher stopped" line at that point, fails the test.
+func TestDispatcher_WaitReturnsAfterTheReporterLoggedItsLastLine(t *testing.T) {
+	var mu sync.Mutex
+	var lines []string
+	waited := false
+	late := false
+	prev := log.Writer()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if waited {
+			late = true
+		}
+		lines = append(lines, string(p))
+		return len(p), nil
+	}))
+	defer log.SetOutput(prev)
+
+	for i := 0; i < 50; i++ {
+		d := NewDispatcher(nil, 10)
+		ctx, cancel := context.WithCancel(context.Background())
+		d.Start(ctx)
+		cancel()
+		d.Wait()
+		mu.Lock()
+		waited = true
+		got := strings.Contains(strings.Join(lines, ""), "[HOOKS] Dispatcher stopped")
+		mu.Unlock()
+		if !got {
+			t.Fatalf("run %d: Wait returned before the reporter logged \"Dispatcher stopped\"", i)
+		}
+		mu.Lock()
+		waited, lines = false, nil
+		mu.Unlock()
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if late {
+		t.Error("a log line was written after Wait returned")
+	}
+}
+
+// A dispatcher that was never started has nothing to wait for.
+func TestDispatcher_WaitOnANeverStartedDispatcherReturns(t *testing.T) {
+	NewDispatcher(nil, 10).Wait()
+}
+
+// v3.0.6: a relay.* event is keyed by its relay_id (FIFO per relay), its variables carry the
+// detail, and the webhook body has a relay object and no host object.
+func TestRelayEvent_VarsKeyAndWebhookBody(t *testing.T) {
+	job := dispatchJob{event: "relay.up", relayID: "zone-a", relayChain: []string{"zone-a"}, timestamp: "ts",
+		detail: Detail{Mode: "pull", ConnSeq: 3, HostsRouted: 0, RelaysBelow: 2, RelaysBelowIDs: []string{"b", "c"}}}
+	if job.key() != "zone-a" {
+		t.Errorf("key = %q, want the relay_id", job.key())
+	}
+	v := job.vars()
+	for k, want := range map[string]string{"event": "relay.up", "relay_id": "zone-a", "mode": "pull", "conn_seq": "3",
+		"hosts_routed": "0", "relays_below": "2", "relays_below_ids": "b,c", "hostname": ""} {
+		if v[k] != want {
+			t.Errorf("vars[%q] = %q, want %q", k, v[k], want)
+		}
+	}
+	env := strings.Join(shellEnvironment(nil, nil, v), "\n")
+	for _, want := range []string{"SECAGENT_RELAY_ID=zone-a", "SECAGENT_CONN_SEQ=3", "SECAGENT_HOSTS_ROUTED=0", "SECAGENT_MODE=pull"} {
+		if !strings.Contains(env, want) {
+			t.Errorf("shell environment lacks %s:\n%s", want, env)
+		}
+	}
+	o := relayObjOf(v)
+	if o == nil || o.RelayID != "zone-a" || o.ConnSeq == nil || *o.ConnSeq != 3 || o.HostsRouted == nil || *o.HostsRouted != 0 {
+		t.Errorf("relay object = %+v", o)
+	}
+	hostJob := dispatchJob{event: "host.up", hostname: "h", status: "connected", detail: Detail{ConnSeq: 2}}
+	if hostJob.key() != "h" || relayObjOf(hostJob.vars()) != nil {
+		t.Error("a host event is keyed by hostname and has no relay object")
+	}
+}
+
+func TestPropagatedCoversTheNewKinds(t *testing.T) {
+	for _, k := range []string{"relay.failover", "relay.up", "relay.reconnect", "relay.down", "relay.discover", "relay.rerouted",
+		"relay.removed", "relay.converged", "host.reconnect", "host.discover", "host.rerouted", "host.removed", "host.up"} {
+		if !Propagated(k) {
+			t.Errorf("%s must be propagated", k)
+		}
+	}
+	for _, k := range []string{"relay.updated", "host.deleted", "host.revoked", "host.conflict"} {
+		if Propagated(k) {
+			t.Errorf("%s must not be propagated by the dispatcher", k)
+		}
+	}
+}
+
+func TestConfigWarnsWhenSeveralHooksListenToTheSameEvent(t *testing.T) {
+	var mu sync.Mutex
+	var out strings.Builder
+	prev := log.Writer()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) { mu.Lock(); defer mu.Unlock(); return out.Write(p) }))
+	defer log.SetOutput(prev)
+
+	cfg := &HooksConfig{Hooks: []HookDef{{Event: "host.up"}, {Event: "host.down"}, {Event: "host.up"}, {Event: "host.up"}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got := out.String()
+	mu.Unlock()
+	if n := strings.Count(got, `3 hooks listen to event "host.up": only the first matching one runs`); n != 1 {
+		t.Errorf("want one warning for host.up, got %d:\n%s", n, got)
+	}
+	if strings.Contains(got, `"host.down"`) {
+		t.Errorf("host.down has a single hook, no warning expected:\n%s", got)
 	}
 }

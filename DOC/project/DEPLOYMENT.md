@@ -330,6 +330,89 @@ Aucune rupture de lien ni d'agent. Trois précautions **avant** de démarrer le 
 
 **Retour arrière vers v3.0.4** : à partir du premier renouvellement ou de la première rotation, l'état contient `prev_token_jti` et un binaire v3.0.4 ne sait plus le lire (il peut même basculer en silence sur `relay.state.prev`, plus ancien : `STATE_SPEC.md`). Procédure : arrêter **tous** les nœuds du relais, `secagent-server state restore --from <sauvegarde pre-v305> --state-dir "$STATE_DIR"` (vérifie le HMAC, sauvegarde l'état courant, écriture atomique), démarrer les binaires v3.0.4 avec la **même** clé maître (ou celle de la sauvegarde si `state rekey` a eu lieu entre-temps). **Perte** : tout ce que l'état contenait de plus récent que la sauvegarde — agents enrôlés, révocations, jetons créés, clés de signature de lien. Les agents dont le JWT a été renouvelé depuis ont un JTI inconnu de l'état restauré : ils reçoivent 401 et se ré-enrôlent (jeton réutilisable indispensable, sinon code 78). Noter avant le retour arrière les révocations à ré-appliquer.
 
+## Montée de version v3.0.5 → v3.0.6 : monter les parents d'abord (événements de relais, #225 #245 #265)
+
+La v3.0.6 ne change ni les liens ni la `schema_version` de `relay.state` (aucune rupture de lien), **mais elle ajoute un champ optionnel à l'état** (`first_seen_at`, #266) : **le retour arrière vers v3.0.5 est BLOQUANT** (voir plus bas). Elle ajoute aussi des **événements** que seule la v3.0.6 comprend (SERVER_SPEC §9.2, HOOKS_SPEC §2) : `relay.failover`, `relay.up`, `relay.reconnect`, `relay.down`, `host.reconnect`, `host.rerouted`, `relay.rerouted`, `relay.converged`, `host.discover`, `host.removed`, `relay.discover`, `relay.removed`. Un nœud v3.0.5 qui les reçoit d'un enfant v3.0.6 **jette tout kind inconnu** : un `[SECURITY WARNING] event_forward rejected … unsupported event kind` **par événement**, lien conservé (rien ne ferme un lien mixte), et chacun consomme le quota de 200 `event_forward` par seconde du `relay_id` (#216).
+
+**Avant de démarrer le binaire v3.0.6 : sauvegarder `STATE_DIR`** (comme pour v3.0.4 → v3.0.5) : `install -m 0600 "$STATE_DIR/relay.state" /chemin/hors-STATE_DIR/relay.state.pre-v306.$(date -u +%Y%m%dT%H%M%SZ)`. C'est la **seule** voie de retour arrière.
+
+**Règle : monter les parents d'abord**, niveau par niveau, de la racine vers les feuilles (même ordre passif/actif pour une paire), pour qu'aucun enfant v3.0.6 ne parle à un parent v3.0.5.
+
+Ce qui se passe si un enfant est monté avant son parent :
+
+- **Bruit de logs et quota** : un WARNING par `relay.*` / `host.reconnect` reçu, quota consommé ; sans danger, mais bruyant à chaque reconnexion d'agent de l'enfant.
+- **`host.reconnect` ignoré** : le parent v3.0.5 ne met pas la route de l'hôte à jour sur cet événement ; elle n'est corrigée qu'au prochain `topology_snapshot` de l'enfant (pas d'impact sur les tâches locales de l'enfant).
+- **Propagation interrompue** : un relais v3.0.5 **intermédiaire** arrête la remontée des nouveaux événements vers la racine v3.0.6 ; les hooks de la racine ne les voient pas tant qu'il n'est pas monté. `host.up` n'est pas affecté.
+- **Sens inverse** (parent v3.0.6, enfant ou minion v3.0.5) : sans danger. Un minion ou un relais v3.0.5 n'annonce pas de `conn_seq` : le parent le compte comme 1 et émet `host.up` / `relay.up` à **chaque** connexion, jamais `*.reconnect`.
+
+**Hooks existants, à relire avant la montée** : `host.up` n'est plus émis aux reconnexions d'un même process minion ≥ 3.0.6. Un hook qui doit s'exécuter à toute connexion s'abonne à `host.up` **et** `host.reconnect` (HOOKS_SPEC §2). Un hook sur un nom d'événement que le serveur n'émet jamais (`relay.updated`, faute de frappe) est signalé par un `[WARN]` au chargement.
+
+### Après une bascule actif/passif : resynchroniser l'état des hôtes (#247)
+
+Le relais ne garde pas de registre persistant des hôtes connectés (option A, décision du 2026-11-09). Après une bascule, les hooks `host.*` peuvent donc **manquer** des changements survenus pendant la fenêtre sans maître :
+
+- **arrêt propre** : l'ancien maître émet `host.down` pour tous ses agents directs (en pratique avant le drain de 10 s ; un `host.down` tardif est rejeté et compté) ; **arrêt brutal** (perte du verrou) : tous perdus ;
+- **hôte tombé pendant la fenêtre** : aucun `host.down`, dans les deux modes ;
+- **hôtes derrière un relais enfant** : aucun événement `host.*` à la reprise du lien ; l'enfant met ses événements en file lien coupé (pull comme push) et les rejoue après son snapshot, marqués `late` au-delà de 10 s (historique : ni route, ni conflit, ni `host.rerouted`), dans la limite de sa file amont (`RELAY_UPSTREAM_QUEUE_SIZE`, défaut 10 000, bornes 256 à 100 000 ; cadence `RELAY_UPSTREAM_RATE`, défaut 150/s ; `RELAY_CONVERGENCE_TIMEOUT`, défaut 60 s, bornes 5 s à 10 min).
+- **parent gelé sans coupure TCP** (livraison au plus une fois) : les événements qu'un enfant écrit pendant la détection de la perte (jusqu'à 90 s) sont perdus et **non comptés** dans `upstream_dropped_events` ; la file amont ne protège que les coupures déjà détectées. Correction (`event_ack`, rejeu, déduplication) prévue en v3.0.7.
+
+À faire : sur `relay.failover`, puis quand les enfants attendus sont revenus (`relay.up` / `relay.reconnect`, ou `relay.converged`, émis une fois par le nœud promu), relire `GET /api/inventory` (jeton plugin) et réconcilier l'outil aval. Détail : `DOC/server/HOOKS_SPEC.md`, « Pertes à la bascule ».
+
+### Mémoire de la file amont d'un relais enfant (v3.0.6, #246)
+
+Un relais enfant garde les événements de son sous-arbre dans une file bornée tant que son parent est injoignable : `RELAY_UPSTREAM_QUEUE_SIZE` (défaut 10 000, bornes 256 à 100 000), rejouée à `RELAY_UPSTREAM_RATE` (défaut 150/s, bornes 10 à 1000 ; au-delà de 200/s le parent refuse l'excédent). **10 000 événements pleins ≈ 4,2 Mio** ; la taille d'un événement est bornée par la taille maximale d'un message WebSocket, donc le pire cas d'une file à 100 000 est nettement plus grand. **Si vous relevez `RELAY_UPSTREAM_QUEUE_SIZE`, adaptez `GOMEMLIMIT` et la limite mémoire du conteneur.** Rejeu de 10 000 événements ≈ 67 s. Les pertes sont comptées (`upstream_dropped_events` dans `GET /api/admin/status`, un `[WARN]` et une entrée `upstream_dropped` du journal par minute). Détail : `DOC/server/HOOKS_SPEC.md` §9b « File amont ».
+
+### Cycle de vie : `first_seen_at`, retour arrière bloquant, vague de `discover` (v3.0.6, #266)
+
+**`first_seen_at`** : la v3.0.6 inscrit dans `relay.state` la date du **premier handshake** de chaque hôte (`Agent.first_seen_at`) et du **premier snapshot** de chaque relais déclaré (`RelayNode.first_seen_at`) ; c'est la marque qui rend `host.discover` / `relay.discover` uniques (HOOKS_SPEC « Cycle de vie »). Écriture groupée (`RELAY_FIRST_SEEN_FLUSH`, 1 s par défaut, 100 ms à 10 s), sous la garde du verrou maître.
+
+- **Retour arrière vers v3.0.5 : BLOQUANT dès le premier hôte connecté après la montée.** Le décodeur strict de v3.0.5 (`DisallowUnknownFields`) refuse un état qui contient `first_seen_at` (message d'une corruption, alors que le fichier est valide) ; il peut même basculer sur `relay.state.prev`, plus ancien (voir « Retour arrière vers v3.0.4 » : mêmes risques). **Seule procédure sûre** : arrêter **tous** les nœuds, `secagent-server state restore --from <sauvegarde pre-v306> --state-dir "$STATE_DIR"` (vérifie le HMAC, sauvegarde l'état courant), démarrer les binaires v3.0.5 avec la **même** clé maître. **Perte** : tout ce que l'état contenait de plus récent que la sauvegarde (enrôlements, révocations, jetons, clés de lien). Ne jamais retirer le champ à la main (HMAC). Un état **sans** aucune marque reste lisible par v3.0.5.
+- **Ordre de montée en actif/passif** : monter **les deux nœuds** (actif et passif) en v3.0.6 **avant toute connexion d'agent** (relancer d'abord le passif, puis l'actif, ou arrêter les agents). Un nœud v3.0.5 qui deviendrait maître après qu'un nœud v3.0.6 a écrit une marque refuserait l'état (retour arrière bloquant ci-dessus).
+- **Vague de `discover` à la montée** : les hôtes et relais **déjà enrôlés** n'ont pas de marque, et **aucun rattrapage** n'est fait : **chacun émet un `host.discover` / `relay.discover` à sa première connexion** après la montée. Un parc de plusieurs milliers d'hôtes qui se reconnecte produit donc une rafale ; vérifier que les hooks `host.discover` / `relay.discover` supportent le volume (file : `RELAY_HOOKS_QUEUE_SIZE`, 10 000 par défaut). Hors de cette vague, un `discover` n'est émis qu'une fois par hôte, jamais à une bascule.
+- **`host.deleted` déprécié** : toujours émis en v3.0.6 (après `host.removed`), **retiré dès la v3.0.7 ([BREAKING])** ; un hook qui s'y abonne produit un `[WARN]` au chargement. Migrer vers `host.removed` avant la v3.0.7.
+- **Hôtes inactifs** : pas d'événement `host.stale` ; l'administrateur surveille les hôtes silencieux à partir de l'inventaire : `GET /api/admin/minions` (liste et détail) expose `status`, `last_seen` (dernier contact, valeur approximative en retard d'au plus une écriture d'état) et `first_seen_at`.
+
+## Plateforme Podman rootless (v3.0.6, #267)
+
+Cibles : **QUALIF** srv3 `192.168.1.213` (racine a) et srv4 `192.168.1.214` (racine b, enfant `dmz1`, minions de test) ; **PROD** srv1 `192.168.1.211` (racine a) et srv2 `192.168.1.212` (racine b). Compte `cyril` (uid 1000), **sans démon Docker de la plateforme**, administration par SSH seulement (les racines écoutent leurs ports 7770/7771/7772). L'hôte Docker `192.168.1.218` reste la PROD jusqu'à la recréation sur cette plateforme. Les nœuds portent aussi RKE2 et des chunkservers MooseFS : la plateforme n'y touche jamais. Détail et fichiers : `DEPLOYMENT/podman/README.md` ; risques : `DOC/security/SECURITY.md` §13.
+
+**Séquence d'un nœud** (poste de contrôle, `<env>` = `qualif` | `prod`, `<srvX>` = `srv1`..`srv4`) :
+
+```bash
+# 1. une fois par nœud
+DEPLOYMENT/podman/prepare-node-files.sh <env> <srvX>                         # poste : arborescence PRIVATE/<ENV>/<srvX>/cyril/secagent/ (0700) + garde
+ssh … cyril@<ip> sudo -n bash -s -- <env> <srvX> < DEPLOYMENT/podman/install-node.sh   # nœud : contrôles, linger ; rien n'est installé
+# 2. à chaque release : dépôt puis vérification épinglée (code 0 exigé)
+SECAGENT_IMAGE=…@sha256:… [SECAGENT_MINION_IMAGE=…] DEPLOYMENT/podman/stage-node-files.sh <env> <srvX>
+# verify exige les MÊMES variables que stage (SECAGENT_IMAGE, SECAGENT_MINION_IMAGE, SECAGENT_VERSION en PROD), sinon REFUS : release.env attendu différent
+SECAGENT_IMAGE=… [SECAGENT_MINION_IMAGE=… SECAGENT_VERSION=…] DEPLOYMENT/podman/verify-node-files.sh --pin <env> <srvX>
+# 3. sur le nœud, en cyril, sans sudo (jamais `systemctl --user link`)
+systemctl --user enable --now podman.socket && systemctl --user daemon-reload
+systemctl --user enable secagent-<env>-<srvX>.service                          # SANS --now
+# 4. premier démarrage de la racine, APRÈS le `state init`
+#    QUALIF : CONTAINER_CLI=podman bash DEPLOYMENT/qualif/chain-test.sh bootstrap   (state init, secrets, jetons, démarrage)
+#    PROD   : state init (un seul nœud), puis systemctl --user start secagent-prod-<srvX>.service
+```
+
+**Qui démarre quoi** : l'**unité** `secagent-<env>-<srvX>` ne démarre que la **racine** du nœud (a sur srv3, b sur srv4) ; l'enfant et les minions de QUALIF sont des **services de test**, démarrés par `chain-test.sh` seulement (`bootstrap`, scénarios, `test-services-up`). Jamais de `podman-compose up` de a/b à la main, ni de `systemctl --user start` avant le `state init`.
+
+**À chaque démarrage** (boot, `Restart=on-failure`, relance), l'unité vérifie les empreintes du partage contre le manifeste épinglé puis exécute la garde `check-private.sh` : fail-closed (`SECURITY.md` §13.3). Une release déposée sans `verify --pin` ne démarre pas.
+
+**Relancer une racine arrêtée** : l'unité est `Type=oneshot` + `RemainAfterExit=yes` : elle reste `active` même si le conteneur est arrêté (`podman stop`/`kill`), et `systemctl --user start` seul est **sans effet**. Relance : `systemctl --user stop secagent-<env>-<srvX>.service` **puis** `start` (ou `restart`) ; si l'unité est `failed`, `reset-failed` d'abord. Vérifier le **conteneur** (`podman ps`, healthy), pas seulement l'état de l'unité. Un crash réel du processus est relancé par la politique du conteneur ; un arrêt volontaire laisse l'autre nœud prendre le verrou à la péremption (≈ 278 s mesurés en recette). Suivi de l'état réel de l'unité : #279.
+
+**Après une indisponibilité du partage** : au boot, si l'autofs n'est pas joignable, `ExecStartPre` échoue et **aucun conteneur ne démarre** (fail-closed) ; `Restart=on-failure` réessaie 3 fois en 600 s. Partage revenu : `systemctl --user reset-failed secagent-<env>-<srvX>.service ; systemctl --user start …`. Ce comportement est **conforme à la conception mais non éprouvé en recette** (aucun test sur MooseFS ni reboot). Un échec d'empreinte ou de liste de fichiers signifie que le partage a été modifié depuis la vérification : **ne pas** rejouer `--pin` sans comprendre l'écart. Un conteneur démarré avant un remontage de l'autofs garde l'ancien montage : `systemctl --user restart …`.
+
+**Dépendance à MooseFS** : l'état (`PRIVATE/<ENV>/state`), les secrets et la PKI sont sur le partage. Master MooseFS injoignable : les démarrages sont refusés et les nœuds en marche perdent l'accès à l'état (HMAC, verrou) : **indisponibilité, jamais de corruption**. Superviser MooseFS ; ne jamais copier l'état PROD sur le poste.
+
+**QUALIF — repartir de zéro et sauvegarder** (`CONTAINER_CLI=podman`, `chain-test.sh`) :
+- `reset-state` : `down`, puis `RESET_STATE_CONFIRM=secagent-qualif bash chain-test.sh reset-state` (confirmation = nom du projet ; refus pour un autre environnement ou un chemin PROD), puis `bootstrap`. Il sauvegarde d'abord l'état dans `PRIVATE/QUALIF/state-backups/<horodatage UTC>/{root,child}` (0700/0600) ; si la sauvegarde échoue, rien n'est effacé. Un `bootstrap` sur un état existant est refusé.
+- `state-backup` : scénario sans perte simulée : `state verify` sur le nœud, copie 0600 hors partage (`~/secagent-backup/<horodatage>/relay.state` de `cyril`), restauration vérifiée sur une copie. Les sauvegardes sont à supprimer après la recette.
+- `push-tls` et `backup-restore` ne s'appliquent pas sous Podman.
+
+**Renouvellement de la PKI de QUALIF avant le 2027-02-11** (certificats de 90 jours) : sauvegarder `pki/` et `pki-ca/` en `*.old-<date>`, puis `PKI_DAYS=90 PKI_EXTRA_SAN=IP:192.168.1.213,IP:192.168.1.214,IP:192.168.1.218 bash DEPLOYMENT/qualif/pki/gen.sh`, redéployer par `stage-node-files` puis `verify-node-files --pin` sur srv3 et srv4 (et `push-tls` sur `.218` tant que la QUALIF Docker sert encore), puis relancer les racines (**stop puis start** de l'unité `secagent-qualif-<srvX>`). Les minions montent le **fichier** `ca.crt` : le remplacer crée un nouvel inode et le conteneur garde l'ancienne CA (échec TLS) : `podman stop` de l'**enfant et des minions** (sur le nœud), puis `CONTAINER_CLI=podman bash DEPLOYMENT/qualif/chain-test.sh test-services-up` (le redémarrage re-résout le bind du fichier `ca.crt`), puis `smoke`. Ne **pas** passer par `down` puis `bootstrap` (refusé quand un état existe). Cette procédure est **conforme à la conception mais non éprouvée en recette** (aucun remplacement de certificat n'a été fait pendant la recette). Purger les anciennes générations (`pki.old-*`, `pki-ca.old-*`) après validation.
+
+**Retour arrière** : le retour vers v3.0.5 est bloqué par `first_seen_at` (voir « Cycle de vie : `first_seen_at`, retour arrière bloquant »).
+
 ## Gestion des Tokens Relay (v3.0.4)
 
 ### Créer un jeton de lien (sur la racine uniquement)

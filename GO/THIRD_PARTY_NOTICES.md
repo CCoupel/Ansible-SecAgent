@@ -387,7 +387,7 @@ limitations under the License.
 
 ---
 
-## Go standard library and runtime (go1.27.3)
+## Go standard library and runtime (go1.27.4)
 
 - License: BSD-3-Clause
 - Source: https://go.dev/LICENSE

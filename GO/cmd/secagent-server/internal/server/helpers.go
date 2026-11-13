@@ -165,15 +165,6 @@ func startPushDialers(st *storage.Store, mgr pushStarter) {
 	}
 }
 
-// queueUpstream hands an event to the uplink without ever blocking a handler.
-func queueUpstream(ch chan<- repeater.Event, ev repeater.Event) {
-	select {
-	case ch <- ev:
-	default:
-		log.Printf("[REPEATER] upstream event queue full, event %s dropped", ev.Event)
-	}
-}
-
 // agentRevokedCheck is the replay of B55 (ws.SetAgentRevokedCheckFunc): after the connection is registered,
 // is the host revoked, its JTI blacklisted, or the agent gone? It reads the in-memory state only and takes no
 // write, so it costs two map lookups per connection.

@@ -54,7 +54,7 @@ func TestRegisterConnection(t *testing.T) {
 	hostname := "test-agent-1"
 
 	mockConn := &AgentConnection{Hostname: hostname, Conn: nil}
-	RegisterConnection(hostname, mockConn)
+	RegisterConnection(hostname, mockConn, 1)
 
 	conn, err := GetConnection(hostname)
 	if err != nil {
@@ -71,7 +71,7 @@ func TestUnregisterConnection(t *testing.T) {
 	hostname := "test-agent-2"
 
 	mockConn := &AgentConnection{Hostname: hostname, Conn: nil}
-	RegisterConnection(hostname, mockConn)
+	RegisterConnection(hostname, mockConn, 1)
 	UnregisterConnection(hostname)
 
 	_, err := GetConnection(hostname)
@@ -96,6 +96,7 @@ func TestGetConnectionNotFound(t *testing.T) {
 
 func TestRegisterConnectionReplacesStale(t *testing.T) {
 	resetState()
+	t.Cleanup(resetState) // a "live local agent" left in the global map makes later relay tests drop host-a from agent_list
 
 	// Directly set conn in map (nil Conn avoids Close() panic)
 	conn1 := &AgentConnection{Hostname: "host-a"}
@@ -221,7 +222,7 @@ func TestUnregisterConnectionResolvesFutures(t *testing.T) {
 	resetState()
 
 	mockConn := &AgentConnection{Hostname: "host-a"}
-	RegisterConnection("host-a", mockConn)
+	RegisterConnection("host-a", mockConn, 1)
 	ch := mustFuture(RegisterFuture("task-1", "host-a"))
 
 	UnregisterConnection("host-a")
@@ -489,8 +490,8 @@ func TestGetConnectedCount(t *testing.T) {
 		t.Errorf("expected 0, got %d", n)
 	}
 
-	RegisterConnection("host-a", &AgentConnection{Hostname: "host-a"})
-	RegisterConnection("host-b", &AgentConnection{Hostname: "host-b"})
+	RegisterConnection("host-a", &AgentConnection{Hostname: "host-a"}, 1)
+	RegisterConnection("host-b", &AgentConnection{Hostname: "host-b"}, 1)
 
 	if n := GetConnectedCount(); n != 2 {
 		t.Errorf("expected 2, got %d", n)
@@ -512,8 +513,8 @@ func TestGetConnectedHostnames(t *testing.T) {
 		t.Errorf("expected 0 hostnames, got %d", len(hosts))
 	}
 
-	RegisterConnection("alpha", &AgentConnection{Hostname: "alpha"})
-	RegisterConnection("beta", &AgentConnection{Hostname: "beta"})
+	RegisterConnection("alpha", &AgentConnection{Hostname: "alpha"}, 1)
+	RegisterConnection("beta", &AgentConnection{Hostname: "beta"}, 1)
 
 	hosts = GetConnectedHostnames()
 	if len(hosts) != 2 {
@@ -732,7 +733,7 @@ func TestCloseAgent_ConnectedAgent(t *testing.T) {
 			return
 		}
 		agentConn := &AgentConnection{Hostname: "close-test-host", Conn: conn}
-		RegisterConnection("close-test-host", agentConn)
+		RegisterConnection("close-test-host", agentConn, 1)
 
 		// Read until close (blocks until CloseAgent sends the close frame)
 		for {
@@ -888,7 +889,7 @@ func TestConcurrentGetConnectedHostnames(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			h := fmt.Sprintf("concurrent-host-%d", idx)
-			RegisterConnection(h, &AgentConnection{Hostname: h})
+			RegisterConnection(h, &AgentConnection{Hostname: h}, 1)
 			GetConnectedHostnames()
 			GetConnectedCount()
 			UnregisterConnection(h)

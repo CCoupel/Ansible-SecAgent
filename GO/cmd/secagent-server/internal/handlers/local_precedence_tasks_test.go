@@ -47,7 +47,7 @@ func connectPrecAgent(t *testing.T, hostname string) *precAgent {
 		if err != nil {
 			return
 		}
-		ws.RegisterConnection(hostname, &ws.AgentConnection{Hostname: hostname, Conn: c})
+		ws.RegisterConnection(hostname, &ws.AgentConnection{Hostname: hostname, Conn: c}, 1)
 		select {}
 	}))
 	client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)

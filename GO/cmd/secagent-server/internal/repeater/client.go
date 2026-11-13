@@ -18,12 +18,14 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 
 	"secagent-server/cmd/secagent-server/internal/config"
+	"secagent-server/cmd/secagent-server/internal/hooks"
 	"secagent-server/internal/endpoints"
 )
 
@@ -31,6 +33,7 @@ import (
 const (
 	ProtocolVersion = "3.0"
 	NodeTypeRelay   = "relay"
+	maxConnSeq      = 1 << 31 // upper bound of a conn_seq on the wire
 	ModePull        = "pull"
 
 	// CloseCodePermanent (4010): permanent refusal (revoked/unauthorized identity, loop, identity
@@ -92,10 +95,16 @@ type Event struct {
 	RelayChain []string       `json:"relay_chain"`
 	GroupVars  map[string]any `json:"group_vars,omitempty"`
 	Timestamp  string         `json:"timestamp,omitempty"`
-	EnrolledAt string         `json:"enrolled_at,omitempty"` // host.new only
+	// Late marks an event that sat in the queue (a cut link, a backlog): the parent keeps it as history
+	// (hooks, propagation) and does not let it rewrite a route or raise a conflict (T24).
+	Late       bool   `json:"late,omitempty"`
+	EnrolledAt string `json:"enrolled_at,omitempty"` // host.new only
 	// host.conflict only
 	OldRelay string `json:"old_relay,omitempty"`
 	NewRelay string `json:"new_relay,omitempty"`
+	// v3.0.6: relay.* kinds, host.reconnect… (see hooks.Detail). Mode is relay.* pull | push.
+	Mode string `json:"mode,omitempty"`
+	hooks.Detail
 }
 
 // message is the generic envelope; only the fields of the given type are set.
@@ -114,6 +123,7 @@ type message struct {
 	TaskID     string         `json:"task_id,omitempty"`
 	Hostname   string         `json:"hostname,omitempty"`
 	RelayChain []string       `json:"relay_chain,omitempty"`
+	ConnSeq    hooks.Seq      `json:"conn_seq,omitempty"` // relay_hello / relay_ack: connections of this process (v3.0.6)
 }
 
 type snapshotMessage struct {
@@ -143,6 +153,13 @@ type Options struct {
 	Snapshot func() Snapshot
 	// Events carries local subtree events to forward upstream (optional).
 	Events <-chan Event
+	// EventRate caps the events sent upstream per second (token bucket, no burst): the replay of a
+	// queue that filled while the link was down must stay under the parent's per-identity quota
+	// (RELAY_UPSTREAM_RATE, #246). 0 = unlimited.
+	EventRate int
+	// OnEventLost is called with the number of events taken from Events but never delivered (an
+	// invalid chain, a write that failed): a loss is counted, never silent. Optional.
+	OnEventLost func(n int64)
 	// Changed signals a downstream state change → agent_list is re-sent (optional).
 	Changed <-chan struct{}
 	// TopologyChanged signals that the set of relays below this node changed: a FULL
@@ -190,8 +207,10 @@ type Client struct {
 	parentID string // identity learned at first successful handshake
 	terminal error  // set when a permanent refusal stopped the client
 	done     chan struct{}
+	stopped  chan struct{} // closed when the run loop has returned (after the 1001 close frame of a stop)
 	conn     *websocket.Conn
 	rotor    *endpoints.Rotor // the parent's addresses, last good one first
+	links    atomic.Int64     // links of this process established with a parent: conn_seq of the next relay_hello
 }
 
 // New builds a Client from the validated repeater config.
@@ -200,7 +219,7 @@ func New(cfg config.RepeaterConfig, opts Options) *Client {
 		opts.OwnLinkJTI = unverifiedJTI(cfg.UpstreamToken)
 	}
 	up := NewUplink(cfg.ID, opts)
-	return &Client{cfg: cfg, opts: up.opts, up: up, tr: newLinkTracker(), done: make(chan struct{})}
+	return &Client{cfg: cfg, opts: up.opts, up: up, tr: newLinkTracker(), done: make(chan struct{}), stopped: make(chan struct{})}
 }
 
 // Uplink returns the shared uplink publisher (used to also accept a parent that dials us, #140).
@@ -273,7 +292,24 @@ func (c *Client) Start(ctx context.Context) error {
 	return nil
 }
 
+// WaitStopped blocks, at most d, until the run loop has returned: after the context was cancelled
+// the session has then sent its 1001 going-away close frame (a process that exits sooner would
+// leave the parent with a cut socket, 1006). It returns at once for a client never started.
+func (c *Client) WaitStopped(d time.Duration) {
+	c.mu.Lock()
+	started := c.started
+	c.mu.Unlock()
+	if !started {
+		return
+	}
+	select {
+	case <-c.stopped:
+	case <-time.After(d):
+	}
+}
+
 func (c *Client) run(ctx context.Context) {
+	defer close(c.stopped)
 	err := runLoopAfter(ctx, "parent", c.opts.MinBackoff, c.opts.MaxBackoff, c.tr, c.setTerminal, c.session, c.opts.after)
 	if err != nil {
 		close(c.done)
@@ -342,14 +378,23 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 
 	// Closing on ctx cancel unblocks the read loop.
 	sessCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go func() { <-sessCtx.Done(); _ = conn.Close() }()
+	closer := make(chan struct{})
+	defer func() { cancel(); <-closer }() // the close frame of a stop is written before the session returns
+	go func() {
+		defer close(closer)
+		<-sessCtx.Done()
+		if ctx.Err() != nil {
+			c.up.goingAway(conn) // orderly stop: 1001 going away before the socket closes
+		}
+		_ = conn.Close()
+	}()
 
 	// 1. relay_hello
 	hello := message{Type: "relay_hello", NodeType: NodeTypeRelay, Mode: ModePull,
-		RelayID: c.cfg.ID, Ancestors: []string{}, Version: ProtocolVersion, GroupVars: c.opts.GroupVars}
+		RelayID: c.cfg.ID, Ancestors: []string{}, Version: ProtocolVersion, GroupVars: c.opts.GroupVars,
+		ConnSeq: hooks.Seq(min(c.links.Load()+1, maxConnSeq))}
 	if err := c.write(conn, hello); err != nil {
-		return false, fmt.Errorf("send relay_hello: %w", err)
+		return false, c.up.earlyClose(conn, fmt.Errorf("send relay_hello: %w", err))
 	}
 
 	// 2. relay_ack
@@ -368,6 +413,7 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 		return false, &refusedError{reason: err.Error(), permanent: true}
 	}
 
+	c.links.Add(1) // this connection counts: the next hello announces conn_seq + 1
 	c.up.SetAncestors(ack.Ancestors)
 	c.tr.set(LinkConnected, "")
 	log.Printf("[REPEATER] linked to parent relay_id=%q as %s", ack.RelayID, c.cfg.ID)

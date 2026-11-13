@@ -4,14 +4,11 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -30,9 +27,7 @@ func authorize(t *testing.T, admin, host string) (int, map[string]any) {
 func TestReadOnly_WriteIs503StateReadOnlyWithAReason(t *testing.T) {
 	var mode atomic.Value
 	mode.Store("ok")
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	defer log.SetOutput(os.Stderr)
+	buf := captureLogs(t)
 	_, _, admin, _ := startNode(t, func(c *Config) {
 		c.WriteGuard = func() error {
 			if mode.Load() == "ok" {

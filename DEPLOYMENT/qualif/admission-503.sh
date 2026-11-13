@@ -45,16 +45,37 @@ adm503_cleanup() { # sortie de l'etape (succes ou echec) : plus de tache en fond
   ADM503_PIDS=()
   if [ -n "$ADM503_OVERRIDE" ] && [ -f "$ADM503_OVERRIDE" ]; then
     echo "== nettoyage : plafond memoire par defaut restaure" >&2
-    "${DC[@]}" up -d --no-deps --force-recreate secagent-server-a secagent-server-b >/dev/null 2>&1 || true
+    root_reset >/dev/null 2>&1 || true   # Podman : recree par les unites ; Docker : compose force-recreate
     rm -f "$ADM503_OVERRIDE"
   fi
 }
 
 adm503_uuid() { cat /proc/sys/kernel/random/uuid 2>/dev/null || python3 -c 'import uuid;print(uuid.uuid4())'; }
 
-adm503_base() { # URL de l'API du maitre courant (a : 7770, b : 8770, voir docker-compose.server.yml)
+ADM503_BASE=""                       # URL de l'API du maitre, resolue UNE fois par adm503_set_base (jamais dans les taches de fond)
+
+adm503_base_of() { # $1 conteneur maitre -> URL de son API (a : port d'hote 7770, b : 8770, voir docker-compose.server.yml)
+  # Podman (#267, T48) : a sur le noeud A, b sur le noeud B, joints par l'adresse de leur noeud (comme control_env) ;
+  # ENDPOINT_HOST (127.0.0.1 par defaut) ne designe pas les noeuds : HTTP 000 depuis le poste.
+  # ADM503_PORT_A / ADM503_PORT_B : ports d'hote de a et b (defauts du Compose ; autres valeurs : banc isole seulement)
+  local pa="${ADM503_PORT_A:-7770}" pb="${ADM503_PORT_B:-8770}"
+  if [ "${CONTAINER_CLI:-docker}" = podman ]; then
+    if [ "$1" = "$C_A" ]; then echo "https://$(node_addr A):$pa"; else echo "https://$(node_addr B):$pb"; fi
+  elif [ "$1" = "$C_A" ]; then echo "https://${ENDPOINT_HOST}:$pa"; else echo "https://${ENDPOINT_HOST}:$pb"; fi
+}
+adm503_api_up() { # 0 si l'API HTTPS du maitre repond (tout code HTTP, 404 compris : ecoute et TLS valides)
+  local c; c="$(curl -sS --cacert "$QUALIF_TLS_DIR/ca.crt" -o /dev/null -w '%{http_code}' --max-time 5 "$ADM503_BASE/" 2>/dev/null)" || c=000
+  [ "$c" != 000 ]
+}
+# Maitre elu et API joignable depuis le poste, apres chaque recreation de la racine. Resolu ICI, une seule fois : les
+# requetes paralleles (adm503_fill, sondes) n'ouvrent aucune session SSH (10 `master` en parallele saturaient le
+# multiplexage SSH, MaxSessions, T48 : « Session open refused by peer »).
+adm503_set_base() {
+  wait_for "maitre elu sur la racine" 60 master >/dev/null
   local m; m="$(master)" || fail "pas de maitre sur la racine"
-  if [ "$m" = "$C_A" ]; then echo "https://${ENDPOINT_HOST}:7770"; else echo "https://${ENDPOINT_HOST}:8770"; fi
+  ADM503_BASE="$(adm503_base_of "$m")"
+  wait_for "API du maitre $m ($ADM503_BASE)" 60 adm503_api_up >/dev/null
+  echo "maitre $m, API $ADM503_BASE joignable"
 }
 
 # $1 hote cible, $2 task_id, $3 commande, $4 delai max (s), $5 prefixe des fichiers de sortie (.hdr .body) ; affiche
@@ -64,7 +85,7 @@ adm503_exec() {
   body="$(printf '{"task_id":"%s","cmd":"%s","stdin":"eA==","timeout":%s,"become":false}' "$2" "$3" "$4")"
   code="$(curl -sS --cacert "$QUALIF_TLS_DIR/ca.crt" -H "@$CHAIN_DIR/plugin.header" -H 'Content-Type: application/json' \
     -X POST --max-time "$(( $4 + 15 ))" -D "$5.hdr" -o "$5.body" -w '%{http_code}' -d "$body" \
-    "$(adm503_base)/api/exec/$1" 2>/dev/null)" || code=000
+    "${ADM503_BASE:?adm503_set_base non appele}/api/exec/$1" 2>/dev/null)" || code=000
   echo "$code"
 }
 
@@ -106,7 +127,7 @@ adm503_lot_all_ok() {
   done
 }
 
-adm503_minion_logs() { "${DC[@]}" logs --no-color "$1" 2>&1; }  # $1 service minion-root | minion-child
+adm503_minion_logs() { dc logs --no-color "$1" 2>&1; }  # $1 service minion-root | minion-child
 
 # Surcharge Compose temporaire (./chain/, non versionnee) : MAX_STDOUT_BUFFER_TOTAL sur les deux noeuds racine.
 adm503_write_override() {
@@ -125,26 +146,31 @@ EOF
 # Recree les deux noeuds racine (avec la surcharge si $1 = with) et attend maitre + minions + enfant reconnectes.
 adm503_recreate_root() {
   if [ "$1" = with ]; then
-    "${DC[@]}" -f "$ADM503_OVERRIDE" up -d --no-deps --force-recreate secagent-server-a secagent-server-b
+    dc -f "$ADM503_OVERRIDE" up -d --no-deps --force-recreate secagent-server-a secagent-server-b
   else
-    "${DC[@]}" up -d --no-deps --force-recreate secagent-server-a secagent-server-b
+    root_reset   # configuration par defaut ; Podman : recree par les unites (seul chemin de a/b hors du test)
   fi
-  wait_for "racine healthy" 120 bash -c "[ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_A)\" = healthy ] && [ \"\$(docker inspect -f '{{.State.Health.Status}}' $C_B)\" = healthy ]" >/dev/null
+  wait_for "racine healthy" 120 all_health healthy "$C_A" "$C_B" >/dev/null
   sleep 3
   local m; m="$(master)" || fail "pas de maitre sur la racine apres recreation"
   connected "$m" relays dmz1 4
   connected "$m" minions minion-root 2
   connected "$C_CHILD" minions minion-child 2
+  adm503_set_base   # maitre elu + API joignable ; URL figee pour les requetes paralleles
 }
 
-adm503_env_of() { docker exec "$1" printenv MAX_STDOUT_BUFFER_TOTAL 2>/dev/null || true; }  # $1 conteneur : valeur ou vide
+adm503_env_of() { ctr exec "$1" printenv MAX_STDOUT_BUFFER_TOTAL 2>/dev/null || true; }  # $1 conteneur : valeur ou vide
 
 admission_503() {
+  require_ansible_version   # #249 : etape 5 (plugin reel) suppose la version epinglee de la CI
   verify_images; need INVENTORY_BIN
   local slots=$(( ADM503_BUDGET / ADM503_TASK_BYTES )) m n code probe
   [ "$slots" -ge 2 ] || fail "ADM503_BUDGET=$ADM503_BUDGET trop bas (moins de 2 taches)"
   [ "$slots" -le 20 ] || fail "ADM503_BUDGET=$ADM503_BUDGET : $slots taches > 2 x MAX_TASKS_PER_AGENT, le refus serait un 429 et non un 503"
   chain_dir   # garde de CHAIN_DIR (lien, proprietaire, 0700) avant d'y ecrire
+  # Fichiers de l'etape (codes, corps, en-tetes, inventaire, journal Ansible) crees en 0600 (T49 R4 : 0664 constate) ;
+  # umask d'origine restauree en fin d'etape (succes) ; un echec termine le script.
+  local adm503_umask; adm503_umask="$(umask)"; umask 077
   ADM503_DIR="$CHAIN_DIR/admission-503"; rm -rf "$ADM503_DIR"; mkdir -p "$ADM503_DIR"; chmod 700 "$ADM503_DIR"
   trap adm503_cleanup EXIT
   # 0. jeton plugin frais -> en-tete d'autorisation en fichier 0600 (jamais affiche)
@@ -162,7 +188,7 @@ admission_503() {
   local hosts=() half=$(( slots / 2 ))
   for n in $(seq 1 "$half"); do hosts+=(minion-child); done
   for n in $(seq 1 $(( slots - half ))); do hosts+=(minion-root); done
-  local refused_before; refused_before="$(docker logs "$m" 2>&1 | grep -c 'task refused at admission: reason=memory_budget_exhausted' || true)"
+  local refused_before; refused_before="$(ctr logs "$m" 2>&1 | grep -c 'task refused at admission: reason=memory_budget_exhausted' || true)"
   adm503_fill fill "$ADM503_HOLD" "${hosts[@]}"
   # sonde : exec court, repete jusqu'au refus (les premieres sondes peuvent preceder l'admission des $slots taches)
   local t0 probe_host
@@ -200,9 +226,9 @@ admission_503() {
       fail "admission-503 : la tache refusee (sonde vers minion-$svc) a ete ENVOYEE au minion"
     fi
   done
-  local refused_after; refused_after="$(docker logs "$m" 2>&1 | grep -c 'task refused at admission: reason=memory_budget_exhausted' || true)"
+  local refused_after; refused_after="$(ctr logs "$m" 2>&1 | grep -c 'task refused at admission: reason=memory_budget_exhausted' || true)"
   [ "$refused_after" -gt "$refused_before" ] || fail "admission-503 : '[SECURITY WARNING] task refused at admission: reason=memory_budget_exhausted' absent du journal de $m ($refused_before -> $refused_after)"
-  docker logs "$m" 2>&1 | grep 'task refused at admission: reason=memory_budget_exhausted' | tail -1 | sed 's/^/extrait du journal : /'
+  ctr logs "$m" 2>&1 | grep 'task refused at admission: reason=memory_budget_exhausted' | tail -1 | sed 's/^/extrait du journal : /'
 
   echo "== 4. liberation : fin des taches, puis admission a nouveau possible"
   adm503_lot_wait
@@ -217,12 +243,15 @@ admission_503() {
   echo "== 5. plugin Ansible reel : 12 forks > plafond ($slots)"
   control_env
   local inv="$CHAIN_DIR/admission-503-inventory.ini" out="$CHAIN_DIR/admission-503-ansible.log"
+  rm -f "$inv" "$out"   # un fichier existant garderait son ancien mode (0664 avant T49 R4) : recree en 0600 (umask 077)
   { echo "[all]"
     for n in $(seq 1 6); do echo "adm-root-$n ansible_host=minion-root ansible_connection=relay"; done
     for n in $(seq 1 6); do echo "adm-child-$n ansible_host=minion-child ansible_connection=relay"; done
   } > "$inv"
+  chmod 600 "$inv"
   ANSIBLE_CONNECTION_PLUGINS="$REPO/SECAGENT-PYTHON/ansible_plugins/connection_plugins" \
     "${ANSIBLE_BIN:-ansible}" all -i "$inv" -f 12 -m command -a "sleep 20" > "$out" 2>&1 || true   # rc != 0 attendu (UNREACHABLE)
+  chmod 600 "$out"
   local unreach ok_hosts
   unreach="$(grep -c 'UNREACHABLE!' "$out" || true)"; ok_hosts="$(grep -c 'CHANGED\|SUCCESS' "$out" || true)"
   [ "$unreach" -ge 1 ] || fail "admission-503 : aucun hote UNREACHABLE avec 12 forks et un plafond de $slots (voir $out)"
@@ -248,5 +277,6 @@ admission_503() {
   smoke
   trap - EXIT
   rm -rf "$ADM503_DIR"
+  umask "$adm503_umask"
   echo "admission-503 OK ($slots taches admises, la suivante refusee en 503 memory_budget_exhausted avec Retry-After, rien envoye au minion, liberation constatee, plugin explicite, defaut restaure)"
 }

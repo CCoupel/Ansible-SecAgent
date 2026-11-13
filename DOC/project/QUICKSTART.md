@@ -207,3 +207,21 @@ docker compose -p secagent-qualif -f docker-compose.server.yml run --rm secagent
 ---
 
 **Questions ?** Consulter [DOC/](../) ou créer une issue sur GitHub.
+
+---
+
+## Variante : nœuds Podman rootless (v3.0.6)
+
+Pour déployer sur des nœuds Podman rootless (srv1-srv4, compte `cyril`, sans Docker), la séquence est :
+
+```bash
+DEPLOYMENT/podman/prepare-node-files.sh <env> <srvX>          # poste (une fois)
+#   puis, sur le nœud : install-node.sh en sudo (une fois, voir DEPLOYMENT/podman/README.md)
+# stage ET verify : mêmes variables SECAGENT_IMAGE, SECAGENT_MINION_IMAGE (et SECAGENT_VERSION en PROD), sinon REFUS
+SECAGENT_IMAGE=… SECAGENT_MINION_IMAGE=… DEPLOYMENT/podman/stage-node-files.sh <env> <srvX>        # poste, à chaque release
+SECAGENT_IMAGE=… SECAGENT_MINION_IMAGE=… DEPLOYMENT/podman/verify-node-files.sh --pin <env> <srvX> # intégrité + épinglage (code 0 exigé)
+systemctl --user enable secagent-<env>-<srvX>.service          # nœud, en cyril, SANS --now
+CONTAINER_CLI=podman bash DEPLOYMENT/qualif/chain-test.sh bootstrap   # QUALIF : state init puis démarrage des racines
+```
+
+L'unité ne démarre que la racine ; ne jamais démarrer a ou b à la main avant le `state init`. Relance d'une racine arrêtée : `systemctl --user stop` puis `start`. Détail, indisponibilité du partage, `reset-state` : `DOC/project/DEPLOYMENT.md`, « Plateforme Podman rootless ». Risques : `DOC/security/SECURITY.md` §13.

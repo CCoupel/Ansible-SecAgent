@@ -26,7 +26,7 @@ func connectLocalAgent(t *testing.T, hostname, stdout string) {
 		if err != nil {
 			return
 		}
-		ws.RegisterConnection(hostname, &ws.AgentConnection{Hostname: hostname, Conn: c})
+		ws.RegisterConnection(hostname, &ws.AgentConnection{Hostname: hostname, Conn: c}, 1)
 		select {}
 	}))
 	client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)

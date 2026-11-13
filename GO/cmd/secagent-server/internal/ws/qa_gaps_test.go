@@ -156,7 +156,7 @@ func TestQAGaps_AnExhaustedIdentityIsRefusedAtTheHelloBeforeAnyAck(t *testing.T)
 func TestQAGaps_ASuspensionEventForAHostConnectedHereAndAlsoRoutedIsRefused(t *testing.T) {
 	sink := recordSuspensions(t)
 	r := newEventRig(t, map[string]string{"host-A": "dmz1"})
-	RegisterConnection("host-A", &AgentConnection{Hostname: "host-A"})
+	RegisterConnection("host-A", &AgentConnection{Hostname: "host-A"}, 1)
 	t.Cleanup(func() { UnregisterConnection("host-A") })
 
 	r.send(RelayMessage{Event: "host.suspended", Hostname: "host-A", RelayChain: []string{"dmz1"}})

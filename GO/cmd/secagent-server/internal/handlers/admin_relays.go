@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"secagent-server/cmd/secagent-server/internal/hooks"
 	"secagent-server/cmd/secagent-server/internal/repeater"
 	"secagent-server/cmd/secagent-server/internal/state"
 	"secagent-server/cmd/secagent-server/internal/storage"
@@ -121,6 +122,7 @@ type RelaySummary struct {
 	URLs        []string `json:"urls,omitempty"`
 	URL         string   `json:"url,omitempty"`
 	LastSeen    *string  `json:"last_seen,omitempty"`
+	FirstSeenAt string   `json:"first_seen_at,omitempty"` // v3.0.6 (#266)
 	CreatedAt   string   `json:"created_at"`
 }
 
@@ -399,6 +401,11 @@ func AdminDeleteRelay(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	hostsRouted := 0
+	if hosts, herr := adminStore.ListRelayRouting(node.RelayID); herr == nil {
+		hostsRouted = len(hosts)
+	}
+
 	// Best-effort: delete routing entries before the node (FK cascade handles it,
 	// but explicit delete is safer if FK cascade is not enabled at connection level).
 	_ = adminStore.DeleteRelayRoutingByRelay(node.RelayID)
@@ -407,6 +414,16 @@ func AdminDeleteRelay(w http.ResponseWriter, r *http.Request) {
 		log.Printf("AdminDeleteRelay DeleteRelayNode: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 		return
+	}
+
+	// relay.removed (#266): ONE event, no cascade, BEFORE the relay.down reason=revoked the cut below causes
+	// (same relay_id key: FIFO). A revocation never emits it.
+	if hooks.GlobalDispatcher != nil {
+		removed := hooks.Event{Name: "relay.removed", RelayID: node.RelayID, RelayChain: []string{node.RelayID}, Detail: hooks.Detail{Mode: node.Mode, Cause: "deleted", HostsRouted: hostsRouted}}
+		if node.FirstSeenAt != nil {
+			removed.Detail.FirstSeenAt = node.FirstSeenAt.UTC().Format(time.RFC3339)
+		}
+		hooks.GlobalDispatcher.DispatchEvent(removed)
 	}
 
 	if node.Mode == "push" {
@@ -443,6 +460,9 @@ func relayNodeToSummary(n storage.RelayNode) RelaySummary {
 	if n.LastSeen != nil {
 		t := time.Unix(*n.LastSeen, 0).UTC().Format(time.RFC3339)
 		s.LastSeen = &t
+	}
+	if n.FirstSeenAt != nil {
+		s.FirstSeenAt = n.FirstSeenAt.UTC().Format(time.RFC3339)
 	}
 	return s
 }

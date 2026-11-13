@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"secagent-server/cmd/secagent-server/internal/hooks"
 )
 
 var upgrader = websocket.Upgrader{
@@ -93,7 +96,70 @@ var (
 	// SetDispatchFunc. Atomic: handler goroutines of a node that is going away read it while a new
 	// node is built.
 	dispatchFn atomic.Pointer[func(event string, hostname string, status string, enrolledAt string)]
+
+	// eventFn receives the v3.0.6 events (host.up / host.reconnect with conn_seq, relay.*); see
+	// SetEventFunc. It takes precedence over dispatchFn for the events it carries.
+	eventFn atomic.Pointer[func(ev hooks.Event)]
 )
+
+// SetEventFunc injects the sink of the events that carry more than (event, hostname, status):
+// host.up / host.reconnect (conn_seq) and the relay.* lifecycle kinds. nil = fall back to the
+// function of SetDispatchFunc for host events, drop relay.* events.
+func SetEventFunc(fn func(ev hooks.Event)) {
+	if fn == nil {
+		eventFn.Store(nil)
+		return
+	}
+	eventFn.Store(&fn)
+}
+
+// emitEvent hands an event to the sink SYNCHRONOUSLY, in the order of the calls, so that the FIFO of
+// a worker (per hostname / per relay_id) reflects the order of emission. The sink never blocks (the
+// dispatcher's queues are bounded and full means dropped and counted), but it must not be called
+// with a registry lock held. Without an event sink a host event still reaches the legacy dispatch.
+func emitEvent(ev hooks.Event) {
+	if fn := eventFn.Load(); fn != nil {
+		(*fn)(ev)
+		return
+	}
+	if hooks.IsRelayEvent(ev.Name) {
+		return
+	}
+	if fn := dispatchFn.Load(); fn != nil {
+		(*fn)(ev.Name, ev.Hostname, ev.Status, ev.EnrolledAt)
+	}
+}
+
+// firstSeenFn marks the first handshake of a host (storage.MarkFirstSeen) and returns its enrollment date.
+var firstSeenFn atomic.Pointer[func(hostname string) (first bool, firstSeen, enrolledAt time.Time)]
+
+// SetFirstSeenFunc wires the first-seen mark (#266). nil disables host.discover.
+func SetFirstSeenFunc(fn func(hostname string) (first bool, firstSeen, enrolledAt time.Time)) {
+	if fn == nil {
+		firstSeenFn.Store(nil)
+		return
+	}
+	firstSeenFn.Store(&fn)
+}
+
+// ParseConnSeq reads a conn_seq: a decimal integer 1..2^31. Anything else (absent, empty, zero,
+// negative, not decimal, out of range) is 1: fail-safe, it announces a new process (host.up /
+// relay.up) rather than a reconnection.
+func ParseConnSeq(raw string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n < 1 || n > maxConnSeq {
+		return 1
+	}
+	return n
+}
+
+// normConnSeq is ParseConnSeq for a number already decoded from JSON.
+func normConnSeq(n int) int {
+	if n < 1 || n > maxConnSeq {
+		return 1
+	}
+	return n
+}
 
 // SetDispatchFunc injects the function called when an agent connects (host.up) or disconnects
 // (host.down), from the server wiring, to avoid an import cycle between ws and hooks.
@@ -105,6 +171,10 @@ func SetDispatchFunc(fn func(event string, hostname string, status string, enrol
 	}
 	dispatchFn.Store(&fn)
 }
+
+// ConnSeqHeader is the request header of /ws/agent that carries the connection counter of the
+// agent process (v3.0.6).
+const ConnSeqHeader = "X-SecAgent-Conn-Seq"
 
 // SetRekeyFunc injects the function used to issue a new encrypted token to an agent.
 // Called at startup by main.go after handlers are initialized.
@@ -122,36 +192,49 @@ func nowISO() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
-// RegisterConnection registers a WebSocket connection for a hostname
-func RegisterConnection(hostname string, conn *AgentConnection) {
+// RegisterConnection registers a WebSocket connection for a hostname. connSeq is the number of
+// connections the agent process announced (X-SecAgent-Conn-Seq, 1 when absent or invalid): the
+// first one of a process gives host.up, the following ones host.reconnect, never both.
+func RegisterConnection(hostname string, conn *AgentConnection, connSeq int) {
 	connectionsMu.Lock()
-	defer connectionsMu.Unlock()
-
 	// Close any existing connection for this hostname
 	if oldConn, exists := wsConnections[hostname]; exists {
 		log.Printf("Replacing stale WS for hostname: %q", hostname)
 		_ = oldConn.Conn.Close()
 	}
-
 	wsConnections[hostname] = conn
+	connectionsMu.Unlock()
 	log.Printf("Agent connected: hostname=%q", hostname)
 
-	if fn := dispatchFn.Load(); fn != nil {
-		go (*fn)("host.up", hostname, "connected", "")
+	// host.discover (#266): the FIRST handshake of the host, before host.up (same hostname worker: FIFO).
+	if fn := firstSeenFn.Load(); fn != nil {
+		if first, firstSeen, enrolledAt := (*fn)(hostname); first {
+			d := hooks.Detail{FirstSeenAt: firstSeen.UTC().Format(time.RFC3339)}
+			ev := hooks.Event{Name: "host.discover", Hostname: hostname, Detail: d}
+			if !enrolledAt.IsZero() {
+				ev.EnrolledAt = enrolledAt.UTC().Format(time.RFC3339)
+			}
+			emitEvent(ev)
+		}
 	}
+	name := "host.up"
+	seq := normConnSeq(connSeq)
+	if seq > 1 {
+		name = "host.reconnect"
+	}
+	emitEvent(hooks.Event{Name: name, Hostname: hostname, Status: "connected", Detail: hooks.Detail{ConnSeq: hooks.Seq(seq)}})
+	noteLocalConnect(hostname) // a host that still has a route through a relay: host.rerouted direct (#244)
 }
 
 // UnregisterConnection removes a hostname from active connections
 func UnregisterConnection(hostname string) {
 	connectionsMu.Lock()
-	defer connectionsMu.Unlock()
-
 	delete(wsConnections, hostname)
+	connectionsMu.Unlock()
 	log.Printf("Agent disconnected: hostname=%q", hostname)
 
-	if fn := dispatchFn.Load(); fn != nil {
-		go (*fn)("host.down", hostname, "disconnected", "")
-	}
+	emitEvent(hooks.Event{Name: "host.down", Hostname: hostname, Status: "disconnected"})
+	noteLocalDisconnect(hostname)
 
 	// Resolve all pending futures with error
 	ResolveFuturesForHostname(hostname, "agent_disconnected")
@@ -171,9 +254,8 @@ func unregisterIfCurrent(hostname string, conn *AgentConnection) {
 	connectionsMu.Unlock()
 	log.Printf("Agent disconnected: hostname=%q", hostname)
 
-	if fn := dispatchFn.Load(); fn != nil {
-		go (*fn)("host.down", hostname, "disconnected", "")
-	}
+	emitEvent(hooks.Event{Name: "host.down", Hostname: hostname, Status: "disconnected"})
+	noteLocalDisconnect(hostname)
 	ResolveFuturesForHostname(hostname, "agent_disconnected")
 }
 
@@ -526,15 +608,16 @@ func AgentHandler(w http.ResponseWriter, r *http.Request) {
 		Hostname: hostname,
 		Conn:     conn,
 	}
-	RegisterConnection(hostname, agentConn)
+	RegisterConnection(hostname, agentConn, ParseConnSeq(r.Header.Get(ConnSeqHeader)))
 
 	// B55: replay the revocation check now that a revocation would find this connection to close.
 	if rerr := replayRevokedCheck(hostname, id.JTI); rerr != nil {
 		log.Printf("[SECURITY WARNING] agent connection closed right after registration: hostname=%q jti=%q: %v", hostname, truncateJTI(id.JTI), rerr)
+		// Unregister BEFORE the close frame: once the peer has seen 4001 the link is already gone (#255).
+		unregisterIfCurrent(hostname, agentConn)
 		agentConn.mu.Lock()
 		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(WSCloseRevoked, "token_revoked"), time.Now().Add(time.Second))
 		agentConn.mu.Unlock()
-		unregisterIfCurrent(hostname, agentConn)
 		_ = conn.Close()
 		return
 	}

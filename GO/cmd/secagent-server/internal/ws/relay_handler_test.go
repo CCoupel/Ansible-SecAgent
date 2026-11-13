@@ -138,6 +138,7 @@ func awaitRelayConnected(t *testing.T, relayID string, timeout time.Duration) bo
 // setupRelayTestServer starts a test HTTP server with RelayHandler and configures JWT.
 func setupRelayTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
+	resetRerouteMemory(t) // the process memories (routes, agent_list guard #266) are global: every relay test starts fresh
 
 	// Link verification trust (restored by the cleanup: a test may remove it to check the fail-closed)
 	linkMu.RLock()

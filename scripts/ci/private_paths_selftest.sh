@@ -9,6 +9,7 @@
 #  (d) pki/gen.sh refuse d'ecrire des cles dans un depot git ou le chemin n'est pas ignore ;
 #  (f) SECAGENT_PRIVATE_DIR relatif => refus ("n'est pas un chemin absolu"), meme avec SECRETS_DIR absolu, y compris pki/gen.sh ;
 #  (g) CHAIN_DIR (jetons volatils, defaut ${TMPDIR:-/tmp}/secagent-qualif-chain-<uid>) : refus relatif, '/', lien, non-repertoire, autre uid, droits > 0700 ;
+#      un refus de garde (#256) porte le prefixe `REFUS:`, rc 2, et JAMAIS le bloc DIAGNOSTIC (reserve aux echecs d'execution) ;
 #  (h) chain_dir_clean (down) : supprime un repertoire 0700 a soi, refuse sans rien supprimer vide, '/', relatif, lien (meme casse), fichier, 0755, autre uid ;
 #  (e) plus aucun ancien defaut ($HERE/secrets, $HERE/pki/out, $HERE/.ci-tls, $HERE/chain) dans DEPLOYMENT/qualif.
 # Contrat : sous-commande `paths` de failover-test.sh et chain-test.sh, imprimant PRIVATE_DIR=, SECRETS_DIR=, QUALIF_TLS_DIR= (+ CHAIN_DIR= pour chain-test.sh seul).
@@ -101,6 +102,9 @@ chk_chain() { # $1 nom, $2 sous-chaine attendue, $3 CHAIN_DIR
   local out rc
   out="$(clean_env SECAGENT_PRIVATE_DIR="$Pg" CHAIN_DIR="$3" bash "$Q/chain-test.sh" paths 2>&1)"; rc=$?
   [ $rc -ne 0 ] && ok "(g) $1 : code != 0" || ko "(g) $1 : accepte (rc=0)"
+  [ $rc -eq 2 ] && ok "(g) $1 : rc 2 (refus de garde)" || ko "(g) $1 : rc=$rc (attendu 2)"
+  printf '%s' "$out" | grep -q '^REFUS:' && ok "(g) $1 : prefixe REFUS:" || ko "(g) $1 : prefixe REFUS: absent"
+  printf '%s' "$out" | grep -q 'DIAGNOSTIC' && ko "(g) $1 : bloc DIAGNOSTIC present" || ok "(g) $1 : pas de DIAGNOSTIC"
   printf '%s' "$out" | grep -qF -- "$2" && ok "(g) $1 : message '$2'" || ko "(g) $1 : message sans '$2'"
 }
 chk_chain "CHAIN_DIR relatif" "n'est pas un chemin absolu" "rel/chain"
@@ -129,6 +133,9 @@ chk_clean_refus() { # $1 nom, $2 sous-chaine, $3 valeur CHAIN_DIR, $4 chemin qui
   local out rc
   out="$(clean_run "$3")"; rc=$?
   [ $rc -ne 0 ] && ok "(h) $1 : code != 0" || ko "(h) $1 : accepte (rc=0)"
+  [ $rc -eq 2 ] && ok "(h) $1 : rc 2 (refus de garde)" || ko "(h) $1 : rc=$rc (attendu 2)"
+  printf '%s' "$out" | grep -q '^REFUS:' && ok "(h) $1 : prefixe REFUS:" || ko "(h) $1 : prefixe REFUS: absent"
+  printf '%s' "$out" | grep -q 'DIAGNOSTIC' && ko "(h) $1 : bloc DIAGNOSTIC present" || ok "(h) $1 : pas de DIAGNOSTIC"
   printf '%s' "$out" | grep -qF -- "$2" && ok "(h) $1 : message '$2'" || ko "(h) $1 : message sans '$2'"
   if [ -n "${4:-}" ]; then { [ -e "$4" ] || [ -L "$4" ]; } && ok "(h) $1 : rien supprime" || ko "(h) $1 : SUPPRIME ($4)"; fi
 }

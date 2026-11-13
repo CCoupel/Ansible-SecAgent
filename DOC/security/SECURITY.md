@@ -572,6 +572,16 @@ Lors de la remontée d'un événement par un relay enfant, la chaîne d'événem
 
 **Fail-closed** : les événements invalides sont silencieusement ignorés (ne bloquent pas le lien).
 
+### Événements de relais et `conn_seq` (v3.0.6, #225 #245 #265)
+
+**`conn_seq` est déclaratif.** Le compteur de connexions qui distingue `*.up` de `*.reconnect` est annoncé par le **client** (en-tête `X-SecAgent-Conn-Seq` d'un minion, `conn_seq` du `relay_hello` / `relay_ack` d'un relais) : un pair authentifié peut toujours annoncer 1 (donc `host.up` / `relay.up`) ou un grand nombre. Il ne parle que de lui-même (l'identité vient du JWT ou du jeton de lien, jamais de cette valeur) : aucune élévation de droits. Conséquence pour l'exploitation : **un `reconnect` n'est pas une preuve d'instabilité** et un `up` n'est pas une preuve de redémarrage ; ne pas déclencher d'action de sécurité sur la seule foi de ce compteur. La valeur est toujours bornée : absente, non entière, négative ou hors de 1..2³¹ ⇒ 1 sur l'en-tête, le hello et l'ack ; refusée (`invalid conn_seq`) dans un `event_forward` (`ws/handler.go` `ParseConnSeq`, `ws/relay_handler.go` `detailShapeError`). Aucun index, allocation ni boucle n'en dépend.
+
+**Marquage `first_seen_at` (v3.0.6, #266).** Seul un handshake **local** réussi (agent) ou le premier snapshot accepté d'un relais **déclaré** par son parent direct déclenche l'écriture de la marque qui rend `host.discover` / `relay.discover` uniques : **jamais un événement reçu d'un enfant** (un enfant ne peut donc pas faire écrire l'état d'un ancêtre). Écriture groupée sous la garde du verrou maître (#163), mémoire bornée (100 000 marques). Règle du sous-arbre : un relais refuse les événements d'hôte d'un enfant pour un hôte hors de son sous-arbre (`HOOKS_SPEC.md`, « Règle du sous-arbre » ; limite #278).
+
+**Formes bornées, liste blanche par kind.** Les champs de détail d'un événement venu d'un relais enfant (`reason`, `cause`, `instance_id`, `mode`, `old_chain`…) deviennent des variables de hooks (`{{reason}}`, `SECAGENT_*`) et le corps d'un webhook : ils ne sont donc jamais libres. Chaque kind n'accepte que sa liste de champs (SERVER_SPEC §9.2, `eventDetailFields`) ; un champ non vide hors de cette liste fait **refuser** l'événement (`[SECURITY WARNING]`, lien ouvert), et les valeurs admises sont bornées par liste ou regex (`reason`, `cause`, `mode`), par forme (`relay_id` : `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`, `instance_id` : `^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`) ou par taille (compteurs ≤ 10 000 000, `relays_below_ids` ≤ 256, chaînes ≤ 32). Un `relay.*` n'est accepté que pour l'émetteur du lien ou un descendant qu'il a déclaré (pas d'usurpation d'un autre sous-arbre) et ne porte jamais de hostname. Ces contrôles ferment un défaut relevé à l'audit du lot : avant la liste blanche, un enfant authentifié pouvait injecter des chaînes arbitraires dans `{{reason}}` / `{{cause}}` ; aucune variable de ces kinds n'alimentait un hook par défaut, et les hooks `shell` n'ont jamais de `sh -c` (exécution directe). Reste la règle d'exploitation : **ne pas placer une variable d'événement en tête d'un argument ou dans un chemin sans la contrôler** (HOOKS_SPEC §2).
+
+**Compatibilité** : un parent v3.0.5 jette les kinds inconnus (WARNING, lien ouvert, quota consommé) ; monter les parents d'abord (DEPLOYMENT.md).
+
 ### Filtrage des hooks — relay_chain_contains (v3.0.2)
 
 Les hooks configurés via `RELAY_HOOKS_CONFIG` JSON peuvent filtrer sur la chaîne d'événement :
@@ -750,7 +760,7 @@ Le binaire `secagent-inventory` utilise `RELAY_INSECURE_TLS` pour désactiver la
 - **Une seule rupture, pas de retour arrière vers v3.0.3** (décision de l'utilisateur) : `schema_version` 2, un binaire v3.0.3 refuse l'état v2 (`ErrSchemaVersion`, sans repli sur `.prev`) ; le retour arrière passe par `relay.state.v1.bak` + binaires v3.0.3 + anciens jetons HS256, et perd les écritures faites sous v3.0.4 (voir `DEPLOYMENT.md`).
 - **Rejeu d'un `link_keys` sur un relay déjà à jour (audit R4, corrigé en `1c231ee`)** : une trame qui annonce exactement les clés déjà de confiance (reconnexion, redémarrage) n'est acceptée que si sa **signature se vérifie avec une clé déjà de confiance** (`auth.VerifyLinkKeysReplay` : la `previous` de confiance pour une rotation encore ouverte, la `current` une fois la fenêtre fermée), jamais avec une clé lue dans la trame. Authentique : no-op idempotent. Non authentifiable (y compris un `link_keys{current_pub = clé de confiance, sig invalide, seq élevé}` forgé par un parent compromis) : **ni retransmise, ni mémorisée, ni confirmée**, et le `seq` d'un `link_state` ne provient jamais d'une trame non vérifiée ; il ne peut donc plus produire de faux consensus de rotation. Chaque relay rapporte son **propre** état authentifié (`kid`, `seq`) ; la racine confirme une rotation sur le `kid` rapporté. Limite connue restante : `link_state` n'est pas signé (un relay intermédiaire compromis peut mentir sur l'état de ses descendants) ; `retire-link-previous --force` reste donc à n'utiliser qu'en connaissance de cause. Voir `SERVER_SPEC.md` §9.2.1.
 - **Racine = point unique de signature** : tant qu'elle est injoignable, aucun nouveau jeton de lien ni aucune révocation ne se propage ; les liens établis continuent.
-- **`event_forward` (200/s)** : limité par lien en v3.0.4 (une reconnexion remettait le compteur à zéro) ; **par identité `relay_id` depuis v3.0.5 (#216)**, comme les snapshots topologiques (#156) : table bornée, purgée par l'activité, mémoire seulement.
+- **`event_forward` (200/s)** : limité par lien en v3.0.4 (une reconnexion remettait le compteur à zéro) ; **par identité `relay_id` depuis v3.0.5 (#216)**, comme les snapshots topologiques (#156) : table bornée, purgée par l'activité, mémoire seulement. **Seau à jetons depuis v3.0.6 (#246)** : débit soutenu 200/s inchangé, rafale bornée à 400 événements (2 s de débit, `eventQuotaBurst`) acceptée après un silence — une pause du parent suivie d'un rattrapage n'est plus refusée comme avec l'ancienne fenêtre fixe de 1 s ; aucune exemption (un rejeu compte), refus agrégés une fois par minute.
 
 ### Limites connues — v3.0.3
 
@@ -849,3 +859,48 @@ Contrairement à `TLS_CERT` / `TLS_KEY` qui sont rechargés à chaud via `GetCer
 | Trame de lien surdimensionnée | Bornes sur les octets bruts avant décodage (1 Mio / 512 o), fermeture `4012` |
 | Enfant qui ment sur la suspension d'un agent (#180) | Drapeau purement informatif ; le refus appartient au relay qui détient l'agent |
 | Saturation mémoire par `exec` massifs (#179) | Admission avec réservation de 5 Mio/tâche, limites par agent et globale, `503 memory_budget_exhausted` |
+
+---
+
+## 13. Plateforme Podman rootless (v3.0.6, #267) : modèle de sécurité et risques acceptés
+
+Les nœuds QUALIF (srv3, srv4) et PROD (srv1, srv2) font tourner secagent sous **Podman rootless** (compte `cyril`, uid 1000) ; l'ancien hôte Docker `192.168.1.218` reste la PROD jusqu'à la recréation. Mécanique et séquence : `DEPLOYMENT/podman/README.md`, `DOC/project/DEPLOYMENT.md` (« Plateforme Podman rootless »).
+
+### 13.1 Mapping d'uid et accès aux secrets
+
+- **Serveurs** : `userns_mode: keep-id:uid=10001,gid=10001` (`DEPLOYMENT/podman/docker-compose.podman*.yml`) : l'uid 10001 du conteneur **est** l'uid 1000 de l'hôte (`cyril`), propriétaire des fichiers du partage. Secrets : propriétaire 1000, mode 0400 (`SECRET_OWNER_UID=1000`).
+- **Minions de QUALIF, sans keep-id** : ils ne montent que le fichier **`ca.crt`** (jamais le dossier `pki/`). Sans cela, le root du conteneur (= `cyril`, propriétaire de `tls.key`) lisait la clé privée des serveurs (constat **HAUT H1** de la recette de sécurité T49 : le dossier `pki/` entier était monté ; corrigé par `116b9dd`, qui monte le **fichier** `ca.crt` en lecture seule ; `5b52dee` n'avait fait que rendre `ca.crt` lisible par les minions, pas retiré `tls.key` de leur vue) ; `ca.key` vit dans `pki-ca/`, jamais montée (`scripts/ci/check_no_binds.py`, `check_podman_certs.py`).
+- **Processus du minion** : l'**agent et ses tâches tournent en `relay`** (uid 100), sans capacité (`CapEff 0`), `no-new-privileges` posé ; root n'existe que pour l'**entrypoint** (création de répertoires, clé RSA, `chown`, avant `su-exec`) et pour un `podman exec` par défaut, qui **ne voit plus `tls.key`**. Les capacités CHOWN/SETUID/SETGID ne sont gardées que pour cet entrypoint ; les autres sont retirées, mémoire et pids limités ; le conteneur n'est pas `read_only` (relecture r2 du security-reviewer, qui corrige son constat B4).
+
+### 13.2 §S : état et secrets lisibles par l'uid 1000 du poste
+
+Le partage MooseFS conserve les uid numériques : l'**uid 1000 du poste de travail** est aussi l'uid propriétaire de `PRIVATE/<ENV>/{state,secrets,pki}/`. Tout agent de la session de développement peut donc, techniquement, **lire** `relay.state` (HMAC, secrets chiffrés `enc:`), `jwt_secret_key`, `admin_token`, `rsa_master_key`, `ca.key` et `tls.key`, et **modifier** l'état vivant : une écriture par erreur dans `PRIVATE/PROD/state/root/` met la PROD hors service (le HMAC détecte, le serveur refuse : indisponibilité, pas de compromission silencieuse). **Changement de sécurité accepté par l'utilisateur** (GATE LOT-4, Q-B), avec les garde-fous suivants :
+
+1. **Règle agents** (`CLAUDE.md`, règle §S.1) : lecture **et** écriture interdites sur `PRIVATE/<ENV>/{state,secrets,pki,pki-ca}/` ; `stat -c '%a %U'` seulement ; pas de `grep`/`cat`/`tar` sous `PRIVATE/`.
+2. **Modes** : dossiers 0700 (`pki/` de QUALIF en 0711, voir `DEPLOYMENT/podman/README.md`), `relay.state*` 0600 (`relay.lock` est observé en 0700 sur le partage : bit x, sans incidence), secrets 0400, `ca.key`/`tls.key` 0600. Garde `DEPLOYMENT/podman/check-private.sh` (partage accessible, FUSE, bon propriétaire, `pki/` limité à `ca.crt`/`tls.crt`/`tls.key`, liste exacte des fichiers).
+3. **Séparation d'état** : `PRIVATE/PROD/state/root` est le **seul** emplacement de l'état PROD, jamais copié ; la sauvegarde se fait hors poste, chiffrée, par l'utilisateur.
+
+### 13.3 Intégrité vérifiée à chaque démarrage
+
+Les fichiers de déploiement d'un nœud vivent **sur le partage** (`PRIVATE/<ENV>/<srvX>/cyril/secagent/{bin,release,systemd}`), donc modifiables par tout écrivain du partage. Contre cela (fail-closed) :
+
+- `verify-node-files.sh --pin` recalcule le contenu attendu **depuis le dépôt**, le compare à ce que lit le nœud, puis écrit **hors partage** (home de `cyril`, 0600) une **copie** de l'unité systemd (jamais un lien) et le **manifeste épinglé** des empreintes ;
+- à **chaque démarrage** (boot, `Restart=`, relance) : `ExecStartPre` vérifie les empreintes du partage contre ce manifeste (`sha256sum --strict -c`), puis exécute la garde `check-private.sh` (ainsi vérifiée) ; `ExecStartPost` vérifie qu'un conteneur de la racine tourne. Un fichier **modifié** ou **ajouté** (`release/.env`) **bloque le démarrage** (recette T49 : deux falsifications refusées) ; un lien symbolique est refusé par la garde (`703d16c`, selftests) ; un partage inaccessible bloque le démarrage **par conception, non éprouvé en recette** (interdiction de toucher à MooseFS), de même que le démarrage au **boot** (aucun reboot en test) ;
+- une release déposée (`stage`) sans `--pin` ne démarre pas.
+
+### 13.4 Risques acceptés par l'utilisateur ou connus (à ne pas rouvrir sans décision)
+
+| Risque | Gravité | Statut |
+|---|---|---|
+| **API Docker `tcp:2375` en HTTP, sans authentification, sur 0.0.0.0** des nœuds (srv1-srv4, `.218`, 8 hôtes, #268) : accès root équivalent pour tout hôte du réseau, qui annule l'isolation rootless | HAUT (réévalué par la recette T49) | **Volontaire et accepté par l'utilisateur** ; hors du code du lot, le démon Docker n'est jamais reconfiguré par la plateforme ; ne bloque pas les GATE ; suivi #268 |
+| **`sshd` des nœuds par mot de passe** (en plus de la clé) ; `cyril` dispose de `sudo` | MOYEN | **Accepté par l'utilisateur** ; les scripts n'utilisent que la clé (`BatchMode`, `IdentitiesOnly`, `StrictHostKeyChecking=yes`, `known_hosts` épinglé) |
+| **Cloisonnement QUALIF/PROD non garanti** : un seul autofs root, un uid commun (1000) ; seuls les modes 0700 et l'uid protègent | MOYEN | **Accepté** |
+| **Colocalisation** : les nœuds portent aussi le cluster **RKE2** et des **chunkservers MooseFS** ; la plateforme ne touche jamais Kubernetes, MooseFS ni Docker (interdits codés dans `install-node.sh`), limites mémoire obligatoires | MOYEN | **Accepté** ; contrôle CI `--require-memory-limit` |
+| **`maproot` de l'export MooseFS non vérifié** (lisible seulement sur le maître `mfsexports.cfg`) : si l'export autorise les nœuds avec `maproot=0`, **tout root d'un client MooseFS** lit `PRIVATE/` malgré 0700/0400 | MOYEN | **Non vérifié** ; recommandation : export dédié à `PRIVATE/`, limité aux IP du poste et de srv1-srv4, `maproot` non nul |
+| **TOCTOU (#273)** : la garde et les Compose sont relus depuis le partage **après** le contrôle d'empreinte | MOYEN | **Accepté en v3.0.6** ; copie locale épinglée en v3.0.7 ; d'ici là, seul l'uid 1000 du poste écrit sur le partage |
+| **Dépendance à MooseFS** : état, secrets et PKI sont sur le partage ; master injoignable : `ExecStartPre` refuse, les nœuds en marche perdent l'état (HMAC/verrou) | MOYEN | **Fail-closed** (indisponibilité, pas de corruption) ; changement d'architecture accepté (STATE_DIR partagé) ; relance : `DEPLOYMENT.md` |
+| Jeton d'enrôlement des minions en variable d'environnement (`podman inspect`, `/proc`) | BAS | Jeton à usage unique ; serveurs : aucun secret en variable (`*_FILE` seulement) |
+| Enfant et minions de QUALIF hors unité systemd (pas de garde d'intégrité `ExecStartPre`) | BAS | Seules les racines a et b sont épinglées ; services de test |
+| Port de b ouvert en secondaire (`rootlessport` accepte puis coupe la connexion) | BAS | Conforme à « aucun service en secondaire » |
+
+**PKI de QUALIF** : valable 90 jours, **expire le 2027-02-11** ; à régénérer avant cette date (`DEPLOYMENT.md`).

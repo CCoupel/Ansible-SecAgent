@@ -73,7 +73,7 @@ func dialerOpts(serve chan<- serveCall) DialerOptions {
 		TLSConfig:  &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test server cert
 		MinBackoff: 10 * time.Millisecond,
 		MaxBackoff: 40 * time.Millisecond,
-		Serve: func(ctx context.Context, conn *websocket.Conn, peer string) error {
+		Serve: func(ctx context.Context, conn *websocket.Conn, peer string, _ int) error {
 			serve <- serveCall{peer}
 			<-ctx.Done()
 			_ = conn.Close()

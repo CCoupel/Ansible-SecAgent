@@ -114,18 +114,21 @@ func TestEventQuota_AReconnectionDoesNotResetTheCounter(t *testing.T) {
 	srv := setupRelayTestServer(t)
 	defer srv.Close()
 	var firstLink, secondLink int
+	var el time.Duration
 	id := withinOneWindow(t, func(id string) time.Duration {
 		start := time.Now()
-		sendEvents(t, srv, id, maxEventsPerSecond) // the whole quota of the identity, one link
+		sendEvents(t, srv, id, eventQuotaBurst) // the whole bucket of the identity, one link
 		firstLink = sink.count(id)
 		sendEvents(t, srv, id, 50) // immediate reconnection: the child ignores its backoff
 		secondLink = sink.count(id) - firstLink
-		return time.Since(start)
+		el = time.Since(start)
+		return el
 	})
-	if firstLink != maxEventsPerSecond {
-		t.Fatalf("%s: the first link forwarded %d events, want exactly its quota (%d)", id, firstLink, maxEventsPerSecond)
+	refill := int(el.Seconds()*maxEventsPerSecond) + 10                    // what the bucket refilled while the scenario ran
+	if firstLink < eventQuotaBurst || firstLink > eventQuotaBurst+refill { // the bucket plus its refill while sending
+		t.Fatalf("%s: the first link forwarded %d events, want its bucket (%d) and the refill of a few ms", id, firstLink, eventQuotaBurst)
 	}
-	if secondLink != 0 {
+	if secondLink > refill { // only what the bucket refilled in the few milliseconds between the two links
 		t.Fatalf("%s: %d event(s) of the NEW link were forwarded in the same second: the quota belongs to the relay_id, a reconnection must not reset it", id, secondLink)
 	}
 }
@@ -144,15 +147,16 @@ func TestEventQuota_ManyQuickReconnectionsStayWithinOneQuota(t *testing.T) {
 		total = sink.count(id)
 		return time.Since(start)
 	})
-	if total > maxEventsPerSecond {
-		t.Fatalf("%s: %d events forwarded for 5 successive links in one window, limit %d per identity", id, total, maxEventsPerSecond)
+	// bucket (400) + what refills at 200/s during the scenario (it ran inside 0.7 s: at most 140)
+	if total > eventQuotaBurst+150 {
+		t.Fatalf("%s: %d events forwarded for 5 successive links, bucket %d + refill", id, total, eventQuotaBurst)
 	}
-	if total < maxEventsPerSecond-10 {
-		t.Fatalf("%s: only %d forwarded: the quota must be consumed, not the whole identity blocked", id, total)
+	if total < eventQuotaBurst-10 {
+		t.Fatalf("%s: only %d forwarded: the bucket must be consumed, not the whole identity blocked", id, total)
 	}
 }
 
-// 2. The excess is IGNORED and journalized once per excess, naming the relay and leaking no token.
+// 2. The excess is IGNORED and journalized once per period (aggregated, #246), naming the relay and leaking no token.
 func TestEventQuota_TheExcessIsJournalizedWithTheRelayID(t *testing.T) {
 	out := &lockedLog{}
 	log.SetOutput(out)
@@ -166,6 +170,7 @@ func TestEventQuota_TheExcessIsJournalizedWithTheRelayID(t *testing.T) {
 		sendEvents(t, srv, id, 3)
 		return time.Since(start)
 	})
+	eventRejectAgg.Flush() // the refusals are logged once per period (#246): do not wait for it
 	logs := out.String()
 	want := fmt.Sprintf("event_forward rate limit exceeded: relay_id=%q", id)
 	if !strings.Contains(logs, want) {
@@ -186,14 +191,14 @@ func TestEventQuota_DistinctIdentitiesHaveIndependentQuotas(t *testing.T) {
 	var a, b, c int
 	id := withinOneWindow(t, func(id string) time.Duration {
 		start := time.Now()
-		sendEvents(t, srv, id, maxEventsPerSecond+50) // exhausts "id"
-		sendEvents(t, srv, id+"-b", 100)              // untouched by the abuse of "id"
+		sendEvents(t, srv, id, eventQuotaBurst+100) // exhausts "id"
+		sendEvents(t, srv, id+"-b", 100)            // untouched by the abuse of "id"
 		sendEvents(t, srv, id+"-c", 100)
 		a, b, c = sink.count(id), sink.count(id+"-b"), sink.count(id+"-c")
 		return time.Since(start)
 	})
-	if a != maxEventsPerSecond {
-		t.Errorf("%s: %d events forwarded, want its quota (%d)", id, a, maxEventsPerSecond)
+	if a < eventQuotaBurst || a > eventQuotaBurst+90 { // its bucket + the refill of the ~0.4 s the scenario took
+		t.Errorf("%s: %d events forwarded, want its bucket (%d) plus a small refill", id, a, eventQuotaBurst)
 	}
 	if b != 100 || c != 100 {
 		t.Errorf("the other identities were affected by %s: %d and %d events forwarded, want 100 and 100", id, b, c)
@@ -207,11 +212,11 @@ func TestEventQuota_TheIdentityIsServedAgainWhenTheWindowIsOver(t *testing.T) {
 	defer srv.Close()
 	id := withinOneWindow(t, func(id string) time.Duration {
 		start := time.Now()
-		sendEvents(t, srv, id, maxEventsPerSecond+20)
+		sendEvents(t, srv, id, eventQuotaBurst+20)
 		return time.Since(start)
 	})
 	before := sink.count(id)
-	time.Sleep(1200 * time.Millisecond) // window (1 s) over
+	time.Sleep(1200 * time.Millisecond) // the bucket refilled 240 tokens
 	sendEvents(t, srv, id, 25)
 	if got := sink.count(id) - before; got != 25 {
 		t.Fatalf("%s: %d of 25 events forwarded after the window: a permanent block (or a partial reset)", id, got)
@@ -232,7 +237,7 @@ func TestEventQuota_TheTableIsPurgedAfterInactivity(t *testing.T) {
 	if n := specEventQuotaEntries(); n == 0 || n > 30 {
 		t.Fatalf("entries = %d, want 1..30 (one per identity seen)", n)
 	}
-	time.Sleep(1300 * time.Millisecond)
+	time.Sleep(2300 * time.Millisecond) // longer than the time a bucket needs to be full again (2 s)
 	sendEvents(t, srv, "relay-late", 1) // activity triggers the purge
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {

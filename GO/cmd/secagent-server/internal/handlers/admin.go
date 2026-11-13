@@ -69,6 +69,8 @@ type MinionSummary struct {
 	LastSeen   string `json:"last_seen"`
 	Suspended  bool   `json:"suspended"`
 	EnrolledAt string `json:"enrolled_at"`
+	// FirstSeenAt (v3.0.6, #266): first successful handshake; absent while the host never connected.
+	FirstSeenAt string `json:"first_seen_at,omitempty"`
 }
 
 // AdminListMinions returns all enrolled agents with summary fields.
@@ -109,6 +111,9 @@ func AdminListMinions(w http.ResponseWriter, r *http.Request) {
 			Suspended:  a.Suspended,
 			EnrolledAt: a.EnrolledAt.UTC().Format(time.RFC3339),
 		})
+		if a.FirstSeenAt != nil {
+			result[len(result)-1].FirstSeenAt = a.FirstSeenAt.UTC().Format(time.RFC3339)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, result)
@@ -126,6 +131,7 @@ type MinionDetail struct {
 	Suspended      bool                   `json:"suspended"`
 	Revoked        bool                   `json:"revoked"` // v3.0.5 (#233): persistent revocation (minions revoke)
 	EnrolledAt     string                 `json:"enrolled_at"`
+	FirstSeenAt    string                 `json:"first_seen_at,omitempty"` // v3.0.6 (#266)
 	KeyFingerprint string                 `json:"key_fingerprint"`
 	Vars           map[string]interface{} `json:"vars"`
 }
@@ -180,6 +186,9 @@ func AdminGetMinion(w http.ResponseWriter, r *http.Request) {
 		EnrolledAt:     agent.EnrolledAt.UTC().Format(time.RFC3339),
 		KeyFingerprint: publicKeyFingerprint(agent.PublicKeyPEM),
 		Vars:           vars,
+	}
+	if agent.FirstSeenAt != nil {
+		detail.FirstSeenAt = agent.FirstSeenAt.UTC().Format(time.RFC3339)
 	}
 
 	writeJSON(w, http.StatusOK, detail)
@@ -541,6 +550,19 @@ var (
 	instanceStatusFn func() map[string]interface{}
 )
 
+var (
+	upstreamStatusMu sync.RWMutex
+	upstreamStatusFn func() (dropped int64, depth, capacity int)
+)
+
+// SetUpstreamQueueStatusFunc wires the counters of the upstream event queue exposed by
+// GET /api/admin/status: upstream_dropped_events, upstream_queue_depth, upstream_queue_capacity (#246).
+func SetUpstreamQueueStatusFunc(fn func() (dropped int64, depth, capacity int)) {
+	upstreamStatusMu.Lock()
+	upstreamStatusFn = fn
+	upstreamStatusMu.Unlock()
+}
+
 // SetLinkStatusFunc wires the parent / push-child link status exposed by GET /api/admin/status (#154).
 func SetLinkStatusFunc(fn func() interface{}) {
 	linkStatusMu.Lock()
@@ -549,7 +571,8 @@ func SetLinkStatusFunc(fn func() interface{}) {
 }
 
 // AdminStatus returns server health: db, ws_connections, uptime, links and the hooks queue counters
-// (hooks_queue_depth, hooks_queue_capacity, hooks_inflight, hooks_dropped_events, hooks_dropped_actions).
+// (hooks_queue_depth, hooks_queue_capacity, hooks_inflight, hooks_dropped_events, hooks_dropped_actions)
+// and the upstream event queue counters (upstream_dropped_events, upstream_queue_depth, upstream_queue_capacity).
 // GET /api/admin/status
 func AdminStatus(w http.ResponseWriter, r *http.Request) {
 	if !requireAdminAuth(w, r) {
@@ -583,6 +606,18 @@ func AdminStatus(w http.ResponseWriter, r *http.Request) {
 		body["hooks_dropped_events"] = st.DroppedEvents
 		body["hooks_dropped_actions"] = st.DroppedActions
 	}
+	// upstream event queue (#246): always present, 0 / 0 / 0 until wired (a root without parent still has the queue)
+	var upDropped int64
+	var upDepth, upCap int
+	upstreamStatusMu.RLock()
+	upFn := upstreamStatusFn
+	upstreamStatusMu.RUnlock()
+	if upFn != nil {
+		upDropped, upDepth, upCap = upFn()
+	}
+	body["upstream_dropped_events"] = upDropped
+	body["upstream_queue_depth"] = upDepth
+	body["upstream_queue_capacity"] = upCap
 	instanceStatusMu.RLock()
 	instFn := instanceStatusFn
 	instanceStatusMu.RUnlock()
@@ -709,8 +744,17 @@ func AdminDeleteMinion(w http.ResponseWriter, r *http.Request) {
 		wsDisconnected = closeAgentFn(hostname, ws.WSCloseNormal, "admin_delete") || wsDisconnected
 	}
 
-	// Dispatch host.deleted event (async, nil-safe during tests)
+	// host.removed (#266, propagated up the tree) then the historical local host.deleted, deprecated since
+	// v3.0.6 and removed in v3.0.7 (nil-safe during tests). A revocation never emits either.
 	if hooks.GlobalDispatcher != nil {
+		removed := hooks.Event{Name: "host.removed", Hostname: hostname, Detail: hooks.Detail{Cause: "deleted"}}
+		if !agent.EnrolledAt.IsZero() {
+			removed.EnrolledAt = agent.EnrolledAt.UTC().Format(time.RFC3339)
+		}
+		if agent.FirstSeenAt != nil {
+			removed.Detail.FirstSeenAt = agent.FirstSeenAt.UTC().Format(time.RFC3339)
+		}
+		hooks.GlobalDispatcher.DispatchEvent(removed)
 		hooks.GlobalDispatcher.Dispatch("host.deleted", hostname, "deleted", "")
 	}
 

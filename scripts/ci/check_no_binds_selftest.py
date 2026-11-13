@@ -14,14 +14,14 @@ CHECK = os.path.join(HERE, "check_no_binds.py")
 failures = 0
 
 
-def run(doc: dict) -> int:
-    return subprocess.run([sys.executable, CHECK], input=json.dumps(doc), text=True,
+def run(doc: dict, args=()) -> int:
+    return subprocess.run([sys.executable, CHECK, *args], input=json.dumps(doc), text=True,
                           capture_output=True).returncode
 
 
-def expect(name: str, doc: dict, want: int) -> None:
+def expect(name: str, doc: dict, want: int, args=()) -> None:
     global failures
-    got = run(doc)
+    got = run(doc, args)
     print(("ok   " if got == want else "KO   ") + f"{name} (rc={got}, attendu {want})")
     if got != want:
         failures += 1
@@ -45,4 +45,72 @@ expect("config file: utilise", {**svc(configs=[{"source": "c", "target": "/c"}])
 expect("config content:", {**svc(configs=[{"source": "c", "target": "/c"}]), "configs": {"c": {"content": "{}"}}}, 0)
 expect("build", svc(build={"context": "."}), 1)
 expect("env_file inline (rendu)", svc(environment={"A": "b"}), 0)
+
+# --allow-prefix (#267, Podman rootless : chemins du NOEUD sous SECAGENT_HOST_PREFIX, sous-chemins permis seulement)
+R = "/share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/PROD"
+P = ("--allow-prefix", R)
+
+
+def bind(src):
+    return svc(volumes=[{"type": "bind", "source": src, "target": "/x"}])
+
+
+def secret(path):
+    return {**svc(secrets=["t"]), "secrets": {"t": {"file": path}}}
+
+
+expect("prefixe : state/root accepte", bind(R + "/state/root"), 0, P)
+expect("prefixe : state/child accepte", bind(R + "/state/child"), 0, P)
+expect("prefixe : sous state/root accepte", bind(R + "/state/root/journal"), 0, P)
+expect("prefixe : secrets (repertoire) accepte", bind(R + "/secrets"), 0, P)
+expect("prefixe : secret file: sous secrets accepte", secret(R + "/secrets/admin_token"), 0, P)
+expect("prefixe : pki/tls.crt accepte", bind(R + "/pki/tls.crt"), 0, P)
+expect("prefixe : pki/tls.key accepte", bind(R + "/pki/tls.key"), 0, P)
+expect("prefixe : pki/ca.crt accepte", bind(R + "/pki/ca.crt"), 0, P)
+expect("prefixe : prefixe avec / final", bind(R + "/state/root"), 0, ("--allow-prefix", R + "/"))
+expect("prefixe : le prefixe lui-meme refuse", bind(R), 1, P)
+expect("prefixe : state/ entier refuse", bind(R + "/state"), 1, P)
+expect("prefixe : pki/ entier accepte (ca.key rangee dans pki-ca/)", bind(R + "/pki"), 0, P)
+expect("prefixe : pki/ca.key refuse", bind(R + "/pki/ca.key"), 1, P)
+expect("prefixe : pki-ca/ (emplacement propose pour ca.key) refuse", bind(R + "/pki-ca"), 1, P)
+expect("prefixe : pki-ca/ca.key refuse", bind(R + "/pki-ca/ca.key"), 1, P)
+expect("prefixe : srv1/ (fichiers du noeud) refuse", bind(R + "/srv1"), 1, P)
+expect("prefixe : srv1/cyril/secagent/release refuse", bind(R + "/srv1/cyril/secagent/release"), 1, P)
+expect("prefixe : srv1/.../bin/check-private.sh refuse", bind(R + "/srv1/cyril/secagent/bin/check-private.sh"), 1, P)
+expect("prefixe : secret file: pki/ca.key refuse", secret(R + "/pki/ca.key"), 1, P)
+expect("prefixe : poste-cyril/id_ed25519 refuse", bind(R + "/poste-cyril/id_ed25519"), 1, P)
+expect("prefixe : secret file: poste-cyril refuse", secret(R + "/poste-cyril/id_ed25519"), 1, P)
+expect("prefixe : faux sous-chemin state/rootx refuse", bind(R + "/state/rootx"), 1, P)
+expect("prefixe : faux voisin pkix/ refuse", bind(R + "/pkix/tls.crt"), 1, P)
+expect("prefixe : faux voisin pki-ca2/ refuse", bind(R + "/pki-ca2"), 1, P)
+expect("prefixe : bind hors prefixe refuse", bind("/home/cyril/autre"), 1, P)
+expect("prefixe : prefixe frere refuse (prod2)", bind(R + "2/state/root"), 1, P)
+expect("prefixe : evasion par .. refusee", bind(R + "/state/root/../../../qualif/state/root"), 1, P)
+expect("prefixe : retour par .. vers ca.key refuse", bind(R + "/secrets/../pki/ca.key"), 1, P)
+expect("prefixe : source relative refusee", bind("secagent/prod/state/root"), 1, P)
+expect("prefixe : secret file: hors prefixe refuse", secret("/root/t"), 1, P)
+expect("prefixe : build toujours refuse", svc(build={"context": R}), 1, P)
+expect("prefixe : sans option, state/root refuse", bind(R + "/state/root"), 1)
+expect("prefixe : '/' refuse (code 2)", {}, 2, ("--allow-prefix", "/"))
+expect("prefixe : '/etc' refuse (code 2, < 4 composants)", {}, 2, ("--allow-prefix", "/etc"))
+expect("prefixe : '/home/cyril' refuse (code 2)", {}, 2, ("--allow-prefix", "/home/cyril"))
+expect("prefixe : '/home/cyril/secagent' refuse (code 2, 3 composants)", {}, 2, ("--allow-prefix", "/home/cyril/secagent"))
+expect("prefixe : relatif refuse (code 2)", {}, 2, ("--allow-prefix", R.lstrip("/")))
+expect("prefixe : '..' refuse (code 2)", {}, 2, ("--allow-prefix", "/home/cyril/../root/x/y"))
+expect("prefixe : option sans valeur refusee (code 2)", {}, 2, ("--allow-prefix",))
+
+
+def bvol(device, o="bind", typ="none", external=False):
+    return {"services": {"s": {"volumes": [{"type": "volume", "source": "st", "target": "/data"}]}},
+            "volumes": {"st": {"driver": "local", "external": external, "driver_opts": {"type": typ, "o": o, "device": device}}}}
+
+
+expect("volume driver_opts bind : refuse sans prefixe (bind deguise)", bvol(R + "/state/root"), 1)
+expect("volume driver_opts bind : state/root accepte sous le prefixe", bvol(R + "/state/root"), 0, P)
+expect("volume driver_opts bind : poste-cyril refuse", bvol(R + "/poste-cyril"), 1, P)
+expect("volume driver_opts bind : pki-ca refuse", bvol(R + "/pki-ca"), 1, P)
+expect("volume driver_opts rbind,ro : hors prefixe refuse", bvol("/etc", o="rbind,ro"), 1, P)
+expect("volume driver_opts type none sans o : refuse", bvol("/etc", o=""), 1, P)
+expect("volume driver_opts nfs (pas un bind) : accepte", bvol(":/export", o="addr=1.2.3.4", typ="nfs"), 0)
+expect("volume nomme sans driver_opts : accepte", {"services": {"s": {"volumes": [{"type": "volume", "source": "v", "target": "/d"}]}}, "volumes": {"v": {}}}, 0)
 sys.exit(1 if failures else 0)

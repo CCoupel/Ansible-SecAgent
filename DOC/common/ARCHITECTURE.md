@@ -298,7 +298,7 @@ Envoyé immédiatement après le démarrage du subprocess, avant tout stdout.
 | `4000` | Fermeture normale (émise seulement à la suppression d'un agent, `handlers/admin.go:644`) | Reconnexion avec backoff exponentiel |
 | `4001` | Token révoqué (émis à la révocation) | Ne pas reconnecter ; le minion sort avec le code 77 |
 | `4002` | Token expiré — constante définie (`ws/handler.go:24`) mais jamais émise | Aucun traitement dédié : reconnexion |
-| `1001` | Arrêt propre du serveur / perte du verrou (`server/server.go:566,602`) | Reconnexion avec backoff |
+| `1001` | Arrêt propre du serveur / perte du verrou (`server/server.go:766,802`) | Reconnexion avec backoff |
 
 Seul `4001` arrête l'agent (`dispatcher.go:159`). Il n'existe pas de code `4003`/`4004` ; le ré-enrôlement est déclenché par un
 `401` (JWT rejeté), pas par un code de fermeture. Voir `DOC/contracts/WEBSOCKET.md`.

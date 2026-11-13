@@ -246,6 +246,7 @@ func RunInstance(ctx context.Context, cfg Config) (int, error) {
 	}
 	node.SetInstance(lock.PhaseMaster, lk.InstanceID())
 	node.SetLockStatus(lk.Status)
+	node.AnnounceFailover(lk.Status()) // relay.failover (#225): the master is known, no port is open yet
 	if keeper != nil {
 		keeper.setMode(func() (string, uint64) { m, _ := node.StateMode(); return m, node.store.WriteSeq() })
 	}

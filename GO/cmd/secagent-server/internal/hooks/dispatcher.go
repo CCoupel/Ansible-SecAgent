@@ -31,6 +31,17 @@ type dispatchJob struct {
 	enrolledAt string   // only set for host.new
 	timestamp  string   // RFC3339 — captured at Dispatch time
 	relayChain []string // relays traversed since the origin; empty for an event of this node
+	relayID    string   // relay.* events: the relay they are about (they have no hostname)
+	detail     Detail   // v3.0.6 fields (conn_seq, reason, hosts_routed…)
+}
+
+// key is what the FIFO order of an event is kept per: the hostname, or the relay_id of a relay.*
+// event (which has no hostname).
+func (j dispatchJob) key() string {
+	if j.hostname != "" {
+		return j.hostname
+	}
+	return j.relayID
 }
 
 // ── ActionLogger interface ─────────────────────────────────────────────────────
@@ -56,6 +67,15 @@ func buildVars(event, hostname, status, timestamp, enrolledAt string, relayChain
 		"relay_chain":  strings.Join(relayChain, ","),
 		"relay_origin": origin,
 	}
+}
+
+// varsOf is buildVars plus the v3.0.6 fields of the job.
+func (j dispatchJob) vars() map[string]string {
+	m := buildVars(j.event, j.hostname, j.status, j.timestamp, j.enrolledAt, j.relayChain)
+	for k, v := range j.detail.vars(j.event, j.relayID) {
+		m[k] = v
+	}
+	return m
 }
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
@@ -92,11 +112,14 @@ type Dispatcher struct {
 	droppedActions atomic.Int64 // actions lost with queued events at an abrupt stop
 	started        atomic.Bool
 	wg             sync.WaitGroup
+	reporterDone   chan struct{} // made by NewDispatcher; closed when the drop reporter has returned (after its last log line)
 
 	// upstream, when set, receives every LOCAL event of a propagated kind (see Propagated) so that
 	// it can be forwarded to the parent. Events received from a child (DispatchChain) are never
 	// handed to it: a received event is never forwarded back up from here.
 	upstream func(event, hostname, status, enrolledAt string)
+	// upstreamEvent, when set, takes precedence over upstream and also carries relay.* events.
+	upstreamEvent func(Event)
 
 	// journalWarn rate-limits the warning logged when the journal cannot be written: one per
 	// minute (with the count of the suppressed ones), not one per action.
@@ -182,6 +205,7 @@ func NewDispatcher(store ActionLogger, bufSize int) *Dispatcher {
 		shellExec:     &ShellExecutor{},
 		fileExec:      &FileExecutor{},
 		apiExec:       &APIExecutor{client: client},
+		reporterDone:  make(chan struct{}),
 	}
 	for i := range d.workers {
 		d.workers[i] = &hookWorker{ch: make(chan dispatchJob, per)}
@@ -274,7 +298,8 @@ func (d *Dispatcher) Start(ctx context.Context) {
 			}
 		}()
 	}
-	go func() { // not part of wg: it waits for the workers on stop
+	go func() { // not part of wg: it waits for the workers on stop; Wait waits for it
+		defer close(d.reporterDone)
 		tick := time.NewTicker(d.reportEvery)
 		defer tick.Stop()
 		for {
@@ -287,6 +312,16 @@ func (d *Dispatcher) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// Wait blocks until the workers and the drop reporter have returned, i.e. until the dispatcher
+// has logged its last line. Call it after cancelling the context given to Start; a dispatcher
+// never started returns at once.
+func (d *Dispatcher) Wait() {
+	d.wg.Wait()
+	if d.started.Load() {
+		<-d.reporterDone
+	}
 }
 
 // abandon keeps a job a worker took out of its queue just as the dispatcher was stopping: it is
@@ -373,6 +408,11 @@ func (d *Dispatcher) actionsOf(job dispatchJob) int {
 	return 0
 }
 
+// Pending is the number of events accepted and not fully processed yet (queued or running): unlike
+// Stats().QueueDepth + Inflight it has no window in which a job was taken from its queue but is not counted
+// as running.
+func (d *Dispatcher) Pending() int64 { return d.pending.Load() }
+
 // Drain stops accepting events and waits, at most timeout, until everything already accepted is
 // processed. It returns the number of events still pending when the delay is over (0 = flushed).
 // Call it on a clean stop, before cancelling the context given to Start.
@@ -411,10 +451,11 @@ func (d *Dispatcher) reportDrops() {
 // Propagated reports whether an event kind is propagated upstream through the relay tree.
 func Propagated(event string) bool {
 	switch event {
-	case "host.up", "host.down", "host.new", "host.suspended", "host.resumed":
+	case "host.up", "host.down", "host.new", "host.suspended", "host.resumed",
+		"host.reconnect", "host.discover", "host.rerouted", "host.removed":
 		return true
 	}
-	return false
+	return IsRelayEvent(event)
 }
 
 // SetUpstream installs the forwarder of local events to the parent (nil = none). Thread-safe.
@@ -422,6 +463,55 @@ func (d *Dispatcher) SetUpstream(fn func(event, hostname, status, enrolledAt str
 	d.mu.Lock()
 	d.upstream = fn
 	d.mu.Unlock()
+}
+
+// SetUpstreamEvent installs the forwarder of local events to the parent for every kind, relay.*
+// included (nil = none); it replaces the one set by SetUpstream. Thread-safe.
+func (d *Dispatcher) SetUpstreamEvent(fn func(Event)) {
+	d.mu.Lock()
+	d.upstreamEvent = fn
+	d.mu.Unlock()
+}
+
+// DispatchEvent enqueues a LOCAL event (hooks of this node) and hands it to the upstream forwarder
+// when its kind is propagated. relay.* events are about a relay: RelayID set, Hostname empty.
+func (d *Dispatcher) DispatchEvent(ev Event) {
+	d.DispatchEventChain(ev, ev.RelayChain)
+	if !Propagated(ev.Name) {
+		return
+	}
+	d.mu.RLock()
+	fwd, fwdEv := d.upstream, d.upstreamEvent
+	d.mu.RUnlock()
+	switch {
+	case fwdEv != nil:
+		fwdEv(ev)
+	case fwd != nil && !IsRelayEvent(ev.Name):
+		fwd(ev.Name, ev.Hostname, ev.Status, ev.EnrolledAt)
+	}
+}
+
+// DispatchEventChain enqueues an event for the hooks of THIS node only (it never forwards).
+func (d *Dispatcher) DispatchEventChain(ev Event, relayChain []string) {
+	if d.stopping.Load() {
+		d.droppedEvents.Add(1)
+		return
+	}
+	ts := ev.Timestamp
+	if ts == "" {
+		ts = time.Now().UTC().Format(time.RFC3339)
+	}
+	job := dispatchJob{
+		event: ev.Name, hostname: ev.Hostname, status: ev.Status, enrolledAt: ev.EnrolledAt,
+		timestamp: ts, relayChain: append([]string(nil), relayChain...), relayID: ev.RelayID, detail: ev.Detail,
+	}
+	d.pending.Add(1)
+	select {
+	case d.workerFor(job.key()).ch <- job:
+	default:
+		d.pending.Add(-1)
+		d.droppedEvents.Add(1)
+	}
 }
 
 // Dispatch enqueues a LOCAL event (relay_chain empty) for asynchronous hook execution and, for
@@ -434,9 +524,12 @@ func (d *Dispatcher) Dispatch(event, hostname, status, enrolledAt string) {
 		return
 	}
 	d.mu.RLock()
-	fwd := d.upstream
+	fwd, fwdEv := d.upstream, d.upstreamEvent
 	d.mu.RUnlock()
-	if fwd != nil {
+	switch {
+	case fwdEv != nil:
+		fwdEv(Event{Name: event, Hostname: hostname, Status: status, EnrolledAt: enrolledAt})
+	case fwd != nil:
 		fwd(event, hostname, status, enrolledAt)
 	}
 }
@@ -476,7 +569,7 @@ func (d *Dispatcher) processJob(ctx context.Context, job dispatchJob) {
 		return
 	}
 
-	vars := buildVars(job.event, job.hostname, job.status, job.timestamp, job.enrolledAt, job.relayChain)
+	vars := job.vars()
 
 	for _, hookDef := range cfg.Hooks {
 		if hookDef.Event != job.event || !hookDef.Filter.Matches(job.relayChain) {

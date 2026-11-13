@@ -34,6 +34,7 @@ type Uplink struct {
 	cur       *websocket.Conn
 	states    map[string]json.RawMessage // last link_state frame per relay_id (own and relayed), re-sent after each snapshot
 	revoked   atomic.Bool                // the token of THIS link was revoked by the root (link_revocations)
+	declared  map[string]struct{}        // relays ever declared (or given up on) in a topology_snapshot SENT on the current link session
 }
 
 // ErrUplinkBusy is returned by Serve when a parent link is already active (single parent).
@@ -125,6 +126,7 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 	u.revoked.Store(false)
 	u.mu.Lock()
 	u.cur = conn
+	u.declared = map[string]struct{}{} // a new session of the link: the parent starts from nothing
 	u.mu.Unlock()
 	defer func() {
 		u.mu.Lock()
@@ -136,9 +138,15 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 	if u.opts.LinkTrust != nil {
 		u.opts.LinkTrust.ResetFrames() // the parent re-sends its full state on this link
 	}
-	go func() { <-sessCtx.Done(); _ = conn.Close() }()
+	go func() {
+		<-sessCtx.Done()
+		if ctx.Err() != nil {
+			u.goingAway(conn) // orderly stop: the parent reads 1001, not a cut socket (1006)
+		}
+		_ = conn.Close()
+	}()
 	if err := u.sendSnapshot(conn); err != nil {
-		return false, err
+		return false, u.earlyClose(conn, err)
 	}
 	u.resendLinkStates(conn)
 	lastSnap := time.Now()
@@ -146,13 +154,13 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 
 	// 4. steady state
 	if err := u.sendAgentList(conn); err != nil {
-		return true, err
+		return true, u.earlyClose(conn, err)
 	}
 
 	readDeadline := u.opts.PingInterval * readTimeoutFactor
 	extend := func() error { return conn.SetReadDeadline(time.Now().Add(readDeadline)) }
 	if err := extend(); err != nil {
-		return true, err
+		return true, u.earlyClose(conn, err)
 	}
 	conn.SetPongHandler(func(string) error { return extend() })
 
@@ -184,10 +192,86 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 	list := time.NewTicker(u.opts.AgentListInterval)
 	defer list.Stop()
 
+	// Replay cadence (#246): after each event the channel is left alone for one interval, so a
+	// backlog goes out at EventRate per second and the loop keeps answering pings and snapshots.
+	var evInterval time.Duration
+	if u.opts.EventRate > 0 {
+		evInterval = time.Second / time.Duration(u.opts.EventRate)
+	}
+	evCh := u.events()
+	var evTimer *time.Timer
+	var evTick <-chan time.Time
+	// An event about a relay the parent has not been told about yet is HELD (not taken further) until the
+	// snapshot that declares it has been sent, at most HoldEventsForSnapshotAfter.
+	var held *Event
+	var heldAt time.Time
+	var heldTotal time.Duration // cumulative time events were held on this session (safety net)
+	var holdTimer *time.Timer
+	var holdC <-chan time.Time
+	defer func() {
+		if held != nil { // the session ends with an event still held: lost, but counted
+			u.eventLost(1)
+		}
+	}()
+	defer func() {
+		if evTimer != nil {
+			evTimer.Stop()
+		}
+		if holdTimer != nil {
+			holdTimer.Stop()
+		}
+	}()
+	// sendEvent forwards one event and applies the replay cadence.
+	sendEvent := func(ev Event) error {
+		if err := u.forwardEvent(conn, ev); err != nil {
+			return err
+		}
+		if evInterval > 0 {
+			if evTimer == nil {
+				evTimer = time.NewTimer(evInterval)
+			} else {
+				evTimer.Reset(evInterval)
+			}
+			evTick, evCh = evTimer.C, nil
+		}
+		return nil
+	}
+	// releaseHeld sends the held event when its relays are now declared (or when force is set).
+	releaseHeld := func(force bool) error {
+		if held == nil || (!force && !u.releasable(*held)) {
+			return nil
+		}
+		ev := *held
+		held = nil
+		heldTotal += time.Since(heldAt)
+		u.markDeclared(ev.RelayChain) // held once per relay: after a snapshot it is declared, or the parent decides
+		if holdTimer != nil {
+			holdTimer.Stop()
+			holdTimer, holdC = nil, nil
+		}
+		if err := sendEvent(ev); err != nil {
+			return err
+		}
+		if evInterval <= 0 {
+			evCh = u.events()
+		}
+		return nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return true, ctx.Err()
+		case <-evTick:
+			evTick = nil
+			if held == nil {
+				evCh = u.events()
+			}
+		case <-holdC:
+			holdTimer, holdC = nil, nil
+			if err := releaseHeld(true); err != nil {
+				return true, u.preferRead(err, readErr)
+			}
 		case err := <-readErr:
 			if u.revoked.Load() { // the root revoked our own link token: never reconnect with it
 				return true, &refusedError{reason: "link token revoked by the root (operator action required)", permanent: true}
@@ -198,11 +282,11 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 			err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(u.opts.HandshakeTimeout))
 			u.wmu.Unlock()
 			if err != nil {
-				return true, fmt.Errorf("ping: %w", err)
+				return true, u.preferRead(fmt.Errorf("ping: %w", err), readErr)
 			}
 		case <-list.C:
 			if err := u.sendAgentList(conn); err != nil {
-				return true, err
+				return true, u.preferRead(err, readErr)
 			}
 		case <-u.topologyChanged():
 			// coalesce a burst of changes into ONE full snapshot, never closer than TopologyMinGap
@@ -218,24 +302,85 @@ func (u *Uplink) run(ctx context.Context, conn *websocket.Conn) (established boo
 		case <-topoC:
 			topoTimer, topoC = nil, nil
 			if err := u.sendSnapshot(conn); err != nil {
-				return true, err
+				return true, u.preferRead(err, readErr)
 			}
 			u.resendLinkStates(conn)
 			lastSnap = time.Now()
+			if err := releaseHeld(true); err != nil { // a snapshot has just gone out: nothing is worth waiting for any more
+				return true, u.preferRead(err, readErr)
+			}
 		case <-u.changed():
 			if err := u.sendAgentList(conn); err != nil {
-				return true, err
+				return true, u.preferRead(err, readErr)
 			}
-		case ev, ok := <-u.events():
+		case ev, ok := <-evCh:
 			if !ok {
+				evCh = nil
 				continue
 			}
-			if err := u.forwardEvent(conn, ev); err != nil {
-				return true, err
+			if !u.releasable(ev) && heldTotal < maxHoldTotal {
+				// hold it and make sure a snapshot that declares the relay goes out soon (debounced like any change)
+				held, heldAt, evCh = &ev, time.Now(), nil
+				holdTimer = time.NewTimer(holdEventsFor)
+				holdC = holdTimer.C
+				if topoTimer == nil {
+					delay := u.opts.TopologyDebounce
+					if wait := u.opts.TopologyMinGap - time.Since(lastSnap); wait > delay {
+						delay = wait
+					}
+					topoTimer = time.NewTimer(delay)
+					topoC = topoTimer.C
+				}
+				continue
+			}
+			if err := sendEvent(ev); err != nil {
+				return true, u.preferRead(err, readErr)
 			}
 		}
 	}
 }
+
+// preferRead is called when a WRITE failed: the parent that closes a link writes its close frame first
+// (4010 permanent refusal, 4012 retry), but a write of ours racing with that close fails before the
+// reader goroutine has delivered the frame, and the node would retry as if the link had merely broken
+// (a revoked child coming back). The close frame, when it arrives within a short delay, wins.
+func (u *Uplink) preferRead(werr error, readErr <-chan error) error {
+	if u.revoked.Load() { // already known: no wait, no retry
+		return &refusedError{reason: "link token revoked by the root (operator action required)", permanent: true}
+	}
+	select {
+	case rerr := <-readErr:
+		if u.revoked.Load() {
+			return &refusedError{reason: "link token revoked by the root (operator action required)", permanent: true}
+		}
+		return wrapRead("read", rerr)
+	case <-time.After(writeFailReadGrace):
+		return werr
+	}
+}
+
+// earlyClose is preferRead for the failures BEFORE the reader goroutine exists (the first writes of a
+// session, the handshake): it reads, for at most writeFailReadGrace, the close frame the parent may have
+// sent, and gives it priority over the write error (fail closed: a 4010 is never retried).
+func (u *Uplink) earlyClose(conn *websocket.Conn, werr error) error {
+	if u.revoked.Load() {
+		return &refusedError{reason: "link token revoked by the root (operator action required)", permanent: true}
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(writeFailReadGrace))
+	for i := 0; i < 16; i++ { // data frames before the close frame are skipped
+		if _, _, err := conn.ReadMessage(); err != nil {
+			var ce *websocket.CloseError
+			if errors.As(err, &ce) {
+				return wrapRead("read", err)
+			}
+			return werr
+		}
+	}
+	return werr
+}
+
+// writeFailReadGrace is how long a failed write waits for the close frame of the parent.
+const writeFailReadGrace = 500 * time.Millisecond
 
 func (u *Uplink) topologyChanged() <-chan struct{} { return u.opts.TopologyChanged }
 
@@ -254,7 +399,62 @@ func (u *Uplink) sendSnapshot(conn *websocket.Conn) error {
 	if err := u.write(conn, snapshotMessage{Type: "topology_snapshot", Relays: snap.Relays, Agents: snap.Agents, GroupVars: u.opts.GroupVars}); err != nil {
 		return fmt.Errorf("send topology_snapshot: %w", err)
 	}
+	ids := make([]string, 0, len(snap.Relays))
+	for _, r := range snap.Relays {
+		ids = append(ids, r.RelayID)
+	}
+	u.markDeclared(ids)
 	return nil
+}
+
+// maxDeclared bounds the set of relays remembered per link session; maxHoldTotal bounds the cumulative time
+// events may be held on one session (past it nothing is held: the parent decides, as before).
+const (
+	maxDeclared  = 100000
+	maxHoldTotal = 30 * time.Second
+)
+
+// markDeclared remembers relays as declared (or as already waited for once) on this link session.
+func (u *Uplink) markDeclared(ids []string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.declared == nil {
+		u.declared = map[string]struct{}{}
+	}
+	for _, id := range ids {
+		if len(u.declared) >= maxDeclared {
+			return
+		}
+		u.declared[id] = struct{}{}
+	}
+}
+
+// HoldEventsForSnapshotAfter bounds how long an event about a relay the parent has not been told about yet
+// waits for the snapshot that declares it (after that it is sent anyway: the parent will log and refuse it).
+const HoldEventsForSnapshotAfter = 5 * time.Second
+
+// holdEventsFor is HoldEventsForSnapshotAfter, a variable so that a test can shorten it.
+var holdEventsFor = HoldEventsForSnapshotAfter
+
+// releasable reports whether every relay of the event's chain was already declared (or waited for once) on this link session: it checks each
+// element of relay_chain (but the sender, appended last) against the descendants of the last snapshot it got.
+// An event for a relay declared only by a snapshot still to come (a grandchild that has just linked) would be
+// refused as "unknown descendant" and its lifecycle event lost.
+func (u *Uplink) releasable(ev Event) bool {
+	if len(ev.RelayChain) == 0 || u.opts.Snapshot == nil { // no snapshot source: nothing to wait for (tests)
+		return true
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for _, id := range ev.RelayChain {
+		if id == u.id {
+			continue
+		}
+		if _, ok := u.declared[id]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // changed/events return nil channels (block forever) when unset.
@@ -264,6 +464,12 @@ func (u *Uplink) events() <-chan Event {
 		return nil
 	}
 	return u.opts.Events
+}
+
+// goingAway sends the close frame 1001 of an orderly stop (best effort, 1 s at most): the parent then
+// reports relay.down reason=peer_closed:1001 and can tell a stop from a cut (peer_closed:1006).
+func (u *Uplink) goingAway(conn *websocket.Conn) {
+	u.closeWithCode(conn, websocket.CloseGoingAway, "going away")
 }
 
 func (u *Uplink) closeWithCode(conn *websocket.Conn, code int, reason string) {
@@ -306,16 +512,30 @@ func (u *Uplink) forwardEvent(conn *websocket.Conn, ev Event) error {
 	chain, err := ForwardChain(ev.RelayChain, u.id)
 	if err != nil {
 		log.Printf("[REPEATER] event %s dropped: %v", ev.Event, err)
+		u.eventLost(1)
 		return nil
 	}
 	ev.RelayChain = chain
 	if ev.Timestamp == "" {
 		ev.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	} else if at, perr := time.Parse(time.RFC3339, ev.Timestamp); perr == nil && time.Since(at) > LateEventAfter {
+		ev.Late = true
 	}
 	if err := u.write(conn, eventMessage{Type: "event_forward", Event: ev}); err != nil {
+		u.eventLost(1) // the event left the queue but not the node
 		return fmt.Errorf("send event_forward: %w", err)
 	}
 	return nil
+}
+
+// LateEventAfter is the age from which a forwarded event is marked Late (it waited in the queue).
+const LateEventAfter = 10 * time.Second
+
+// eventLost reports events removed from the queue and never delivered.
+func (u *Uplink) eventLost(n int64) {
+	if u.opts.OnEventLost != nil {
+		u.opts.OnEventLost(n)
+	}
 }
 
 // handleIncoming processes a message from the parent. An event_forward coming

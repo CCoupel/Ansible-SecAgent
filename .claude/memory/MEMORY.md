@@ -30,7 +30,7 @@
 - Mesures : arrêt propre 3,2 à 7,2 s, `kill` ~5 min (péremption du verrou), 3 000 agents enrôlés en 11,8 s.
 
 ## CI et outils
-- **Poste Linux natif** (conteneur ubuntu:26.04, home recréé à chaque démarrage), dépôt sur MooseFS (`/share/MFS/...`) : plus de WSL/NTFS/`/mnt/c`/`docker.exe`. Le partage dépend des chunkservers de srv8. Go 1.27.3 dans `~/.local/go` (bootstrap Claude-Launcher) ; bloc d'environnement : `.claude/outillage_go.md`. Tests : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test -race ./... -timeout 900s` depuis `GO/`. `gcc` + en-têtes libc ajoutés à `env.yaml` : `go test -race` local après reconstruction du poste, d'ici là `-race` en CI seulement.
+- **Poste Linux natif** (conteneur ubuntu:26.04, home recréé à chaque démarrage), dépôt sur MooseFS (`/share/MFS/...`) : plus de WSL/NTFS/`/mnt/c`/`docker.exe`. Le partage dépend des chunkservers de srv8. Go 1.27.4 dans `~/.local/go` (bootstrap Claude-Launcher, relevé par `env.yaml`, GO-2026-6859) ; bloc d'environnement : `.claude/outillage_go.md`. Tests : `JWT_SECRET_KEY=test ADMIN_TOKEN=test go test -race ./... -timeout 900s` depuis `GO/`. `gcc` + en-têtes libc ajoutés à `env.yaml` : `go test -race` local après reconstruction du poste, d'ici là `-race` en CI seulement.
 - Pas de client Docker ni de `ssh` sur le poste : CLI Linux à dézipper dans le scratchpad, `DOCKER_HOST` / `-H tcp://192.168.1.218:2375`. Démon Docker local : ne pas le démarrer. `gh` 2.46 (< 2.49 : pas de `gh attestation verify`). `pyyaml` via `.github/ci/.venv` ; Ansible uniquement dans un venv hors `~/.local`.
 
 ## Suivis / à trancher
@@ -41,6 +41,7 @@
 
 ## Règles / pièges (leçons)
 - **Questions à l'utilisateur** : toujours via AskUserQuestion. **Pas de push sans feu vert explicite** ; push délégué à `deployer` (SHA complet, jamais `HEAD`, jamais de force, jamais main sauf PR validée) ; un tag publie : confirmation dédiée.
+- **`main` protégée par ruleset sans contournement admin : tout passe par PR** (ni push direct, ni force-push, ni suppression), y compris `/init-project`, `/end-session` (branche `docs/session-<date>` + PR) et la release (`gh pr create` + `gh pr merge --merge` par `deployer`, rollback = PR de revert) ; tag soumis à l'Environment `release` (reviewer requis) — #254.
 - **Tâches et retours par fichier** : tout ordre > 3 lignes dans `_work/tasks/<agent>-<YYYYMMDD-HHmmss>.md` ; retour des agents en UNE ligne (SHA, rapport dans `_work/reports/`).
 - **Trailer de commit EXACT** : `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` ; contrôler tous les commits non poussés avant un push. **Jamais `git commit --amend` en arbre partagé**. Règle : `git commit -- <chemins>` après `git diff --cached --stat` (incident `166638e`).
 - **Vérifier, ne pas croire** : les « vérifié à 100 % » des agents contiennent des erreurs ; les budgets de jetons annoncés sont inventés ; agents de documentation en `model: sonnet`. Les tests d'intrusion réels de QA trouvent ce que les revues ne voient pas.

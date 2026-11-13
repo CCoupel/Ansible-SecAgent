@@ -15,10 +15,26 @@ services:
   secagent-server-a: *tls-volume
   secagent-server-b: *tls-volume
   secagent-child: *tls-volume
-  minion-root: *tls-volume
-  minion-child: *tls-volume
+  secagent-grandchild: *tls-volume   # profil level3
+  # Minions : CA PUBLIQUE SEULE (T49 H1), volume `secagent_tls_ca` (ca.crt seul, push-tls) ; `!override` remplace la liste
+  # (le bind du fichier ca.crt du Compose de base designerait un chemin du client). Jamais le volume TLS complet (tls.key).
+  minion-root:
+    volumes: !override
+      - minion_root_data:/var/lib/secagent-minion
+      - {type: volume, source: secagent_tls_ca, target: /certs, read_only: true}
+  minion-child:
+    volumes: !override
+      - minion_child_data:/var/lib/secagent-minion
+      - {type: volume, source: secagent_tls_ca, target: /certs, read_only: true}
+  minion-grand:                      # profil level3
+    volumes: !override
+      - minion_grand_data:/var/lib/secagent-minion
+      - {type: volume, source: secagent_tls_ca, target: /certs, read_only: true}
 
 volumes:
   secagent_tls:
     external: true
     name: ${SECAGENT_TLS_VOLUME:-secagent-qualif_tls}
+  secagent_tls_ca:
+    external: true
+    name: ${SECAGENT_TLS_CA_VOLUME:-secagent-qualif_tls_ca}

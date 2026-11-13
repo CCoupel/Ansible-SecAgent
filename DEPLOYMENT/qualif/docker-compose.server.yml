@@ -39,9 +39,12 @@ x-secagent: &secagent
       source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt / tls.key)}
       target: /certs
       read_only: true
+  # SECAGENT_TMPFS_OPTS : proprietaire des tmpfs. Docker (defaut) : uid=10001,gid=10001 ; Podman : `U` (podman 5.7 refuse
+  # uid=/gid= : « unknown mount option », T48), pose par release.env (stage-node-files.sh) et chain-test.sh. Valeur et
+  # non surcharge : podman-compose 1.5 fusionne ce fichier (include: de la chaine) APRES la surcharge Podman.
   tmpfs:
-    - /run/secagent:uid=10001,gid=10001,mode=0700
-    - /tmp:uid=10001,gid=10001,mode=1777
+    - /run/secagent:${SECAGENT_TMPFS_OPTS:-uid=10001,gid=10001},mode=0700
+    - /tmp:${SECAGENT_TMPFS_OPTS:-uid=10001,gid=10001},mode=1777
   healthcheck:
     test: ["CMD", "/app/secagent-server", "status", "--local"]
     interval: 10s
@@ -63,6 +66,8 @@ x-secagent-env: &secagent-env
   TLS_KEY: /certs/tls.key
   LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
   GOMEMLIMIT: ${GOMEMLIMIT:-1638MiB}   # ~80 % de SECAGENT_MEM_LIMIT
+  # relay.converged (#246, LOT-3.2) : delai de convergence apres une promotion, raccourci en qualif (defaut serveur 60 s)
+  RELAY_CONVERGENCE_TIMEOUT: 30s
 
 services:
   secagent-server-a:
@@ -88,7 +93,7 @@ services:
 volumes:
   # Volume local partage par les 2 conteneurs (meme hote). Pour tester un vrai partage reseau (NFS),
   # remplacer par un volume `driver_opts type=nfs` : voir DEPLOYMENT/prod/README.md.
-  secagent_state:
+  secagent_state: {}
   # Volume EXTERNE des secrets serveur (cree et alimente par `failover-test.sh setup-ci` / `chain-test.sh bootstrap`) :
   # JWT_SECRET_KEY, ADMIN_TOKEN, RSA_MASTER_KEY en fichiers 0400 (10001). Retire par `down` / `teardown`.
   secagent_secrets:

@@ -45,7 +45,7 @@ Authorization: Bearer <ADMIN_TOKEN>
 
 ### `GET /api/admin/minions/{hostname}` — Détail d'un agent
 
-**Réponse 200 :** `hostname`, `status`, `last_seen`, `suspended`, `revoked`, `enrolled_at`, `key_fingerprint` (début de la clef publique, 16 caractères + `...`) et `vars` (variables Ansible de l'hôte) — `MinionDetail`, `handlers/admin.go`. La clef publique complète n'est pas renvoyée. `revoked` (booléen, additif en v3.0.5) : l'hôte est révoqué (`minions revoke`) ; `minions delete` s'en sert pour avertir que la suppression lève la révocation. **`status` suit la connexion WebSocket vivante** (`connected` si l'agent est connecté à ce nœud, comme la liste `GET /api/admin/minions`), sinon le dernier statut de l'état (v3.0.5, #233 : il valait avant le seul statut persisté, `disconnected` pour un agent connecté).
+**Réponse 200 :** `hostname`, `status`, `last_seen`, `suspended`, `revoked`, `enrolled_at`, `first_seen_at` (v3.0.6, #266 : date du premier handshake réussi, absent tant que l'hôte ne s'est jamais connecté), `key_fingerprint` (début de la clef publique, 16 caractères + `...`) et `vars` (variables Ansible de l'hôte) — `MinionDetail`, `handlers/admin.go`. La clef publique complète n'est pas renvoyée. `revoked` (booléen, additif en v3.0.5) : l'hôte est révoqué (`minions revoke`) ; `minions delete` s'en sert pour avertir que la suppression lève la révocation. **`status` suit la connexion WebSocket vivante** (`connected` si l'agent est connecté à ce nœud, comme la liste `GET /api/admin/minions`), sinon le dernier statut de l'état (v3.0.5, #233 : il valait avant le seul statut persisté, `disconnected` pour un agent connecté).
 
 **Codes d'erreur :**
 
@@ -434,6 +434,8 @@ Lu dans le journal append-only `actions.log` (#161). `limit` : 1–200 (défaut 
 
 `hooks_dropped_events` : événements rejetés (file pleine ou arrêt) ; `hooks_dropped_actions` : actions perdues avec des événements en file lors d'un arrêt brutal (doit rester 0). `secagent-server server status` les affiche.
 
+**File d'événements ascendants (#246, v3.0.6)** : `upstream_dropped_events` (entier, cumul depuis le démarrage : événements perdus parce que la file était pleine ou retirés de la file sans avoir pu être envoyés au parent), `upstream_queue_depth` (événements en attente) et `upstream_queue_capacity` (`RELAY_UPSTREAM_QUEUE_SIZE`, défaut 10000, bornes 256..100000). Toujours présents ; une racine sans parent renvoie `0`, `0`, `N`. Le rejeu vers le parent est cadencé à `RELAY_UPSTREAM_RATE` événements/s (défaut 150, bornes 10..1000). Une perte est signalée par **un** `[WARN]` et **une** entrée `action_type:"upstream_dropped"` du journal des actions (`GET /api/admin/hooks/log?event=*`) par minute au plus.
+
 **Mode d'écriture de l'état (#163)** : `state_mode` (`read_write` | `read_only`), `state_mode_reason` quand il est `read_only` (`no write guard`, `lock lost`, `ownership not confirmed`), `role` (`master`), `instance_id`, `write_seq` (de l'état détenu), `beat` et `last_beat_at` (dernier battement réussi du verrou, RFC 3339). `secagent-server server status` les affiche ; `secagent-server status --local` donne le même mode d'écriture sans passer par l'API.
 
 **Écriture refusée parce que l'instance est en lecture seule (#163)** : toute route qui écrit répond **`503 {"error":"state_read_only","reason":"<no write guard|lock lost|ownership not confirmed>"}`** (et non plus un `500 db_error` générique) quand, au moment de la réponse, l'état est réellement en lecture seule (aucune garde, verrou perdu ou non confirmé). Un vrai échec de base reste un `500 db_error`. Le refus est journalisé une fois par minute. Une révocation d'agent (`POST …/revoke`) dont l'écriture dans la blacklist est refusée **ne ferme plus** le lien en `4001` : elle répond 503 et le client réessaie.
@@ -460,6 +462,8 @@ Lu dans le journal append-only `actions.log` (#161). `limit` : 1–200 (défaut 
 | `GET /api/admin/relays/status` | État des relays : `{ "relays": [...], "timestamp": "..." }` |
 | `DELETE /api/admin/relays/{id}` | Supprime un relay |
 | `POST /api/admin/relays/{id}/revoke` | Révoque un relay (CLI : `relays revoke <relay_id|uuid>` ou `relays remove --revoke`, depuis v3.0.5) |
+
+`GET /api/admin/relays` (v3.0.6, #266) : champ additif `first_seen_at` (RFC 3339, premier snapshot accepté de ce relais déclaré par ce nœud ; absent s'il ne s'est jamais connecté).
 
 (`server/routers.go:96-100`, `handlers/admin_relays.go`.)
 

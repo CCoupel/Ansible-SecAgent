@@ -496,7 +496,7 @@ func TestAdminGetMinion_StatusFollowsTheLiveConnection(t *testing.T) {
 	if st := get(); st == "connected" {
 		t.Fatalf("no connection yet, status = %q", st)
 	}
-	ws.RegisterConnection("live-detail", &ws.AgentConnection{Hostname: "live-detail"})
+	ws.RegisterConnection("live-detail", &ws.AgentConnection{Hostname: "live-detail"}, 1)
 	t.Cleanup(func() { ws.UnregisterConnection("live-detail") })
 	if st := get(); st != "connected" {
 		t.Fatalf("a live connection must show connected, got %q", st)
@@ -531,7 +531,7 @@ func TestAdminDeleteMinion_RefusesTheJWTBeforeClosingTheSocket(t *testing.T) {
 				t.Errorf("at the first close the row must already be deleted: %+v", a)
 			}
 			// a connection slips in between the deletion and the close
-			ws.RegisterConnection("del-order", &ws.AgentConnection{Hostname: "del-order"})
+			ws.RegisterConnection("del-order", &ws.AgentConnection{Hostname: "del-order"}, 1)
 		}
 		return true
 	}

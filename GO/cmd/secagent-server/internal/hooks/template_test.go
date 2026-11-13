@@ -93,3 +93,53 @@ func TestRender_empty_string(t *testing.T) {
 		t.Errorf("expected empty string, got %q", got)
 	}
 }
+
+// ========================================================================
+// LOT-3.2 (#246 remark, T21) — a variable that is KNOWN but not carried by the event renders EMPTY;
+// an UNKNOWN token stays as written. Variables known: eventEnvKeys + the base keys (hostname, event,
+// timestamp, status, enrolled_at, relay_chain, relay_origin, group_vars…).
+// RED before T21: the token of a known-but-absent variable is left in place.
+// ========================================================================
+
+func TestRender_known_but_absent_variable_is_empty(t *testing.T) {
+	vars := map[string]string{"hostname": "h1", "event": "relay.failover"}
+	got := Render("host={{hostname}} previous={{previous_instance_id}} cause={{cause}}", vars)
+	want := "host=h1 previous= cause="
+	if got != want {
+		t.Errorf("got %q, want %q (previous_instance_id and cause are known variables, absent from vars)", got, want)
+	}
+}
+
+func TestRender_known_variable_with_empty_value_is_empty(t *testing.T) {
+	got := Render("previous={{previous_instance_id}}.", map[string]string{"previous_instance_id": ""})
+	if got != "previous=." {
+		t.Errorf("got %q, want %q", got, "previous=.")
+	}
+}
+
+func TestRender_mix_known_absent_unknown_and_present(t *testing.T) {
+	vars := map[string]string{"instance_id": "i-42"}
+	got := Render("{{instance_id}}|{{previous_instance_id}}|{{not_a_variable}}|{{old_chain}}|{{upstream_dropped_events_total}}", vars)
+	want := "i-42||{{not_a_variable}}||"
+	if got != want {
+		t.Errorf("got %q, want %q (unknown tokens stay, known-absent ones become empty)", got, want)
+	}
+}
+
+func TestRender_known_absent_with_no_vars_at_all(t *testing.T) {
+	if got := Render("a={{previous_instance_id}}", nil); got != "a=" {
+		t.Errorf("Render(nil vars) = %q, want %q (a known variable is still blanked)", got, "a=")
+	}
+	if got := Render("a={{not_a_variable}}", nil); got != "a={{not_a_variable}}" {
+		t.Errorf("Render(nil vars) = %q, want the unknown token untouched", got)
+	}
+}
+
+func TestRender_every_event_variable_is_known(t *testing.T) {
+	for _, k := range append([]string{"hostname", "event", "timestamp", "status", "enrolled_at", "relay_chain", "old_relay", "new_relay"}, eventEnvKeys...) {
+		tok := "{{" + k + "}}"
+		if got := Render("["+tok+"]", map[string]string{"hostname": "x"}); got == "["+tok+"]" && k != "hostname" {
+			t.Errorf("variable %q is known (event variable) but its token was left in place by Render", k)
+		}
+	}
+}

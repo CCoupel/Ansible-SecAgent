@@ -46,7 +46,11 @@ type Node struct {
 
 	store       *storage.Store
 	dispatcher  *hooks.Dispatcher
+	purgeWG     sync.WaitGroup // the periodic blacklist purge goroutine
 	journal     *actionlog.Journal
+	upQueue     *upstreamQueue // events going up to the parent (#246)
+	conv        *convergence   // relay.converged follow-up after a promotion (#246)
+	convMu      sync.Mutex
 	hooksPath   string
 	dispatchCtx context.Context
 	cancel      context.CancelFunc
@@ -271,6 +275,7 @@ func Build(cfg Config) (node *Node, err error) {
 	ws.SetDispatchFunc(func(event, hostname, status, enrolledAt string) {
 		dispatcher.Dispatch(event, hostname, status, enrolledAt)
 	})
+	ws.SetEventFunc(dispatcher.DispatchEvent) // host.up / host.reconnect with conn_seq, relay.* (v3.0.6)
 	log.Println("[OK] Hooks dispatcher started")
 
 	// Wire relay routing/status update functions into ws package (avoids import cycle ws→storage)
@@ -399,7 +404,11 @@ func Build(cfg Config) (node *Node, err error) {
 	// dials us (push, #140). A node has a single parent: with REPEATER_UPSTREAM_* configured,
 	// links opened by a parent are refused.
 	selfID, _ := ws.RelayIdentity()
-	upEvents := make(chan repeater.Event, 256)
+	// Bounded, measured queue of the events going up (#246): RELAY_UPSTREAM_QUEUE_SIZE, a counter, one
+	// aggregated warning per period; the uplink replays it at RELAY_UPSTREAM_RATE per second.
+	upQueue := newUpstreamQueue(UpstreamQueueSizeFromEnv(), journal, upstreamDropReportInterval)
+	n.upQueue = upQueue
+	handlers.SetUpstreamQueueStatusFunc(upQueue.Stats)
 	// A child link changed the subtree below us (snapshot accepted, link closed): our parent gets a
 	// full topology_snapshot again. Non-blocking, coalesced by the uplink.
 	topoChanged := make(chan struct{}, 1)
@@ -416,7 +425,9 @@ func Build(cfg Config) (node *Node, err error) {
 		GroupVars:       cfg.GroupVars,
 		DirectAgents:    directAgents,
 		Snapshot:        func() repeater.Snapshot { return buildSnapshot(selfID, store) },
-		Events:          upEvents,
+		Events:          upQueue.Chan(),
+		EventRate:       UpstreamRateFromEnv(),
+		OnEventLost:     upQueue.Lost,
 		TopologyChanged: topoChanged,
 		OnTask:          forwarder.Handle,
 	}
@@ -450,9 +461,11 @@ func Build(cfg Config) (node *Node, err error) {
 		if repeaterCfg == nil && !n.uplink.Active() {
 			return
 		}
-		queueUpstream(upEvents, repeater.Event{Event: m.Event, Hostname: m.Hostname, RelayID: m.RelayID, Status: m.Status,
+		d := m.Detail
+		d.Mode = m.Mode
+		upQueue.Offer(repeater.Event{Event: m.Event, Hostname: m.Hostname, RelayID: m.RelayID, Status: m.Status,
 			RelayChain: m.RelayChain, GroupVars: m.GroupVars, Timestamp: m.Timestamp, OldRelay: m.OldRelay, NewRelay: m.NewRelay,
-			EnrolledAt: m.EnrolledAt})
+			EnrolledAt: m.EnrolledAt, Mode: m.Mode, Detail: d, Late: m.Late})
 	})
 
 	// link_state frames of the relays below travel UP to the root through our parent link (informative).
@@ -461,18 +474,28 @@ func Build(cfg Config) (node *Node, err error) {
 	})
 
 	// Event propagation (#126). Local events of this node (agent connect / disconnect, enrollment)
-	// go up to the parent; the uplink appends this node's id to relay_chain. A link that is not
-	// established drops them: the snapshot sent at the next connection re-synchronizes the parent.
-	dispatcher.SetUpstream(func(event, hostname, status, enrolledAt string) {
-		if !n.uplink.Active() {
+	// go up to the parent; the uplink appends this node's id to relay_chain. A NON-ROOT node puts every
+	// local event, host.* included, in the bounded upstream queue (#246) even when its link is down (or
+	// not established yet): the uplink sends the snapshot first, then replays the queue, paced, each
+	// event keeping its own timestamp (T24). A root without parent has nothing to forward to.
+	dispatcher.SetUpstreamEvent(func(ev hooks.Event) {
+		if !queueLocalEvent(nonRoot, n.uplink.Active()) {
 			return
 		}
-		queueUpstream(upEvents, repeater.Event{Event: event, Hostname: hostname, Status: status,
-			EnrolledAt: enrolledAt, Timestamp: time.Now().UTC().Format(time.RFC3339)})
+		ts := ev.Timestamp
+		if ts == "" {
+			ts = time.Now().UTC().Format(time.RFC3339)
+		}
+		up := repeater.Event{Event: ev.Name, Hostname: ev.Hostname, RelayID: ev.RelayID, Status: ev.Status,
+			EnrolledAt: ev.EnrolledAt, Timestamp: ts, RelayChain: ev.RelayChain, Mode: ev.Detail.Mode, Detail: ev.Detail}
+		if ev.Name == "host.rerouted" { // the parent validates the two relays of a re-route
+			up.OldRelay, up.NewRelay = ev.Detail.OldRelay(), ev.Detail.NewRelay()
+		}
+		upQueue.Offer(up)
 	})
 	// Events received from a child run THIS node's hooks with the received relay_chain.
-	ws.SetRelayEventLocalFunc(func(event, hostname, status, enrolledAt string, relayChain []string) {
-		dispatcher.DispatchChain(event, hostname, status, enrolledAt, relayChain)
+	ws.SetRelayEventLocalFunc(func(ev hooks.Event) {
+		dispatcher.DispatchEventChain(ev, ev.RelayChain)
 	})
 
 	// Hierarchical routing (#127): chains of snapshot routes, event-driven routes, host.conflict.
@@ -480,6 +503,27 @@ func Build(cfg Config) (node *Node, err error) {
 		_, err := store.UpsertRelayRoute(hostname, relayID, chain)
 		return err
 	})
+	ws.SetRelayChainsFunc(func() map[string][]string {
+		chains, err := store.ListRelayChains()
+		if err != nil {
+			return nil
+		}
+		return chains
+	})
+	store.SetFirstSeenFlush(storage.FirstSeenFlushFromEnv())
+	ws.SetFirstSeenFunc(func(hostname string) (bool, time.Time, time.Time) {
+		first, at := store.MarkFirstSeen(hostname)
+		if !first {
+			return false, time.Time{}, time.Time{}
+		}
+		var enrolled time.Time
+		if rec, _ := store.GetAgent(context.Background(), hostname); rec != nil {
+			enrolled = rec.EnrolledAt
+		}
+		return true, at, enrolled
+	})
+	ws.SetRelayFirstSeenFunc(store.MarkRelayFirstSeen)
+	ws.SetRelayLinkEstablishedFunc(n.linkEstablished)
 	ws.SetRelayChainFunc(func(relayID string, chain []string) error {
 		_, err := store.SetRelayChain(relayID, chain)
 		return err
@@ -499,7 +543,7 @@ func Build(cfg Config) (node *Node, err error) {
 			hooks.GlobalDispatcher.Dispatch("host.conflict", c.Hostname, c.OldRelay+"->"+c.NewRelay, "")
 		}
 		if !fromBelow && (repeaterCfg != nil || n.uplink.Active()) {
-			queueUpstream(upEvents, repeater.Event{Event: "host.conflict", Hostname: c.Hostname,
+			upQueue.Offer(repeater.Event{Event: "host.conflict", Hostname: c.Hostname,
 				RelayID: c.NewRelay, OldRelay: c.OldRelay, NewRelay: c.NewRelay})
 		}
 	})
@@ -551,8 +595,30 @@ func (n *Node) ReloadHooks() {
 func (n *Node) Close() {
 	n.closeOnce.Do(func() {
 		handlers.ConfigureMasterKey("")
+		n.convMu.Lock()
+		if n.conv != nil {
+			n.conv.stop() // before the cancel: nothing may be announced while closing
+		}
+		n.convMu.Unlock()
 		if n.cancel != nil {
 			n.cancel()
+		}
+		if n.rc != nil {
+			n.rc.WaitStopped(3 * time.Second) // the parent link says 1001 going away before the process exits
+		}
+		// Wait for the background goroutines that log (dispatcher + its reporter, purge) so that
+		// nothing writes to the log after Close returns (#263).
+		if n.dispatcher != nil {
+			n.dispatcher.Wait()
+		}
+		n.purgeWG.Wait()
+		n.convMu.Lock()
+		if n.conv != nil {
+			n.conv.stop() // nothing may be announced while closing
+		}
+		n.convMu.Unlock()
+		if n.upQueue != nil {
+			n.upQueue.Close() // flushes the pending drop report while the journal is still open
 		}
 		if n.journal != nil {
 			if err := n.journal.Close(); err != nil {
@@ -760,6 +826,31 @@ func (n *Node) SetInstance(role, id string) {
 	n.instMu.Unlock()
 }
 
+// AnnounceFailover emits relay.failover (#225): this instance has just become the master, before any
+// port is opened. cause is "takeover" when it removed the stale lock of a master that vanished, "start"
+// when the lock was free (first start, clean stop of the previous master; previous_instance_id is then
+// empty). The event runs this node's hooks and goes up to the parent (queued even before the parent
+// link exists). The previous master's id comes from a file: it is dropped when it is not a plain id.
+func (n *Node) AnnounceFailover(st lock.Status) {
+	if n.dispatcher == nil {
+		return
+	}
+	id, _ := ws.RelayIdentity()
+	d := hooks.Detail{Cause: "start", InstanceID: st.InstanceID}
+	if st.Takeover {
+		d.Cause = "takeover"
+		if ws.InstanceIDShape.MatchString(st.PreviousInstanceID) {
+			d.PreviousInstanceID = st.PreviousInstanceID
+		}
+	}
+	if !ws.InstanceIDShape.MatchString(d.InstanceID) {
+		log.Printf("[WARN] relay.failover not announced: this instance's id %q is not a valid instance id", d.InstanceID)
+		return
+	}
+	n.dispatcher.DispatchEvent(hooks.Event{Name: "relay.failover", RelayID: id, Detail: d})
+	n.startConvergence(id) // relay.converged: once, when the declared children are back or at the timeout
+}
+
 func (n *Node) shutdownServers() {
 	// Graceful shutdown with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
@@ -784,7 +875,9 @@ func (n *Node) startPurge(every time.Duration) {
 	if ctx == nil {
 		return
 	}
+	n.purgeWG.Add(1)
 	go func() {
+		defer n.purgeWG.Done()
 		t := time.NewTicker(every)
 		defer t.Stop()
 		for {

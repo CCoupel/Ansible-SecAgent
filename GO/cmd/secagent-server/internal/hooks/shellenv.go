@@ -64,6 +64,11 @@ func shellEnvironment(environ []string, declared map[string]string, rawVars map[
 		out["SECAGENT_RELAY_CHAIN"] = rc
 		out["SECAGENT_RELAY_ORIGIN"] = vars["relay_origin"]
 	}
+	for _, k := range eventEnvKeys {
+		if v := vars[k]; v != "" {
+			out["SECAGENT_"+strings.ToUpper(k)] = v
+		}
+	}
 	names := make([]string, 0, len(out))
 	for n := range out {
 		names = append(names, n)

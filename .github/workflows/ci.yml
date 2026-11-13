@@ -17,7 +17,8 @@ jobs:
   build-test:
     name: Build + tests Go
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # LOT-3.3 (#266, decision Q5 du 2026-11-12) : 15 min (tests -timeout 480s + build + compilation -race)
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -52,14 +53,14 @@ jobs:
           COMPONENT=secagent-inventory bash ../scripts/ci/assert_version.sh 9.9.9 "$RUNNER_TEMP/secagent-inventory-v"
 
       # Tests bloquants : aucun contournement. -race exige CGO (actif sur ubuntu-latest).
-      # -timeout 300s par package : marge x8 sur le package le plus lent (handlers ~37 s en local
-      # sous -race), un runner GitHub etant 2 a 3 fois plus lent.
+      # -timeout 480s par package (LOT-3.3, #266, decision Q5) : le paquet integration approchait 300 s sur le runner
+      # (LOT-3.2 : 84649eb) ; marge sur le package le plus lent sous -race, un runner GitHub etant 2 a 3 fois plus lent.
       - name: Tests
         working-directory: GO
         env:
           JWT_SECRET_KEY: test
           ADMIN_TOKEN: test
-        run: go test -race ./... -timeout 300s
+        run: go test -race ./... -timeout 480s
 
   # Tests lents (rafales de 3 000 agents, ~4 min a eux seuls) : exclus de la boucle rapide ci-dessus par
   # le tag de build `slow`, mais JOUES a chaque push dans ce job dedie (le garde-fou n'est pas retire).
@@ -220,6 +221,21 @@ jobs:
           # la garde est elle-meme testee (formes conformes, injections, 14 contournements YAML de M6), AVANT de juger les workflows
           "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_actions_pinned_selftest.py
           "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_actions_pinned.py
+          # T48 (#267) : sources Compose fusionnables par podman-compose 1.5 (aucune ressource nulle surchargee par un dict,
+          # memes types des deux cotes) ; garde testee d'abord, puis chaque Compose livre et les combinaisons Podman.
+          "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_compose_merge_selftest.py
+          git ls-files -z 'DEPLOYMENT/*docker-compose*.yml' | xargs -0 "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_compose_merge.py --no-null
+          # SECAGENT_TMPFS_OPTS=U : valeur posee sous Podman par release.env (stage-node-files.sh) et chain-test.sh
+          SECAGENT_TMPFS_OPTS=U "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_compose_merge.py -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml -f DEPLOYMENT/podman/docker-compose.podman.qualif.yml
+          "$RUNNER_TEMP/guard-venv/bin/python" -I scripts/ci/check_compose_merge.py -f DEPLOYMENT/prod/docker-compose.server.yml -f DEPLOYMENT/prod/docker-compose.child.yml -f DEPLOYMENT/podman/docker-compose.podman.yml
+          # T48 (#267) : rejeu du chemin `chain-test.sh bootstrap` sous Podman avec le VRAI podman-compose des noeuds (1.5.0,
+          # version et somme epinglees) et un faux `podman` a etat : un refus de podman-compose (fusion, volume externe,
+          # montage) est vu ici, jamais sur srv3/srv4.
+          "$RUNNER_TEMP/guard-venv/bin/python" -m pip install --quiet --no-deps --require-hashes --only-binary=:all: -r .github/ci/requirements-podman-compose.txt
+          PODMAN_COMPOSE="$RUNNER_TEMP/guard-venv/bin/podman-compose" bash scripts/ci/podman_compose_replay.sh </dev/null
+          # Ordre n°24 (CI 43436496433) : meme rejeu pour Docker (vrai docker compose du runner pour le rendu, faux moteur qui
+          # exige les volumes EXTERNES avant up/run) : chain-test.sh bootstrap (TLS bind et volume), failover-test.sh setup-ci.
+          bash scripts/ci/docker_compose_replay.sh </dev/null
 
       # LOT-7 / #237 (D17) : en-tete SPDX AGPL-3.0-or-later sur chaque source .go/.py/.sh suivie (exclusions dans la garde).
       # Garde stdlib seule ; elle est elle-meme testee AVANT de juger l'arbre. Correction locale : check_spdx.py --fix.
@@ -375,7 +391,9 @@ jobs:
           bash scripts/ci/chain_verify_images_selftest.sh
           bash scripts/ci/failover_guard_selftest.sh
           python3 scripts/ci/check_no_binds_selftest.py
+          python3 -I scripts/ci/check_podman_certs_selftest.py
           bash scripts/ci/admission_503_selftest.sh
+          bash scripts/ci/ansible_version_selftest.sh
           python3 -I DEPLOYMENT/qualif/tools/test_ghcr_image_archive.py
           bash scripts/ci/assert_version_selftest.sh
           bash scripts/ci/release_notes_selftest.sh
@@ -384,6 +402,12 @@ jobs:
           bash scripts/ci/minion_entrypoint_selftest.sh
           bash scripts/ci/preflight_secrets_selftest.sh
           bash scripts/ci/private_paths_selftest.sh
+          bash scripts/ci/qualif_pki_selftest.sh
+          bash scripts/ci/install_node_selftest.sh
+          bash scripts/ci/podman_cli_selftest.sh
+          bash scripts/ci/podman_node_files_selftest.sh
+          bash scripts/ci/reset_state_selftest.sh
+          bash scripts/ci/state_backup_selftest.sh
           python3 scripts/ci/check_scripts.py .github/workflows/*.yml
 
       # Variables d'exemple NON secretes : uniquement pour que `docker compose config` puisse interpoler.
@@ -427,15 +451,39 @@ jobs:
           docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.remote-tls.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml config --format json > render/qualif-chain-remote.json
           # Profil `negative` (minion-negca) : absent du rendu par defaut, donc de tout controle sans --profile
           docker compose --profile negative -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml config --format json > render/qualif-chain-negative.json
+          # 3e niveau (profil level3, LOT-3.2 : secagent-grandchild dmz2 + minion-grand) : rendu et controles du durcissement
+          docker compose --profile level3 -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.remote-tls.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml config --format json > render/qualif-chain-level3-remote.json
           python3 - <<'PY'
           import json, sys
+          svc = json.load(open("render/qualif-chain-level3-remote.json"))["services"]
+          if not {"secagent-grandchild", "minion-grand"} <= set(svc):
+              sys.exit("::error::secagent-grandchild/minion-grand absents du rendu --profile level3")
           if "minion-negca" not in json.load(open("render/qualif-chain-negative.json"))["services"]:
               sys.exit("::error::minion-negca absent du rendu --profile negative : le controle de durcissement ne le verrait pas")
           PY
-          python3 scripts/ci/check_compose.py --require-memory-limit --require-secret-files render/prod-root.json render/prod-root-ports.json render/prod-child.json render/qualif-server.json render/qualif-chain.json render/qualif-chain-remote.json render/qualif-chain-negative.json
+          python3 scripts/ci/check_compose.py --require-memory-limit --require-secret-files render/prod-root.json render/prod-root-ports.json render/prod-child.json render/qualif-server.json render/qualif-chain.json render/qualif-chain-remote.json render/qualif-chain-negative.json render/qualif-chain-level3-remote.json
+          # Podman rootless (#267, LOT-4) : surcharges keep-id rendues sur les Compose livres ; uid 10001 du conteneur =
+          # utilisateur rootless de l'hote. Rendu par docker compose (userns_mode est une cle Compose standard).
+          docker compose -f DEPLOYMENT/prod/docker-compose.server.yml -f DEPLOYMENT/podman/docker-compose.podman.yml config --format json > render/podman-prod-root.json
+          docker compose -f DEPLOYMENT/prod/docker-compose.server.yml -f DEPLOYMENT/prod/docker-compose.child.yml -f DEPLOYMENT/podman/docker-compose.podman.yml config --format json > render/podman-prod-child.json
+          # Chaine QUALIF repartie (srv3/srv4) : chemins du partage tels que vus par les noeuds (rien n'est lu ici)
+          PQ=/share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/QUALIF
+          QUALIF_PRIVATE_DIR="$PQ" QUALIF_TLS_DIR="$PQ/pki" QUALIF_NODE_A_ADDR=192.168.1.213 SECAGENT_TMPFS_OPTS=U \
+            docker compose -f DEPLOYMENT/qualif/docker-compose.chain.yml -f DEPLOYMENT/qualif/docker-compose.hooks.yml -f DEPLOYMENT/podman/docker-compose.podman.qualif.yml config --format json > render/podman-qualif-chain.json
+          python3 scripts/ci/check_compose.py --require-memory-limit --require-secret-files --require-userns-keepid render/podman-prod-root.json render/podman-prod-child.json render/podman-qualif-chain.json
+          # Hypotheses de la garde check-private.sh (QUALIF pki/ en 0711, tls.key 0600) : seuls les SERVEURS sont en keep-id
+          # (uid 10001 = proprietaire : lisent tls.key) ; les MINIONS restent sans keep-id (uid `relay` != proprietaire : ne
+          # lisent que les certificats publics) et montent /certs en lecture seule.
+          python3 scripts/ci/check_podman_certs.py render/podman-qualif-chain.json
+          # T49 H1 : les minions ne montent QUE la CA publique (bind du fichier ca.crt, ou volume *tls_ca* en TLS distant),
+          # dans TOUS les rendus de la chaine (Docker local, distant, 3e niveau, negatif)
+          python3 scripts/ci/check_podman_certs.py --minions-only render/qualif-chain.json render/qualif-chain-remote.json render/qualif-chain-negative.json render/qualif-chain-level3-remote.json
+          # Binds (y compris les volumes driver_opts) limites aux sous-chemins permis de PRIVATE/QUALIF ; jamais ca.key ni poste-cyril
+          python3 scripts/ci/check_no_binds.py --allow-prefix "$PQ" < render/podman-qualif-chain.json
           # Rendu destine a un demon Docker DISTANT (qualif reelle) : aucun chemin du client (bind, secret/config file:, build).
           # Le CI a un demon local et ne peut pas voir ce defaut a l'execution : ce controle statique est la seule garde.
           python3 scripts/ci/check_no_binds.py < render/qualif-chain-remote.json
+          python3 scripts/ci/check_no_binds.py < render/qualif-chain-level3-remote.json
 
       - name: Test negatif — un Compose qui publie 7771 sur toutes les interfaces doit echouer
         run: |
@@ -583,6 +631,9 @@ jobs:
           docker compose --env-file .env.example -f docker-compose.server.yml config --format json > r.json
           docker compose --env-file .env.example -f docker-compose.server.yml -f docker-compose.child.yml config --format json > c.json
           python3 tools/check_compose.py --require-memory-limit --require-digest --require-secret-files r.json c.json
+          # surcharge Podman rootless de PROD (#267) embarquee dans l'archive (stage-node-files.sh prod la lit par son nom)
+          docker compose --env-file .env.example -f docker-compose.server.yml -f docker-compose.podman.yml config --format json > p.json
+          python3 tools/check_compose.py --require-memory-limit --require-digest --require-secret-files --require-userns-keepid p.json
       - name: Tests negatifs - l'archive est refusee avec latest ou NATS
         run: |
           set -u

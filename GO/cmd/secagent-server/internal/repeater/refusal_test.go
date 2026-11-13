@@ -222,7 +222,7 @@ func refusalDialer(t *testing.T, p *refusalPeer, relayID string, wouldLoop func(
 		WouldLoop:  wouldLoop,
 		TLSConfig:  &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test server cert
 		MinBackoff: 20 * time.Millisecond, MaxBackoff: 80 * time.Millisecond,
-		Serve: func(ctx context.Context, conn *websocket.Conn, _ string) error {
+		Serve: func(ctx context.Context, conn *websocket.Conn, _ string, _ int) error {
 			serves.Add(1)
 			<-ctx.Done()
 			_ = conn.Close()

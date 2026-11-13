@@ -85,8 +85,8 @@ func childNode(t *testing.T, childID string, agents []AgentInfo) (string, *Uplin
 }
 
 // recordingServe plays the parent's ServeDialedRelay: it just records what the child sends.
-func recordingServe(msgs chan<- map[string]any) func(context.Context, *websocket.Conn, string) error {
-	return func(ctx context.Context, conn *websocket.Conn, peer string) error {
+func recordingServe(msgs chan<- map[string]any) func(context.Context, *websocket.Conn, string, int) error {
+	return func(ctx context.Context, conn *websocket.Conn, peer string, _ int) error {
 		defer func() { _ = conn.Close() }()
 		for {
 			var m map[string]any

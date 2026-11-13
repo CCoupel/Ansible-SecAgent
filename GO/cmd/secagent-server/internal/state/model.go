@@ -70,6 +70,11 @@ type Agent struct {
 	Revoked  bool           `json:"revoked,omitempty"`
 	Vars     map[string]any `json:"vars,omitempty"`
 	LastSeen *time.Time     `json:"last_seen,omitempty"`
+	// FirstSeenAt (v3.0.6, #266) is the date of the first successful handshake of the agent: the mark of
+	// host.discover (emitted once, when it goes from empty to set). Optional at read (an older state has
+	// none, schema_version unchanged), omitted while empty. A v3.0.5 binary refuses a state that has it
+	// (strict decoder): see STATE_SPEC.
+	FirstSeenAt *time.Time `json:"first_seen_at,omitempty"`
 }
 
 // AuthorizedKey is a pre-authorized public key.
@@ -163,8 +168,8 @@ type BlacklistEntry struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// RelayNode is the CONFIGURATION of a child relay. Its status, last_seen and relay_chain are
-// volatile (rebuilt by the topology snapshots) and never stored here.
+// RelayNode is the CONFIGURATION of a child relay (plus, since v3.0.6, the date of its first snapshot).
+// Its status, last_seen and relay_chain are volatile (rebuilt by the topology snapshots) and never stored here.
 type RelayNode struct {
 	ID          string         `json:"id"`
 	RelayID     string         `json:"relay_id"`
@@ -181,6 +186,9 @@ type RelayNode struct {
 	// presents to the child, ALWAYS "enc:"-prefixed) are distinct fields.
 	TokenHash   string `json:"token_hash,omitempty"`
 	TokenSecret string `json:"token_secret,omitempty"`
+	// FirstSeenAt (v3.0.6, #266): first snapshot accepted from this DECLARED relay by this node (the mark of
+	// relay.discover). Optional at read, omitted while empty (see Agent.FirstSeenAt for the rollback rule).
+	FirstSeenAt *time.Time `json:"first_seen_at,omitempty"`
 }
 
 // Payload is the permanent content of the state file. Keys: hostname, id, jti, relay_id, key.
@@ -299,6 +307,7 @@ func cloneTime(t *time.Time) *time.Time {
 func (a Agent) clone() Agent {
 	a.Vars = cloneVars(a.Vars)
 	a.LastSeen = cloneTime(a.LastSeen)
+	a.FirstSeenAt = cloneTime(a.FirstSeenAt)
 	return a
 }
 func (t EnrollmentToken) clone() EnrollmentToken {
@@ -314,6 +323,7 @@ func (t RelayParentToken) clone() RelayParentToken { t.RevokedAt = cloneTime(t.R
 func (n RelayNode) clone() RelayNode {
 	n.URLs = append([]string(nil), n.URLs...)
 	n.GroupVars = cloneVars(n.GroupVars)
+	n.FirstSeenAt = cloneTime(n.FirstSeenAt)
 	return n
 }
 

@@ -55,11 +55,15 @@ var minionsListCmd = &cobra.Command{
 		return printOutput(globalFormat, agents, func(v interface{}) error {
 			list := v.([]map[string]interface{})
 			tp := newTabPrinter()
-			tp.println("HOSTNAME\tSTATUS\tSUSPENDED\tLAST_SEEN\tENROLLED_AT")
+			tp.println("HOSTNAME\tSTATUS\tSUSPENDED\tLAST_SEEN\tENROLLED_AT\tFIRST_SEEN")
 			for _, a := range list {
-				tp.printf("%s\t%s\t%v\t%s\t%s\n",
+				first := "-"
+				if f, ok := a["first_seen_at"].(string); ok && f != "" {
+					first = f
+				}
+				tp.printf("%s\t%s\t%v\t%s\t%s\t%s\n",
 					a["hostname"], a["status"], a["suspended"],
-					a["last_seen"], a["enrolled_at"])
+					a["last_seen"], a["enrolled_at"], first)
 			}
 			return tp.flush()
 		})
@@ -89,7 +93,11 @@ var minionsGetCmd = &cobra.Command{
 		return printOutput(globalFormat, agent, func(v interface{}) error {
 			a := v.(map[string]interface{})
 			tp := newTabPrinter()
-			for _, k := range []string{"hostname", "status", "suspended", "last_seen", "enrolled_at", "key_fingerprint"} {
+			for _, k := range []string{"hostname", "status", "suspended", "last_seen", "enrolled_at", "first_seen_at", "key_fingerprint"} {
+				if v, ok := a[k]; !ok && k == "first_seen_at" {
+					_ = v // never connected: no line
+					continue
+				}
 				tp.printf("%s\t%v\n", k, a[k])
 			}
 			return tp.flush()

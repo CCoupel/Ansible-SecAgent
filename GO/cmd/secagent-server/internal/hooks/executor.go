@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -86,16 +87,85 @@ type WebhookExecutor struct {
 
 // webhookPayload is the standardised JSON body sent by webhook actions.
 type webhookPayload struct {
-	Event     string      `json:"event"`
-	Timestamp string      `json:"timestamp"`
-	Host      webhookHost `json:"host"`
+	Event     string           `json:"event"`
+	Timestamp string           `json:"timestamp"`
+	Host      *webhookHost     `json:"host,omitempty"`   // omitted for relay.* events (no hostname)
+	Relay     *webhookRelayObj `json:"relay,omitempty"`  // relay.* events and *.rerouted
+	Change    *webhookChange   `json:"change,omitempty"` // host.rerouted and relay.rerouted
 	webhookRelay
+}
+
+// webhookRelayObj describes the relay a relay.* event is about.
+type webhookRelayObj struct {
+	RelayID                    string   `json:"relay_id"`
+	Mode                       string   `json:"mode,omitempty"`
+	Reason                     string   `json:"reason,omitempty"`
+	Cause                      string   `json:"cause,omitempty"`
+	InstanceID                 string   `json:"instance_id,omitempty"`
+	PreviousInstanceID         string   `json:"previous_instance_id,omitempty"`
+	ConnSeq                    *int     `json:"conn_seq,omitempty"`
+	HostsRouted                *int     `json:"hosts_routed,omitempty"`
+	RelaysBelow                *int     `json:"relays_below,omitempty"`
+	RelaysBelowIDs             []string `json:"relays_below_ids,omitempty"`
+	OldChain                   []string `json:"old_chain,omitempty"`
+	NewChain                   []string `json:"new_chain,omitempty"`
+	RelaysConnected            *int     `json:"relays_connected,omitempty"`
+	RelaysMissing              *int     `json:"relays_missing,omitempty"`
+	HostsDirect                *int     `json:"hosts_direct,omitempty"`
+	UpstreamDroppedEventsTotal *int64   `json:"upstream_dropped_events_total,omitempty"`
+}
+
+func varInt(vars map[string]string, k string) *int {
+	if n, err := strconv.Atoi(vars[k]); err == nil {
+		return &n
+	}
+	return nil
+}
+
+func varList(vars map[string]string, k string) []string {
+	if vars[k] == "" {
+		return nil
+	}
+	return strings.Split(vars[k], ",")
+}
+
+func relayObjOf(vars map[string]string) *webhookRelayObj {
+	if vars["relay_id"] == "" {
+		return nil
+	}
+	o := &webhookRelayObj{RelayID: vars["relay_id"], Mode: vars["mode"], Reason: vars["reason"], Cause: vars["cause"],
+		InstanceID: vars["instance_id"], PreviousInstanceID: vars["previous_instance_id"],
+		ConnSeq: varInt(vars, "conn_seq"), HostsRouted: varInt(vars, "hosts_routed"), RelaysBelow: varInt(vars, "relays_below"),
+		RelaysBelowIDs: varList(vars, "relays_below_ids"), OldChain: varList(vars, "old_chain"), NewChain: varList(vars, "new_chain"),
+		RelaysConnected: varInt(vars, "relays_connected"), RelaysMissing: varInt(vars, "relays_missing"), HostsDirect: varInt(vars, "hosts_direct")}
+	if n, err := strconv.ParseInt(vars["upstream_dropped_events_total"], 10, 64); err == nil {
+		o.UpstreamDroppedEventsTotal = &n
+	}
+	return o
+}
+
+// webhookChange describes a re-route: the relays and the top-down chains before and after.
+type webhookChange struct {
+	OldRelay string   `json:"old_relay,omitempty"`
+	NewRelay string   `json:"new_relay,omitempty"`
+	OldChain []string `json:"old_chain,omitempty"`
+	NewChain []string `json:"new_chain,omitempty"`
+	Cause    string   `json:"cause,omitempty"`
+}
+
+func changeOf(vars map[string]string) *webhookChange {
+	if !strings.HasSuffix(vars["event"], ".rerouted") {
+		return nil
+	}
+	return &webhookChange{OldRelay: vars["old_relay"], NewRelay: vars["new_relay"], OldChain: varList(vars, "old_chain"),
+		NewChain: varList(vars, "new_chain"), Cause: vars["cause"]}
 }
 
 type webhookHost struct {
 	Hostname   string `json:"hostname"`
 	Status     string `json:"status,omitempty"`
 	EnrolledAt string `json:"enrolled_at,omitempty"`
+	ConnSeq    *int   `json:"conn_seq,omitempty"` // host.up / host.reconnect
 }
 
 // webhookRelay carries the relay path of a propagated event (omitted for local events).
@@ -108,12 +178,15 @@ func (e *WebhookExecutor) Execute(ctx context.Context, action ActionDef, vars ma
 	payload := webhookPayload{
 		Event:     vars["event"],
 		Timestamp: vars["timestamp"],
-		Host: webhookHost{
-			Hostname:   vars["hostname"],
-			Status:     vars["status"],
-			EnrolledAt: vars["enrolled_at"],
-		},
 	}
+	if vars["hostname"] != "" {
+		payload.Host = &webhookHost{Hostname: vars["hostname"], Status: vars["status"], EnrolledAt: vars["enrolled_at"]}
+		if vars["relay_id"] == "" {
+			payload.Host.ConnSeq = varInt(vars, "conn_seq")
+		}
+	}
+	payload.Relay = relayObjOf(vars)
+	payload.Change = changeOf(vars)
 	if rc := vars["relay_chain"]; rc != "" {
 		payload.Chain = strings.Split(rc, ",")
 		payload.Origin = vars["relay_origin"]

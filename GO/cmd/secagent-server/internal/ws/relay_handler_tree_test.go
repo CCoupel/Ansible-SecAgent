@@ -398,7 +398,7 @@ func TestTree_EventForwardRateLimited(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if n == 0 || n > maxEventsPerSecond*2 { // window may roll once on a slow machine
+	if n == 0 || n > eventQuotaBurst+maxEventsPerSecond/2 { // bucket + the refill of a slow machine
 		t.Errorf("forwarded %d events out of %d (limit %d/s)", n, maxEventsPerSecond*3, maxEventsPerSecond)
 	}
 }

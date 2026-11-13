@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Surcharge PODMAN ROOTLESS (LOT-4 v3.0.6, #267) de la chaine de QUALIF REPARTIE sur deux noeuds :
+#   noeud A (srv3) : secagent-server-a ;  noeud B (srv4) : secagent-server-b, secagent-child, minion-root, minion-child
+# podman-compose est lance SUR chaque noeud (chain-test.sh, CONTAINER_CLI=podman) depuis
+# PRIVATE/QUALIF/<srvX>/cyril/secagent/release/ avec SEULEMENT les services du noeud :
+#   podman-compose -p secagent-qualif -f docker-compose.chain.yml -f docker-compose.hooks.yml \
+#                  -f docker-compose.podman.qualif.yml up -d <services du noeud>
+#
+# - Mapping uid : keep-id:uid=10001,gid=10001 sur les SERVICES SERVEUR (uid 10001 du conteneur = cyril, uid 1000, de
+#   l'hote = proprietaire des fichiers du partage). Les minions (entrypoint root -> su-exec) gardent le mapping rootless
+#   par defaut : volumes nommes locaux seulement, aucun fichier du partage (a constater en T48).
+# - Etat et secrets : volumes locaux LIES (driver_opts bind) au partage vu par le noeud (autofs /share/MFS/ROOT) :
+#   a et b partagent PRIVATE/QUALIF/state/root (actif/passif inter-noeuds), l'enfant PRIVATE/QUALIF/state/child, les
+#   secrets PRIVATE/QUALIF/secrets (fichiers 0400, proprietaire 1000 ; volume cree par chain-test.sh push-secrets). Jamais `down -v` (chain-test.sh down ne le fait pas
+#   sous Podman). TLS : QUALIF_TLS_DIR = PRIVATE/QUALIF/pki (ca.crt, tls.crt, tls.key ; ca.key dans pki-ca/, jamais lie).
+#   Garde fail-closed avant demarrage : check-private.sh qualif <srvX>. Rendu controle en CI : check_no_binds.py
+#   --allow-prefix <PRIVATE/QUALIF> (binds deguises compris) et check_compose.py --require-userns-keepid.
+# - Reseau : chaque noeud a son propre reseau Compose. Depuis le noeud B, a se joint par l'IP du noeud A
+#   (QUALIF_NODE_A_ADDR, port d'hote 7770/7772) et b par son nom de service ; l'IP du noeud B lui-meme n'est PAS utilisee
+#   (pasta : l'adresse de l'hote est recopiee dans le conteneur et ne mene pas a l'hote). SAN de la PKI QUALIF (T47) :
+#   IP de A, IP de B, noms secagent-server-a/-b, secagent-child.
+# Configuration DE podman-compose (seule cle utilisee de `x-podman`) : pas de pod. podman-compose 1.5 place sinon tous
+# les services dans `pod_<projet>` (--pod), que podman refuse avec --userns (keep-id des serveurs) : « --userns and
+# --pod cannot be set together » (T48, 2026-11-13). Le pod par defaut (--infra=false --share=) ne partage rien :
+# reseaux Compose, volumes et unites systemd inchanges. Controle : check_compose_merge.py (userns_mode => in_pod: false).
+# tmpfs : podman 5.7 refuse les options uid=/gid= des Compose de base (« unknown mount option "uid=10001" », T48) : sous
+# Podman, SECAGENT_TMPFS_OPTS=U (release.env, chain-test.sh) ; JAMAIS une surcharge ici : a et b viennent de
+# docker-compose.server.yml (include:), fusionne par podman-compose 1.5 APRES ce fichier (liste concatenee, scalaire ecrase).
+x-podman:
+  in_pod: false
+
+x-secagent-podman:   # documentation seulement ; jamais dans `x-podman` (podman-compose avertit sur toute cle inconnue)
+  host_uid: 1000
+  secret_owner_uid: 1000
+  container_host_a: ssh://cyril@192.168.1.213/run/user/1000/podman/podman.sock
+  container_host_b: ssh://cyril@192.168.1.214/run/user/1000/podman/podman.sock
+  host_prefix: /share/MFS/ROOT/CLAUDE_PROJETS/PROJETS/PRO/Ansible_SecAgent/PRIVATE/QUALIF
+
+services:
+  secagent-server-a:
+    userns_mode: "keep-id:uid=10001,gid=10001"
+  secagent-server-b:
+    userns_mode: "keep-id:uid=10001,gid=10001"
+  secagent-child:
+    userns_mode: "keep-id:uid=10001,gid=10001"
+    environment:
+      REPEATER_UPSTREAM_URL: wss://${QUALIF_NODE_A_ADDR:?QUALIF_NODE_A_ADDR est obligatoire (IP du noeud A)}:7772,wss://secagent-server-b:7772
+  secagent-grandchild:   # 3e niveau (profil level3) : meme mapping que l'enfant (tls.key 0600 du partage)
+    userns_mode: "keep-id:uid=10001,gid=10001"
+  minion-root:
+    environment:
+      RELAY_SERVER_URL: https://${QUALIF_NODE_A_ADDR:?QUALIF_NODE_A_ADDR est obligatoire}:7770,https://secagent-server-b:7770
+      RELAY_WS_URL: wss://${QUALIF_NODE_A_ADDR:?QUALIF_NODE_A_ADDR est obligatoire}:7772/ws/agent,wss://secagent-server-b:7772/ws/agent
+  minion-negca:
+    environment:
+      RELAY_SERVER_URL: https://${QUALIF_NODE_A_ADDR:?QUALIF_NODE_A_ADDR est obligatoire}:7770,https://secagent-server-b:7770
+      RELAY_WS_URL: wss://${QUALIF_NODE_A_ADDR:?QUALIF_NODE_A_ADDR est obligatoire}:7772/ws/agent,wss://secagent-server-b:7772/ws/agent
+
+# Volumes lies au partage : `uid=,gid=` dans `o` (options propres a podman, retirees avant le mount) desactivent le
+# « chown » du premier montage, qui donnait au repertoire du partage le mode du /data de l'image (0755) : la garde
+# check-private.sh (0700 exige) refusait alors le demarrage suivant de l'unite (T48, banc srv3 2026-11-13).
+volumes:
+  secagent_state:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind,uid=10001,gid=10001   # uid/gid : podman ne retouche pas le repertoire (voir ci-dessus)
+      device: ${QUALIF_PRIVATE_DIR:?QUALIF_PRIVATE_DIR est obligatoire (PRIVATE/QUALIF vu par le noeud)}/state/root
+  child_state:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind,uid=10001,gid=10001   # uid/gid : podman ne retouche pas le repertoire (voir ci-dessus)
+      device: ${QUALIF_PRIVATE_DIR:?QUALIF_PRIVATE_DIR est obligatoire}/state/child
+  # secagent_secrets n'est PAS redefini ici : declare EXTERNE par docker-compose.server.yml (inclus par la chaine), et
+  # podman-compose 1.5 fusionne les fichiers `include:` APRES les -f (podman_compose.py:2289-2292) : une redefinition ici
+  # serait ecrasee (« External volume [secagent-qualif_secrets] does not exists », T48 2026-11-13). Sous Podman, ce
+  # volume est CREE par `chain-test.sh push-secrets` (bootstrap), en bind sur PRIVATE/QUALIF/secrets, avant tout `up`.

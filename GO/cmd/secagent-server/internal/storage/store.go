@@ -29,6 +29,7 @@ type AgentRecord struct {
 	TokenJTI     string
 	PrevTokenJTI string // #217: the JTI replaced by TokenJTI, valid until TokenJTI is used at a handshake
 	EnrolledAt   time.Time
+	FirstSeenAt  *time.Time // #266: first successful handshake (nil: never connected)
 	LastSeen     time.Time
 	Status       string // "connected", "disconnected"
 	Suspended    bool
@@ -72,6 +73,10 @@ type Store struct {
 	remoteSuspended map[string]bool
 
 	onWrite atomic.Pointer[func(uint64)]
+
+	// first-seen marks waiting to be persisted (#266, store_first_seen.go)
+	fsMu sync.Mutex
+	fs   firstSeenState
 }
 
 type agentVolatile struct {
@@ -133,6 +138,7 @@ func (s *Store) AfterClose(fn func()) { s.cleanup = fn }
 
 // Close releases what the store owns (a temporary directory for OpenTemp).
 func (s *Store) Close() error {
+	s.closeFirstSeen()
 	if s.cleanup != nil {
 		s.cleanup()
 		s.cleanup = nil
@@ -142,6 +148,7 @@ func (s *Store) Close() error {
 
 // piggyback merges the volatile last_seen / last_used data into the payload about to be written.
 func (s *Store) piggyback(p *state.Payload) {
+	s.mergeFirstSeen(p)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for host, v := range s.agentVol {
@@ -163,6 +170,7 @@ func (s *Store) piggyback(p *state.Payload) {
 func (s *Store) mutate(fn func(*state.Tx) error) error {
 	err := s.eng.Mutate(fn)
 	if err == nil {
+		s.reapFirstSeen()
 		if cb := s.onWrite.Load(); cb != nil {
 			(*cb)(s.snap().WriteSeq())
 		}
@@ -237,6 +245,12 @@ func (s *Store) agentRecord(a state.Agent) AgentRecord {
 		LastSeen: a.EnrolledAt, Status: "disconnected", Suspended: a.Suspended, Revoked: a.Revoked, Vars: varsJSON(a.Vars)}
 	if a.LastSeen != nil {
 		rec.LastSeen = *a.LastSeen
+	}
+	if a.FirstSeenAt != nil {
+		t := *a.FirstSeenAt
+		rec.FirstSeenAt = &t
+	} else if t, ok := s.pendingFirstSeen(a.Hostname); ok { // marked in memory, not written yet
+		rec.FirstSeenAt = &t
 	}
 	s.mu.RLock()
 	if v, ok := s.agentVol[a.Hostname]; ok {
@@ -371,6 +385,7 @@ func (s *Store) DeleteAgent(ctx context.Context, hostname string) (bool, error) 
 		s.mu.Lock()
 		delete(s.agentVol, hostname)
 		s.mu.Unlock()
+		s.forgetFirstSeen(hostname, "")
 		log.Printf("Agent deleted: hostname=%q", hostname)
 	}
 	return deleted, nil
