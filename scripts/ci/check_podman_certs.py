@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2025-2026 Cyril Coupel
 # SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Controle du rendu Compose de la chaine QUALIF sous Podman (#267, LOT-4) : hypotheses de securite de la garde
 check-private.sh (pki/ en 0711, ca.crt/tls.crt 0644, tls.key 0600). Les services SERVEUR sont en keep-id (uid 10001 du
 conteneur = proprietaire des fichiers : ils lisent tls.key) ; les MINIONS ne sont PAS en keep-id (uid `relay` = un uid
