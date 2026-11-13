@@ -859,3 +859,48 @@ Contrairement à `TLS_CERT` / `TLS_KEY` qui sont rechargés à chaud via `GetCer
 | Trame de lien surdimensionnée | Bornes sur les octets bruts avant décodage (1 Mio / 512 o), fermeture `4012` |
 | Enfant qui ment sur la suspension d'un agent (#180) | Drapeau purement informatif ; le refus appartient au relay qui détient l'agent |
 | Saturation mémoire par `exec` massifs (#179) | Admission avec réservation de 5 Mio/tâche, limites par agent et globale, `503 memory_budget_exhausted` |
+
+---
+
+## 13. Plateforme Podman rootless (v3.0.6, #267) : modèle de sécurité et risques acceptés
+
+Les nœuds QUALIF (srv3, srv4) et PROD (srv1, srv2) font tourner secagent sous **Podman rootless** (compte `cyril`, uid 1000) ; l'ancien hôte Docker `192.168.1.218` reste la PROD jusqu'à la recréation. Mécanique et séquence : `DEPLOYMENT/podman/README.md`, `DOC/project/DEPLOYMENT.md` (« Plateforme Podman rootless »).
+
+### 13.1 Mapping d'uid et accès aux secrets
+
+- **Serveurs** : `userns_mode: keep-id:uid=10001,gid=10001` (`DEPLOYMENT/podman/docker-compose.podman*.yml`) : l'uid 10001 du conteneur **est** l'uid 1000 de l'hôte (`cyril`), propriétaire des fichiers du partage. Secrets : propriétaire 1000, mode 0400 (`SECRET_OWNER_UID=1000`).
+- **Minions de QUALIF, sans keep-id** : ils ne montent que le fichier **`ca.crt`** (jamais le dossier `pki/`). Sans cela, le root du conteneur (= `cyril`, propriétaire de `tls.key`) lisait la clé privée des serveurs (constat **HAUT H1** de la recette de sécurité T49, corrigé par `5b52dee`) ; `ca.key` vit dans `pki-ca/`, jamais montée (`scripts/ci/check_no_binds.py`, `check_podman_certs.py`).
+- **Réserve de conception** : root du conteneur minion = `cyril` de l'hôte, capacités CHOWN/SETUID/SETGID conservées (nécessaires à `become`/`su`), conteneur non `read_only` ; les autres capacités sont retirées, `no-new-privileges` posé, mémoire et pids limités. Acceptable pour un agent d'exécution, consigné (T49 B4).
+
+### 13.2 §S : état et secrets lisibles par l'uid 1000 du poste
+
+Le partage MooseFS conserve les uid numériques : l'**uid 1000 du poste de travail** est aussi l'uid propriétaire de `PRIVATE/<ENV>/{state,secrets,pki}/`. Tout agent de la session de développement peut donc, techniquement, **lire** `relay.state` (HMAC, secrets chiffrés `enc:`), `jwt_secret_key`, `admin_token`, `rsa_master_key`, `ca.key` et `tls.key`, et **modifier** l'état vivant : une écriture par erreur dans `PRIVATE/PROD/state/root/` met la PROD hors service (le HMAC détecte, le serveur refuse : indisponibilité, pas de compromission silencieuse). **Changement de sécurité accepté par l'utilisateur** (GATE LOT-4, Q-B), avec les garde-fous suivants :
+
+1. **Règle agents** (`CLAUDE.md`, règle §S.1) : lecture **et** écriture interdites sur `PRIVATE/<ENV>/{state,secrets,pki,pki-ca}/` ; `stat -c '%a %U'` seulement ; pas de `grep`/`cat`/`tar` sous `PRIVATE/`.
+2. **Modes** : dossiers 0700 (`pki/` de QUALIF en 0711, voir `DEPLOYMENT/podman/README.md`), `relay.state*`/`relay.lock` 0600, secrets 0400, `ca.key`/`tls.key` 0600. Garde `DEPLOYMENT/podman/check-private.sh` (partage accessible, FUSE, bon propriétaire, `pki/` limité à `ca.crt`/`tls.crt`/`tls.key`, liste exacte des fichiers).
+3. **Séparation d'état** : `PRIVATE/PROD/state/root` est le **seul** emplacement de l'état PROD, jamais copié ; la sauvegarde se fait hors poste, chiffrée, par l'utilisateur.
+
+### 13.3 Intégrité vérifiée à chaque démarrage
+
+Les fichiers de déploiement d'un nœud vivent **sur le partage** (`PRIVATE/<ENV>/<srvX>/cyril/secagent/{bin,release,systemd}`), donc modifiables par tout écrivain du partage. Contre cela (fail-closed) :
+
+- `verify-node-files.sh --pin` recalcule le contenu attendu **depuis le dépôt**, le compare à ce que lit le nœud, puis écrit **hors partage** (home de `cyril`, 0600) une **copie** de l'unité systemd (jamais un lien) et le **manifeste épinglé** des empreintes ;
+- à **chaque démarrage** (boot, `Restart=`, relance) : `ExecStartPre` vérifie les empreintes du partage contre ce manifeste (`sha256sum --strict -c`), puis exécute la garde `check-private.sh` (ainsi vérifiée) ; `ExecStartPost` vérifie qu'un conteneur de la racine tourne. Un fichier modifié, ajouté (`release/.env`), un lien symbolique ou un partage inaccessible **bloque le démarrage** (recette T49 : deux falsifications refusées) ;
+- une release déposée (`stage`) sans `--pin` ne démarre pas.
+
+### 13.4 Risques acceptés par l'utilisateur ou connus (à ne pas rouvrir sans décision)
+
+| Risque | Gravité | Statut |
+|---|---|---|
+| **API Docker `tcp:2375` en HTTP, sans authentification, sur 0.0.0.0** des nœuds (srv1-srv4, `.218`, 8 hôtes, #268) : accès root équivalent pour tout hôte du réseau, qui annule l'isolation rootless | HAUT (réévalué par la recette T49) | **Volontaire et accepté par l'utilisateur** ; hors du code du lot, le démon Docker n'est jamais reconfiguré par la plateforme ; ne bloque pas les GATE ; suivi #268 |
+| **`sshd` des nœuds par mot de passe** (en plus de la clé) ; `cyril` dispose de `sudo` | MOYEN | **Accepté par l'utilisateur** ; les scripts n'utilisent que la clé (`BatchMode`, `IdentitiesOnly`, `StrictHostKeyChecking=yes`, `known_hosts` épinglé) |
+| **Cloisonnement QUALIF/PROD non garanti** : un seul autofs root, un uid commun (1000) ; seuls les modes 0700 et l'uid protègent | MOYEN | **Accepté** |
+| **Colocalisation** : les nœuds portent aussi le cluster **RKE2** et des **chunkservers MooseFS** ; la plateforme ne touche jamais Kubernetes, MooseFS ni Docker (interdits codés dans `install-node.sh`), limites mémoire obligatoires | MOYEN | **Accepté** ; contrôle CI `--require-memory-limit` |
+| **`maproot` de l'export MooseFS non vérifié** (lisible seulement sur le maître `mfsexports.cfg`) : si l'export autorise les nœuds avec `maproot=0`, **tout root d'un client MooseFS** lit `PRIVATE/` malgré 0700/0400 | MOYEN | **Non vérifié** ; recommandation : export dédié à `PRIVATE/`, limité aux IP du poste et de srv1-srv4, `maproot` non nul |
+| **TOCTOU (#273)** : la garde et les Compose sont relus depuis le partage **après** le contrôle d'empreinte | MOYEN | **Accepté en v3.0.6** ; copie locale épinglée en v3.0.7 ; d'ici là, seul l'uid 1000 du poste écrit sur le partage |
+| **Dépendance à MooseFS** : état, secrets et PKI sont sur le partage ; master injoignable : `ExecStartPre` refuse, les nœuds en marche perdent l'état (HMAC/verrou) | MOYEN | **Fail-closed** (indisponibilité, pas de corruption) ; changement d'architecture accepté (STATE_DIR partagé) ; relance : `DEPLOYMENT.md` |
+| Jeton d'enrôlement des minions en variable d'environnement (`podman inspect`, `/proc`) | BAS | Jeton à usage unique ; serveurs : aucun secret en variable (`*_FILE` seulement) |
+| Enfant et minions de QUALIF hors unité systemd (pas de garde d'intégrité `ExecStartPre`) | BAS | Seules les racines a et b sont épinglées ; services de test |
+| Port de b ouvert en secondaire (`rootlessport` accepte puis coupe la connexion) | BAS | Conforme à « aucun service en secondaire » |
+
+**PKI de QUALIF** : valable 90 jours, **expire le 2027-02-11** ; à régénérer avant cette date (`DEPLOYMENT.md`).
