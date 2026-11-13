@@ -434,11 +434,12 @@ backup_restore() {
   local m bk key; m="$(master)" || fail "pas de maitre sur la racine"
   bk="$CHAIN_DIR/backup-state"; key="$CHAIN_DIR/backup-key"
   local bkvol="${PROJECT}_backup"   # volume NOMME (pas de bind mount local : le demon peut etre distant)
-  rm -rf "$bk" "$key"; mkdir -p "$bk" "$key"; chmod 700 "$key"
+  # copies LOCALES d'etat et de cle : protegees comme les secrets (0700/0600, umask 077), lues seulement par ce script
+  rm -rf "$bk" "$key"; ( umask 077; mkdir -p "$bk" "$key" ); chmod 700 "$bk" "$key"
   connected "$m" minions minion-root 2    # le minion doit etre enrole et connecte avant la sauvegarde
   echo "== sauvegarde (etat) et sauvegarde distincte de RSA_MASTER_KEY"
   ctr exec "$m" /app/secagent-server state verify /data/relay.state >/dev/null || fail "etat source invalide"
-  ctr cp "$m:/data/relay.state" "$bk/relay.state"; chmod 755 "$bk"; chmod 644 "$bk/relay.state"
+  ( umask 077; ctr cp "$m:/data/relay.state" "$bk/relay.state" ); chmod 600 "$bk/relay.state"   # 0644 seulement DANS le volume (uid 10001)
   ctr volume create "$bkvol" >/dev/null
   tar -C "$bk" -cf - relay.state | ctr run --rm -i -v "$bkvol:/backup" \
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
