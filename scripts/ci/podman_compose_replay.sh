@@ -141,6 +141,11 @@ run_bootstrap() {
     wait_for() { shift 2; "$@"; }   # pas d attente : le faux podman repond tout de suite
     sleep() { :; }
     bootstrap
+    echo "== sous-commandes absentes de podman-compose 1.5 : rm emule (negative-ca), logs --no-color (admission-503)"
+    DC_NOCHECK=1 dc --profile negative up -d --no-deps minion-negca
+    dc --profile negative rm -sf minion-negca >/dev/null
+    dc logs --no-color minion-root >/dev/null
+    echo "rm et logs OK"
     echo "== push-hooks / push-events rejoues sans down (volumes existants : podman volume create les refuse)"
     push_hooks; push_events
     echo "== down (unites arretees, conteneurs retires, jamais -v)"
@@ -162,6 +167,30 @@ grep -E "^==|bootstrap OK|REJEU|Error|RuntimeError|ValueError|ECHEC|REFUS|volume
 w="$(grep -c "WARNING:podman_compose" "$out")"; [ "$w" = 0 ] && echo "  aucun avertissement podman-compose" || { echo "  $w avertissement(s) podman-compose :"; grep "WARNING:podman_compose" "$out" | sort -u | sed 's/^/    /'; }
 echo "--- appels podman (noeud A puis B), extrait :"
 for n in A B; do grep -cE "^podman (run|create)" "$T/$n/calls.log" 2>/dev/null | sed "s/^/  noeud $n : conteneurs crees /"; grep -E "volume create|^systemctl" "$T/$n/calls.log" 2>/dev/null | sed "s/^/  $n /" | cut -c1-200; done
+# --- chaque appel `dc` des scripts de qualif : sous-commande et options connues du VRAI podman-compose (ordre n°21) ----
+# Exceptions : `rm` (emule par dc()), `logs --no-color` (option retiree par dc()), `config --format` et `down -v` (chemins
+# Docker seulement ; dc() refuse `config --format` sous Podman).
+subs="$(FAKE_PODMAN_STATE="$T/v" "$PC" --help 2>/dev/null | sed -n 's/^ *{\(.*\)}.*/\1/p' | head -1 | tr ',' ' ')"
+dc_bad=0; dc_n=0
+while IFS= read -r line; do
+  set -f; read -r -a ws <<< "$line"; set +f
+  i=0; while [ $i -lt ${#ws[@]} ] && [ "${ws[$i]}" != dc ]; do i=$((i+1)); done; i=$((i+1))
+  while [ $i -lt ${#ws[@]} ]; do case "${ws[$i]}" in -f|--profile|-p) i=$((i+2)) ;; *) break ;; esac; done
+  sub="${ws[$i]:-}"; [ -n "$sub" ] || continue; dc_n=$((dc_n+1))
+  [ "$sub" = rm ] && continue
+  case " $subs " in *" $sub "*) ;; *) echo "  KO dc $sub : sous-commande absente de podman-compose ($line)"; dc_bad=1; continue ;; esac
+  help="$(FAKE_PODMAN_STATE="$T/v" "$PC" "$sub" --help 2>/dev/null)"
+  # options de Compose = jusqu'au premier mot qui n'est ni une option ni la valeur d'une option (service, redirection...)
+  skipv=0
+  for o in "${ws[@]:$((i+1))}"; do
+    if [ "$skipv" = 1 ]; then skipv=0; continue; fi
+    case "$o" in -*) ;; *) break ;; esac
+    case "$o" in -e|-v|-u|-w|-p|-l|-t|--name|--entrypoint|--label|--env|--volume|--user|--workdir|--publish|--timeout) skipv=1 ;; esac
+    o="${o%%=*}"; case "$sub $o" in "logs --no-color"|"config --format"|"down -v") continue ;; esac
+    grep -qE -- "(^|[ ,])$o([ ,]|$)" <<< "$help" || { echo "  KO dc $sub $o : option absente de podman-compose $sub ($line)"; dc_bad=1; }
+  done
+done < <(grep -hE '(^|[ ;(|&{])(DC_NOCHECK=1 )?dc [a-z-]' "$REPO"/DEPLOYMENT/qualif/*.sh | grep -vE '^[[:space:]]*#|^[[:space:]]*dc\(\)|dc_on|dc_rm')
+if [ "$dc_bad" = 0 ]; then echo "ok   $dc_n appels dc des scripts de qualif : sous-commandes et options connues de podman-compose (rm emule)"; else rc=1; fi
 # --- PROD : demarrage de l'unite de srv1 (Compose serveur PROD + surcharge Podman), meme faux podman (noeud C) ---------
 PP="$P/PROD"; mkdir -p "$PP"/state/root "$PP"/secrets "$PP"/pki; chmod 700 "$PP" "$PP"/state "$PP"/state/root "$PP"/secrets "$PP"/pki
 for f in jwt_secret_key admin_token rsa_master_key; do printf '%064d' 0 > "$PP/secrets/$f"; chmod 400 "$PP/secrets/$f"; done
@@ -174,5 +203,5 @@ if [ "$prod_ok" = 1 ] && FAKE_PODMAN_STATE="$T/C" systemctl --user start secagen
 else
   echo "KO   PROD : unite secagent-prod-srv1"; tail -15 "$T/prod.log"; rc=1
 fi
-if [ "$rc" = 0 ] && grep -q "REJEU COMPLET OK" "$out" && [ "$w" = 0 ]; then echo "ok   chemin bootstrap complet sous Podman ($(FAKE_PODMAN_STATE="$T/v" "$PC" --version 2>&1 | grep -o "podman-compose version [0-9.]*" | head -1))"; exit 0; fi
+if [ "$rc" = 0 ] && [ "$dc_bad" = 0 ] && grep -q "REJEU COMPLET OK" "$out" && [ "$w" = 0 ]; then echo "ok   chemin bootstrap complet sous Podman ($(FAKE_PODMAN_STATE="$T/v" "$PC" --version 2>&1 | grep -o "podman-compose version [0-9.]*" | head -1))"; exit 0; fi
 echo "KO   chemin bootstrap (rc=$rc), journal complet : $out"; tail -30 "$out"; trap - EXIT; exit 1

@@ -33,6 +33,9 @@ while [ \$# -gt 0 ]; do case "\$1" in -n) n=non ;; -i|-o) shift ;; *) if [ -z "\
 echo "\$tgt | \$cmd | stdin=\$n" >> "$T/ssh.log"
 # require_running : un conteneur « en cours » par service, sauf FAKE_PS_EMPTY=1 (creation echouee malgre le rc 0)
 case "\$cmd" in *"podman ps -q --filter label=com.docker.compose"*) [ "\${FAKE_PS_EMPTY:-0}" = 1 ] || echo c0ffee ;; esac
+# dc rm (emule) : un conteneur existe tant que $T/psa existe ; podman rm -f le retire (sauf FAKE_RM_STUCK=1)
+case "\$cmd" in *"podman ps -aq --filter label=com.docker.compose"*) [ -e "$T/psa" ] && echo dead01 ;; esac
+case "\$cmd" in *"podman rm -f dead01"*) [ "\${FAKE_RM_STUCK:-0}" = 1 ] || rm -f "$T/psa" ;; esac
 EOF
 chmod +x "$T/bin/ssh"
 P=/share/MFS/ROOT/essai/PRIVATE
@@ -112,6 +115,23 @@ run CMD='dc start minion-root'; grep -qE "^$B \| podman ps -q .*service=minion-r
 run CMD='DC_NOCHECK=1 dc --profile negative up -d --no-deps minion-negca'; grep -q "podman ps -q" "$T/ssh.log" && ko "DC_NOCHECK=1 : controle fait quand meme" || ok "DC_NOCHECK=1 (negative-ca) : pas de controle d'etat"
 grep -q 'DC_NOCHECK=1 dc --profile negative up -d --no-deps minion-negca' "$HERE/../../DEPLOYMENT/qualif/chain-test.sh" \
   && [ "$(grep -c 'DC_NOCHECK=1 dc' "$HERE/../../DEPLOYMENT/qualif/chain-test.sh")" = 1 ] && ok "DC_NOCHECK : seulement negative-ca" || ko "DC_NOCHECK utilise ailleurs"
+# --- ordre n°21 : sous-commandes absentes de podman-compose 1.5 (rm emule, autres refusees, logs --no-color) ---
+touch "$T/psa"; run CMD='dc --profile negative rm -sf minion-negca'
+grep -qE "^$B \| podman ps -aq --filter label=com.docker.compose.project=secagent-qualif --filter label=com.docker.compose.service=minion-negca " "$T/ssh.log" \
+  && grep -qE "^$B \| podman rm -f dead01 " "$T/ssh.log" && ! grep -q "podman-compose" "$T/ssh.log" && [ ! -e "$T/psa" ] \
+  && ok "dc rm -sf minion-negca : podman rm -f par etiquettes sur B, sans podman-compose" || ko "dc rm : $(last | tr '\n' '#')"
+run CMD='dc rm -sf secagent-server-a'; grep -qE "^$A \| podman ps -aq .*service=secagent-server-a" "$T/ssh.log" && ! grep -q "podman rm" "$T/ssh.log" \
+  && ok "dc rm : idempotent (aucun conteneur : rien a retirer), noeud de a = A" || ko "dc rm idempotent : $(last | tr '\n' '#')"
+touch "$T/psa"; : > "$T/ssh.log"; env -i "${ENVV[@]}" FAKE_RM_STUCK=1 CMD='dc rm -sf minion-root' bash -c 'source "$1"; eval "$CMD"' _ "$F" > "$T/o" 2>&1; rc=$?; rm -f "$T/psa"
+[ "$rc" = 1 ] && grep -q "encore present" "$T/o" && ok "dc rm : conteneur restant -> echec" || ko "dc rm conteneur restant rc=$rc : $(cat "$T/o")"
+: > "$T/ssh.log"; env -i "${ENVV[@]}" CMD='dc rm' bash -c 'source "$1"; eval "$CMD"' _ "$F" > "$T/o" 2>&1; rc=$?
+[ "$rc" = 2 ] && ok "dc rm sans service : refus (jamais tout le projet)" || ko "dc rm sans service rc=$rc"
+for sub in cp create top events; do
+  : > "$T/ssh.log"; env -i "${ENVV[@]}" CMD="dc $sub secagent-child" bash -c 'source "$1"; eval "$CMD"' _ "$F" > "$T/o" 2>&1; rc=$?
+  [ "$rc" = 2 ] && grep -q "absente de podman-compose" "$T/o" && [ ! -s "$T/ssh.log" ] && ok "dc $sub : refus explicite, aucun appel" || ko "dc $sub rc=$rc : $(cat "$T/o")"
+done
+run CMD='dc logs --no-color minion-root'; grep -qE "^$B .*podman-compose .* logs minion-root " "$T/ssh.log" && ! grep -q -- "--no-color" "$T/ssh.log" \
+  && ok "dc logs --no-color : option retiree (absente de podman-compose 1.5)" || ko "dc logs : $(last | tr '\n' '#')"
 FS="$HERE/../../DEPLOYMENT/qualif/failover-test.sh"
 CT="$HERE/../../DEPLOYMENT/qualif/chain-test.sh"   # bootstrap (Docker ET Podman) : a/b par root_up ; backup_restore est Docker seulement
 sed -n '/^bootstrap() {/,/^}/p' "$CT" | grep -q 'dc up -d secagent-server-a' && ko "chain-test.sh bootstrap : dc up de a/b (double chemin sous Podman)" || ok "chain-test.sh bootstrap : a/b demarres par root_up seulement"

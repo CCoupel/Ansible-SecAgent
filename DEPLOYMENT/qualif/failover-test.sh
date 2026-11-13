@@ -137,6 +137,17 @@ dc() {
     i=$((i+1))
   done
   [ -n "$sub" ] || refuse "dc : sous-commande absente"
+  # Sous-commandes de podman-compose 1.5.0 (ordre n°21) : `rm` n'existe pas (emule ci-dessous), toute autre absente est
+  # refusee ici plutot que par un message d'usage au milieu d'un scenario ; options sans equivalent traduites ou refusees.
+  case "$sub" in
+    up|run|exec|start|stop|restart|logs|down|ps|kill|pause|unpause|pull|images|port|config) ;;
+    rm) dc_rm "${rest[@]}"; return ;;   # -f/--profile de tete sans objet : selection par etiquettes
+    *) refuse "dc $sub : sous-commande absente de podman-compose 1.5 (Podman) : a emuler dans dc() avant usage" ;;
+  esac
+  if [ "$sub" = logs ]; then   # podman-compose logs : pas de --no-color (sortie sans couleur de toute facon)
+    local kept=(); for a in "${rest[@]}"; do [ "$a" = --no-color ] || kept+=("$a"); done; rest=("${kept[@]}")
+  fi
+  [ "$sub" != config ] || [[ " ${rest[*]} " != *" --format "* ]] || refuse "dc config --format : absent de podman-compose 1.5"
   local n
   case "$sub" in
     run|exec)
@@ -157,6 +168,23 @@ dc() {
   # podman-compose up/start/restart rend 0 MEME si la creation ou le demarrage d'un conteneur echoue (T48) : etat verifie.
   # DC_NOCHECK=1 : service dont l'echec est attendu (negative-ca).
   case "$sub" in up|start|restart) [ "${DC_NOCHECK:-0}" = 1 ] || require_running "${svcA[@]}" "${svcB[@]}" ;; esac
+}
+# `docker compose rm [-s] [-f] [-v] <services>` sous Podman (absent de podman-compose 1.5, ordre n°21) : `podman rm -f` des
+# conteneurs du projet portant l'etiquette du service, sur le noeud du service ; idempotent (aucun conteneur = rien a faire),
+# puis verification qu'il n'en reste aucun. Options -s/-f/-v/--stop/--force acceptees (rm -f arrete et force toujours) ;
+# `-v` (volumes anonymes) : aucun dans nos Compose. Sans service : refus (jamais tout le projet par megarde).
+dc_rm() { # $@ options de `compose rm` (ignorees) puis services
+  local a svcs=() s n ids
+  for a in "$@"; do case "$a" in -*) ;; *) svcs+=("$a") ;; esac; done
+  [ ${#svcs[@]} -gt 0 ] || refuse "dc rm : service(s) obligatoire(s) sous Podman"
+  for s in "${svcs[@]}"; do
+    n="$(node_of "$s")"; n="${n:-B}"
+    ids="$(CTR_NODE="$n" ctr ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=$s")"
+    # shellcheck disable=SC2086   # identifiants sans espace
+    [ -z "$ids" ] || CTR_NODE="$n" ctr rm -f $ids >/dev/null
+    [ -z "$(CTR_NODE="$n" ctr ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=$s")" ] \
+      || fail "dc rm $s : conteneur(s) encore present(s) sur le noeud $n"
+  done
 }
 # Echoue si un service Compose n'a pas de conteneur EN COURS (etiquettes Compose, posees par docker compose et
 # podman-compose) sur son noeud : jamais se fier au code retour de podman-compose (T48).
