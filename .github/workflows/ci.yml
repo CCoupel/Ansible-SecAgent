@@ -472,6 +472,9 @@ jobs:
           # (uid 10001 = proprietaire : lisent tls.key) ; les MINIONS restent sans keep-id (uid `relay` != proprietaire : ne
           # lisent que les certificats publics) et montent /certs en lecture seule.
           python3 scripts/ci/check_podman_certs.py render/podman-qualif-chain.json
+          # T49 H1 : les minions ne montent QUE la CA publique (bind du fichier ca.crt, ou volume *tls_ca* en TLS distant),
+          # dans TOUS les rendus de la chaine (Docker local, distant, 3e niveau, negatif)
+          python3 scripts/ci/check_podman_certs.py --minions-only render/qualif-chain.json render/qualif-chain-remote.json render/qualif-chain-negative.json render/qualif-chain-level3-remote.json
           # Binds (y compris les volumes driver_opts) limites aux sous-chemins permis de PRIVATE/QUALIF ; jamais ca.key ni poste-cyril
           python3 scripts/ci/check_no_binds.py --allow-prefix "$PQ" < render/podman-qualif-chain.json
           # Rendu destine a un demon Docker DISTANT (qualif reelle) : aucun chemin du client (bind, secret/config file:, build).

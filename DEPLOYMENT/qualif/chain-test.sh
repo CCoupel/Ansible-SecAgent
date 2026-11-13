@@ -72,6 +72,7 @@ export SECAGENT_EVENTS_VOLUME="${SECAGENT_EVENTS_VOLUME:-${PROJECT}_events}"
 export COMPOSE_OVERRIDES="$HERE/docker-compose.hooks.yml"
 if [ "${TLS_MODE:-bind}" = volume ] && [ "${CONTAINER_CLI:-docker}" = docker ]; then
   export SECAGENT_TLS_VOLUME="${SECAGENT_TLS_VOLUME:-${PROJECT}_tls}"
+  export SECAGENT_TLS_CA_VOLUME="${SECAGENT_TLS_CA_VOLUME:-${PROJECT}_tls_ca}"   # ca.crt SEUL : monte chez les minions (T49 H1)
   export COMPOSE_OVERRIDES="$HERE/docker-compose.remote-tls.yml $COMPOSE_OVERRIDES"
 fi
 # Hote sur lequel le poste de controle joint la racine (ports d'hote 7770 et 8770) ; defaut : poste local / runner.
@@ -204,7 +205,12 @@ push_tls() {
     alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
     sh -c 'set -e; tar -xf - -C /certs; chown 0:0 /certs /certs/tls.crt /certs/ca.crt; chmod 755 /certs; chmod 644 /certs/tls.crt /certs/ca.crt
            chown 10001:10001 /certs/tls.key; chmod 0600 /certs/tls.key'
-  echo "certificats de test pousses dans le volume $SECAGENT_TLS_VOLUME (tls.key 10001 0600, tls.crt/ca.crt 0644)"
+  # volume de la CA PUBLIQUE SEULE, monte chez les minions (T49 H1 : jamais tls.key chez un minion)
+  vol_ensure "$SECAGENT_TLS_CA_VOLUME"
+  tar -C "$QUALIF_TLS_DIR" -cf - ca.crt | ctr run --rm -i -v "$SECAGENT_TLS_CA_VOLUME:/certs" \
+    alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
+    sh -c 'set -e; find /certs -mindepth 1 -delete; tar -xf - -C /certs; chown 0:0 /certs /certs/ca.crt; chmod 755 /certs; chmod 644 /certs/ca.crt'
+  echo "certificats de test pousses dans le volume $SECAGENT_TLS_VOLUME (tls.key 10001 0600, tls.crt/ca.crt 0644) ; CA seule dans $SECAGENT_TLS_CA_VOLUME (minions)"
 }
 
 # Depose hooks.json dans le volume `$SECAGENT_HOOKS_VOLUME` (hote Docker distant ou non) par un conteneur ephemere

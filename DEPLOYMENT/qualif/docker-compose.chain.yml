@@ -107,9 +107,10 @@ services:
       RELAY_CA_BUNDLE: /certs/ca.crt
     volumes:
       - minion_root_data:/var/lib/secagent-minion
+      # CA PUBLIQUE SEULE (T49 H1) : jamais le dossier pki/ (tls.key) ; l'entrypoint du minion tourne en root avant su-exec
       - type: bind
-        source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}
-        target: /certs
+        source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}/ca.crt
+        target: /certs/ca.crt
         read_only: true
     # Durcissement (#238, v3.0.5) : l'entrypoint de l'image minion demarre en root (mkdir, openssl, chown du volume) puis
     # abandonne les droits par `su-exec relay` : capacites MESUREES minimales = CHOWN, SETUID, SETGID (essai sur 192.168.1.218,
@@ -135,9 +136,10 @@ services:
       RELAY_CA_BUNDLE: /certs/ca.crt
     volumes:
       - minion_child_data:/var/lib/secagent-minion
+      # CA PUBLIQUE SEULE (T49 H1) : jamais le dossier pki/ (tls.key) ; l'entrypoint du minion tourne en root avant su-exec
       - type: bind
-        source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}
-        target: /certs
+        source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}/ca.crt
+        target: /certs/ca.crt
         read_only: true
     # Durcissement (#238) : memes capacites minimales que minion-root.
     cap_drop: [ALL]
@@ -208,9 +210,10 @@ services:
       RELAY_CA_BUNDLE: /certs/ca.crt
     volumes:
       - minion_grand_data:/var/lib/secagent-minion
+      # CA PUBLIQUE SEULE (T49 H1) : jamais le dossier pki/ (tls.key) ; l'entrypoint du minion tourne en root avant su-exec
       - type: bind
-        source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}
-        target: /certs
+        source: ${QUALIF_TLS_DIR:?QUALIF_TLS_DIR est obligatoire (tls.crt, tls.key, ca.crt)}/ca.crt
+        target: /certs/ca.crt
         read_only: true
     # Durcissement (#238) : memes capacites minimales que minion-root.
     cap_drop: [ALL]

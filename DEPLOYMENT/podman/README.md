@@ -30,7 +30,9 @@ obligatoires (contrôle CI `--require-memory-limit`, délégation cgroup `memory
   (risque accepté) : seuls les modes 0700 et l'uid 1000 commun protègent.
 - **Mapping uid** : `userns_mode: keep-id:uid=10001,gid=10001` sur les services serveur (uid 10001 du conteneur = uid
   1000 de l'hôte = propriétaire des fichiers du partage). Secrets : propriétaire **1000**, 0400 (`SECRET_OWNER_UID=1000`).
-- **TLS** : `pki/` ne contient que `ca.crt`, `tls.crt`, `tls.key` (monté sur `/certs`) ; `ca.key` est dans `pki-ca/`,
+- **TLS** : `pki/` ne contient que `ca.crt`, `tls.crt`, `tls.key` (monté sur `/certs` chez les **serveurs** ; les **minions**
+  ne montent que le fichier `ca.crt`, T49 H1 : leur entrypoint tourne en root avant `su-exec relay`, et root du conteneur =
+  cyril = propriétaire de `tls.key`) ; `ca.key` est dans `pki-ca/`,
   jamais monté (`check_no_binds.py` et `check-private.sh` le refusent).
   Modes exigés par la garde : `tls.key` 0600 au plus ; QUALIF : `pki/` en **0711** (traversable, non listable) et
   `ca.crt`/`tls.crt` en 0644, car les minions colocalisés gardent le mapping rootless par défaut (uid `relay` ≠ propriétaire)
